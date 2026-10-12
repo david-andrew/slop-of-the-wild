@@ -1,0 +1,124 @@
+# Render coverage must not stain a dry cliff with the bed of a suspended lake.
+# No GL context: exercise the exact levels uploaded for water, terrain and grass.
+use '../game/water_render.jo'
+use '../game/water.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+levels = water_render_levels()
+removed = 0
+lake_left = 0
+river_kept = 0
+loop zi in [0..73):
+    z = 1901 + zi * 2
+    loop xi in [0..125):
+        x = -1500 + xi * 2
+        k = int(round((f64(z) - hf.z0) / hf.cell)) * hf.n + int(round((f64(x) - hf.x0) / hf.cell))
+        level = water_grid[k]
+        if level < -9000.0: continue
+        depth = level - hf.h[k]
+        if level > 310.0:
+            if levels[k] < -9000.0:
+                removed += 1
+            else if depth > 0.1:
+                lake_left += 1
+        else if depth > 0.1 and depth < 7.0 and levels[k] == level:
+            river_kept += 1
+assert(removed > 500 and lake_left == 0 and river_kept > 2000, "uncontained high lake removed; river retained")
+# Actual world points behind pixels (320,145), (480,145), (640,145) of
+# the 1600x900 snow regression frame: these are leaked bed tint, not a lake.
+loop p in [vec2(-1451.36,1922.11), vec2(-1461.08,1937.23), vec2(-1472.30,1954.43)]:
+    k = int(round((f64(p.y) - hf.z0) / hf.cell)) * hf.n + int(round((f64(p.x) - hf.x0) / hf.cell))
+    assert(water_grid[k] > 310.0 and levels[k] < -9000.0, "snow camera slope cannot receive lake-bed tint")
+print("PASS water coverage: removed {removed} unsupported high-lake samples; retained {river_kept} river samples")
+
+# Hopper Pond is a contained basin, not the spilled high lake. Preserve its bed.
+pond_kept = 0
+loop zi in [0..60):
+    loop xi in [0..60):
+        x = -1290.0 + f64(xi) * 2.0
+        z = 1590.0 + f64(zi) * 2.0
+        k = int(round((z - hf.z0) / hf.cell)) * hf.n + int(round((x - hf.x0) / hf.cell))
+        if water_grid[k] > -9000.0 and water_grid[k] > hf.h[k]:
+            assert(levels[k] == water_grid[k], "Hopper Pond retained")
+            pond_kept += 1
+assert(pond_kept > 100, "real contained pond control")
+print("PASS water coverage: retained {pond_kept} Hopper Pond samples")
+
+removed_total = 0
+min_x = 1e9
+max_x = -1e9
+min_z = 1e9
+max_z = -1e9
+loop k in [0..levels.len()):
+    if water_grid[k] > -9000.0 and levels[k] < -9000.0:
+        removed_total += 1
+        x = hf.x0 + f64(k % hf.n) * hf.cell
+        z = hf.z0 + f64(k / hf.n) * hf.cell
+        min_x = min(min_x, x)
+        max_x = max(max_x, x)
+        min_z = min(min_z, z)
+        max_z = max(max_z, z)
+assert(removed_total < 1000, "basin rejection stays local to unsupported pools")
+print("render mask removed {removed_total} texels; bounds {min_x}..{max_x}, {min_z}..{max_z}")
+
+# Render-only splash anchors must lie outside stone on the actual falling sheet.
+# Their unit directions and prepared-pack roundtrip are used by the shared FX batch.
+water_generate()
+assert(fall_shelves.len() > 0, "falling sheet retains shelf spray contacts")
+west_shelves = 0
+low_bench = false
+high_bench = false
+loop shelf in fall_shelves:
+    assert(abs(length(shelf.out) - 1.0) < 0.001 and abs(shelf.out.y) < 0.001, "finite unit shelf spray direction")
+    assert(height_at(f64(shelf.pos.x), f64(shelf.pos.z)) <= f64(shelf.pos.y) + 1.01, "shelf spray outside dry rock")
+    if shelf.pos.x > -1498.0 and shelf.pos.x < -1400.0 and shelf.pos.z > 1805.0 and shelf.pos.z < 1844.0:
+        west_shelves += 1
+        low_bench = low_bench or abs(shelf.pos.y - 144.0) < 0.02
+        high_bench = high_bench or abs(shelf.pos.y - 194.0) < 0.02
+        assert(abs(shelf.pos.y - 144.0) < 0.02 or abs(shelf.pos.y - 194.0) < 0.02, "spray intersects an authored rock bench")
+        assert(shelf.out.x < -0.8, "west bench spray faces the receiving pool")
+assert(west_shelves > 0 and low_bench and high_bench, "reviewed west waterfall has visible shelf spray anchors")
+print("PASS waterfall shelves: {fall_shelves.len()} surface contacts, {west_shelves} at reviewed west fall; unit directions, dry-rock exclusion")
+
+# Synthetic controls: a leaking flat sheet, a descending waterfall, and a
+# contained pond. The render mask must never mutate the gameplay water levels.
+hf.n = 9
+hf.h = fill(f32(0), 81)
+source = fill(f32(-10000), 81)
+loop z in [1..8):
+    loop x in [1..8): source[z * 9 + x] = 30.0
+# A distant LOD could draw this dry crest at y=20, below the stored level.
+# The tint channel must still report its actual y=40 bed as dry, while the
+# neighbouring low basin keeps its positive depth and unchanged water level.
+hf.h[40] = 40.0
+hf.x0=0.0
+hf.z0=0.0
+hf.cell=2.0
+bed_surface = [WVert(vec3(6,30,6)),WVert(vec3(10,30,6)),WVert(vec3(10,30,10)),WVert(vec3(6,30,10))]
+bed_indices: u32[] = [0,1,2,0,2,3]
+bed_pixels = water_bed_levels(bed_surface,bed_indices,source)
+assert(source[40] == 30.0 and bed_pixels[40] == -10000.0, "dry crest cannot acquire underwater tint from coarse render height")
+assert(source[41] == 30.0 and bed_pixels[41] == 30.0, "real basin depth and water level preserved")
+assert(bed_pixels[0] == -10000.0, "dry sentinel carries no false bed depth")
+assert(source[10] == 30.0 and bed_pixels[10] == -10000.0, "stored water without a rendered sheet cannot paint a dark ground patch")
+hf.h[40] = 0.0
+water_grid_set(source, 9, 0.0, 0.0, 2.0)
+flat = water_render_levels()
+assert(flat[40] < -9000.0 and water_grid[40] == 30.0, "leak rejected without mutating gameplay map")
+loop z in [1..8):
+    loop x in [1..8): water_grid[z * 9 + x] = f32(40 - x * 4)
+fall = water_render_levels()
+assert(fall[40] == 24.0, "descending waterfall coverage preserved")
+loop k in [0..81):
+    if water_grid[k] < -9000.0: hf.h[k] = 31.0
+    else: water_grid[k] = 30.0
+basin = water_render_levels()
+assert(basin[40] == 30.0, "bounded pond retained")
+print("PASS water coverage: flat leak rejected, waterfall and basin retained, gameplay levels unchanged")

@@ -1,0 +1,207 @@
+{
+  "base_revision": "fe93d1c396d777619b39ea923c00da4563cef274",
+  "startup": {
+    "protocol": "git archive plus ignored terrain inputs to clean snapshot; cp -r to /tmp; warm_assets.sh; fresh one-frame X11 processes in one serialized flock batch; time excludes lock wait",
+    "preparation": "Revision-matched CPU packs baked in archived base; shader cache copied from this worktree and validated by driver/GLSL keys; no cache flush",
+    "flags": {
+      "BOTW_LOADTIME": "1",
+      "BOTW_NOVSYNC": "1",
+      "BOTW_SCALE": "1",
+      "SLOPPY_PLATFORM": "x11",
+      "SLOPPY_WINDOW": "1280x720",
+      "SLOPPY_FRAMES": "1",
+      "SLOPPY_FRAME_STATS": "1"
+    },
+    "source": {
+      "loaded_s": {
+        "median": 1.6549999999999998,
+        "min": 1.63,
+        "max": 2.37
+      },
+      "process_elapsed_s": {
+        "median": 3.0300000000000002,
+        "min": 2.97,
+        "max": 3.77
+      }
+    },
+    "binary": {
+      "loaded_s": {
+        "median": 1.585,
+        "min": 1.55,
+        "max": 1.64
+      },
+      "process_elapsed_s": {
+        "median": 1.77,
+        "min": 1.73,
+        "max": 1.82
+      }
+    },
+    "loadavg_1min_range": [
+      3.5,
+      4.38
+    ],
+    "runs": [
+      {
+        "mode": "source",
+        "repeat": 1,
+        "loaded_s": 2.37,
+        "process_elapsed_s": 3.77,
+        "shader_hits": 34,
+        "loadavg": "4.38 4.98 4.47 4/2080 1538204"
+      },
+      {
+        "mode": "source",
+        "repeat": 2,
+        "loaded_s": 1.66,
+        "process_elapsed_s": 2.97,
+        "shader_hits": 34,
+        "loadavg": "4.19 4.93 4.46 3/2089 1538283"
+      },
+      {
+        "mode": "source",
+        "repeat": 3,
+        "loaded_s": 1.71,
+        "process_elapsed_s": 3.08,
+        "shader_hits": 34,
+        "loadavg": "4.19 4.93 4.46 1/2091 1538360"
+      },
+      {
+        "mode": "source",
+        "repeat": 4,
+        "loaded_s": 1.65,
+        "process_elapsed_s": 3.04,
+        "shader_hits": 34,
+        "loadavg": "4.02 4.88 4.44 1/2091 1538530"
+      },
+      {
+        "mode": "source",
+        "repeat": 5,
+        "loaded_s": 1.63,
+        "process_elapsed_s": 3.02,
+        "shader_hits": 34,
+        "loadavg": "4.02 4.88 4.44 3/2084 1538553"
+      },
+      {
+        "mode": "source",
+        "repeat": 6,
+        "loaded_s": 1.64,
+        "process_elapsed_s": 3.02,
+        "shader_hits": 34,
+        "loadavg": "3.78 4.81 4.42 3/2091 1538584"
+      },
+      {
+        "mode": "binary",
+        "repeat": 1,
+        "loaded_s": 1.59,
+        "process_elapsed_s": 1.79,
+        "shader_hits": 34,
+        "loadavg": "3.87 4.82 4.43 5/2092 1538659"
+      },
+      {
+        "mode": "binary",
+        "repeat": 2,
+        "loaded_s": 1.64,
+        "process_elapsed_s": 1.82,
+        "shader_hits": 34,
+        "loadavg": "3.87 4.82 4.43 3/2092 1538680"
+      },
+      {
+        "mode": "binary",
+        "repeat": 3,
+        "loaded_s": 1.61,
+        "process_elapsed_s": 1.78,
+        "shader_hits": 34,
+        "loadavg": "3.87 4.82 4.43 3/2093 1538703"
+      },
+      {
+        "mode": "binary",
+        "repeat": 4,
+        "loaded_s": 1.55,
+        "process_elapsed_s": 1.73,
+        "shader_hits": 34,
+        "loadavg": "3.72 4.77 4.41 2/2089 1538776"
+      },
+      {
+        "mode": "binary",
+        "repeat": 5,
+        "loaded_s": 1.58,
+        "process_elapsed_s": 1.76,
+        "shader_hits": 34,
+        "loadavg": "3.72 4.77 4.41 2/2086 1538799"
+      },
+      {
+        "mode": "binary",
+        "repeat": 6,
+        "loaded_s": 1.57,
+        "process_elapsed_s": 1.76,
+        "shader_hits": 34,
+        "loadavg": "3.50 4.71 4.40 2/2097 1538857"
+      }
+    ]
+  },
+  "production_loop": {
+    "supplied_s": 0.5,
+    "native_clamped_s": 0.1,
+    "wall_s": 0.5,
+    "accounted_s": 0.5,
+    "max_steps": 60,
+    "step_cap_s": 0.008333333333333333,
+    "assertions": [
+      "clock/status/autosave",
+      "thin cover",
+      "overlapping hostile arrow damage once",
+      "one pickup pulse",
+      "2s stall cap/no backlog",
+      "menu pause/resume",
+      "traversal animation elapsed time",
+      "native close saves once before simulation",
+      "fixed-step capture without scripted input retains 1/60s"
+    ]
+  },
+  "session_30min": {
+    "simulated_seconds": 1800,
+    "frames": 108000,
+    "wall_seconds": 103.10575331700966,
+    "peak_rss_kib": 606040,
+    "post_warmup_growth_kib": 19856.0,
+    "post_warmup_virtual_growth_kib": 1024.0,
+    "post_warmup_live_allocation_range": 1.0,
+    "post_warmup_huge_page_growth_kib": 96256.0,
+    "early_update_us_median": 889.0155,
+    "late_update_us_median": 884.9225
+  },
+  "session_60min": {
+    "frames": 216000,
+    "wall_s": 216.022748,
+    "post_warmup_allocation_min": 6205.0,
+    "post_warmup_allocation_max": 6206.0,
+    "post_warmup_rss_growth_kib": 3324.0,
+    "post_warmup_virtual_growth_kib": 2048.0,
+    "post_warmup_huge_page_growth_kib": 83968.0,
+    "second_half_rss_growth_kib": 932.0
+  },
+  "fresh_process_transactions": [
+    "write burning hand + ground and collected rusty/camp rock/apple/mushroom",
+    "read hand/ground -> real pickup -> save, plus remaining material timer",
+    "read repicked gear and almost-expired timer -> materials regrow only away"
+  ],
+  "raw_evidence": [
+    "build/sol-startup-fe93d1c/summary.json",
+    "build/production-loop-check/run.log",
+    "build/menu-pause-check/run.log",
+    "build/round65-defects/round66-session-metrics.json",
+    "build/sol-memory-60.log"
+  ],
+  "earlier_session_30min": {
+    "simulated_seconds": 1800,
+    "frames": 108000,
+    "wall_seconds": 111.68684032198507,
+    "peak_rss_kib": 593276,
+    "post_warmup_growth_kib": 564.0,
+    "post_warmup_virtual_growth_kib": 1024.0,
+    "post_warmup_live_allocation_range": 1.0,
+    "post_warmup_huge_page_growth_kib": 0.0,
+    "early_update_us_median": 992.904,
+    "late_update_us_median": 1082.6865
+  }
+}

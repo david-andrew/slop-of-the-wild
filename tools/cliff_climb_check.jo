@@ -1,0 +1,35 @@
+# Production controller on the displaced west rim (no synthetic flat wall).
+use '../game/structures.jo'
+use '../game/worldgen.jo'
+use '../game/gfx.jo'
+use '../game/physics.jo'
+use '../game/env.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+from '../game/structures.jo' import __west_cliffs
+
+worldgen_load()
+structures_pads()
+worldgen_finish()
+__west_cliffs()
+env.rain = 0.0
+loop z in [1645.0, 1718.0, 1752.0, 1777.0, 1908.0]:
+    h = raycast(v3(-1640, 208, z), vec3(1, 0, 0), 200, true, false)
+    assert(h.hit)
+    p = h.pos + h.normal * 0.45 - vec3(0, 1, 0)
+    pl = Player(pos = p, last_safe = p, state = .air, grounded = false, st_t = 0.3, vel = vec3(0, -1, 0), face = yaw_of(h.normal * -1.0), air_peak = f64(p.y))
+    cam_yaw_global = yaw_of(h.normal * -1.0)
+    act = Actions(move = vec2(0, 1))
+    ticks = 0
+    mantling = 0
+    standing = 0
+    loop k in [0..360):
+        player_update(1.0 / 60.0)
+        if pl.state == .climb: ticks += 1
+        if pl.state == .mantle: mantling += 1
+        if pl.state == .ground: standing += 1
+    print("cliff climb z={z:.0}: {ticks} climbing, {mantling} mantle, {standing} grounded frames; rise {f64(pl.pos.y - p.y):.2} m; state {pl.state}; position {pl.pos}")
+    assert(ticks >= 350, "continuous six-second climb on the displaced mesh")
+    assert(pl.pos.y > p.y + 4.0 and pl.pos.y < p.y + 6.0, "climb gains height without falling or jumping")
+    assert(pl.state == .climb, "still holding the cliff")
+print("cliff climb PASS: five production-controller routes, 1800 frames")

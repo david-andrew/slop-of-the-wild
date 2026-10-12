@@ -1,0 +1,710 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'terrain.jo'
+use 'build.jo'
+use 'items.jo'
+use 'scene.jo'
+use 'fx.jo'
+use 'worldgen.jo'
+use 'mesh_assets.jo'
+use 'asset_stream.jo'
+
+# Hyrule beyond the plateau: a wide ring of terrain out to 16 km with the landmarks seen from
+# the overlook — Hyrule Castle on its hill wrapped in the Calamity's swirl, Death Mountain
+# smoking to the north-east, the Dueling Peaks, the snowy ranges west and north-west, and
+# Lake Hylia with its bridge to the south-east.
+
+const FAR_CX = -970.0
+const FAR_CZ = 1915.0
+# The detailed heightfield covers the inner ring; these constants also anchor distant props.
+const FAR_INNER = 550.0
+const FAR_OUTER = 16000.0
+const FAR_ANGLES = 512
+const FAR_RINGS = 110
+const CASTLE = v3(-900.0, 0.0, -1000.0)
+const DEATH_MTN = v3(5400.0, 0.0, -2300.0)
+const LANAYRU = v3(4800.0, 0.0, -600.0)
+const GREAT_FOREST = v3(180.0, 0.0, -2850.0)
+
+# The title panorama leaves the central lettering in open sky: the castle
+# anchors the left, the cleft peaks the middle-right, and the volcano the outer
+# right. These scenic landmarks are outside the playable plateau.
+
+# A low, broken ridge cut by the river, rather than two isolated conical summits.
+# Broad crowns and unequal outer spurs keep the split legible from the western overlook.
+dueling_height = (x: f64, z: f64) -> f64:
+    river_z = far_river_z(x)
+    # Winding ridge axes and broad unequal crowns replace the pointed green
+    # foothill silhouettes in front of the volcano in the title composition.
+    bend = sin(x * 0.006 + 0.7) * 24.0 + (noise(x * 0.009, z * 0.007) - 0.5) * 28.0
+    north = hypot((x - 1740.0) / 410.0, (z - (river_z - 126.0 + bend)) / 185.0)
+    south = hypot((x - 1830.0) / 475.0, (z - (river_z + 146.0 + bend * 0.7)) / 185.0)
+    mass = max(255.0 * exp(-pow(north, 4.0) * 3.6), 245.0 * exp(-pow(south, 4.0) * 3.6))
+    # Incised tributary gullies cut the crowns into connected shelves; broad
+    # noise survives the polar mesh rather than producing thin painted stripes.
+    ribs = 0.84 + noise(x * 0.018, z * 0.012) * 0.24
+    teeth = (noise(x * 0.008 + 21.0, z * 0.023) - 0.5) * 42.0
+    drainage = smoothstep(0.58, 0.82, noise(x * 0.012 + z * 0.004, z * 0.018)) * 32.0
+    mass = max(0.0, mass * ribs + (teeth - drainage) * smoothstep(75.0, 180.0, mass))
+    shoulders = bump(x, z, 1590.0, -440.0, 265.0, 42.0) + bump(x, z, 1950.0, 140.0, 320.0, 34.0)
+    # The deep inner walls expose the blue-grey river between forested feet.
+    cleft = smoothstep(38.0, 105.0, abs(z - river_z))
+    (mass + shoulders) * cleft
+
+# Lanayru is a broad far-eastern snow massif with a summit offset from its shoulders.
+# Its apparent height stays behind the plateau skyline rather than filling the sky.
+lanayru_height = (x: f64, z: f64) -> f64:
+    d = hypot((x - f64(LANAYRU.x)) / 1850.0, (z - f64(LANAYRU.z)) / 1320.0)
+    crown = 650.0 * max(0.0, 1.0 - d) ^ 1.05
+    spur = bump(x, z, 4180.0, -860.0, 850.0, 110.0) + bump(x, z, 5530.0, -300.0, 1050.0, 165.0)
+    ribs = 0.92 + noise(x * 0.005, z * 0.004) * 0.14
+    crown * ribs + spur
+
+struct FarV:
+    pos: vec3
+    normal: vec3
+
+struct FarU:
+    vp: mat4
+    cam: vec3
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    time: f32
+    clouds = 0.0
+
+struct FarO:
+    pos: vec4
+    world: vec3
+    normal: vec3
+
+bump = (x: f64, z: f64, cx: f64, cz: f64, r: f64, h: f64) -> f64:
+    d = hypot(x - cx, z - cz) / r
+    h * exp(-d * d)
+
+# The river bends across the field into the cleft between the two peaks. Shared by the
+# mesh and tree placement, so the banks and woodland agree rather than crossing the water.
+far_river_z = (x: f64) -> f64: -100.0 + sin((x - 1880.0) * 0.0018) * 210.0
+
+# A field road follows the rolling shoulders, with forks toward the castle.
+# The same centreline keeps the tree fringe out of the rendered wheel track.
+far_road_z = (x: f64) -> f64: 730.0 + sin(x * 0.0022 + 0.7) * 175.0
+far_road_distance = (x: f64, z: f64) -> f64:
+    main = if x > -1750.0 and x < 1300.0: abs(z - far_road_z(x)) else: 10000.0
+    fork = if z > -500.0 and z < 750.0: abs(x - (-740.0 + sin(z * 0.003) * 130.0)) else: 10000.0
+    min(main, fork)
+
+far_clearing = (x: f64, z: f64) -> f64:
+    min(hypot((x + 620.0) / 190.0, (z - 830.0) / 90.0), min(hypot((x - 190.0) / 150.0, (z - 760.0) / 170.0), hypot((x - 750.0) / 140.0, (z - 490.0) / 80.0)))
+
+# An unequal ridge crest, a lower lateral shoulder and one drainage saddle.
+# Unlike circular bumps, the mass has a long axis and a broken skyline.
+far_shoulder = (x: f64, z: f64, cx: f64, cz: f64, rx: f64, rz: f64, height: f64) -> f64:
+    u = (x-cx)/rx
+    v = (z-cz)/rz
+    crest = exp(-(u*u*2.2+v*v*5.0))
+    shoulder = exp(-((u-0.38)*(u-0.38)*5.0+(v+0.34)*(v+0.34)*7.0))
+    saddle = exp(-((u+0.16)*(u+0.16)*22.0+(v-0.04-u*0.3)*(v-0.04-u*0.3)*12.0))
+    height * max(0.0,crest*0.78+shoulder*0.42-saddle*0.20)
+
+far_height = (x: f64, z: f64) -> f64:
+    h = 105.0 + (fbm(x * 0.0006, z * 0.0006, 4) - 0.45) * 90.0
+    r = hypot(x - FAR_CX, z - FAR_CZ)
+    # Broad shoulders catch morning light across Hyrule Field. These are distant scenery,
+    # not a new playable region; the plateau's own collision heightfield is untouched.
+    field = far_shoulder(x, z, -750.0, 700.0, 560.0, 360.0, 54.0) + far_shoulder(x, z, 150.0, 450.0, 740.0, 440.0, 68.0)
+    field += far_shoulder(x, z, -1750.0, 250.0, 820.0, 480.0, 82.0) + far_shoulder(x, z, 670.0, 1090.0, 480.0, 260.0, 54.0)
+    field += far_shoulder(x, z, -150.0, 1840.0, 350.0, 220.0, 34.0)
+    # Unequal shelf ridges and drainage breaks give the middle distance its own
+    # light/shadow rhythm, carried by the existing ring mesh.
+    field += bump(x, z, -430.0, 1010.0, 220.0, 27.0) + bump(x, z, 450.0, 780.0, 240.0, 34.0)
+    shelves = smoothstep(0.45, 0.65, noise(x * 0.006 + 8.0, z * 0.009))
+    field += shelves * bump(x, z, -120.0, 680.0, 900.0, 18.0)
+    # Shallow linked spurs and incised drainage articulate the open shoulders
+    # between groves. Only distant scenery changes; playable terrain is shared.
+    middle = 1.0 - smoothstep(1550.0, 2250.0, hypot(x + 350.0, z - 740.0))
+    brow = smoothstep(0.40, 0.68, noise(x * 0.013 + z * 0.003, z * 0.009 + 31.0))
+    field += middle * min(field * 0.40, 18.0) * (brow - 0.28)
+    h += field
+    # Branching spurs and shallow saddles break the smooth Gaussian shoulders.
+    erosion = (1.0 - abs(noise(x * 0.005 + 11.0, z * 0.005) * 2.0 - 1.0))
+    h += (erosion * erosion - 0.55) * min(field * 0.36, 22.0)
+    # mountain ranges grow with distance (the edge of the world rises)
+    ridges = 1.0 - abs(noise(x * 0.00035, z * 0.00035) * 2.0 - 1.0)
+    h += ridges * ridges * 900.0 * smooth01((r - 8000.0) / 6000.0)
+    # Death Mountain: a volcano with a crater
+    dm = 1240.0 * max(0.0, 1.0 - hypot(x - f64(DEATH_MTN.x), z - f64(DEATH_MTN.z)) / 1450.0) ^ 1.18
+    # gullies and ridges on every mountain
+    rr = 1.0 - abs(noise(x * 0.0025, z * 0.0025) * 2.0 - 1.0)
+    rough = rr * rr * 0.6 + fbm(x * 0.004, z * 0.004, 3) * 0.4
+    dm -= bump(x, z, f64(DEATH_MTN.x), f64(DEATH_MTN.z), 180.0, 300.0)
+    # its flanks cut by deep gullies running down from the summit, the spurs between them sharp
+    dmr = hypot(x - f64(DEATH_MTN.x), z - f64(DEATH_MTN.z))
+    dang = atan2(z - f64(DEATH_MTN.z), x - f64(DEATH_MTN.x))
+    gully = pow(abs(sin(dang * 9.0 + fbm(x * 0.0009, z * 0.0009, 3) * 5.0 + dmr * 0.0007)), 0.6)
+    dm *= 1.0 - 0.16 * (1.0 - gully) * smoothstep(150.0, 700.0, dmr) * smoothstep(1450.0, 1000.0, dmr)
+    # A tighter volcanic cone rises above broken lower spurs instead of spreading a
+    # smooth tent across the title horizon. The crater keeps its previous apparent height.
+    spurs = smoothstep(600.0, 1100.0, dmr) * (1.0 - smoothstep(1250.0, 1750.0, dmr))
+    teeth = pow(abs(sin(dang * 13.0 + noise(x * 0.003, z * 0.003) * 4.0)), 2.0)
+    h += dm * (0.94 + 0.12 * rough) + spurs * (45.0 + teeth * 145.0)
+    # Long, eroded radial foothills join the volcanic skirt to the field.
+    # Unequal ridges and low drainage saddles are carried by existing vertices.
+    apron = smoothstep(1000.0, 1500.0, dmr) * (1.0 - smoothstep(1850.0, 2700.0, dmr))
+    toe_ribs = pow(abs(sin(dang * 7.0 + noise(x * 0.0015, z * 0.0015) * 2.7 + dmr * 0.001)), 1.6)
+    h += apron * (18.0 + toe_ribs * 130.0) * (0.7 + rough * 0.6)
+    # the castle hill
+    h += bump(x, z, f64(CASTLE.x), f64(CASTLE.z), 900.0, 110.0) + bump(x, z, f64(CASTLE.x), f64(CASTLE.z), 260.0, 50.0)
+    # Dueling Peaks east of the plateau (two summits split by a gorge)
+    h += dueling_height(x, z)
+    # snowy ranges: Gerudo highlands west, Hebra north-west
+    h += (bump(x, z, -4600.0, 1300.0, 1500.0, 700.0) + bump(x, z, -4200.0, -3600.0, 2000.0, 900.0)) * (0.6 + 0.8 * rough)
+    h += lanayru_height(x, z)
+    # The Great Forest forms a low, broad wooded island beyond the castle.
+    h += bump(x, z, f64(GREAT_FOREST.x), f64(GREAT_FOREST.z), 850.0, 76.0)
+    # Mount Hylia's southern shoulder and the hills south of the plateau
+    h += bump(x, z, -1400.0, 3300.0, 900.0, 300.0)
+    # Lake Hylia south-east
+    lake = smooth01(1.0 - hypot((x - 300.0) / 900.0, (z - 2900.0) / 600.0))
+    h = lerp(h, 30.0, lake)
+    # A broad river valley remains lower than the shoulders on either side.
+    river = exp(-pow((z - far_river_z(x)) / 95.0, 2.0)) * smoothstep(-500.0, 0.0, x) * (1.0 - smoothstep(1800.0, 2300.0, x))
+    h = lerp(h, 92.0, river * 0.9)
+    extent = hf.cell * f64(hf.n - 1)
+    edge = min(min(x - hf.x0, hf.x0 + extent - x), min(z - hf.z0, hf.z0 + extent - z))
+    if in_bounds(x, z):
+        # The source heightfield extends well beyond the plateau: previously it hid this
+        # entire foreground of the far land, leaving a flat apron with no trees. Sink the
+        # scenery into its foot, then bring the hills above it outside the playable walls.
+        ground = height_at(x, z)
+        skirt = smoothstep(260.0, 600.0, edge_at(x, z))
+        h = lerp(ground - 8.0, max(h, ground + 2.0 + field * 0.65 * (1.0 - river)), skirt)
+    else if edge > -240.0:
+        # Join the detailed heightfield's outer edge from the height the scenery has just
+        # inside it, rather than dropping at its square boundary (that step showed as
+        # disconnected dark ledges across the hazy horizon).
+        ground = height_at(x, z)
+        h = lerp(max(h, ground + 2.0 + field * 0.65 * (1.0 - river)), h, smooth01(-edge / 240.0))
+    h
+
+far_vs = (v: FarV, u: FarU) -> FarO: FarO(u.vp * vec4(v.pos, 1), v.pos, v.normal)
+
+far_fs = (i: FarO, u: FarU) -> vec4:
+    w = i.world
+    # Three octaves are enough at this distance; the mesh carries the broad relief.
+    # Keeping these derivatives coarse pays for the nearer field without adding GPU cost.
+    e = 12.0
+    hp = fbm3(w.xz * 0.004)
+    hx = fbm3((w.xz + vec2(e, 0)) * 0.004)
+    hz = fbm3((w.xz + vec2(0, e)) * 0.004)
+    steep = clamp(1.0 - i.normal.y, 0.0, 1.0)
+    n = normalize(normalize(i.normal) + vec3(hp - hx, 0.0, hp - hz) * (2.0 + steep * 14.0))
+    # meadows, forests (dark blotches), rock on the steeps, snow on the heights
+    alb = mix(vec3(0.24, 0.38, 0.15), vec3(0.44, 0.45, 0.22), smoothstep(0.4, 0.75, fbm3(w.xz * 0.0008)))
+    forest = smoothstep(0.52, 0.66, fbm3(w.xz * 0.0025 + vec2(9.0, 3.0))) * smoothstep(0.7, 0.85, n.y) * smoothstep(900.0, 500.0, w.y)
+    great_wood = 1.0 - smoothstep(520.0, 900.0, length(w.xz - GREAT_FOREST.xz))
+    forest = max(forest, great_wood * smoothstep(0.45, 0.8, n.y))
+    peaks = 1.0 - smoothstep(360.0, 650.0, length(w.xz - vec2(1790.0, -100.0)))
+    forest = max(forest, peaks * smoothstep(325.0, 180.0, w.y) * smoothstep(0.4, 0.8, n.y))
+    alb = mix(alb, vec3(0.1, 0.2, 0.1), forest * 0.85)
+    # Broad groves and their pale, dry margins frame the road and pasture gaps.
+    field_mask = (1.0 - smoothstep(2400.0, 3300.0, length(w.xz - vec2(-100.0, 750.0)))) * smoothstep(0.6, 0.85, n.y)
+    road_z = 730.0 + sin(w.x * 0.0022 + 0.7) * 175.0
+    road_d = min(abs(w.z - road_z) + (1.0 - step(-1750.0, w.x) * step(w.x, 1300.0)) * 10000.0,
+        abs(w.x - (-740.0 + sin(w.z * 0.003) * 130.0)) + (1.0 - step(-500.0, w.z) * step(w.z, 750.0)) * 10000.0)
+    clear_d = min(length((w.xz - vec2(-620, 830)) / vec2(190, 90)), min(length((w.xz - vec2(190, 760)) / vec2(150, 170)), length((w.xz - vec2(750, 490)) / vec2(140, 80))))
+    west = exp(-(pow((w.x + 850.0) / 580.0, 2.0) + pow((w.z - 470.0 - sin(w.x * 0.004) * 70.0) / 145.0, 2.0)))
+    middle = exp(-(pow((w.x - 80.0 - sin(w.z * 0.005) * 85.0) / 155.0, 2.0) + pow((w.z - 1000.0) / 430.0, 2.0)))
+    riverwood = exp(-(pow((w.x - 670.0) / 550.0, 2.0) + pow((w.z - 260.0 - sin(w.x * 0.003) * 70.0) / 120.0, 2.0)))
+    grove = smoothstep(0.20, 0.60, max(west, max(middle, riverwood))) * field_mask
+    forest = max(forest, grove * smoothstep(0.8, 1.5, clear_d) * smoothstep(14.0, 36.0, road_d))
+    alb = mix(alb, vec3(0.13, 0.25, 0.105), grove * 0.65)
+    dry_margin = max(1.0 - smoothstep(14.0, 35.0, road_d), 1.0 - smoothstep(0.8, 1.24, clear_d)) * field_mask
+    alb = mix(alb, vec3(0.40, 0.43, 0.20), dry_margin * 0.72)
+    alb = mix(alb, vec3(0.45, 0.385, 0.27), (1.0 - smoothstep(5.0, 10.0, road_d)) * field_mask)
+    # Dark woodland on the feet and crown shelves; keep the river/bank layers above it.
+    peak_green = mix(vec3(0.205, 0.24, 0.185), vec3(0.145, 0.185, 0.15), forest)
+    relief = 0.86 + hp * 0.34
+    alb = mix(alb, peak_green * relief, peaks)
+    river_z = -100.0 + sin((w.x - 1880.0) * 0.0018) * 210.0
+    river = (1.0 - smoothstep(17.0, 38.0, abs(w.z - river_z))) * smoothstep(-500.0, 0.0, w.x) * (1.0 - smoothstep(1800.0, 2300.0, w.x))
+    # At this range a blue-grey ribbon and pale banks read better than animated waves.
+    bank = (1.0 - smoothstep(34.0, 55.0, abs(w.z - river_z))) * smoothstep(-500.0, 0.0, w.x) * (1.0 - smoothstep(1800.0, 2300.0, w.x))
+    alb = mix(alb, vec3(0.38, 0.39, 0.27), bank * 0.65)
+    alb = mix(alb, vec3(0.17, 0.32, 0.35), river * 0.85)
+    rock = smoothstep(0.7, 0.45, n.y)
+    # Grey-brown exposed faces retain a clear value against the haze. Reuse the
+    # existing relief noise and slope, without extra shader octaves or geometry.
+    rock_alb = mix(vec3(0.42, 0.4, 0.38), vec3(0.55, 0.5, 0.44), hp)
+    rock_alb = mix(rock_alb, vec3(0.17, 0.165, 0.15) * relief, peaks)
+    alb = mix(alb, rock_alb, rock)
+    dmd = length(w.xz - DEATH_MTN.xz)
+    foothill = smoothstep(3100.0, 1750.0, dmd)
+    alb = mix(alb, mix(vec3(0.26, 0.255, 0.225), vec3(0.19, 0.22, 0.19), hp), foothill * 0.82)
+    dm = smoothstep(2400.0, 1200.0, dmd)
+    alb = mix(alb, mix(vec3(0.17, 0.08, 0.055), vec3(0.11, 0.07, 0.06), fbm3(w.xz * 0.006)), dm)
+    snow = smoothstep(520.0, 680.0, w.y + (fbm3(w.xz * 0.003) - 0.5) * 140.0) * smoothstep(1500.0, 1700.0, dmd)
+    alb = mix(alb, vec3(0.82, 0.85, 0.92), snow * smoothstep(0.35, 0.65, n.y) * (1.0 - peaks))
+    l = normalize(u.sun_dir)
+    v = normalize(u.cam - w)
+    c = paint_light(alb, n, l, v, u.sun_color, u.sky, u.ground, cloud_shade(w.xz, u.time, u.clouds), 0.1)
+    # the volcano glows at its crater
+    c = c + vec3(3.0, 0.8, 0.2) * smoothstep(260.0, 60.0, dmd) * smoothstep(1000.0, 1200.0, w.y)
+    # lava seams running down from the crater
+    seam = smoothstep(0.62, 0.7, fbm3(vec2(atan2(w.z - DEATH_MTN.z, w.x - DEATH_MTN.x) * 9.0, dmd * 0.004)))
+    c = c + vec3(2.4, 0.5, 0.1) * seam * smoothstep(700.0, 300.0, dmd) * smoothstep(650.0, 1000.0, w.y)
+    c = atmos(c, w, u.cam, l, u.haze * vec3(0.85, 0.93, 1.1), u.sun_color, u.density * (0.32 - 0.10 * dm + 0.18 * smoothstep(5000.0, 10500.0, length(w.xz - u.cam.xz))), 0.0025)
+    vec4(c, 1)
+
+far_sh: Shader
+far_mesh: Mesh
+
+farland_build = ():
+    farland_prepared_hit = farland_asset_load()
+    if not farland_prepared_hit: farland_generate()
+    far_sh = make_sh(shader(far_vs, far_fs))
+    far_mesh = static_mesh(far_vertices, far_indices)
+    far_tree_mesh = static_mesh(far_tree.vs, far_tree.idx)
+    far_fir_mesh = static_mesh(far_fir.vs, far_fir.idx)
+    far_ruin_mesh = static_mesh(far_ruin.vs, far_ruin.idx)
+    far_rock_mesh = static_mesh(far_rock.vs, far_rock.idx)
+    far_rocks_buf = static_instances(far_rocks)
+    far_trees_buf = static_instances(far_trees)
+    far_firs_buf = static_instances(far_firs)
+    far_ruins_buf = static_instances(far_ruins)
+    # Castle architecture is included in the structures pack; generation retains
+    # its original placement in the build/rain dictionaries for fallback callers.
+    if not farland_prepared_hit: farland_castle_prepare()
+    __global_rng = far_rng
+    if env("BOTW_ASSET_CHECK") == none and env("BOTW_BAKE_ASSETS") == none:
+        far_vertices = []
+        far_indices = []
+        far_tree = MeshB()
+        far_fir = MeshB()
+        far_ruin = MeshB()
+        far_rock = MeshB()
+        far_rocks = []
+        far_trees = []
+        far_firs = []
+        far_ruins = []
+
+far_vertices: FarV[]
+far_indices: u32[]
+far_tree: MeshB
+far_fir: MeshB
+far_ruin: MeshB
+far_rock: MeshB
+far_rocks: PropI[]
+far_trees: PropI[]
+far_firs: PropI[]
+far_ruins: PropI[]
+far_rng = __global_rng
+farland_generate = ():
+    na = FAR_ANGLES
+    nr = FAR_RINGS
+    vs: FarV[]
+    idx: u32[]
+    loop ri in [0..nr):
+        t = f64(ri) / f64(nr - 1)
+        rad = FAR_INNER * pow(FAR_OUTER / FAR_INNER, t)
+        loop ai in [0..na):
+            a = TAU * f64(ai) / f64(na)
+            x = FAR_CX + cos(a) * rad
+            z = FAR_CZ + sin(a) * rad
+            h = far_height(x, z)
+            e = max(rad * 0.01, 4.0)
+            nx = far_height(x - e, z) - far_height(x + e, z)
+            nz = far_height(x, z - e) - far_height(x, z + e)
+            vs.push(FarV(v3(x, h, z), normalize(v3(nx, 2.0 * e, nz))))
+    loop ri in [0..nr - 1):
+        loop ai in [0..na):
+            a = u32(ri * na + ai)
+            b = u32(ri * na + (ai + 1) % na)
+            c = a + u32(na)
+            d = b + u32(na)
+            loop k in [a, b, c, b, d, c]: idx.push(k)
+    far_vertices = vs
+    far_indices = idx
+    malice_center = v3(f64(CASTLE.x), far_height(f64(CASTLE.x), f64(CASTLE.z)), f64(CASTLE.z))
+    far_plumes.push(vec4(DEATH_MTN.x, f32(far_height(f64(DEATH_MTN.x), f64(DEATH_MTN.z)) + 60.0), DEATH_MTN.z, 1.0))
+    farland_scatter()
+    far_rng = __global_rng
+
+# Height on the rendered triangle, rather than the analytic mountain between its vertices.
+# Thin distant walls used to stand above gullies the coarse mesh could not represent.
+far_surface_height = (x: f64, z: f64) -> f64:
+    angle = atan2(z - FAR_CZ, x - FAR_CX)
+    if angle < 0.0: angle += TAU
+    ai = int(floor(angle / TAU * f64(FAR_ANGLES)))
+    radius = max(hypot(x - FAR_CX, z - FAR_CZ), FAR_INNER)
+    ri = clamp(int(floor(log(radius / FAR_INNER) / log(FAR_OUTER / FAR_INNER) * f64(FAR_RINGS - 1))), 0, FAR_RINGS - 2)
+    p = (ring: int, ang: int) -> vec3:
+        rad = FAR_INNER * pow(FAR_OUTER / FAR_INNER, f64(ring) / f64(FAR_RINGS - 1))
+        a = TAU * f64(ang) / f64(FAR_ANGLES)
+        xx = FAR_CX + cos(a) * rad
+        zz = FAR_CZ + sin(a) * rad
+        v3(xx, far_height(xx, zz), zz)
+    a = p(ri, ai)
+    b = p(ri, ai + 1)
+    c = p(ri + 1, ai)
+    d = p(ri + 1, ai + 1)
+    weights = (aa: vec3, bb: vec3, cc: vec3) -> vec3:
+        bx = f64(bb.x - aa.x)
+        bz = f64(bb.z - aa.z)
+        cx = f64(cc.x - aa.x)
+        cz = f64(cc.z - aa.z)
+        px = x - f64(aa.x)
+        pz = z - f64(aa.z)
+        den = bx * cz - bz * cx
+        v = (px * cz - pz * cx) / den
+        w = (bx * pz - bz * px) / den
+        v3(1.0 - v - w, v, w)
+    abc = weights(a, b, c)
+    if abc.x >= 0.0: return f64(a.y * abc.x + b.y * abc.y + c.y * abc.z)
+    bdc = weights(b, d, c)
+    f64(b.y * bdc.x + d.y * bdc.y + c.y * bdc.z)
+
+# Hyrule Castle: a cluster of towers and spires on its hill, built with the kit (named: drawn far)
+__castle = ():
+    o = v3(f64(CASTLE.x), far_height(f64(CASTLE.x), f64(CASTLE.z)) - 30.0, f64(CASTLE.z))
+    begin_named("castle")
+    c = stone(0.16, 0.16, 0.2)
+    dk = stone(0.1, 0.1, 0.14)
+    box(o - v3(0.0, 400.0, 0.0), v3(190.0, 435.0, 150.0), 0.0, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+    box(o + v3(0.0, 40.0, -10.0), v3(170.0, 50.0, 130.0), 0.0, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+    box(o + v3(0.0, 90.0, -20.0), v3(90.0, 60.0, 70.0), 0.0, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+    # the keep in tiers, its great spire, and the sanctum's dome beside it
+    roof = stone(0.13, 0.14, 0.2)
+    column(o + v3(0.0, 150.0, -20.0), 28.0, 24.0, 70.0, 12, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+    column(o + v3(0.0, 220.0, -20.0), 30.0, 30.0, 4.0, 12, dk, vec4(0.0, 0.0, 0.0, 0.0), false)
+    column(o + v3(0.0, 224.0, -20.0), 18.0, 15.0, 55.0, 12, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+    column(o + v3(0.0, 279.0, -20.0), 19.0, 0.0, 115.0, 12, roof, vec4(0.0, 0.0, 0.0, 0.0), false)
+    loop k in [0..4):
+        a = TAU * (f64(k) + 0.5) / 4.0
+        q = o + v3(cos(a) * 24.0, 220.0, -20.0 + sin(a) * 24.0)
+        column(q, 5.0, 4.5, 30.0, 8, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+        column(q + v3(0.0, 30.0, 0.0), 5.6, 0.0, 22.0, 8, roof, vec4(0.0, 0.0, 0.0, 0.0), false)
+    dome(o + v3(55.0, 120.0, 20.0), 28.0, 26.0, 16, 5, roof, vec4(0.0, 0.0, 0.0, 0.0))
+    column(o + v3(55.0, 146.0, 20.0), 4.0, 0.0, 30.0, 8, roof, vec4(0.0, 0.0, 0.0, 0.0), false)
+    # towers: a ring of great ones and many small ones, each with a steep roof
+    seed_random(4)
+    loop i in [0..22):
+        big = i < 7
+        a = if big: TAU * f64(i) / 7.0 + 0.3 else: random(0.0, TAU)
+        d = if big: random(85.0, 115.0) else: random(40.0, 140.0)
+        p = o + v3(cos(a) * d, random(20.0, 60.0), sin(a) * d * 0.8)
+        h = if big: random(110.0, 160.0) else: random(45.0, 100.0)
+        # Unequal outer turrets frame the tall keep through the malice cloud.
+        if big and i % 3 == 0: h += 32.0
+        r = if big: random(12.0, 16.0) else: random(6.0, 10.0)
+        column(p, r, r * 0.85, h, 10, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+        column(p + v3(0.0, h, 0.0), r * 1.15, r * 1.15, 3.0, 10, dk, vec4(0.0, 0.0, 0.0, 0.0), false)
+        column(p + v3(0.0, h + 3.0, 0.0), r * 1.1, 0.0, r * (if big: 3.6 else: 3.0), 10, roof, vec4(0.0, 0.0, 0.0, 0.0), false)
+    # the curtain wall round the hill, with its towers
+    loop k in [0..28):
+        a0 = TAU * f64(k) / 28.0
+        a1 = TAU * f64(k + 1) / 28.0
+        m = (a0 + a1) * 0.5
+        rr = 230.0
+        q = o + v3(cos(m) * rr, -40.0, sin(m) * rr * 0.85)
+        g = far_height(f64(q.x), f64(q.z))
+        len_ = TAU * rr / 28.0 + 4.0
+        box(v3(f64(q.x), g - 10.0, f64(q.z)), v3(len_, 38.0, 6.0), -m + PI / 2.0, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+        if k % 4 == 0:
+            column(v3(f64(q.x), g - 10.0, f64(q.z)), 10.0, 9.0, 55.0, 8, c, vec4(0.0, 0.0, 0.0, 0.0), false)
+            column(v3(f64(q.x), g + 45.0, f64(q.z)), 10.5, 0.0, 26.0, 8, roof, vec4(0.0, 0.0, 0.0, 0.0), false)
+    end_named()
+    # the other Sheikah towers, far across Hyrule (they rise with the plateau's)
+    begin_named("far_towers")
+    sk = stone(0.18, 0.19, 0.22)
+    loop q in [(-150.0, 700.0), (1450.0, 2050.0), (-2700.0, 500.0), (-1100.0, -900.0), (1900.0, 200.0), (350.0, -1900.0), (-2900.0, 3000.0), (2600.0, 2900.0), (-3600.0, -1300.0), (800.0, -3200.0)]:
+        g = far_height(q.0, q.1)
+        column(v3(q.0, g - 5.0, q.1), 9.0, 6.0, 85.0, 6, sk, vec4(0.0, 0.0, 0.0, 0.0), false)
+        column(v3(q.0, g + 80.0, q.1), 13.0, 13.0, 4.0, 8, sk, vec4(0.0, 0.0, 3.0, 0.0), false)
+        loop k in [0..5): column(v3(q.0, g + 10.0 + f64(k) * 15.0, q.1), 8.6, 8.4, 1.5, 6, sk, vec4(0.0, 0.0, 2.0, 0.0), false)
+    end_named()
+
+farland_draw = (u: FarU):
+    draw_fast(far_sh, far_mesh, u)
+
+
+# ---------------- Hyrule's woods and ruins, seen from the plateau ----------------
+# Forests where a broad noise says so (and none on the steep or snowy heights), scattered
+# lone trees, and the stumps of old walls and towers. Low-detail, instanced, drawn far away.
+far_tree_mesh: Mesh
+far_fir_mesh: Mesh
+far_firs_buf = InstBuf()
+far_rock_mesh: Mesh
+far_rocks_buf = InstBuf()
+far_ruin_mesh: Mesh
+far_trees_buf = InstBuf()
+far_ruins_buf = InstBuf()
+
+farland_scatter = ():
+    b = MeshB()
+    leaf = rgb(0.16, 0.3, 0.13)
+    # A flattened spreading crown and offset low bough retain the same triangle
+    # budget. Lobed shoulders break the identical oval silhouettes at 2x crops.
+    mb_sphere(b, v3(-0.16, 0.64, -0.06), v3(0.45, 0.23, 0.34), leaf, 5)
+    mb_sphere(b, v3(0.29, 0.48, 0.09), v3(0.34, 0.14, 0.24), leaf, 4)
+    loop k in [0..b.vs.len()):
+        p = b.vs[k].pos
+        rag = f32(noise(f64(p.x) * 13.0 + 8.0, f64(p.z) * 13.0 + f64(p.y) * 7.0) - 0.5)
+        angle = atan2(f64(p.z) + 0.06, f64(p.x) + 0.16)
+        lobe = f32(sin(angle * 3.0 + 0.4) * 0.11 + sin(angle * 5.0 - 0.7) * 0.06)
+        b.vs[k].pos = vec3(p.x * (1.0 + lobe), p.y + rag * 0.12 + lobe * 0.20, p.z * (1.0 - lobe * 0.6))
+    mb_cyl(b, v3(-0.05, 0.0, 0.0), v3(-0.04, 0.53, 0.0), 0.035, 0.025, rgb(0.18, 0.17, 0.12), 4)
+    far_tree = b
+    # firs: a dark cone on the higher, colder ground
+    bf = MeshB()
+    mb_cyl(bf, v3(0.0, 0.1, 0.0), v3(0.0, 1.3, 0.0), 0.36, 0.0, rgb(0.11, 0.21, 0.13), 7)
+    mb_cyl(bf, v3(0.0, 0.0, 0.0), v3(0.0, 0.2, 0.0), 0.06, 0.06, rgb(0.2, 0.15, 0.1), 5)
+    far_fir = bf
+    # Three surviving courses and an off-centre collapsed bay replace the
+    # single long parapet. One existing instanced batch retains the draw cost.
+    b2 = MeshB()
+    loop piece in [vec4(-0.36, 0.46, 0.14, 0.46), vec4(-0.05, 0.25, 0.17, 0.25), vec4(0.29, 0.37, 0.16, 0.37)]:
+        mb_box(b2, v3(f64(piece.x), f64(piece.y), 0.0), v3(f64(piece.z), f64(piece.w), 0.12), rgb(0.49, 0.48, 0.44))
+    mb_box(b2, v3(-0.14, 0.07, 0.12), v3(0.30, 0.07, 0.23), rgb(0.39, 0.40, 0.35))
+    far_ruin = b2
+    br = MeshB()
+    mb_sphere(br, vec3(0, 0.28, 0), vec3(0.7, 0.48, 0.55), rgb(0.32, 0.32, 0.285), 5)
+    mb_sphere(br, vec3(0.44, 0.15, 0.1), vec3(0.45, 0.3, 0.35), rgb(0.43, 0.405, 0.34), 4)
+    loop k in [0..br.vs.len()):
+        p = br.vs[k].pos
+        # An inclined split cap and splayed basal wedge, carried by real facets.
+        br.vs[k].pos.y = min(p.y, 0.59 + p.x * 0.17 - p.z * 0.12)
+    far_rock = br
+    rocks: PropI[]
+    trees: PropI[]
+    firs: PropI[]
+    ruins: PropI[]
+    seed_random(808)
+    # Unstratified candidates avoid rows visible through haze. A grove field with small
+    # clearings yields dense knots and open pasture instead of one silhouette per cell.
+    loop candidate in [0..111556):
+        # Spend part of the same fixed candidate budget on the previously empty field.
+        near = candidate < 16000
+        x = if near: random(-1700.0, 1500.0) else: FAR_CX + random(-7000.0, 7000.0)
+        z = if near: random(100.0, 1400.0) else: FAR_CZ + random(-7000.0, 7000.0)
+        r = hypot(x - FAR_CX, z - FAR_CZ)
+        if r < 650.0 or r > 7000.0: continue
+        if in_bounds(x, z) and edge_at(x, z) < 300.0: continue
+        if x > -500.0 and x < 2300.0 and abs(z - far_river_z(x)) < 65.0: continue
+        # Long woodland fingers follow drainage and turn across the shoulders.
+        # Unequal axes and a slow bend avoid repeated circular noise islands.
+        bend = sin(x * 0.0015 + 0.8) * 230.0
+        f = fbm(x * 0.0010 + 0.7, (z + bend) * 0.0024, 3)
+        # Broken belts on the field's shoulders silhouette against the lower valley.
+        belt = max(bump(x, z, -720.0, 730.0, 340.0, 1.0), bump(x, z, 200.0, 600.0, 300.0, 1.0))
+        belt = max(belt, bump(x, z, 500.0, 1080.0, 260.0, 1.0))
+        f = max(f, belt * 0.72 + (noise(x * 0.009, z * 0.009) - 0.5) * 0.18)
+        clearing = noise(x * 0.005 + 17.0, z * 0.005 - 8.0)
+        great_wood = 1.0 - smoothstep(520.0, 900.0, hypot(x - f64(GREAT_FOREST.x), z - f64(GREAT_FOREST.z)))
+        grove = max(smoothstep(0.51, 0.70, f) * smoothstep(0.26, 0.62, clearing), great_wood * smoothstep(0.16, 0.42, clearing))
+        if hypot(x + 100.0, z - 750.0) < 2400.0:
+            # Three distinct connected stands: a wide west shoulder, narrow winding
+            # copse and a riparian strip. Broad pasture separates their silhouettes.
+            west = exp(-(((x + 850.0) / 580.0) ^ 2.0 + ((z - 470.0 - sin(x * 0.004) * 70.0) / 145.0) ^ 2.0))
+            middle = exp(-(((x - 80.0 - sin(z * 0.005) * 85.0) / 155.0) ^ 2.0 + ((z - 1000.0) / 430.0) ^ 2.0))
+            riverwood = exp(-(((x - 670.0) / 550.0) ^ 2.0 + ((z - 260.0 - sin(x * 0.003) * 70.0) / 120.0) ^ 2.0))
+            connected = max(west, max(middle, riverwood))
+            grove = smoothstep(0.20, 0.60, connected + (clearing - 0.5) * 0.22) * 0.82
+        road = far_road_distance(x, z)
+        gap = far_clearing(x, z)
+        if road < 19.0 or gap < 1.0: continue
+        # Shorter, tawny trees mark grazed clearing margins; dense green crowns sit back.
+        margin = max(1.0 - smoothstep(22.0, 65.0, road), 1.0 - smoothstep(1.05, 1.55, gap))
+        # Sparse outliers occur near woods rather than evenly peppering every open hillside.
+        fringe = smoothstep(0.44, 0.58, f) * 0.003
+        if random() > grove * 0.82 + fringe: continue
+        h = far_surface_height(x, z)
+        if h > 520.0 or h < 40.0: continue
+        e = 18.0
+        # Measure slope on the analytic field, not between an analytic sample and the
+        # triangulated mesh height: their difference stamped the ring topology into woods.
+        sl = hypot(far_height(x + e, z) - far_height(x - e, z), far_height(x, z + e) - far_height(x, z - e)) / (2.0 * e)
+        if random() > 1.0 - smoothstep(0.18, 0.48, sl): continue
+        # (each wood its own tone and kind: broadleaf in the low country, firs up high, sizes
+        # and shapes varied so a wood is not a row of identical blobs)
+        s = random(12.0, 37.0) * (1.0 - margin * 0.28) * (if r < 2200.0: 0.7 else: 1.0) * (1.0 + great_wood * 0.42)
+        wood = fbm(x * 0.0007 + 3.0, z * 0.0007, 2)
+        v = f32(random(0.70, 1.18)) * f32(0.85 + 0.3 * wood)
+        tint = vec4(v * f32(0.95 + 0.15 * wood + margin * 0.3), v, v * f32(1.05 - 0.2 * wood - margin * 0.18), 1)
+        if great_wood < 0.2 and (h > 300.0 or (h > 160.0 and random() < 0.4 and r > 2200.0)):
+            firs.push(PropI(translation(v3(x, h - 1.0, z)) * rotation_y(random(0.0, TAU)) * scaling(v3(s * 0.7, s * random(1.3, 1.9), s * 0.7)), tint))
+        else:
+            # Keep the candidate/RNG sequence and two existing instance batches.
+            # Damp woodland knots mix slender conifers with spreading broadleaf;
+            # margins carry smaller singles rather than a line of equal crowns.
+            yaw = random(0.0, TAU)
+            sx = random(0.65, 1.45)
+            sy = random(0.65, 1.5)
+            sz = random(0.6, 1.4)
+            kind = hash2(x + 37.0, z - 19.0)
+            conifer = great_wood < 0.2 and margin < 0.5 and kind < 0.17 + wood * 0.12
+            if conifer:
+                firs.push(PropI(translation(v3(x, h - 1.0, z)) * rotation_y(yaw) * scaling(v3(s * sx * 0.55, s * sy * 0.92, s * sz * 0.55)), tint * vec4(0.84, 0.90, 0.93, 1)))
+            else:
+                spread = if kind > 0.75: 1.22 else if kind > 0.45: 0.78 else: 1.0
+                high = if kind > 0.75: 0.76 else if kind > 0.45: 1.25 else: 1.0
+                single = 1.0 - margin * (0.18 + kind * 0.20)
+                trees.push(PropI(translation(v3(x, h - 1.0, z)) * rotation_y(yaw) * scaling(v3(s * sx * spread * single, s * sy * high * single, s * sz * single)), tint))
+    # A few clustered rocky brows and ruin courtyards create readable destinations
+    # alongside the field road. Bases share the rendered triangle height.
+    loop site in [vec2(-620, 830), vec2(190, 760), vec2(750, 490), vec2(-380, 1060), vec2(560, 1080)]:
+        loop k in [0..28):
+            x = f64(site.x) + random(-150.0, 150.0)
+            z = f64(site.y) + random(-100.0, 100.0)
+            if in_bounds(x, z) and edge_at(x, z) < 300.0: continue
+            if far_road_distance(x, z) < 16.0: continue
+            h = far_surface_height(x, z)
+            if h < 40.0: continue
+            sz = random(8.0, 22.0)
+            rocks.push(PropI(translation(v3(x, h - 1.2, z)) * rotation_y(random(0.0, TAU)) * scaling(v3(sz, sz * random(0.6, 1.3), sz)), vec4(1, 1, 1, 1)))
+        loop k in [0..7):
+            x = f64(site.x) + (f64(k % 4) - 1.5) * 15.0
+            z = f64(site.y) + (if k < 4: -26.0 else: 26.0)
+            if in_bounds(x, z) and edge_at(x, z) < 300.0: continue
+            h = far_surface_height(x, z)
+            if h < 40.0 or far_road_distance(x, z) < 14.0: continue
+            ruins.push(PropI(translation(v3(x, h - 2.0, z)) * scaling(v3(17.0, 8.0 + hash2(x, z) * 9.0, 4.0)), vec4(0.85, 0.86, 0.8, 1)))
+    # ruins: broken walls across the field, more of them toward the castle
+    loop k in [0..140):
+        ang = random(0.0, TAU)
+        d = random(1100.0, 4500.0)
+        x = FAR_CX + cos(ang) * d
+        z = FAR_CZ + sin(ang) * d
+        if random() < 0.4:
+            x = f64(CASTLE.x) + random(-900.0, 900.0)
+            z = f64(CASTLE.z) + random(-700.0, 1200.0)
+        if in_bounds(x, z): continue
+        # Each piece and both ends share the actual rendered ground. Reject lake beds.
+        h = far_surface_height(x, z)
+        if h < 40.0: continue
+        n = random_int(1, 4)
+        yaw = random(0.0, PI)
+        loop j in [0..n):
+            px = x + cos(yaw) * f64(j) * 9.0
+            pz = z + sin(yaw) * f64(j) * 9.0
+            width = random(8.0, 14.0)
+            high = random(4.0, 14.0)
+            thick = random(2.0, 4.0)
+            low = far_surface_height(px, pz)
+            top = low
+            loop side in [-1.0, 1.0]:
+                gh = far_surface_height(px + cos(yaw) * width * side * 0.5, pz + sin(yaw) * width * side * 0.5)
+                low = min(low, gh)
+                top = max(top, gh)
+            if top - low > 6.0: continue
+            o = v3(px, low - 2.0, pz)
+            ruins.push(PropI(translation(o) * rotation_y(-yaw) * scaling(v3(width, high + top - low, thick)), vec4(1, 1, 1, 1)))
+    # Authored Hyrule Field silhouettes: Outpost/Exchange approaches north of
+    # the plateau, Mabe's abandoned lanes farther north, and Castle Town's edge.
+    # Reuse the broken-wall mesh and instance batch. Each foot and both ends
+    # are sunk into the rendered terrain, with restrained warm-grey pigment.
+    wall = (x: f64, z: f64, width: f64, high: f64, yaw: f64, thick: f64):
+        low = far_surface_height(x,z)
+        high_ground = low
+        loop sign in [-1.0,1.0]:
+            ground = far_surface_height(x+cos(yaw)*width*sign*0.5,z+sin(yaw)*width*sign*0.5)
+            low = min(low,ground)
+            high_ground = max(high_ground,ground)
+        if low < 40.0 or high_ground-low > high*0.7: return
+        ruins.push(PropI(translation(v3(x,low-2.5,z))*rotation_y(-yaw)*scaling(v3(width,high+high_ground-low,thick)),vec4(0.64,0.66,0.64,1)))
+    # Unequal surviving gate towers; broken crowns and missing sides read as
+    # ruins, rather than another intact Sheikah tower or a bright castle.
+    loop site in [vec2(-510,1110),vec2(-1090,780),vec2(-260,480),vec2(500,1000)]:
+        sx = f64(site.x)
+        sz = f64(site.y)
+        loop tower in [0..2):
+            tx = sx+f64(tower)*62.0
+            tz = sz-f64(tower)*18.0
+            h = 24.0+f64(tower)*11.0
+            wall(tx-9.0,tz,20.0,h,PI/2.0,3.8)
+            wall(tx+9.0,tz,20.0,h*0.64,PI/2.0,3.8)
+            wall(tx,tz+9.0,18.0,h*0.82,0.0,3.8)
+            wall(tx-4.0,tz-9.0,10.0,h*0.45,0.0,3.8)
+        loop k in [0..4):
+            wall(sx+16.0+f64(k)*18.0,sz+14.0,17.0,8.0+f64(k%3)*3.0,0.0,3.0)
+        wall(sx-27.0,sz-12.0,38.0,9.0,PI/2.0,3.0)
+    # Ruined town outline: two staggered rows of roofless house corners, a
+    # broken chapel end wall and the interrupted perimeter beyond the pasture.
+    loop site in [vec2(-620,300),vec2(-930,-520)]:
+        sx = f64(site.x)
+        sz = f64(site.y)
+        loop row in [0..2):
+            loop house in [0..4):
+                x = sx+(f64(house)-1.5)*43.0+f64(row)*12.0
+                z = sz+f64(row)*62.0
+                h = 9.0+hash2(x,z)*9.0
+                wall(x,z,28.0,h,0.0,2.6)
+                wall(x-13.0,z-12.0,25.0,h*0.65,PI/2.0,2.6)
+                if house%2 == 0: wall(x+8.0,z-24.0,11.0,h*0.42,0.0,2.6)
+        wall(sx-110.0,sz-32.0,33.0,30.0,0.0,4.0)
+        wall(sx-125.0,sz-48.0,34.0,17.0,PI/2.0,4.0)
+        loop k in [0..7):
+            if k == 2 or k == 5: continue
+            wall(sx-118.0+f64(k)*34.0,sz+104.0,31.0,10.0+f64(k%3)*4.0,0.0,3.5)
+    far_rocks = rocks
+    far_trees = trees
+    far_firs = firs
+    far_ruins = ruins
+    eprint("far scenery: {trees.len()} broadleaves, {firs.len()} firs, {ruins.len()} ruin pieces, {rocks.len()} rock clusters")
+
+farland_scatter_draw = ():
+    draw_props(far_tree_mesh, far_trees_buf)
+    draw_props(far_fir_mesh, far_firs_buf)
+    draw_props(far_ruin_mesh, far_ruins_buf)
+    draw_props(far_rock_mesh, far_rocks_buf)
+
+farland_asset_key = () -> int:
+    asset_key(["game/farland.jo", "game/scene.jo", "game/items.jo", "game/mesh_assets.jo"]) xor world_asset_key()
+farland_asset_io = (s: mut AssetStream, writing: bool):
+    pack_array(s, far_vertices, writing)
+    pack_array(s, far_indices, writing)
+    pack_array(s, far_tree.vs, writing)
+    pack_array(s, far_tree.idx, writing)
+    pack_array(s, far_fir.vs, writing)
+    pack_array(s, far_fir.idx, writing)
+    pack_array(s, far_ruin.vs, writing)
+    pack_array(s, far_ruin.idx, writing)
+    pack_array(s, far_rock.vs, writing)
+    pack_array(s, far_rock.idx, writing)
+    pack_array(s, far_rocks, writing)
+    pack_array(s, far_trees, writing)
+    pack_array(s, far_firs, writing)
+    pack_array(s, far_ruins, writing)
+    pack_value(s, far_rng, writing)
+    pack_value(s, malice_center, writing)
+    pack_array(s, far_plumes, writing)
+farland_asset_write = (path: str = "assets/prepared/farland.bin") -> bool:
+    s = pack_create(path, farland_asset_key())
+    farland_asset_io(s, true)
+    pack_publish(s, path)
+farland_asset_load = () -> bool:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_NO_PREPARED_ASSETS") != none: return false
+    s = pack_open("assets/prepared/farland.bin", farland_asset_key())
+    defer asset_close(s)
+    if not s.ok: return false
+    farland_asset_io(s, false)
+    if not s.ok or s.left != 0:
+        far_vertices = []
+        far_indices = []
+        far_plumes = []
+        return false
+    if env("BOTW_LOADTIME") != none: eprint("prepared farland: hit")
+    true
+
+farland_prepared_hit = false
+
+far_castle_built = false
+farland_castle_prepare = ():
+    if far_castle_built: return
+    saved_rng = __global_rng
+    __castle()
+    __global_rng = saved_rng
+    far_castle_built = true

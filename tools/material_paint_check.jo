@@ -1,0 +1,157 @@
+# Production post-pass regression: identical flat washes must acquire different
+# material texture, and sky/water/skin must not inherit the stone's paper tooth.
+# Run under: flock /tmp/botw-render.lock sloppy/bin/sloppy tools/material_paint_check.jo
+use '../game/post.jo'
+use '../game/gfx.jo'
+
+struct PaintFixtureU:
+    value: vec4
+    pattern = 0.0
+fixture_vs = (v: FsVert, u: PaintFixtureU) -> PostO: PostO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+fixture_fs = (i: PostO, u: PaintFixtureU) -> vec4:
+    if u.pattern < 0.0:
+        # The production one-pixel dissolve, with bright sky exposed at the holes.
+        retained = glsl_occluder_dither(0.0) > -u.pattern
+        return if retained: vec4(0.1, 0.1, 0.1, -8) else: vec4(0.7, 0.7, 0.7, 0)
+    stripe = (step(0.5, fract(i.uv.x * 24.0)) - 0.5) * u.pattern
+    vec4(u.value.xyz + vec3(stripe, stripe, stripe), u.value.w)
+
+struct GrainFixtureU:
+    grain: Texture
+    scale: vec2
+grain_fixture_vs = (v: FsVert, u: GrainFixtureU) -> PostO: PostO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+grain_fixture_fs = (i: PostO, u: GrainFixtureU) -> vec4: sample(u.grain, i.uv * u.scale)
+
+window("Material paint regression", 192, 128)
+# Exercise the production cache allocation/filter, which the analytic fallback
+# alone cannot cover. Enlarging nearest texels caused round65's mineral mosaic.
+post_begin()
+assert(post.grain.fbo != 0, "production grain cache missing")
+fill_sh = make_sh(shader(fixture_vs, fixture_fs))
+comp_sh = make_sh(shader(pp_vs, pp_comp_fs))
+paint_sh = make_sh(shader(pp_vs, pp_paint_fs))
+src = make_target(192, 128, true, false)
+depth = make_target(192, 128, true, false)
+painted = make_target(192, 128, true, false)
+out = make_target(192, 128, true, false)
+glDisable(GL_DEPTH_TEST)
+glDisable(GL_CULL_FACE)
+glDisable(GL_BLEND)
+u = PostU(src = src.color, soft = src.color, depth = depth.color,
+    texel = vec2(1.0 / 192.0, 1.0 / 128.0), near = 0.1, far = 100.0,
+    exposure = 1.0, paint = 1.0, sat = 1.0)
+values = fill(f32(0), 192 * 128 * 4)
+roughness: f64[]
+loop material in [0.0, 0.15, 0.33, 0.65, 0.85, 1.0, 1.0]:
+    sky = roughness.len() == 6
+    bind_target(src)
+    draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.22, 0.25, 0.19, f32(material))))
+    bind_target(depth)
+    draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4((if sky: 1.0 else: 0.991), 0, 0, 1)))
+    bind_target(painted)
+    u.src = src.color
+    draw_fast(paint_sh, fullscreen_mesh(), u)
+    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    # Constant washes have no fine-structure bit; all material responses survive.
+    assert(abs(f64(values[(64 * 192 + 96) * 4 + 3]) - material) < 0.002)
+    bind_target(out)
+    u.src = painted.color
+    draw_fast(comp_sh, fullscreen_mesh(), u)
+    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    rough = 0.0
+    loop y in [4..124):
+        loop x in [4..188):
+            k = (y * 192 + x) * 4
+            # Second difference rejects the broad wet wash, measures paper tooth.
+            rough += abs(f64(values[k - 4] + values[k + 4] - values[k] * 2.0))
+    rough /= 120.0 * 184.0
+    roughness.push(rough)
+    print("paint material {material:.2} sky={sky}: tooth {rough:.6}")
+assert(roughness[0] < roughness[4] * 0.3, "water acquired mineral grain")
+assert(roughness[1] < roughness[4] * 0.3, "skin acquired mineral grain")
+assert(roughness[6] < roughness[4] * 0.1, "sky acquired paper grain")
+assert(abs(roughness[3] - roughness[4]) > 0.0001, "foliage and stone must have distinct tooth")
+# The water blend changes response by coverage, with byte-equivalent RGB factors.
+bind_target(src)
+glEnable(GL_BLEND)
+glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA)
+draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.4, 0.5, 0.6, 0.75)))
+gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+assert(abs(values[0] - (0.4 * 0.75 + 0.22 * 0.25)) < 0.002)
+assert(abs(values[3] - 0.25) < 0.002)
+glDisable(GL_BLEND)
+# Existing negative foliage coverage must survive material filtering.
+bind_target(src)
+draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.22, 0.25, 0.19, -8)))
+bind_target(depth)
+draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.991, 0, 0, 1)))
+bind_target(painted)
+u.src = src.color
+draw_fast(paint_sh, fullscreen_mesh(), u)
+gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+assert(values[(64 * 192 + 96) * 4 + 3] < -7.9)
+# Sky holes must participate in the same coverage resolve as retained foreground.
+# Exercise every nontrivial 4x4 coverage level, including sparse retained fragments.
+bind_target(depth)
+draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(1, 0, 0, 1)))
+# Production enlarges the watercolor brush by 1.3. Coverage must still use
+# physical source texels; using that brush spacing makes a visible grid.
+u.texel = u.texel * 1.3
+worst_error = 0.0
+loop level in [1..16):
+    fade = f32(level) / 16.0
+    bind_target(src)
+    draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0, 0, 0, 0), -fade))
+    bind_target(painted)
+    u.src = src.color
+    draw_fast(paint_sh, fullscreen_mesh(), u)
+    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    error = 0.0
+    marked = 0
+    loop y in [4..124):
+        loop x in [4..188):
+            k = (y * 192 + x) * 4
+            error += pow(f64(values[k]) - (0.1 + 0.6 * f64(fade)), 2.0)
+            if values[k + 3] < 0.0: marked += 1
+    error /= 120.0 * 184.0
+    worst_error = max(worst_error, error)
+    assert(marked == 120 * 184, "both sky holes and foreground suppress depth ink")
+    assert(error < 0.000001, "balanced coverage resolves without visible dot variance")
+print("material paint: all 15 sky/foreground dissolve levels, worst variance {worst_error:.8} PASS")
+u.texel = u.texel / 1.3
+# Distant high-contrast mineral cuts still acquire fine-structure protection.
+bind_target(src)
+draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.22, 0.25, 0.19, 0.85), 0.3))
+bind_target(depth)
+draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.995, 0, 0, 1)))
+bind_target(painted)
+u.near = 1.0
+u.far = 1000.0
+draw_fast(paint_sh, fullscreen_mesh(), u)
+gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+assert(values[(64 * 192 + 96) * 4 + 3] > 1.05)
+# Crown detail keeps its material identity, so snow cutouts do not regain ink.
+bind_target(src)
+draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.22, 0.25, 0.19, 0.65), 0.3))
+bind_target(painted)
+draw_fast(paint_sh, fullscreen_mesh(), u)
+gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+response=values[(64 * 192 + 96) * 4 + 3]
+assert(response>2.05 and response<=3.0,"distant foliage keeps its soft-rim material")
+assert(paint_foliage(response)==1.0,"foliage marker decodes at distant cutouts")
+print("material paint: material tooth, grain-free sky, water RGB blend, occluders and distant contours PASS")
+grain_sh = make_sh(shader(grain_fixture_vs, grain_fixture_fs))
+loop scale in [0.36, 0.57]:
+    bind_target(out)
+    draw_fast(grain_sh, fullscreen_mesh(), GrainFixtureU(post.grain.color, vec2(192.0 / f32(post.grain.w), 128.0 / f32(post.grain.h)) * f32(scale)))
+    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    flat = 0
+    loop y in [4..124):
+        loop x in [4..188):
+            k = (y * 192 + x) * 4 + 1
+            if abs(values[k + 4] - values[k]) < 0.000001: flat += 1
+    ratio = f64(flat) / (120.0 * 184.0)
+    print("cached pigment scale {scale:.2}: flat horizontal pairs {ratio:.6}")
+    assert(ratio < 0.02, "enlarged grain contains flat nearest-neighbor blocks")
+print("material paint: production stone/foliage cache interpolation PASS")
+exit(0)

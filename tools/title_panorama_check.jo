@@ -1,0 +1,168 @@
+# Headless production camera projection of the scenic summit anchors throughout
+# every visible lettering frame. BOTW_TITLE_BACKGROUND supplies the matched
+# no-atlas PNG for the rendered 3:1 lettering contrast assertion.
+use '../game/story.jo'
+use '../game/farland.jo'
+use '../game/gfx.jo'
+use '../game/interiors.jo'
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/sky.jo'
+use '../game/fx.jo'
+use '../game/malice.jo'
+use '../game/malice_shape.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/items.jo'
+use '../game/audio_cache.jo'
+const DT = 1.0 / 60.0
+__audio_state = 2
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+dimensions = [vec2(1024, 768), vec2(1280, 800), vec2(1280, 720), vec2(2560, 1080), vec2(3840, 1080)]
+checks = 0
+loop released in [false, true]:
+    loop size in dimensions:
+        __win_w = int(size.x)
+        __win_h = int(size.y)
+        aspect = f64(size.x / size.y)
+        story = Story()
+        pl = Player()
+        cam = Cam()
+        skip_to_outside()
+        story.title_done = false
+        story.door1 = 1.0
+        story.door2 = 1.0
+        pl.pos = v3(-1040.0, height_at(-1040.0, 1812.0), 1812.0)
+        cam_open_ground = false
+        cave_mouth = SOR_MOUTH_IN
+        cave_in = normalize(v3(-1128.0, 0.0, 1884.0) - vec3(SOR_MOUTH_IN.x, 0, SOR_MOUTH_IN.z))
+        camera_snap()
+        local_checks = 0
+        previous_gaze = normalize(view_target() - view_pos())
+        partial_checks = 0
+        loop frame in [0..1800):
+            act = Actions(move = vec2(0, if released and (frame < 10 or frame >= 300): 0.0 else: 1.0))
+            cam_open_ground = f64(length(pl.pos - SOR_MOUTH_IN)) > 60.0
+            story_update(DT)
+            player_update(DT)
+            camera_update(DT)
+            gaze = normalize(view_target() - view_pos())
+            turn = atan2(f64(length(cross(previous_gaze, gaze))), f64(dot(previous_gaze, gaze))) * 180.0 / PI
+            previous_gaze = gaze
+            if story.title_alpha <= 0.0: continue
+            assert(story.t - TITLE_CREST_SECONDS > TITLE_LETTERING_START, "lettering must wait for settled panorama")
+            assert(title_sky_strength() > 0.999, "sky reserve must stay settled throughout visible lettering")
+            assert(turn < 0.08, "visible title must not sweep across landmarks")
+            title_t = story.t - TITLE_CREST_SECONDS
+            if title_t >= TITLE_LETTERING_START + 1.0 and title_t <= 16.0:
+                assert(story.title_alpha >= 0.999, "settled title must be fully legible within one second")
+            if story.title_alpha < 0.99: partial_checks += 1
+            # Check both fades and the entire opaque hold.
+            eye = view_pos()
+            f = normalize(view_target() - eye)
+            right = normalize(cross(f, vec3(0, 1, 0)))
+            up = cross(right, f)
+            half = tan(view_fov() * PI / 360.0)
+            r = visible_rect()
+            lettering = title_lettering_size(f64(r.z), f64(r.w))
+            left = 0.5 - f64(lettering.x / r.z) / 2.0
+            right_edge = 1.0 - left
+            bottom = 0.115 + f64(lettering.y / r.w)
+            castle_ground = far_height(f64(CASTLE.x), f64(CASTLE.z))
+            volcano_ground = far_height(f64(DEATH_MTN.x), f64(DEATH_MTN.z))
+            points = [CASTLE + v3(0.0, castle_ground + 364.0, -20.0),
+                      DEATH_MTN + v3(0.0, volcano_ground, 0.0),
+                      v3(1740.0, far_height(1740.0, far_river_z(1740.0) - 105.0), far_river_z(1740.0) - 105.0),
+                      v3(1830.0, far_height(1830.0, far_river_z(1830.0) + 115.0), far_river_z(1830.0) + 115.0),
+                      CASTLE + v3(0.0, castle_ground + 510.0, 0.0),
+                      DEATH_MTN + v3(830.0, volcano_ground + 860.0, -320.0),
+                      CASTLE + v3(350.0, castle_ground + 320.0, -80.0),
+                      pl.pos + vec3(0, 1.6, 0), pl.pos]
+            names = ["Castle", "Death Mountain", "Dueling north", "Dueling south", "Calamity smoke", "Volcano smoke", "Calamity smoke edge", "Link head", "Link feet"]
+            toward = normalize(vec3(eye.x - CASTLE.x, 0, eye.z - CASTLE.z))
+            # Bound the production vortex, edge ripple and shared density cards.
+            # World depth/rotation is shared with malice_vs, not a billboard proxy.
+            loop segment in [0..MALICE_SEGMENTS + 1):
+                tt = f32(f64(frame) * DT)
+                phase = f32(segment) / f32(MALICE_SEGMENTS)
+                local = malice_spine(phase, tt)
+                q = CASTLE + v3(0.0, castle_ground, 0.0) + local
+                outward = normalize(vec3(local.x, 0, local.z))
+                radius = malice_thickness(phase) * 1.35
+                loop sign in [vec2(-1, -1), vec2(-1, 1), vec2(1, -1), vec2(1, 1)]:
+                    points.push(q + outward * sign.x * radius + vec3(0, sign.y * radius, 0))
+                    names.push("Calamity continuous coil")
+                # The density overlay uses the view plane; at the side of the
+                # helix it can extend beyond the radial tube's projected width.
+                loop sign in [vec2(-1, -1), vec2(-1, 1), vec2(1, -1), vec2(1, 1)]:
+                    points.push(q + right * sign.x * radius + up * sign.y * radius)
+                    names.push("Calamity density envelope")
+            bx0 = 0.0
+            by0 = 0.0
+            bx1 = 0.0
+            by1 = 0.0
+            loop k in [0..points.len()):
+                d = points[k] - eye
+                depth = f64(dot(d, f))
+                x = 0.5 + f64(dot(d, right)) / (depth * half * aspect * 2.0)
+                y = 0.5 - f64(dot(d, up)) / (depth * half * 2.0)
+                if k >= 9:
+                    if (k - 9) % 8 == 0:
+                        bx0 = x
+                        bx1 = x
+                        by0 = y
+                        by1 = y
+                    else:
+                        bx0 = min(bx0, x)
+                        bx1 = max(bx1, x)
+                        by0 = min(by0, y)
+                        by1 = max(by1, y)
+                    if (k - 9) % 8 == 7:
+                        box_clear = bx1 < left - 0.01 or bx0 > right_edge + 0.01 or by0 > bottom + 0.01 or by1 < 0.105
+                        if not box_clear: print("FAIL smoke rectangle x={bx0:.4}..{bx1:.4} y={by0:.4}..{by1:.4} left={left:.4} bottom={bottom:.4}")
+                        assert(box_clear, "entire vortex segment must clear lettering")
+                assert(depth > 0.0, "panorama anchor must be in front of camera")
+                clear = x < left - 0.01 or x > right_edge + 0.01 or y > bottom + 0.01 or y < 0.105
+                if not clear: print("FAIL {names[k]} x={x:.4} y={y:.4} left={left:.4} bottom={bottom:.4}")
+                assert(clear, "panorama anchor must clear title lettering")
+                if k < 9: assert(x > 0.01 and x < 0.99 and y > 0.1 and y < 0.9, "panorama anchor must clear letterbox and screen edges")
+                if k < 9 and (local_checks == 0 or frame % 120 == 0): print("PASS panorama {int(size.x)}x{int(size.y)} frame {frame} {names[k]}: x {x:.4} y {y:.4} fov {view_fov():.2}")
+                checks += 1
+                local_checks += 1
+        assert(local_checks >= 96 and partial_checks >= 100)
+print("PASS panorama: {checks} projections across 4:3, 16:10, 16:9, 21:9 and 32:9; landmarks and Link clear letterbox, and landmarks plus full continuous Calamity ribbon clear lettering throughout both fades and opaque hold, with no visible camera sweep for held and frame-300-released input")
+
+# Optional actual-pixel companion: the runner supplies the matching capture with
+# only the atlas overlay suppressed, retaining the production cloud reserve,
+# post-processing, camera, letterbox and simulation instant. Decode display sRGB
+# to linear Rec.709 and require 3:1 at every opaque atlas-core pixel.
+if let path = env("BOTW_TITLE_BACKGROUND"):
+    bg = load_png(read_bytes(path)!)!
+    atlas = load_png(read_bytes("assets/title.png")!)!
+    size = title_lettering_size(f64(bg.width), f64(bg.height))
+    left = (f64(bg.width) - f64(size.x)) * 0.5
+    top = f64(bg.height) * 0.115
+    linear = (c: f32) -> f64:
+        x = f64(c)
+        if x <= 0.04045: x / 12.92 else: pow((x + 0.055) / 1.055, 2.4)
+    luminance = (c: vec4) -> f64: linear(c.x) * 0.2126 + linear(c.y) * 0.7152 + linear(c.z) * 0.0722
+    minimum = 100.0
+    samples = 0
+    loop y in [0..int(size.y)):
+        loop x in [0..int(size.x)):
+            ax = int((f64(x) + 0.5) / f64(size.x) * f64(atlas.width))
+            ay = int((f64(y) + 0.5) / f64(size.y) * f64(atlas.height))
+            letter = get(atlas, ax, ay)
+            if letter.w < 0.98: continue
+            background = get(bg, int(left + f64(x)), int(top + f64(y)))
+            foreground_luma = luminance(letter)
+            background_luma = luminance(background)
+            ratio = (max(foreground_luma, background_luma) + 0.05) / (min(foreground_luma, background_luma) + 0.05)
+            minimum = min(minimum, ratio)
+            samples += 1
+    assert(samples > 1000, "title contrast needs real atlas-core samples")
+    print("title lettering contrast: minimum {minimum:.4}:1 over {samples} opaque atlas pixels; required 3:1")
+    assert(minimum >= 3.0, "rendered background must retain 3:1 lettering contrast")

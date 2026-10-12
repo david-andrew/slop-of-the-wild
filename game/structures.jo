@@ -1,0 +1,2140 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'build.jo'
+from 'build.jo' import __begin, __end, __tri, __quad, __quad_n, __n3, cur, __bchunks
+use 'interiors.jo'
+use 'worldgen.jo'
+use 'water.jo'
+use 'water_render.jo'
+
+# The plateau's buildings and ruins, placed from the original's actor data: the perimeter wall,
+# the Temple of Time and its three abbeys, the Eastern Abbey, the old man's cabin, the old road
+# and its broken pillars, the Shrine of Resurrection's mouth, the four shrines, the tower,
+# Bokoblin lookouts and decayed Guardians.
+
+const TEMPLE = v3(-818.0, 221.0, 2001.0)
+const TEMPLE_ROT = 2.9671
+const TOWER = v3(-560.0, 172.0, 1695.0)
+const CABIN = v3(-784.0, 193.0, 2255.0)
+const SOR_MOUTH = v3(-1068.0, 248.0, 1845.0)
+const OVERLOOK = v3(-1024.0, 253.0, 1799.0)
+const FOREST_THORNS = vec2(-1145,1735)
+const RIVER_CRACKS = vec2(-1210,1860)
+
+# Rock lookout beside the three-actor camp by the old man's hill.
+const CAMP_LOOKOUT = vec2(-966, 1943)
+const CAMP_LOOKOUT_HEIGHT = 2.4
+
+const CAMPFIRE = v3(-943.0, 225.0, 1880.0)
+
+GREY = stone(0.4, 0.39, 0.36)
+GREY_DARK = stone(0.32, 0.31, 0.3)
+BROWN_STONE = stone(0.6, 0.5, 0.4)
+SHEIKAH = stone(0.1, 0.11, 0.13)
+SHEIKAH_STONE = stone(0.2, 0.19, 0.18)
+TOWER_GOLD = stone(0.62, 0.48, 0.24)
+EARTH = stone(0.3, 0.24, 0.16)
+WOOD = stone(0.45, 0.32, 0.2)
+WOOD_DARK = stone(0.32, 0.22, 0.14)
+ROOF = stone(0.36, 0.26, 0.22)
+
+struct Shrine:
+    name: str
+    pos: vec3
+    rot: f64
+    terminal: vec3
+    done = false
+    activated = false
+
+shrines: Shrine[]
+far_shrines: vec3[]
+
+# local frame helper: a point relative to an origin, turned by rot
+lp = (o: vec3, rot: f64, x: f64, y: f64, z: f64) -> vec3: o + transform_dir(rotation_y(rot), v3(x, y, z))
+
+# ---------------- pads: flatten the ground under buildings before the terrain is finished ----------------
+structures_pads = ():
+    loop q in [FOREST_THORNS,RIVER_CRACKS]:
+        pads.push(Pad(f64(q.x),f64(q.y),3.4,gy(f64(q.x),f64(q.y)),2.0))
+    pads.push(Pad(TEMPLE.x, TEMPLE.z, 34.0, 221.0, 30.0))
+    pads.push(Pad(f64(CABIN.x), f64(CABIN.z), 9.0, 193.0, 8.0))
+    pads.push(Pad(f64(TOWER.x), f64(TOWER.z), 12.0, 172.0, 10.0))
+    pads.push(Pad(-498.0, 1988.0, 40.0, 178.0, 12.0))
+    loop a in actors:
+        if a.name == "DgnObj_DungeonEntrance_A_01" and f64(a.pos.x) > -1600.0 and f64(a.pos.x) < -350.0 and f64(a.pos.z) > 1400.0 and f64(a.pos.z) < 2400.0:
+            # Owa Daim's short blend raised a 60 m artificial spike out of the hillside.
+            fall = if a.pos.z > 2300.0: 64.0 else: 6.0
+            pads.push(Pad(f64(a.pos.x), f64(a.pos.z), 8.0, f64(a.pos.y), fall))
+    # A four-metre shelf on Owa Daim's western approach: preserve the local mean
+    # height while giving one stock wheel a place to rest between the two cliff courses.
+    pads.push(Pad(-967.0, 2322.0, 4.0, 291.6, 4.0))
+    pads.push(Pad(f64(CAMPFIRE.x), f64(CAMPFIRE.z), 5.0, 225.0, 6.0))
+
+gy = (x: f64, z: f64) -> f64: height_at(x, z)
+
+# Existing wall pieces carry their own weathering at build time: no extra geometry,
+# draw calls or fragment noise. Sheltered stone is cooler; exposed courses bleach warm.
+__old_stone = (p: vec3) -> vec4:
+    patch = noise(f64(p.x) * 0.085 + f64(p.y) * 0.13, f64(p.z) * 0.085)
+    chip = hash2(f64(p.x) + f64(p.y) * 3.0, f64(p.z))
+    mix(stone(0.30, 0.325, 0.30), stone(0.53, 0.49, 0.405), f32(patch)) * vec4(f32(0.86 + chip * 0.25), f32(0.86 + chip * 0.25), f32(0.86 + chip * 0.25), 1)
+
+__old_block = (p: vec3, size: vec3, yaw: f64, col: vec4, mat: vec4, collide: bool = true, climb: bool = true):
+    weather = __old_stone(p)
+    wear = noise(f64(p.x) * 0.12, f64(p.z) * 0.12 + f64(p.y) * 0.19)
+    # Retain the authored coursing; damp and ivy vary from pier to pier.
+    m = vec4(mat.x, mat.y * f32(0.25 + wear * 1.15), mat.z, mat.w)
+    box(p, size, yaw, vec4(col.xyz * weather.xyz / GREY.xyz, col.w), m, collide, climb)
+
+# ---------------- the perimeter wall ----------------
+__wall_actors: vec3[]
+
+# the plateau's outline (the same polygon tools/heightmap.jo cut the cliffs with)
+outline = [(-1410.0, 1500.0), (-1336.0, 1494.0), (-1265.0, 1502.0), (-1240.0, 1545.0), (-1160.0, 1563.0), (-1080.0, 1548.0),
+    (-1060.0, 1505.0), (-990.0, 1476.0), (-951.0, 1480.0), (-866.0, 1505.0), (-800.0, 1473.0), (-700.0, 1478.0), (-622.0, 1494.0),
+    (-575.0, 1525.0), (-545.0, 1552.0), (-515.0, 1600.0), (-492.0, 1700.0), (-495.0, 1800.0), (-485.0, 1825.0), (-425.0, 1900.0),
+    (-410.0, 1960.0), (-418.0, 2010.0), (-430.0, 2045.0), (-505.0, 2100.0), (-560.0, 2112.0), (-600.0, 2160.0), (-640.0, 2245.0),
+    (-695.0, 2300.0), (-743.0, 2328.0), (-800.0, 2352.0), (-960.0, 2358.0), (-1130.0, 2352.0), (-1169.0, 2318.0), (-1374.0, 2302.0),
+    (-1445.0, 2298.0), (-1470.0, 2250.0), (-1490.0, 2150.0), (-1482.0, 2100.0), (-1510.0, 2050.0), (-1525.0, 1950.0), (-1525.0, 1900.0),
+    (-1500.0, 1852.0), (-1440.0, 1842.0), (-1440.0, 1812.0), (-1495.0, 1800.0), (-1535.0, 1700.0), (-1515.0, 1600.0), (-1480.0, 1550.0),
+    (-1446.0, 1545.0)]
+
+perimeter_wall = ():
+    loop a in actors:
+        if starts_with(a.name, "TwnObj_TempleOfTime_Wall") and not ends_with(a.name, "_Far"): __wall_actors.push(a.pos)
+    pieces = 0
+    n = outline.len()
+    loop i in [0..n):
+        a = outline[i]
+        b = outline[(i + 1) % n]
+        dx = b.0 - a.0
+        dz = b.1 - a.1
+        len_ = hypot(dx, dz)
+        cnt = max(1, int(ceil(len_ / 6.0)))
+        dirx = dx / len_
+        dirz = dz / len_
+        # clockwise outline: outward is to the left of the direction of travel
+        ox = dirz
+        oz = -dirx
+        yaw = atan2(-dz, dx)
+        loop k in [0..cnt):
+            t = (f64(k) + 0.5) / f64(cnt)
+            # on the rim, a little inside it
+            x = a.0 + dx * t - ox * 1.5
+            z = a.1 + dz * t - oz * 1.5
+            near = false
+            loop w in __wall_actors:
+                if hypot(f64(w.x) - x, f64(w.z) - z) < 60.0:
+                    near = true
+                    break
+            if not near: continue
+            # the top: a long, slowly rising and falling line (each block leans to meet its neighbours),
+            # broken down here and there
+            topf = (px: f64, pz: f64) -> f64: max(gy(px - ox * 10.0, pz - oz * 10.0), gy(px - ox * 4.0, pz - oz * 4.0)) + 1.3 + noise(px * 0.025, pz * 0.025) * 2.4 - (if hash2(floor(px / 6.0), floor(pz / 6.0)) < 0.08: 1.4 else: 0.0)
+            half = len_ / f64(cnt) * 0.5
+            tl = topf(x - dirx * half, z - dirz * half)
+            tr = topf(x + dirx * half, z + dirz * half)
+            # Whole courses have fallen in unequal 12--20 m bays. The low
+            # remnants remain rooted; neighbouring standing piers keep height.
+            broken = hash2(floor(x / 17.0), floor(z / 17.0)) < 0.18
+            if broken:
+                tl -= 2.5 + hash2(x, z) * 1.2
+                tr -= 2.2 + hash2(z, x) * 1.5
+            top = (tl + tr) * 0.5
+            # rooted in the ground under it (not reaching down the cliff outside: it would hang
+            # through the face in rows of points)
+            bottom = min(gy(x + ox * 2.2, z + oz * 2.2), min(gy(x, z), gy(x - ox * 2.2, z - oz * 2.2))) - 1.5
+            if top - bottom < 0.7: continue
+            # (where the rim falls away under it, as at a waterfall's notch, no wall: it would stand
+            # as a tall pillar down the face)
+            if top - bottom > 12.0: continue
+            ivy = 0.4 + 0.6 * noise(x * 0.02, z * 0.02)
+            m = vec4(0.48, f32(ivy * 0.35), 0.0, -2.0)
+            hgt = top - bottom
+            centre = v3(x, bottom + hgt * 0.5, z)
+            __begin(centre)
+            first = cur.verts.len()
+            __end()
+            box_m(translation(centre) * rotation_y(yaw) * rotation_z(atan2(tr - tl, half * 2.0)) * scaling(v3(len_ / f64(cnt) + 0.6, hgt, 4.5)), GREY, m, true, true)
+            __begin(centre)
+            loop j in [first..cur.verts.len()):
+                q = cur.verts[j].pos
+                wash = noise(f64(q.x) * 0.027 + f64(q.y) * 0.015, f64(q.z) * 0.027)
+                damp = 1.0 - smoothstep(0.08, 0.80, (f64(q.y) - bottom) / hgt)
+                pigment = mix(vec3(0.245,0.285,0.275), vec3(0.415,0.425,0.365), f32(wash))
+                cur.verts[j].color = vec4(pigment * f32(1.0 - damp * 0.24), 1)
+            __end()
+            if hash2(x, z) < 0.25:
+                box(v3(x + ox * 2.2, bottom, z + oz * 2.2), v3(3.0, (top - bottom) * 0.75, 3.0), yaw, darken(GREY, 0.08), m, true, true)
+            pieces += 1
+    eprint("wall pieces {pieces}")
+
+# ---------------- the Temple of Time ----------------
+# A gothic church: steps up to a portal under a bell tower with a belfry and spire (the old man's
+# lookout at 43 m), a nave of tall pointed windows held by flying buttresses over low aisles, a
+# roof broken open in the middle, and a round apse where the goddess statue stands.
+ROOF_SLATE = stone(0.19, 0.23, 0.25)
+# A roof skin with a timber soffit and a closed, exposed fracture edge. The
+# old solid gable end caps looked like suspended triangles from the nave floor.
+__temple_roof_panel = (a: vec3, b: vec3, c: vec3, d: vec3):
+    q = [a,b,c,d]
+    if cross(b-a,c-a).y < 0.0: q = [d,c,b,a]
+    down = vec3(0,-0.45,0)
+    n = normalize(cross(q[1]-q[0],q[2]-q[0]))
+    __begin(a)
+    __quad(cur,q[0],q[1],q[2],q[3],n,ROOF_SLATE,PLAIN)
+    __quad(cur,q[3]+down,q[2]+down,q[1]+down,q[0]+down,-n,WOOD_DARK,WOODM)
+    loop k in [0..4):
+        j = (k+1)%4
+        edge_n = normalize(cross(q[j]-q[k],down))
+        __quad(cur,q[k],q[k]+down,q[j]+down,q[j],-edge_n,stone(0.31,0.29,0.25),WOODM)
+    __end()
+
+temple = ():
+    o = TEMPLE
+    r = TEMPLE_ROT
+    p = (x: f64, y: f64, z: f64) -> vec3: lp(o, r, x, y, z)
+    col = GREY
+    temple_block = vec4(0.48, 0, 0, -1)
+    temple_ivy = vec4(0.48, 0.7, 0, -1)
+    m = temple_ivy
+    # the platform and the front steps
+    # Established collision under a visibly broken foundation and turf margin.
+    foundation_axis = transform_dir(rotation_y(r)*scaling(v3(36.0,1.3,80.0)),vec3(1,0,0))
+    foundation_yaw = atan2(-f64(foundation_axis.z),f64(foundation_axis.x))
+    add_box(p(0.0, -1.2, 2.0), v3(18.0, 0.65, 40.0), foundation_yaw, false, .stone)
+    box(p(0.0,-1.18,2.0),v3(32.0,1.25,76.0),r,GREY_DARK,temple_block,false)
+    loop side in [-1.0,1.0]:
+        loop k in [0..20):
+            z = -36.0+f64(k)*3.9
+            h = hash2(f64(k),side+241.0)
+            q = p(side*(16.75+h*0.42),-0.42-h*0.18,z)
+            sor_split_stone(q,v3(1.4+h*0.55,0.42,2.0+h*0.45),r+side*0.04+h*0.08,f64(k)+side*61.0,GREY_DARK,temple_ivy)
+        loop k in [0..5):
+            x = side*(6.5+f64(k)*2.25)
+            sor_split_stone(p(x,-0.36,40.0),v3(1.25,0.35,1.6),r+side*0.06,410.0+x,GREY_DARK,temple_ivy)
+    # Earth and turf climb the outer foundation and spill over broken courses.
+    # Outer vertices meet the real slope; the nave and front stairs stay clear.
+    loop side in [-1.0,1.0]:
+        loop k in [0..16):
+            z = -34.0+f64(k)*4.6
+            h = hash2(f64(k),side+310.0)
+            if h < 0.28: continue
+            __begin(p(side*18.0,0.0,z))
+            loop j in [0..4):
+                zz = z+(f64(j)-1.5)*(0.65+h*0.9)
+                point = (along: f64, outer: bool) -> vec3:
+                    q=p(side*(if outer:20.5+h*1.4 else:16.0+h*0.8),0,along)
+                    q.y=f32(if outer:gy(f64(q.x),f64(q.z))+0.025 else:max(gy(f64(q.x),f64(q.z))+0.03,f64(o.y)+0.115+h*0.06))
+                    q
+                a=point(zz,false)
+                b=point(zz+0.65+h*0.9,false)
+                c=point(zz+0.65+h*0.9,true)
+                d=point(zz,true)
+                turf_col=stone(0.28+h*0.06,0.32+h*0.10,0.13+h*0.04)
+                n=normalize(cross(b-a,d-a))
+                if n.y<0.0:n=-n
+                if side < 0.0: __quad(cur,d,c,b,a,n,turf_col,PLAIN)
+                else: __quad(cur,a,b,c,d,n,turf_col,PLAIN)
+            __end()
+    steps(p(0.0, -1.6, 50.0), r + PI, 14.0, 0.4, 1.2, 4, GREY_DARK, temple_block)
+    loop zi in [0..15):
+        q = p(0.0, 0.0, -29.0 + f64(zi) * 5.0)
+        burn_mark(f64(q.x), f64(q.z), 8.0, 3, 3.0)
+    # The original four stairs are below the actual approach slope. A worn flight follows
+    # that slope into the existing landing, each tread shallow enough to walk up normally.
+    loop zi in [0..23):
+        z = 62.0 - f64(zi) * 0.8
+        q = p(0.0, 0.0, z)
+        uphill = p(0.0, 0.0, z - 0.4)
+        g = gy(f64(q.x), f64(q.z))
+        top = max(g, gy(f64(uphill.x), f64(uphill.z))) + 0.09
+        __old_block(v3(f64(q.x), g - 0.25, f64(q.z)), v3(8.6 + f64(zi) * 0.12, top - g + 0.25, 0.8), r, GREY_DARK, temple_ivy, true, false)
+        # (paved: no grass growing up through the treads)
+        if zi % 2 == 0:
+            loop side in [-1.0, 0.0, 1.0]:
+                qs = p(side * 2.6, 0.0, z)
+                burn_mark(f64(qs.x), f64(qs.z), 2.4, 3, 3.0)
+    # Broken paving and clustered fallen masonry flank the stair's clear walking line.
+    loop zi in [0..7):
+        z = 51.4 + f64(zi) * 1.55
+        loop side in [-1.0, 1.0]:
+            q = p(side * (5.7 + hash2(z, side) * 0.3), 0.0, z)
+            g = gy(f64(q.x), f64(q.z))
+            __old_block(v3(f64(q.x), g - 0.12, f64(q.z)), v3(1.1, 0.2, 1.15), r + (hash2(side, z) - 0.5) * 0.12, GREY, temple_ivy, false)
+    loop bed in [vec2(-7.8, 53.0), vec2(8.6, 57.0), vec2(-9.0, 62.0)]:
+        loop k in [0..9):
+            a = hash2(f64(k), f64(bed.x)) * TAU
+            d = hash2(f64(k), f64(bed.y)) * 2.3
+            q = p(f64(bed.x) + cos(a) * d, 0.0, f64(bed.y) + sin(a) * d)
+            sz = 0.35 + hash2(a, d) * 0.8
+            box_m(translation(v3(f64(q.x), gy(f64(q.x), f64(q.z)) + sz * 0.16, f64(q.z))) * rotation_y(a) * rotation_z(0.12) * scaling(v3(sz * 1.5, sz * 0.6, sz)), GREY, temple_ivy, false)
+    # The ruined foundation disappears into turf and fallen courses, following
+    # the actual slope. The portal and interior floor remain completely clear.
+    loop k in [0..42):
+        side = if k % 2 == 0: -1.0 else: 1.0
+        z = -36.0 + f64(k / 2) * 3.7
+        h = hash2(f64(k), 81.2)
+        q = p(side * (17.8 + h * 2.6), 0.0, z)
+        xx = f64(q.x)
+        zz = f64(q.z)
+        g = gy(xx, zz)
+        __begin(q)
+        loop blade in [0..18):
+            seed = hash2(f64(k * 19 + blade), 41.0)
+            x = xx + (seed - 0.5) * 4.8
+            z = zz + (hash2(f64(blade), f64(k)) - 0.5) * 4.8
+            base = v3(x, gy(x, z) + 0.04, z)
+            edge = v3(cos(seed * TAU) * 0.06, 0.0, sin(seed * TAU) * 0.06)
+            __tri(cur, base - edge, base + edge, base + v3(0.08, 0.22 + seed * 0.36, 0.07), stone(0.34, 0.43, 0.16), PLAIN)
+        __end()
+        if h > 0.28:
+            sz = 0.35 + h * 0.9
+            __old_block(v3(xx, g - sz * 0.24, zz), v3(sz * 1.7, sz * 0.65, sz), r + h * 0.7, GREY_DARK, temple_ivy, false)
+    # floor tiles inside
+    box(p(0.0, 0.0, 2.0), v3(19.0, 0.08, 58.0), r, stone(0.52, 0.5, 0.46), vec4(0.8, 0.0, 0.0, -1), false)
+    # nave: piers every 7 m; arcades open to the aisles; a clerestory of tall pointed windows above
+    loop i in [0..9):
+        z = -26.0 + f64(i) * 7.0
+        broken = i == 3 or i == 4
+        loop side in [-1.0, 1.0]:
+            x = side * 10.0
+            h = if broken: 10.5 + f64(i % 2) * 3.0 else: 23.0
+            box(p(x, 0.0, z), v3(2.0, h, 2.0), r, col, m)
+            # aisle wall and its buttress pier
+            __old_block(p(side * 16.5, 0.0, z), v3(2.0, (if broken: 8.0 else: 12.0), 2.4), r, GREY_DARK, m)
+            if i < 8:
+                zc = z + 3.5
+                # the arcade between nave and aisle
+                arch(p(x, 0.0, zc), r + PI / 2.0, 5.0, 8.5, 0.9, 1.6, col, temple_block)
+                if not (broken):
+                    # clerestory: solid band, a tall window (two lights), solid top
+                    box(p(x, 8.5, zc), v3(1.2, 2.5, 5.2), r, col, m)
+                    box(p(x, 11.0, zc - 2.0), v3(1.2, 9.0, 1.2), r, col, m)
+                    box(p(x, 11.0, zc + 2.0), v3(1.2, 9.0, 1.2), r, col, m)
+                    __old_block(p(x, 11.0, zc), v3(0.5, 7.0, 0.4), r, col, temple_block)
+                    arch(p(x, 17.0, zc), r + PI / 2.0, 3.0, 3.0, 0.5, 1.2, col, temple_block)
+                    box(p(x, 20.0, zc), v3(1.2, 3.0, 5.2), r, col, m)
+                # the aisle's outer wall with a low window, and its lean-to roof
+                __old_block(p(side * 16.5, 0.0, zc), v3(1.0, 3.5, 5.6), r, GREY_DARK, m)
+                if not broken: box(p(side * 16.5, 7.5, zc), v3(1.0, 4.5, 5.6), r, GREY_DARK, m)
+                arch(p(side * 16.5, 3.5, zc), r + PI / 2.0, 3.0, 4.0, 0.5, 1.0, GREY_DARK, temple_block)
+                if i < 2 or i > 5: box_m(translation(p(side * 13.2, 12.6, zc)) * rotation_y(r) * rotation_z(-side * 0.42) * scaling(v3(7.6, 0.5, 7.2)), ROOF_SLATE, PLAIN, true)
+            # flying buttress: from the aisle pier up to the nave wall
+            if not broken:
+                d = p(side * 13.4, 15.5, z)
+                box_m(translation(d) * rotation_y(r) * rotation_z(-side * 0.75) * scaling(v3(8.5, 1.2, 1.4)), GREY_DARK, temple_block, false)
+                box(p(side * 17.3, 0.0, z), v3(3.2, 6.0, 3.0), r, col, m)
+                box(p(side * 17.0, 6.0, z), v3(2.5, 5.0, 2.5), r, col, m)
+                column(p(side * 16.5, 12.0, z), 0.9, 0.45, 5.0, 4, col, temple_block, false)
+                spire(p(side * 16.5, 17.0, z), 1.0, 3.0, 4, r + PI / 4.0, GREY_DARK, temple_block)
+    # Only the end bays retain a roof. Each pitched skin seats on a continuous
+    # wall plate over intact clerestory masonry, with visible open timber trusses.
+    # Unequal fracture stations break the free ends without closing them with a
+    # triangular face; the six middle bays remain open all the way to the sky.
+    loop front in [false,true]:
+        back = if front: 31.0 else: -26.7
+        edge = if front: 23.0 else: -19.0
+        sign = if front: -1.0 else: 1.0
+        loop side in [-1.0,1.0]:
+            box(p(side*10.0,22.85,(back+edge)*0.5),v3(1.4,0.8,abs(back-edge)+0.2),r,WOOD_DARK,WOODM,false)
+            loop k in [0..10):
+                x0 = f64(k)*1.07
+                x1 = f64(k+1)*1.07
+                e0 = edge + sign*(hash2(f64(k),side+back)-0.5)*1.8
+                e1 = edge + sign*(hash2(f64(k+1),side+back)-0.5)*1.8
+                y0 = 34.0-x0
+                y1 = 34.0-x1
+                __temple_roof_panel(p(side*x0,y0,back),p(side*x1,y1,back),p(side*x1,y1,e1),p(side*x0,y0,e0))
+        loop z in (if front: [26.0,29.8] else: [-25.5,-21.2]):
+            # Tie beam bears on both wall heads; principal rafters meet at the
+            # ridge and touch the soffit along their full length.
+            tube(p(-10.1,23.25,z),p(10.1,23.25,z),0.36,0.36,4,WOOD_DARK,WOODM)
+            tube(p(0.0,23.25,z),p(0.0,33.6,z),0.23,0.23,4,WOOD_DARK,WOODM)
+            loop side in [-1.0,1.0]:
+                tube(p(side*10.3,23.25,z),p(0.0,33.6,z),0.32,0.28,4,WOOD_DARK,WOODM)
+                tube(p(side*5.8,23.25,z),p(side*2.8,30.7,z),0.22,0.22,4,WOOD_DARK,WOODM)
+    # Snapped rafters grow from surviving wall heads only. Nothing is left
+    # hovering above the two collapsed clerestory bays (z=-5 and z=2).
+    loop side in [-1.0,1.0]:
+        loop z in [-12.0,9.0,16.0]:
+            reach = 1.3 + hash2(side,z)*1.4
+            box(p(side*10.0,22.85,z),v3(1.35,0.55,1.65),r,WOOD_DARK,WOODM,false)
+            tube(p(side*10.2,23.1,z),p(side*(10.0-reach),23.4+reach,z),0.26,0.10,5,WOOD_DARK,WOODM)
+            # A short slate remnant stays rooted to this plate and rafter.
+            if z != 9.0:
+                __temple_roof_panel(p(side*10.65,23.35,z-0.75),p(side*8.8,25.2,z-0.75),p(side*9.15,24.85,z+0.35),p(side*10.65,23.35,z+0.75))
+    # Fallen timbers lie beside the aisles, outside the central walking line.
+    loop k in [0..6):
+        side = if k % 2 == 0: -1.0 else: 1.0
+        z = -15.0 + f64(k) * 6.0
+        tube(p(side * 6.8, 0.28, z), p(side * 8.0, 0.45, z + 4.5), 0.18, 0.13, 5, WOOD_DARK, WOODM)
+    # The apse is open: its former full cone projected into the unsupported nave.
+    # Keep the surviving semicircle of piers and windows.
+    loop k in [0..9):
+        a = PI * f64(k) / 8.0
+        q = p(cos(a) * 10.0, 0.0, -26.0 - sin(a) * 10.0)
+        box(q, v3(2.0, 21.0, 2.0), r - a + PI / 2.0, col, m)
+        if k < 8:
+            a2 = PI * (f64(k) + 0.5) / 8.0
+            q2 = p(cos(a2) * 10.2, 0.0, -26.0 - sin(a2) * 10.2)
+            box(q2, v3(4.4, 7.0, 1.0), r - a2 + PI / 2.0, col, m)
+            box(q2 + transform_dir(rotation_y(r), v3(0.0, 15.0, 0.0)), v3(4.4, 6.0, 1.0), r - a2 + PI / 2.0, col, m)
+            # the tall window between: a pointed head
+            arch(q2 + transform_dir(rotation_y(r), v3(0.0, 12.0, 0.0)), r - a2 + PI / 2.0, 3.0, 3.0, 0.6, 1.2, col, temple_block)
+    # the nave front and its battered corner pinnacles
+    loop side in [-1.0, 1.0]:
+        box(p(side * 8.0, 0.0, 30.5), v3(4.0, 24.0, 3.0), r, col, m)
+        column(p(side * 11.5, 0.0, 31.0), 1.8, 1.3, (if side < 0.0: 28.0 else: 24.0), 8, col, m)
+        if side < 0.0: spire(p(side * 11.5, 28.0, 31.0), 1.8, 7.0, 8, 0.0, ROOF_SLATE, PLAIN)
+    # open portal and rose on the tower's front; solid side walls remain climbable
+    loop side in [-1.0, 1.0]:
+        box(p(side * 5.5, 0.0, 36.0), v3(1.5, 32.0, 12.0), r, col, m)
+        loop z in [30.5, 41.5]:
+            box(p(side * 4.7, 0.0, z), v3(2.6, 32.0, 1.5), r, col, m)
+        # narrow ribs and ledges articulate the tall shaft
+        loop z in [30.0, 42.0]:
+            __old_block(p(side * 5.5, 0.0, z), v3(2.1, 33.0, 2.1), r, col, temple_block)
+        loop y in [11.0, 24.0, 31.0]:
+            __old_block(p(side * 5.5, y, 36.0), v3(2.0, 0.6, 13.0), r, GREY_DARK, temple_block)
+            __old_block(p(0.0, y, 36.0 + side * 5.5), v3(13.0, 0.6, 2.0), r, GREY_DARK, temple_block)
+        loop k in [-1.0, 1.0]:
+            box(p(side * 5.5, 32.0, 36.0 + k * 4.8), v3(1.5, 10.0, 2.4), r, col, m)
+            box(p(k * 4.8, 32.0, 36.0 + side * 5.5), v3(2.4, 10.0, 1.5), r, col, m)
+        arch(p(side * 5.5, 37.5, 36.0), r + PI / 2.0, 7.0, 4.0, 0.65, 1.6, col, temple_block)
+        arch(p(0.0, 37.5, 36.0 + side * 5.5), r, 7.0, 4.0, 0.65, 1.6, col, temple_block)
+        __old_block(p(side * 5.5, 32.0, 36.0), v3(1.5, 6.0, 0.5), r, col, temple_block)
+        __old_block(p(0.0, 32.0, 36.0 + side * 5.5), v3(0.5, 6.0, 1.5), r, col, temple_block)
+    loop z in [30.5, 41.5]:
+        box(p(0.0, 10.5, z), v3(6.8, 4.0, 1.5), r, col, m)
+        box(p(0.0, 21.5, z), v3(6.8, 10.5, 1.5), r, col, m)
+        arch(p(0.0, 5.5, z), r, 6.8, 5.0, 0.65, 1.7, col, temple_block)
+        oculus(p(0.0, 18.0, z), r, 2.7, 3.5, 1.5, col, temple_block)
+        loop k in [0..12):
+            a = TAU * f64(k) / 12.0
+            tube(p(cos(a) * 0.55, 18.0 + sin(a) * 0.55, z + 0.8), p(cos(a) * 2.7, 18.0 + sin(a) * 2.7, z + 0.8), 0.1, 0.14, 5, GREY_DARK, PLAIN)
+        oculus(p(0.0, 18.0, z + 0.82), r, 0.45, 0.6, 0.2, GREY_DARK, PLAIN)
+    loop k in [0..3):
+        arch(p(0.0, 5.0 - f64(k) * 0.3, 42.0 + f64(k) * 0.65), r, 8.5 - f64(k) * 0.9, 6.5 - f64(k) * 0.7, 0.45, 0.7, GREY_DARK, temple_block)
+        loop side in [-1.0, 1.0]:
+            column(p(side * (4.25 - f64(k) * 0.45), 0.0, 42.0 + f64(k) * 0.65), 0.26, 0.26, 5.0 - f64(k) * 0.3, 8, col, temple_block, false)
+    # the deck (walkable at 43 m) with its parapet, and the spire rising from its middle
+    __old_block(p(0.0, 42.0, 36.0), v3(13.0, 1.0, 13.0), r, GREY_DARK, temple_block, true, true)
+    loop side in [-1.0, 1.0]:
+        __old_block(p(side * 6.2, 43.0, 36.0), v3(0.6, 1.0, 13.0), r, GREY_DARK, temple_block, true, true)
+        __old_block(p(0.0, 43.0, 36.0 + side * 6.2), v3(13.0, 1.0, 0.6), r, GREY_DARK, temple_block, true, true)
+    column(p(0.0, 43.0, 36.0), 3.2, 3.0, 4.0, 8, col, m)
+    spire(p(0.0, 47.0, 36.0), 3.6, 16.0, 8, PI / 8.0, ROOF_SLATE, PLAIN)
+    # the goddess statue in the apse
+    sc_ = stone(0.62, 0.6, 0.56)
+    __old_block(p(0.0, 0.0, -30.0), v3(6.0, 1.6, 4.0), r, GREY_DARK, temple_block)
+    column(p(0.0, 1.6, -30.0), 1.5, 0.9, 5.5, 12, sc_, PLAIN)
+    column(p(0.0, 7.1, -30.0), 0.95, 0.75, 1.8, 12, sc_, PLAIN)
+    dome(p(0.0, 8.9, -30.0), 0.75, 0.9, 10, 4, sc_, PLAIN)
+    loop side in [-1.0, 1.0]:
+        box_m(translation(p(side * 1.4, 5.0, -30.6)) * rotation_y(r + side * 0.3) * rotation_z(side * 0.15) * scaling(v3(0.5, 5.5, 1.6)), sc_, PLAIN, false)
+    box_m(translation(p(0.0, 6.4, -29.0)) * rotation_y(r) * scaling(v3(0.9, 0.9, 0.6)), sc_, PLAIN, false)
+    loop i in [0..12):
+        x = 12.0 + hash2(f64(i), 8.0) * 10.0
+        z = -7.0 + hash2(f64(i), 18.0) * 17.0
+        q = p(x, 0.0, z)
+        box_m(translation(v3(f64(q.x), gy(f64(q.x), f64(q.z)) + 0.6, f64(q.z))) * rotation_y(r + f64(i) * 0.7) * rotation_z(0.15) * scaling(v3(2.8, 1.2, 1.6)), col, m, true)
+    # rubble: fallen roof and wall stones inside and around
+    seed_random(77)
+    loop i in [0..40):
+        x = random(-17.0, 17.0)
+        z = random(-30.0, 45.0)
+        sz_ = random(0.5, 2.0)
+        q = p(x, 0.0, z)
+        box_m(translation(v3(f64(q.x), gy(f64(q.x), f64(q.z)) + sz_ * 0.3, f64(q.z))) * rotation_y(random(0.0, 3.0)) * rotation_x(random(-0.3, 0.3)) * scaling(v3(sz_ * 1.5, sz_, sz_)), GREY, temple_block, true)
+
+# the three abbeys north of the temple: ruined chapels on raised bases
+abbey = (o: vec3, rot: f64, size: f64):
+    p = (x: f64, y: f64, z: f64) -> vec3: lp(o, rot, x, y, z)
+    h = size * 1.3
+    __old_block(p(0.0, -2.0, 0.0), v3(size + 4.0, 2.0, size + 4.0), rot, GREY_DARK, BLOCK, true, false)
+    loop sx in [-1.0, 1.0]:
+        loop sz in [-1.0, 1.0]:
+            hh = h * (0.6 + 0.4 * hash2(sx + f64(o.x), sz))
+            __old_block(p(sx * size * 0.5, 0.0, sz * size * 0.5), v3(1.8, hh, 1.8), rot, GREY, BLOCK_IVY)
+    arch(p(0.0, 0.0, size * 0.5), rot, size - 1.8, h * 0.55, 1.0, 1.4, GREY, BLOCK)
+    arch(p(0.0, 0.0, -size * 0.5), rot, size - 1.8, h * 0.55, 1.0, 1.4, GREY, BLOCK)
+    arch(p(size * 0.5, 0.0, 0.0), rot + PI / 2.0, size - 1.8, h * 0.55, 1.0, 1.4, GREY, BLOCK)
+    __old_block(p(-size * 0.5, 0.0, 0.0), v3(1.2, h * 0.45, size), rot, GREY, BLOCK_IVY)
+
+# ---------------- the Eastern Abbey ----------------
+eastern_abbey = ():
+    c = v3(-492.0, 178.0, 1988.0)
+    # outer walls (ruined heights)
+    seed_random(5)
+    loop side in [0..4):
+        loop k in [0..9):
+            t = (f64(k) + 0.5) / 9.0
+            x = 0.0
+            z = 0.0
+            yaw = 0.0
+            if side == 0:
+                x = -40.0 + t * 80.0
+                z = -46.0
+            else if side == 1:
+                x = -40.0 + t * 80.0
+                z = 46.0
+            else if side == 2:
+                x = -40.0
+                z = -46.0 + t * 92.0
+                yaw = PI / 2.0
+            else:
+                x = 40.0
+                z = -46.0 + t * 92.0
+                yaw = PI / 2.0
+            if side == 3 and k == 4: continue           # the gate (toward the shrine)
+            h = random(4.0, 13.0)
+            px = f64(c.x) + x
+            pz = f64(c.z) + z
+            __old_block(v3(px, gy(px, pz) - 1.0, pz), v3((if yaw == 0.0: 9.4 else: 10.6), h, 2.0), yaw, GREY, BLOCK_IVY)
+    # inner hall: arcades
+    loop i in [0..6):
+        z = f64(c.z) - 25.0 + f64(i) * 10.0
+        loop sx in [-12.0, 12.0]:
+            x = f64(c.x) + sx
+            __old_block(v3(x, gy(x, z), z), v3(2.0, random(6.0, 14.0), 2.0), 0.0, GREY, BLOCK_IVY)
+        if i < 5 and i != 2: arch(v3(f64(c.x) - 12.0, gy(f64(c.x) - 12.0, z + 5.0) + 0.0, z + 5.0), PI / 2.0, 8.0, 6.0, 0.9, 1.6, GREY, BLOCK)
+    # broken bell tower
+    __old_block(v3(f64(c.x) + 20.0, gy(f64(c.x) + 20.0, f64(c.z) - 30.0), f64(c.z) - 30.0), v3(8.0, 22.0, 8.0), 0.0, GREY, BLOCK_IVY)
+
+
+# ---------------- the old man's cabin ----------------
+cabin = ():
+    o = CABIN
+    r = 0.4
+    p = (x: f64, y: f64, z: f64) -> vec3: lp(o, r, x, y, z)
+    box(p(0.0, -0.5, 0.0), v3(8.0, 0.8, 6.5), r, WOOD_DARK, WOODM, true, false)
+    # log walls with a door gap at the front (+z)
+    box(p(0.0, 0.3, -3.0), v3(7.6, 3.0, 0.5), r, WOOD, WOODM)
+    box(p(-3.6, 0.3, 0.0), v3(0.5, 3.0, 6.0), r, WOOD, WOODM)
+    box(p(3.6, 0.3, 0.0), v3(0.5, 3.0, 6.0), r, WOOD, WOODM)
+    box(p(-2.4, 0.3, 3.0), v3(2.8, 3.0, 0.5), r, WOOD, WOODM)
+    box(p(2.4, 0.3, 3.0), v3(2.8, 3.0, 0.5), r, WOOD, WOODM)
+    box(p(0.0, 2.6, 3.0), v3(2.0, 0.7, 0.5), r, WOOD, WOODM)
+    gable(p(0.0, 3.3, 0.0), r, 9.0, 8.0, 2.6, stone(0.42, 0.3, 0.22), WOODM)
+    # porch posts and a bench, firewood stacks
+    box(p(-3.0, 0.3, 4.5), v3(0.3, 2.9, 0.3), r, WOOD_DARK, WOODM)
+    box(p(3.0, 0.3, 4.5), v3(0.3, 2.9, 0.3), r, WOOD_DARK, WOODM)
+    loop i in [0..5): box(p(5.2, 0.3 + f64(i) * 0.35, -1.5), v3(0.9, 0.35, 2.6), r + 0.05 * f64(i), WOOD_DARK, WOODM)
+    # the chopping block
+    column(p(2.0, 0.0, 6.0), 0.4, 0.38, 0.6, 10, WOOD, WOODM)
+    # bed inside
+    box(p(-2.0, 0.3, -1.8), v3(2.2, 0.5, 1.2), r, stone(0.6, 0.55, 0.45), PLAIN, false)
+    # log courses: the ends of the logs stick out at the corners
+    loop k in [0..8):
+        y = 0.45 + f64(k) * 0.36
+        loop sx in [-1.0, 1.0]:
+            loop sz in [-1.0, 1.0]:
+                column(p(sx * 3.75, y, sz * 3.15) - vec3(0, 0.17, 0), 0.19, 0.19, 0.34, 6, WOOD_DARK, WOODM, false)
+    # a fieldstone chimney up the west wall
+    box(p(-4.1, -0.2, -0.8), v3(1.3, 6.6, 1.3), r, GREY_DARK, BLOCK)
+    box(p(-4.1, 6.4, -0.8), v3(1.5, 0.3, 1.5), r, GREY, BLOCK, false)
+    # the porch roof on its posts, shutters at the windows
+    box_m(translation(p(0.0, 3.25, 4.2)) * rotation_y(r) * rotation_x(0.22) * scaling(v3(8.4, 0.16, 2.8)), stone(0.42, 0.3, 0.22), WOODM, false)
+    loop sx in [-1.0, 1.0]:
+        box(p(sx * 3.9, 1.3, 0.6), v3(0.12, 1.1, 0.55), r, WOOD_DARK, WOODM, false)
+        box(p(sx * 3.9, 1.3, -0.6), v3(0.12, 1.1, 0.55), r, WOOD_DARK, WOODM, false)
+    # a cooking pot on three legs by the door, a barrel, an axe stump
+    q = p(-2.0, 0.0, 6.3)
+    gq = gy(f64(q.x), f64(q.z))
+    loop k in [0..3):
+        a = TAU * f64(k) / 3.0
+        column(v3(f64(q.x) + cos(a) * 0.4, gq, f64(q.z) + sin(a) * 0.4), 0.05, 0.05, 0.5, 4, stone(0.15, 0.15, 0.16), PLAIN, false)
+    column(v3(f64(q.x), gq + 0.35, f64(q.z)), 0.45, 0.5, 0.45, 12, stone(0.14, 0.14, 0.15), PLAIN, false)
+    column(p(3.4, 0.0, 4.4), 0.32, 0.32, 0.9, 10, WOOD, WOODM, false)
+
+# ---------------- the old road, its pillars and broken bridges ----------------
+old_road = ():
+    seed_random(9)
+    loop a in actors:
+        x = f64(a.pos.x)
+        z = f64(a.pos.z)
+        if x < -1600.0 or x > -350.0 or z < 1400.0 or z > 2420.0: continue
+        if starts_with(a.name, "FldObj_HighwayHylia_A"):
+            # (up in the snow the old road lies buried)
+            if is_snow_area(x, z): continue
+            g = gy(x, z)
+            y = max(f64(a.pos.y), g - 0.3)
+            # raised pieces (above the ground) stand on piers: broken bridges
+            if y - g > 2.0:
+                box(v3(x, y - 0.8, z), v3(4.5, 0.9, 8.5), a.rot, GREY, BLOCK)
+                box(v3(x, g - 1.0, z), v3(2.5, y - g + 0.3, 2.5), a.rot, GREY_DARK, BLOCK_IVY)
+            else:
+                box_m(translation(v3(x, y + 0.1, z)) * rotation_y(a.rot) * rotation_x(random(-0.08, 0.08)) * scaling(v3(4.4, 0.7, 7.5)), GREY, BLOCK, true)
+        else if starts_with(a.name, "FldObj_FirstBrokenPillar") or a.name == "FldObj_HighwayHyliaPillar_A_01":
+            h = if a.name == "FldObj_HighwayHyliaPillar_A_01": 3.0 + hash2(x, z) * 2.5 else: (if ends_with(a.name, "_01"): 6.5 else: 3.5)
+            g = gy(x, z)
+            column(v3(x, g - 0.5, z), 1.0, 0.85, h, 10, GREY, BLOCK_IVY)
+            if ends_with(a.name, "_01"): box(v3(x, g + h - 0.5, z), v3(2.6, 0.8, 2.6), a.rot, GREY, BLOCK)
+        else if a.name == "FldObj_HighwayHyliaWall_A_01" or a.name == "FldObj_HighwayHyliaWall_A_02":
+            # Original roadside boundaries, broken into grounded courses with gaps.
+            loop k in [-2..3):
+                if k == 0: continue
+                q = lp(v3(x, 0, z), a.rot, f64(k) * 3.0, 0, 0)
+                px = f64(q.x)
+                pz = f64(q.z)
+                if material_at(px, pz).w > 0.2 or normal_at(px, pz).y < 0.82: continue
+                h = 0.6 + hash2(px, pz) * 1.8
+                __old_block(v3(px, gy(px, pz) - 0.25, pz), v3(2.9, h, 1.1), a.rot, GREY, BLOCK_IVY)
+        else if starts_with(a.name, "TwnObj_TempleOfTime_Debris"):
+            g = gy(x, z)
+            s = random(0.8, 2.0)
+            if x > -780.0 and x < -665.0 and z > 1760.0 and z < 1870.0: s *= 1.5
+            box_m(translation(v3(x, g + s * 0.25, z)) * rotation_y(a.rot) * rotation_z(random(-0.4, 0.4)) * scaling(v3(s * 2.0, s, s * 1.2)), GREY, BLOCK, true)
+
+# the fountain and the grand staircase between the tower and the temple
+fountain = ():
+    o = v3(-775.0, 189.0, 1774.0)
+    g = gy(f64(o.x), f64(o.z))
+    loop i in [0..12):
+        a = TAU * f64(i) / 12.0
+        box(v3(f64(o.x) + cos(a) * 6.0, g - 0.3, f64(o.z) + sin(a) * 6.0), v3(3.3, 1.2, 1.0), -a + PI / 2.0, GREY, BLOCK)
+    column(v3(f64(o.x), g - 0.3, f64(o.z)), 1.4, 0.9, 3.5, 10, GREY, BLOCK)
+    column(v3(f64(o.x), g + 3.2, f64(o.z)), 2.2, 1.6, 0.5, 12, GREY, BLOCK)
+    s = v3(-695.0, 177.0, 1731.0)
+    steps(v3(f64(s.x), gy(f64(s.x), f64(s.z)) - 0.4, f64(s.z)), 2.8, 12.0, 0.45, 1.4, 14, GREY, BLOCK)
+
+# ---------------- the Shrine of Resurrection's mouth ----------------
+sor_mouth = ():
+    o = SOR_MOUTH
+    rot = 2.24           # faces north-east, along the passage that leads out
+    p = (x: f64, y: f64, z: f64) -> vec3: lp(o, rot, x, y, z)
+    # Continuous bedding from the passage soffit to the hillside. Collision retains the
+    # established corridor clearance; the overhang stays above the walking camera.
+    add_box(p(-3.2, -1.0, 0.0), v3(1.6, 7.0, 2.0), rot, true, .stone)
+    add_box(p(3.2, -1.0, 0.0), v3(1.6, 7.0, 2.0), rot, true, .stone)
+    sor_rock_mouth()
+
+# Bake weathering and chipped relief into the existing cliff vertices. The stone
+# shader keeps its cheap material path; no per-pixel rock stack or new draw calls.
+__cliff_lump = (c: vec3, r: vec3, m: mat4, seed: f64, col: vec4, mat: vec4, cap: f64):
+    __begin(c)
+    first = cur.verts.len()
+    __end()
+    rock_lump(c, r, m, seed, col, mat, cap)
+    __begin(c)
+    relief = (p: vec3) -> f64: noise(f64(p.x + p.z) * 0.15, f64(p.y) * 0.19) * 1.4
+    loop k in [first..cur.verts.len()):
+        p = cur.verts[k].pos
+        n = cur.verts[k].normal
+        across = f64(p.x + p.z)
+        patch = noise(across * 0.055, f64(p.y) * 0.08)
+        bed = sin(f64(p.y) * 0.30 + across * 0.055 + patch * 3.0)
+        wash = f32(0.86 + patch * 0.25 + bed * 0.10)
+        cur.verts[k].color = vec4(col.xyz * wash, col.w)
+        t1 = normalize(cross(n, vec3(0, 1, 0)) + vec3(0.0001, 0, 0))
+        t2 = cross(t1, n)
+        h = relief(p)
+        cur.verts[k].normal = normalize(n - t1 * f32((relief(p + t1) - h) * 0.8) - t2 * f32((relief(p + t2) - h) * 0.8))
+    __end()
+
+# Continuous displaced surfaces. Every octave and bed is addressed by world
+# position: nothing resets at a station, path corner, height row or LOD boundary.
+struct CliffStation:
+    p: vec3
+    out: vec3
+    foot: f64
+    rim: f64
+    along: f64
+
+__cliff_station = (x: f64, z: f64, out: vec3, along: f64) -> CliffStation:
+    p = v3(x, 0, z)
+    inner = p - out * 18.0
+    outer = p + out * 24.0
+    CliffStation(p, out, gy(f64(outer.x), f64(outer.z)) - 6.0,
+        gy(f64(inner.x), f64(inner.z)), along)
+
+# Broad unequal bedding, resolved by every LOD. The previous sub-metre beds
+# were smaller than the skin's height rows and made isolated shadow diamonds.
+__cliff_block = (p: vec3) -> f64: (f64(p.z) + f64(p.x) * 0.28) / 26.0
+__cliff_bed = (p: vec3) -> f64:
+    across = f64(p.z) + f64(p.x) * 0.28
+    y = f64(p.y) * 0.070 + across * 0.007
+    y += (noise(f64(p.x) * 0.018 + 7.0, f64(p.z) * 0.018 + 3.0) - 0.5) * 1.2
+    y + sin(y * 1.6) * 0.20
+
+# Shelves persist across wide shoulders and die in the vertical recesses.
+# A continuous envelope never stamps individual bed/column cells onto the skin.
+__cliff_bed_presence = (p: vec3) -> f64:
+    across = f64(p.z) + f64(p.x) * 0.28
+    smoothstep(0.32, 0.72, noise(across * 0.024 + 3.0, f64(p.y) * 0.009))
+
+__cliff_depth = (p: vec3) -> f64:
+    across = f64(p.z) + f64(p.x) * 0.28
+    y = f64(p.y)
+    # Long vertical structures, 10--40 m across. Their axes drift with height,
+    # rather than smearing every bed into parallel horizontal zigzags.
+    bend = (noise(across * 0.016, y * 0.006) - 0.5) * 5.0
+    ribs = noise((across + bend) * 0.047, y * 0.006 + 13.0)
+    columns = smooth01((ribs - 0.28) / 0.48) * 17.0
+    gullies = smooth01((noise((across + bend) * 0.079 + 7.0, y * 0.004) - 0.57) / 0.25) * 12.0
+    broad = (noise(across * 0.022, y * 0.012) - 0.5) * 16.0
+    # Split the long walls with unequal ribs, broken shelves and inclined
+    # fractures. Every feature deforms the shared render/collision surface.
+    rib = noise((across + bend * 1.8) * 0.103 + 11.0, y * 0.016)
+    secondary = smoothstep(0.28, 0.70, rib) * 7.0
+    bed_height = y + (across - 1320.0) * 0.045
+    bed_height += (noise(f64(p.x) * 0.018 + 7.0, f64(p.z) * 0.018 + 3.0) - 0.5) * 9.0
+    upper = smoothstep(210.0, 222.0, bed_height) * (1.0 - smoothstep(228.0, 235.0, bed_height))
+    lower = smoothstep(149.0, 160.0, bed_height) * (1.0 - smoothstep(166.0, 174.0, bed_height))
+    mid = smoothstep(180.0, 188.0, bed_height) * (1.0 - smoothstep(193.0, 200.0, bed_height))
+    high = smoothstep(243.0, 249.0, bed_height) * (1.0 - smoothstep(255.0, 261.0, bed_height))
+    presence = __cliff_bed_presence(p)
+    poolside = 1.0-smoothstep(28.0,80.0,abs(f64(p.z)-1870.0))
+    toe = smoothstep(108.0,118.0,bed_height)*(1.0-smoothstep(126.0,135.0,bed_height))
+    # The low pool camera sees the toe, below the former first shelf. Carry
+    # real bedding across this shoulder even where the random envelope dies.
+    shelf = (upper*8.0+lower*6.0+mid*7.0+high*5.0+toe*3.0*poolside)*max(presence,poolside*0.85)
+    # Deliberate diagonal fault bays break the tall north buttress and the
+    # south pool shoulder. Their broad returns are resolved by all three LODs.
+    fault = 1.0 - smoothstep(1.8, 5.5, abs(across - 1339.0 + (y - 190.0) * 0.11))
+    fault += 1.0 - smoothstep(2.0, 6.0, abs(across - 1455.0 - (y - 180.0) * 0.16))
+    south = (1.0 - smooth01(abs(f64(p.z) - 1887.0) / 24.0)) * 6.0
+    29.0 + south + columns + secondary - gullies + broad + shelf - fault * 5.0
+
+const CLIFF_ROWS = 48
+__cliff_point = (s: CliffStation, row: int) -> vec3:
+    t = f64(row) / f64(CLIFF_ROWS)
+    f = 1.0 - pow(1.0 - t, 1.45)
+    across = f64(s.p.z) + f64(s.p.x) * 0.28
+    crest = (noise(across * 0.085, 7.0) - 0.5) * 9.0 + (noise(across * 0.029, 19.0) - 0.5) * 10.0
+    y = lerp(s.foot, s.rim + crest, f)
+    y += sin(t * PI) * (noise(across * 0.067, y * 0.071) - 0.5) * 0.35
+    p = s.p + v3(0, y, 0)
+    d = __cliff_depth(p)
+    # Fallen material spreads outward at the foot, joining the buried toe.
+    apron = (12.0 + noise(across * 0.07, 3.0) * 12.0) * (1.0 - smooth01((t - 0.06) / 0.30))
+    d = (d + apron) * smooth01(t / 0.065)
+    # Projecting crown blocks keep an irregular profile, with a closed rock cap.
+    d = lerp(d, 5.0 + noise(across * 0.075, 11.0) * 7.0, smooth01((t - 0.94) / 0.06))
+    # All these paths run monotonically south. Extrude west so neighbouring
+    # columns cannot fold over each other on the tight gorge bends. End caps
+    # return into the heightfield; their front edge now follows the full column
+    # relief rather than being flattened by a constant channel-clearance plane.
+    # The source heightfield is still solid behind the skin. Keep exposed
+    # vertices outside it, especially in the deepest south-shoulder chimney.
+    if (t > 0.20 or (s.p.z > 1844.0 and t > 0.11)) and t < 0.98:
+        loop k in [0..16):
+            ground = gy(f64(p.x) - d, f64(p.z))
+            if ground <= y + 0.02: break
+            d += clamp((ground - y) * 0.12, 0.25, 3.0)
+    # Clearance can consume the authored relief on the steep south bank.
+    # Add projecting beds after it, rather than flattening them against the
+    # same terrain contour. Positive relief only: never bury the exposed skin.
+    ledge = clamp((__cliff_depth(p)-__cliff_depth(p+vec3(0,18,0)))*0.75,0.0,7.0)
+    toe_y = y + (f64(p.z)-1860.0)*0.045
+    toe = smoothstep(111.0,118.0,toe_y)*(1.0-smoothstep(120.0,125.0,toe_y))
+    poolside = 1.0-smoothstep(28.0,65.0,abs(f64(p.z)-1870.0))
+    ledge = max(ledge,toe*poolside*(4.0+noise(f64(p.z)*0.12,5.0)*2.5))
+    d += ledge*smoothstep(0.01,0.035,t)*(1.0-smoothstep(0.90,0.98,t))
+    p + v3(-d, 0, 0)
+
+# CPU builders remain inspectable by headless geometry/collision tests. The
+# renderer uploads once; near/mid/far surfaces share their exact boundary loops.
+cliff_surfaces: Builder[]
+cliff_meshes: Mesh[]
+cliff_lo: vec3[]
+cliff_hi: vec3[]
+cliff_counts: int[]
+cliff_front_vertices: int[]  # front skin only; buried return caps are excluded
+
+__cliff_face = (b: mut Builder, a: int, c: int, d: int):
+    n = cross(b.verts[c].pos - b.verts[a].pos, b.verts[d].pos - b.verts[a].pos)
+    if length(n) < 0.00001: return
+    b.idx.push(u32(a))
+    b.idx.push(u32(c))
+    b.idx.push(u32(d))
+    loop k in [a, c, d]: b.verts[k].normal += n
+
+__cliff_skin = (stations: CliffStation[], step: int) -> Builder:
+    b = Builder()
+    rows = CLIFF_ROWS / step
+    cols = (stations.len() - 1) / step
+    # Coarse LODs keep the same closed outer loop using a fan in each boundary
+    # cell; interior points are true decimation of the near surface.
+    loop i in [0..stations.len()):
+        loop j in [0..CLIFF_ROWS]:
+            b.verts.push(BVert(__cliff_point(stations[i], j), vec3(0, 0, 0), vec4(1, 1, 1, 1), vec4(0, 0, 0, 4)))
+    stride = CLIFF_ROWS + 1
+    loop ci in [0..cols):
+        i = ci * step
+        loop rj in [0..rows):
+            j = rj * step
+            a = i * stride + j
+            c = (i + step) * stride + j
+            d = (i + step) * stride + j + step
+            e = i * stride + j + step
+            if step == 1 or (ci > 0 and ci < cols - 1 and rj > 0 and rj < rows - 1):
+                __cliff_face(b, a, c, d)
+                __cliff_face(b, a, d, e)
+            else:
+                center = b.verts.len()
+                b.verts.push(BVert((b.verts[a].pos + b.verts[c].pos + b.verts[d].pos + b.verts[e].pos) * 0.25, vec3(0, 0, 0), vec4(1, 1, 1, 1), vec4(0, 0, 0, 4)))
+                if rj == 0:
+                    loop k in [0..step): __cliff_face(b, center, (i + k) * stride + j, (i + k + 1) * stride + j)
+                else: __cliff_face(b, center, a, c)
+                if ci == cols - 1:
+                    loop k in [0..step): __cliff_face(b, center, (i + step) * stride + j + k, (i + step) * stride + j + k + 1)
+                else: __cliff_face(b, center, c, d)
+                if rj == rows - 1:
+                    loop k in [0..step): __cliff_face(b, center, (i + step - k) * stride + j + step, (i + step - k - 1) * stride + j + step)
+                else: __cliff_face(b, center, d, e)
+                if ci == 0:
+                    loop k in [0..step): __cliff_face(b, center, i * stride + j + step - k, i * stride + j + step - k - 1)
+                else: __cliff_face(b, center, e, a)
+    cliff_front_vertices.push(b.idx.len())
+    loop i in [0..b.verts.len()):
+        n = b.verts[i].normal
+        if length(n) < 0.0001: n = vec3(-1, 0, 0)
+        n = normalize(n)
+        p = b.verts[i].pos
+        bed = sin(__cliff_bed(p) * TAU)
+        wash = __n3(p * 0.073)
+        seam = smoothstep(0.68,0.77,fract(__cliff_bed(p)))*(1.0-smoothstep(0.84,0.95,fract(__cliff_bed(p)))) * __cliff_bed_presence(p)
+        col = stone(0.335 + bed * 0.010 + wash * 0.055, 0.35 + bed * 0.010 + wash * 0.055, 0.305 + bed * 0.008 + wash * 0.045)
+        col = vec4(col.xyz*f32(1.0-seam*0.14),col.w)
+        moss = smooth01((f64(n.y) - 0.42) / 0.42) * smooth01((wash - 0.25) / 0.40)
+        col = mix(col, stone(0.29, 0.35, 0.16), f32(moss * 0.7))
+        # Bake local concavity into the existing AO channel: projecting adjacent
+        # vertices onto the normal darkens recessed cracks, never whole courses.
+        cavity = 0.0
+        if i >= stride and i < stations.len() * stride - stride and i % stride > 0 and i % stride < CLIFF_ROWS:
+            around = (b.verts[i - stride].pos + b.verts[i + stride].pos + b.verts[i - 1].pos + b.verts[i + 1].pos) * 0.25
+            cavity = clamp(f64(dot(around - p, n)) * 0.85, 0.0, 0.32)
+        col.w = f32((0.84 + 0.16 * smooth01((f64(n.y) + 0.35) / 0.65)) * (1.0 - cavity))
+        b.verts[i].normal = n
+        b.verts[i].color = col
+    # Crown and ends return well inside the heightfield, including coarse LODs.
+    loop i in [0..stations.len() - 1):
+        a = stations[i]
+        c = stations[i + 1]
+        pa = __cliff_point(a, CLIFF_ROWS)
+        pc = __cliff_point(c, CLIFF_ROWS)
+        qa = a.p - a.out * 20.0
+        qc = c.p - c.out * 20.0
+        qa.y = f32(gy(f64(qa.x), f64(qa.z)) - 0.8)
+        qc.y = f32(gy(f64(qc.x), f64(qc.z)) - 0.8)
+        # Deliberately not rain occluders: terrain handles the outdoor crown.
+        first = b.verts.len()
+        loop p in [pa, pc, qc, qa]: b.verts.push(BVert(p, vec3(0, 0, 0), stone(0.36, 0.37, 0.23), vec4(0, 0, 0, 4)))
+        __cliff_face(b, first, first + 1, first + 2)
+        __cliff_face(b, first, first + 2, first + 3)
+    loop side in [0..2):
+        cap_station = stations[if side == 0: 0 else: stations.len() - 1]
+        loop j in [0..CLIFF_ROWS):
+            pa = __cliff_point(cap_station, j)
+            pb = __cliff_point(cap_station, j + 1)
+            qa = cap_station.p - cap_station.out * 20.0 + v3(0, f64(pa.y), 0)
+            qb = cap_station.p - cap_station.out * 20.0 + v3(0, f64(pb.y), 0)
+            qa.y = min(qa.y, f32(gy(f64(qa.x), f64(qa.z)) - 0.8))
+            qb.y = min(qb.y, f32(gy(f64(qb.x), f64(qb.z)) - 0.8))
+            if j == CLIFF_ROWS - 1: qb.y = f32(gy(f64(qb.x), f64(qb.z)) - 0.8)
+            first = b.verts.len()
+            ps = if side == 0: [pa, pb, qb, qa] else: [pa, qa, qb, pb]
+            loop p in ps: b.verts.push(BVert(p, vec3(0, 0, 0), stone(0.335, 0.35, 0.305), vec4(0, 0, 0, 4)))
+            __cliff_face(b, first, first + 1, first + 2)
+            __cliff_face(b, first, first + 2, first + 3)
+    loop i in [0..b.verts.len()):
+        if length(b.verts[i].normal) > 0.00001: b.verts[i].normal = normalize(b.verts[i].normal)
+        b.verts[i].mat = vec4(__cliff_surface_fields(b.verts[i].pos), 4)
+    # Split lighting normals across actual rock facets. Keeping part of the
+    # shared normal avoids a triangular mosaic while ledge edges stay legible.
+    faceted = Builder()
+    loop tri in [0..b.idx.len()/3):
+        a = b.verts[int(b.idx[tri*3])]
+        c = b.verts[int(b.idx[tri*3+1])]
+        d = b.verts[int(b.idx[tri*3+2])]
+        face = normalize(cross(c.pos-a.pos,d.pos-a.pos))
+        loop v in [a,c,d]:
+            q = v
+            q.normal = normalize(v.normal*0.82+face*0.18)
+            faceted.idx.push(u32(faceted.verts.len()))
+            faceted.verts.push(q)
+    faceted
+
+__cliff_strip = (path: vec2[]):
+    stations: CliffStation[]
+    along = 0.0
+    loop k in [0..path.len() - 1):
+        a = path[k]
+        delta = path[k + 1] - a
+        dist = f64(length(delta))
+        dir = delta / f32(dist)
+        out = vec3(-dir.y, 0, dir.x)
+        # Multiples of four allow exact nested decimation at both LOD levels.
+        count = int(ceil(dist / 2.25 / 4.0)) * 4
+        loop i in [0..count):
+            t = f64(i) / f64(count)
+            pos = a + delta * f32(t)
+            n = out
+            # Blend path normals around the corners; a shared station never
+            # joins two differently displaced independent strips.
+            if k > 0 and t < 0.2:
+                prev = normalize(a - path[k - 1])
+                n = normalize(mix(vec3(-prev.y, 0, prev.x), out, f32(0.5 + t * 2.5)))
+            if k < path.len() - 2 and t > 0.8:
+                next = normalize(path[k + 2] - path[k + 1])
+                n = normalize(mix(out, vec3(-next.y, 0, next.x), f32((t - 0.8) * 2.5)))
+            stations.push(__cliff_station(f64(pos.x), f64(pos.y), n, along + dist * t))
+        along += dist
+        if k == path.len() - 2:
+            p = path[k + 1]
+            stations.push(__cliff_station(f64(p.x), f64(p.y), out, along))
+    loop step in [1, 2, 4]:
+        b = __cliff_skin(stations, step)
+        lo = vec3(1e9, 1e9, 1e9)
+        hi = vec3(-1e9, -1e9, -1e9)
+        loop v in b.verts:
+            lo = min(lo, v.pos)
+            hi = max(hi, v.pos)
+        cliff_lo.push(lo)
+        cliff_hi.push(hi)
+        cliff_counts.push(b.idx.len() / 3)
+        cliff_surfaces.push(b)
+    __cliff_collision_mesh(cliff_surfaces[cliff_surfaces.len() - 3])
+
+# Exact near-surface collision, independently of render LOD. Cliff triangles live
+# in a 16 m xz grid; height bounds discard almost all of a tall wall's triangles
+# before narrow-phase tests. The ordinary world physics remains the fallback.
+struct CliffTriangle:
+    a: vec3
+    b: vec3
+    c: vec3
+    n: vec3
+    lo: vec3
+    hi: vec3
+
+cliff_triangles: CliffTriangle[]
+__cliff_grid: {int: int[]} = {}
+__cliff_collision_installed = false
+__cliff_key = (x: int, z: int) -> int: x * 100003 + z
+
+__cliff_collision_mesh = (b: Builder):
+    loop k in [0..b.idx.len() / 3):
+        a = b.verts[int(b.idx[k * 3])].pos
+        bb = b.verts[int(b.idx[k * 3 + 1])].pos
+        c = b.verts[int(b.idx[k * 3 + 2])].pos
+        n = cross(bb - a, c - a)
+        if length(n) < 0.00001: continue
+        lo = min(min(a, bb), c)
+        hi = max(max(a, bb), c)
+        id = cliff_triangles.len()
+        cliff_triangles.push(CliffTriangle(a, bb, c, normalize(n), lo, hi))
+        loop z in [int(floor(f64(lo.z) / 16.0))..int(floor(f64(hi.z) / 16.0))]:
+            loop x in [int(floor(f64(lo.x) / 16.0))..int(floor(f64(hi.x) / 16.0))]:
+                key = __cliff_key(x, z)
+                ids = __cliff_grid.get(key) ?? []
+                ids.push(id)
+                __cliff_grid[key] = ids
+
+__cliff_candidates = (lo: vec3, hi: vec3) -> int[]:
+    ids: int[]
+    # Normal player/camera queries touch one to four cells. Long rays use the
+    # list directly instead of scanning thousands of empty terrain cells.
+    if length(hi.xz - lo.xz) > 100.0:
+        loop i in [0..cliff_triangles.len()):
+            t = cliff_triangles[i]
+            if t.hi.x < lo.x or t.lo.x > hi.x or t.hi.y < lo.y or t.lo.y > hi.y or t.hi.z < lo.z or t.lo.z > hi.z: continue
+            ids.push(i)
+        return ids
+    loop z in [int(floor(f64(lo.z) / 16.0))..int(floor(f64(hi.z) / 16.0))]:
+        loop x in [int(floor(f64(lo.x) / 16.0))..int(floor(f64(hi.x) / 16.0))]:
+            if let cell = __cliff_grid.get(__cliff_key(x, z)):
+                loop id in cell:
+                    t = cliff_triangles[id]
+                    if t.hi.x < lo.x or t.lo.x > hi.x or t.hi.y < lo.y or t.lo.y > hi.y or t.hi.z < lo.z or t.lo.z > hi.z: continue
+                    if not ids.contains(id): ids.push(id)
+    ids
+
+__cliff_ray = (o: vec3, d: vec3, distance: f64) -> Hit:
+    best = Hit()
+    limit = distance
+    end = o + d * f32(distance)
+    loop id in __cliff_candidates(min(o, end) - vec3(0.001, 0.001, 0.001), max(o, end) + vec3(0.001, 0.001, 0.001)):
+        t = cliff_triangles[id]
+        e1 = t.b - t.a
+        e2 = t.c - t.a
+        h = cross(d, e2)
+        det = f64(dot(e1, h))
+        if det < 0.000001: continue
+        delta = o - t.a
+        u = f64(dot(delta, h)) / det
+        if u < 0.0 or u > 1.0: continue
+        q = cross(delta, e1)
+        v = f64(dot(d, q)) / det
+        if v < 0.0 or u + v > 1.0: continue
+        ray_t = f64(dot(e2, q)) / det
+        if ray_t < 0.0 or ray_t > limit: continue
+        limit = ray_t
+        best = Hit(true, ray_t, o + d * f32(ray_t), t.n, -1)
+    best
+
+__cliff_inside = (p: vec3, t: CliffTriangle) -> bool:
+    dot(cross(t.b - t.a, p - t.a), t.n) >= -0.0001 and dot(cross(t.c - t.b, p - t.b), t.n) >= -0.0001 and dot(cross(t.a - t.c, p - t.c), t.n) >= -0.0001
+
+# Closest vector between two finite segments (capsule axis and triangle edge).
+__cliff_segment_gap = (p: vec3, q: vec3, a: vec3, b: vec3) -> vec3:
+    d = q - p
+    e = b - a
+    r = p - a
+    aa = f64(dot(d, d))
+    bb = f64(dot(d, e))
+    cc = f64(dot(e, e))
+    dd = f64(dot(d, r))
+    ee = f64(dot(e, r))
+    denom = aa * cc - bb * bb
+    u = if denom > 0.000001: clamp((bb * ee - cc * dd) / denom, 0.0, 1.0) else: 0.0
+    v = clamp((bb * u + ee) / max(cc, 0.000001), 0.0, 1.0)
+    u = clamp((bb * v - dd) / max(aa, 0.000001), 0.0, 1.0)
+    p + d * f32(u) - a - e * f32(v)
+
+__cliff_push = (p: mut vec3, radius: f64, height: f64) -> vec3:
+    start = p
+    r = f32(radius)
+    ids = __cliff_candidates(p - vec3(r, r, r), p + v3(radius, height + radius, radius))
+    loop iteration in [0..3):
+        moved = false
+        loop id in ids:
+            t = cliff_triangles[id]
+            a = p + v3(0, radius, 0)
+            b = p + v3(0, max(radius, height - radius), 0)
+            da = f64(dot(a - t.a, t.n))
+            db = f64(dot(b - t.a, t.n))
+            # Only the outside skin is solid. The terrain fills the buried back.
+            if max(da, db) < -radius: continue
+            f = if abs(da - db) > 0.000001: clamp(da / (da - db), 0.0, 1.0) else: 0.0
+            axis = mix(a, b, f32(f))
+            signed = f64(dot(axis - t.a, t.n))
+            projected = axis - t.n * f32(signed)
+            push = vec3(0, 0, 0)
+            if __cliff_inside(projected, t):
+                if signed < radius: push = t.n * f32(radius - signed)
+            else:
+                gap = __cliff_segment_gap(a, b, t.a, t.b)
+                loop edge in [__cliff_segment_gap(a, b, t.b, t.c), __cliff_segment_gap(a, b, t.c, t.a)]:
+                    if dot(edge, edge) < dot(gap, gap): gap = edge
+                d = f64(length(gap))
+                if d > 0.00001 and d < radius and dot(gap, t.n) > -0.01: push = gap * f32((radius - d) / d)
+            if length(push) > 0.00001:
+                p += push
+                moved = true
+        if not moved: break
+    p - start
+
+__cliff_install_collision = ():
+    if __cliff_collision_installed: return
+    __cliff_collision_installed = true
+    surface_ray = __cliff_ray
+    surface_push = (p: vec3, radius: f64, height: f64) -> vec3:
+        q = p
+        __cliff_push(q, radius, height)
+
+# Inner rock walls follow the descending course, instead of leaving the
+# expensive exposed heightfield to form two smooth planes beside the curtain.
+# They share the cliff material, LOD draw and exact triangle collision.
+__cliff_gorge_skin = (side: int, step: int) -> Builder:
+    b = Builder()
+    cols = 24 / step
+    rows = 24 / step
+    bank = if side < 0: 1788.0 else: 1864.0
+    edge = if side < 0: 1795.0 else: 1855.0
+    front: int[]
+    back_top: int[]
+    back_foot: int[]
+    vertex = (p: vec3) -> int:
+        id = b.verts.len()
+        wash = noise(f64(p.x) * 0.055, f64(p.y) * 0.062)
+        col = stone(0.40 + wash * 0.045, 0.365 + wash * 0.045, 0.31 + wash * 0.045)
+        b.verts.push(BVert(p, vec3(0, 0, 0), col, vec4(0, 0, 0, 4)))
+        id
+    quad = (a: int, c: int, d: int, e: int):
+        if side < 0:
+            __cliff_face(b, a, c, d)
+            __cliff_face(b, a, d, e)
+        else:
+            __cliff_face(b, a, d, c)
+            __cliff_face(b, a, e, d)
+    loop ci in [0..cols]:
+        x = -1492.0 + f64(ci) / f64(cols) * 108.0
+        # Cover the full bank, including the upper cliff seen from the crown.
+        # A rim tied to water level hid the shelves below the smooth terrain.
+        rim = gy(x, bank) - 0.8
+        foot = min(92.0, gy(x, edge) - 3.0)
+        loop rj in [0..rows]:
+            t = f64(rj) / f64(rows)
+            # Seat the four returning beds as actual shallow terraces. Keep
+            # canonical row positions across LODs and both sealed end fans.
+            row = rj*step
+            height_t = t
+            if row == 5 or row == 11 or row == 17 or row == 22:
+                height_t = f64(row-1)/24.0+0.007
+            y = lerp(foot, rim, height_t)
+            rib = noise(x * 0.063, y * 0.007)
+            recess = noise(x * 0.038 + 7.0, y * 0.031)
+            # Inclined unequal shelves and fracture bays interrupt the inner
+            # walls seen from the pool and the crown. Recess away from the
+            # falling sheet: the six-metre central corridor stays clear.
+            # Four unequal bank-relative beds follow the dipping crown.
+            # Their short returns resolve as shelves in the upper-bank view;
+            # the previous wide world-height envelope became one tall slab.
+            bed = t + (x+1460.0)*0.00015 + (noise(x*0.031+13.0,f64(side))-0.5)*0.018
+            low = smoothstep(0.09,0.14,bed)*(1.0-smoothstep(0.18,0.21,bed))
+            mid = smoothstep(0.32,0.38,bed)*(1.0-smoothstep(0.42,0.45,bed))
+            high = smoothstep(0.57,0.63,bed)*(1.0-smoothstep(0.70,0.73,bed))
+            crown = smoothstep(0.80,0.86,bed)*(1.0-smoothstep(0.90,0.92,bed))
+            presence = 0.70+0.30*smoothstep(0.25,0.70,noise(x*0.065+f64(side)*7.0,y*0.005))
+            fracture = 1.0-smoothstep(1.5,5.0,abs(x+1455.0+(y-170.0)*f64(side)*0.12))
+            ledges = (low*3.0+mid*5.0+high*6.0+crown*8.0)*presence
+            # Both walls stay outside z=1805..1844, the entire falling sheet.
+            depth = clamp(1.0+rib*2.0+(recess-0.5)*1.5+ledges-fracture*2.0,0.0,9.0)
+            z = edge - f64(side) * depth * (0.5 + sin(t * PI) * 0.5)
+            # Round the terminal returns in plan and height instead of making
+            # a straight rectangular post at either end of the curtain.
+            end = 1.0 - smooth01(f64(min(ci, cols - ci) * step) / 4.0)
+            bend = end * (2.5 + noise(y * 0.061, bank * 0.017) * 4.0)
+            px = x + (if ci < cols / 2: bend else: -bend)
+            front.push(vertex(v3(px, y, z)))
+        back_top.push(vertex(v3(x, rim, bank)))
+        back_foot.push(vertex(v3(x, foot, bank)))
+    stride = rows + 1
+    loop ci in [0..cols):
+        loop rj in [0..rows):
+            a = front[ci * stride + rj]
+            c = front[(ci + 1) * stride + rj]
+            quad(a, c, front[(ci + 1) * stride + rj + 1], front[ci * stride + rj + 1])
+        quad(front[ci * stride + rows], front[(ci + 1) * stride + rows], back_top[ci + 1], back_top[ci])
+        quad(front[(ci + 1) * stride], front[ci * stride], back_foot[ci], back_foot[ci + 1])
+        quad(back_top[ci], back_top[ci + 1], back_foot[ci + 1], back_foot[ci])
+    loop cap_side in [0..2):
+        cap_col = if cap_side == 0: 0 else: cols
+        loop rj in [0..rows):
+            a = front[cap_col * stride + rj]
+            c = front[cap_col * stride + rj + 1]
+            # Fans to a buried back edge close the irregular front end exactly.
+            root = back_foot[cap_col]
+            if (cap_side == 0) == (side > 0): __cliff_face(b, root, c, a)
+            else: __cliff_face(b, root, a, c)
+        a = front[cap_col * stride + rows]
+        if (cap_side == 0) == (side > 0): __cliff_face(b, back_foot[cap_col], back_top[cap_col], a)
+        else: __cliff_face(b, back_foot[cap_col], a, back_top[cap_col])
+    loop k in [0..b.verts.len()):
+        n = b.verts[k].normal
+        if length(n) > 0.00001: b.verts[k].normal = normalize(n)
+        b.verts[k].color.w = 0.92
+        b.verts[k].mat = vec4(__cliff_surface_fields(b.verts[k].pos), 4)
+    # Shared normals averaged the narrow shelf returns into a smooth wash.
+    # Retain continuity, but let each actual bed face carry most of its light.
+    finished = Builder()
+    loop tri in [0..b.idx.len()/3):
+        a = b.verts[int(b.idx[tri*3])]
+        c = b.verts[int(b.idx[tri*3+1])]
+        d = b.verts[int(b.idx[tri*3+2])]
+        face = normalize(cross(c.pos-a.pos,d.pos-a.pos))
+        loop v in [a,c,d]:
+            q = v
+            q.normal = normalize(v.normal*0.35+face*0.65)
+            finished.idx.push(u32(finished.verts.len()))
+            finished.verts.push(q)
+    finished
+
+__cliff_add_gorge = (strip: int, side: int):
+    loop lod in [0..3):
+        b = __cliff_gorge_skin(side, if lod == 0: 1 else if lod == 1: 2 else: 4)
+        id = strip * 3 + lod
+        skin = cliff_surfaces[id]
+        first = skin.verts.len()
+        loop v in b.verts:
+            skin.verts.push(v)
+            cliff_lo[id] = min(cliff_lo[id], v.pos)
+            cliff_hi[id] = max(cliff_hi[id], v.pos)
+        loop k in b.idx: skin.idx.push(u32(first) + k)
+        cliff_surfaces[id] = skin
+        cliff_counts[id] += b.idx.len() / 3
+        if lod == 0: __cliff_collision_mesh(b)
+
+# Decorative split plates use the canyon's existing LOD batches and lighting,
+# so shaded undersides keep the same mineral value as the surrounding skin.
+__cliff_fragment = (c: vec3, r: vec3, yaw: f64, seed: f64):
+    fragment = Builder()
+    split_outline = [vec2(-1,-0.45),vec2(-0.60,-1),vec2(0.55,-0.9),vec2(1,0.08),vec2(0.7,0.85),vec2(-0.65,1)]
+    top: vec3[]
+    bottom: vec3[]
+    loop j in [0..6):
+        q = split_outline[j]
+        h = hash2(seed+f64(j)*3.7,4.7)
+        bottom.push(c+transform_dir(rotation_y(yaw),v3(f64(q.x),-0.62-h*0.18,f64(q.y))*r))
+        top.push(c+transform_dir(rotation_y(yaw),v3(f64(q.x)*0.84,0.38+h*0.35,f64(q.y)*0.88)*r))
+    face = (a: vec3, b: vec3, d: vec3):
+        n = normalize(cross(b-a,d-a))
+        loop p in [a,b,d]:
+            fragment.idx.push(u32(fragment.verts.len()))
+            fragment.verts.push(BVert(p,n,vec4(1,1,1,1),vec4(__cliff_surface_fields(p),4)))
+    loop j in [0..6):
+        next = (j+1)%6
+        face(c+vec3(0,r.y*0.78,0),top[next],top[j])
+        face(c-vec3(0,r.y*0.70,0),bottom[j],bottom[next])
+        face(bottom[j],top[j],top[next])
+        face(bottom[j],top[next],bottom[next])
+    strip = if c.z < 1840.0: 0 else: 3
+    loop lod in [0..3):
+        slot=strip+lod
+        skin=cliff_surfaces[slot]
+        first=u32(skin.verts.len())
+        skin.verts.extend(fragment.verts)
+        loop k in fragment.idx:skin.idx.push(first+k)
+        cliff_surfaces[slot]=skin
+        cliff_counts[slot]+=fragment.idx.len()/3
+        loop v in fragment.verts:
+            cliff_lo[slot]=min(cliff_lo[slot],v.pos)
+            cliff_hi[slot]=max(cliff_hi[slot],v.pos)
+
+__west_cliffs = ():
+    __cliff_strip([vec2(-1515, 1600), vec2(-1535, 1700), vec2(-1502, 1785), vec2(-1488, 1797), vec2(-1474, 1803), vec2(-1458, 1805)])
+    __cliff_strip([vec2(-1458, 1844), vec2(-1475, 1848), vec2(-1490, 1855), vec2(-1502, 1869), vec2(-1525, 1900), vec2(-1525, 1950)])
+    __cliff_add_gorge(0, -1)
+    __cliff_add_gorge(1, 1)
+    __cliff_install_collision()
+    # Angular fragments accumulate in unequal fans below the two large faces.
+    # Decorative split stones stay outside the water corridor and add no new
+    # colliders to the already tested canyon route.
+    loop bank in [0..2):
+        loop k in [0..46):
+            seed = f64(k) + f64(bank) * 137.0
+            h = hash2(seed, 63.0)
+            z = (if bank == 0: 1670.0 else: 1872.0) + h * (if bank == 0: 118.0 else: 70.0)
+            x = -1570.0 + hash2(seed, 24.0) * 34.0
+            if water_depth(x, z) > 0.15: continue
+            radius = 0.7 + pow(hash2(seed, 82.0), 2.0) * 3.0
+            q = v3(x, gy(x, z) - radius * 0.20, z)
+            sor_split_stone(q, v3(radius * 1.4, radius * 0.60, radius), h * TAU, seed + 900.0, stone(0.34, 0.325, 0.295), PLAIN)
+    # Seat plates on the actual triangles of upward-facing shelves. Analytic
+    # samples between mesh vertices can leave apparently floating fragments.
+    last = vec3(0, -1000, 0)
+    loop bank in [0, 3]:
+        plates = 0
+        skin = cliff_surfaces[bank]
+        loop tri in [0..skin.idx.len()/3):
+            a = skin.verts[int(skin.idx[tri*3])].pos
+            b = skin.verts[int(skin.idx[tri*3+1])].pos
+            c = skin.verts[int(skin.idx[tri*3+2])].pos
+            n = normalize(cross(b-a,c-a))
+            q = (a+b+c)/3.0
+            if plates >= 2 or n.y < 0.50 or q.y < 135.0 or q.y > 255.0: continue
+            if q.z > 1780.0 and q.z < 1880.0: continue
+            if length(q-last) < 14.0: continue
+            h = hash2(f64(tri), 711.0)
+            if h < 0.76: continue
+            q += vec3(1.5, -0.55, 0)
+            __cliff_fragment(q, v3(2.4 + h, 0.65, 2.2 + h), 0.12 + h * 0.25, 711.0 + f64(tri))
+            last = q
+            plates += 1
+
+# Evaluate the bed boundary per fragment: vertex RGB cannot retain a narrow
+# ledge edge over a two-metre triangle. The mesh carries the same bed coordinate
+# and pinch-out envelope used by its displaced skin, plus a gully exposure mask.
+__cliff_surface_fields = (p: vec3) -> vec3:
+    across = f64(p.z) + f64(p.x) * 0.28
+    bend = (noise(across * 0.016, f64(p.y) * 0.006) - 0.5) * 5.0
+    gully = smooth01((noise((across + bend) * 0.079 + 7.0, f64(p.y) * 0.004) - 0.57) / 0.25)
+    v3(__cliff_bed(p), __cliff_bed_presence(p), 1.0 - gully * 0.9)
+
+# The cliff's grazing beds need a depth ramp, rather than a binary shadow
+# comparison that turns small receiver/caster differences into dark decals.
+# Reuse the same twelve reads and cascade extents as the ordinary receiver.
+cliff_pcf = (sm: Texture, sp: vec4, bias: f32, ramp: f32, radius: f32, rot: f32) -> f32:
+    cover = clamp(sp.w - 1.0, 0.0, 1.0)
+    p = sp.xyz / sp.w * 0.5 + vec3(0.5, 0.5, 0.5)
+    if p.x < 0.0 or p.x > 1.0 or p.y < 0.0 or p.y > 1.0 or p.z > 1.0: return -1.0
+    if cover >= 0.85: return 1.0
+    lit = f32(0.0)
+    spread = radius * shadow_softness(cover)
+    # Rotate the same Vogel disk incrementally. Two trig evaluations replace
+    # twenty-four per fragment without changing its twelve sample positions.
+    ray = vec2(cos(rot),sin(rot))
+    turn = vec2(cos(f32(2.39996)),sin(f32(2.39996)))
+    loop k in [0..12):
+        fk = f32(k)
+        r = sqrt((fk + 0.5) / 12.0) * spread
+        d = sample(sm, p.xy + ray * (r / 2048.0)).x
+        lit += smoothstep(-ramp, ramp, d - p.z + bias * (1.0 + r * 0.25))
+        ray = vec2(ray.x*turn.x-ray.y*turn.y,ray.x*turn.y+ray.y*turn.x)
+    lerp(f32(1.0), lit / 12.0, shadow_direct(cover))
+
+cliff_shadow = (w: vec3, ndl: f32, u: BuildU) -> f32:
+    if u.vp0[3].w >= 1.85: return 1.0
+    b = 1.0 - clamp(ndl, 0.0, 1.0)
+    rot = hash12(floor(w.xz * 40.0) + vec2(floor(w.y * 40.0) * 0.37, 0)) * 6.2832
+    near = u.vp0 * vec4(w, 1)
+    s = cliff_pcf(u.sm0, near, 0.00008 + 0.00018 * b, 0.0012, 4.5, rot)
+    if s >= 0.0: return painted_near_shadow(s, near)
+    middle = u.vp1 * vec4(w, 1)
+    s = cliff_pcf(u.sm1, middle, 0.0008 + 0.002 * b, 0.0012, 2.0, rot)
+    if s >= 0.0:
+        edge = max(abs(middle.x / middle.w), abs(middle.y / middle.w))
+        return lerp(s, f32(1.0), 0.38 * smoothstep(0.72, 0.98, edge))
+    far = u.vp2 * vec4(w, 1)
+    s = cliff_pcf(u.sm2, far, 0.001 + 0.002 * b, 0.0010, 4.0, rot)
+    if s >= 0.0:
+        edge = max(abs(far.x / far.w), abs(far.y / far.w))
+        return lerp(s, f32(1.0), 0.38 + 0.62 * smoothstep(0.72, 0.98, edge))
+    1.0
+
+cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
+    w = i.world
+    n = normalize(i.normal)
+    dist = length(w - u.cam)
+    # Shared granite pigment joins the skin to the exposed heightfield. Actual
+    # buttresses, concavity AO and shadow maps carry the painted value masses.
+    alb = rock_color(w, n, dist)
+    # Unequal mineral beds cross the curved planes, with quiet thin
+    # seams and a broader lower wash. They continue around ribs and taper
+    # into gullies instead of restarting at each triangle or noise cell.
+    bend = vnoise(w.xz * 0.018 + vec2(7, 3))
+    h = w.y + (w.z + w.x * 0.28 - 1320.0) * 0.045 + (bend - 0.5) * 4.0
+    gap = min(abs(h - 167.0), min(abs(h - 228.0), abs(h - 238.0)))
+    width = 0.25 + bend * 0.50
+    edge = 1.0 - smoothstep(width * 0.25, width, gap)
+    presence = clamp(i.mat.z, 0.0, 1.0) * (0.45 + bend * 0.55)
+    # Unequal horizontal beds wrap every canyon plane in world space. Broad
+    # mineral washes and narrow dark contacts reveal the scale of the rock;
+    # vertical joint bays interrupt them rather than forming striped wallpaper.
+    bed = h * 0.12 + sin(h * 0.055) * 0.38
+    phase = fract(bed)
+    seam = (1.0 - smoothstep(0.015, 0.095, phase))
+    joint = smoothstep(0.10, 0.34, abs(sin((w.z + w.x * 0.28) * 0.083 + w.y * 0.013)))
+    beds = (0.62 + bend * 0.38) * (0.70 + joint * 0.30) * (1.0 - smoothstep(0.55, 0.90, n.y))
+    wash = smoothstep(0.12, 0.34, phase) * (1.0 - smoothstep(0.55, 0.87, phase))
+    alb = mix(alb, alb * vec3(0.77, 0.74, 0.69), wash * beds * 0.48)
+    alb = alb * (1.0 - seam * beds * 0.17 - edge * presence * 0.15)
+    alb = alb * (1.0 - u.wet * 0.25)
+    l = normalize(u.sun_dir)
+    v = normalize(u.cam - w)
+    # Geometric receiver offset clears sub-texel self-shadow specks while
+    # preserving the metres-deep shade under the overhangs. Filter only shadow
+    # coverage; pigment and silhouettes remain at their native resolution.
+    face = glsl_facet(w)
+    if dot(face, n) < 0.0: face = face * -1.0
+    sh = cliff_shadow(w + face * 0.65, dot(face, l), u) * cloud_shade(w.xz, u.time, u.clouds)
+    stone_sun = mix(u.sun_color, luma(u.sun_color) * vec3(1.02, 1.0, 0.96), 0.70)
+    stone_sky = mix(u.sky, luma(u.sky) * vec3(0.96, 1.0, 1.04), 0.65)
+    sh = 0.28 + sh * 0.72
+    c = paint_light(alb, n, l, v, stone_sun, stone_sky, u.ground, sh, 0.25) * i.color.w
+    c = c + alb * stone_sun * vec3(0.98, 1.0, 1.04) * 0.2 * clamp(1.0 - n.y * 1.4, 0.0, 1.0) * (1.0 - clamp(dot(n, l), 0.0, 1.0) * sh)
+    c = c + point_light(alb, n, w, u.lp, u.lc)
+    c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
+    # Preserve the building renderer's camera/player occluder dissolve.
+    cp = u.player + vec3(0, 1.0, 0) - u.cam
+    tt = clamp(dot(w - u.cam, cp) / max(dot(cp, cp), 0.01), 0.0, 1.0)
+    fade = smoothstep(u.fade_width, u.fade_width * 0.45, length(u.cam + cp * tt - w)) * smoothstep(0.8, 0.6, tt) * smoothstep(0.08, 0.25, tt)
+    fade = max(fade, smoothstep(u.fade_width * 1.5, u.fade_width * 0.75, dist) * (u.fade_width - 1.0))
+    if u.player.y < -500.0: fade = 0.0
+    glsl_discard(fade > glsl_occluder_dither(0.0))
+    vec4(c, (if fade > 0.001: -8.0 else: 1.0))
+cliff_surface_sh: Shader
+cliff_shadow_sh: Shader
+cliff_shadow_fs = (i: BuildO, u: BuildU) -> vec4: vec4(1, 1, 1, 1)
+
+# Install a draw decorator once during structures_build, retaining the existing
+# building/shadow renderer. This keeps cliff LOD ownership in this file.
+__cliff_lod = (distance: f64) -> int: if distance < 240.0: 0 else if distance < 650.0: 1 else: 2
+__cliff_finish = ():
+    cliff_surface_sh = make_sh(shader(build_vs,cliff_surface_fs))
+    cliff_shadow_sh = make_sh(shader(build_vs,cliff_shadow_fs))
+    loop b in cliff_surfaces: cliff_meshes.push(static_mesh(b.verts, b.idx))
+    if env("BOTW_BAKE_ASSETS") == none and env("BOTW_ASSET_CHECK") == none: cliff_surfaces = []
+    build_extra_draw = (u: BuildU, vp: mat4, cam: vec3, max_dist: f64):
+        if u.shadow_pass < 0.5: sor_passage_light(cam, clamp(u.sun_dir.y*2.0,0.0,1.0))
+        f = frustum_from(vp)
+        loop strip in [0..cliff_meshes.len() / 3):
+            base = strip * 3
+            lo = cliff_lo[base]
+            hi = cliff_hi[base]
+            distance = f64(length(max(max(lo - cam, cam - hi), vec3(0, 0, 0))))
+            if distance > max_dist or not box_visible(f, lo, hi): continue
+            lod = __cliff_lod(distance)
+            # Identical opaque depth; shadow casters do not need mineral washes.
+            sh = if u.shadow_pass > 0.5: cliff_shadow_sh else: cliff_surface_sh
+            draw_fast(sh, cliff_meshes[base + lod], u)
+
+# broad rock ribs, rooted in steep faces; the sheltered route out stays clear
+cliff_outcrops = ():
+    count = 0
+    loop zi in [0..55):
+        loop xi in [0..65):
+            h = hash2(f64(xi) + 43.0, f64(zi) + 17.0)
+            if h < 0.42: continue
+            x = -1600.0 + f64(xi) * 20.0 + h * 9.0
+            z = 1400.0 + f64(zi) * 20.0 + hash2(f64(zi), f64(xi)) * 9.0
+            n = normal_at(x, z)
+            if n.y > 0.48 or n.y < 0.012 or water_depth(x, z) > 0.0: continue
+            if hypot(x + 1068.0, z - 1845.0) < 32.0 or hypot(x + 1024.0, z - 1799.0) < 35.0: continue
+            if is_snow_area(x, z): continue
+            wet = false
+            loop fc in fall_cells:
+                if hypot(x - f64(fc.x), z - f64(fc.y)) < 14.0: wet = true
+            if wet: continue
+            out = normalize(v3(f64(n.x), 0.0, f64(n.z)))
+            yaw = atan2(f64(out.x), f64(out.z))
+            w = 5.0 + h * 5.0
+            tall = 7.0 + hash2(x, z) * 12.0
+            deep = 3.0 + h * 3.0
+            q = v3(x, gy(x, z) - tall * 0.2, z) - out * f32(deep * 0.48)
+            rk = stone(0.4, 0.375, 0.335)
+            # The steep crest sample north of the west camp produced a 17.6 m
+            # tall, thin rib with a level cap 8.7 m above terrain: the beige slab.
+            # Bury that oversized crown; retain its rooted face and collider.
+            cap = if hypot(x + 1455.7, z - 1541.6) < 2.0: 0.32 else: 0.72
+            __cliff_lump(q, v3(w, tall, deep), rotation_y(yaw), x + z, rk, vec4(0.0, 0.25, 0.0, 4.0), cap)
+            add_box(q - v3(0.0, tall * 0.78, 0.0), v3(w * 0.65, tall * 0.75, deep * 0.7), yaw, true, .rock)
+            if h > 0.72:
+                ledge = q + out * f32(deep * 0.25) + v3(w * 0.25, tall * 0.42, 0.0)
+                __cliff_lump(ledge, v3(w * 1.2, 2.0, deep * 1.2), rotation_y(yaw), z, rk, vec4(0.0, 0.55, 0.0, 4.0), 0.7)
+                add_box(ledge - v3(0.0, 1.4, 0.0), v3(w * 0.85, 1.4, deep * 0.8), yaw, true, .rock)
+            count += 1
+    __west_cliffs()
+    eprint("cliff outcrops {count}")
+
+# ---------------- shrines ----------------
+shrine_exterior = (s: Shrine):
+    o = s.pos
+    r = s.rot
+    p = (x: f64, y: f64, z: f64) -> vec3: lp(o, r, x, y, z)
+    burn_mark(f64(o.x), f64(o.z), 7.2, 3, 3.0)
+    begin_named(s.name)
+    # the round base and its steps
+    column(p(0.0, -1.0, 0.0), 6.5, 6.2, 1.2, 20, SHEIKAH, SHEIKAH_LIT, false)
+    column(p(0.0, 0.2, 0.0), 2.4, 2.4, 0.08, 20, SHEIKAH, vec4(0.0, 0.0, 1.2, 0.0), false)
+    # A low outer tread bridges the terrain to the existing base's 25 cm lip.
+    # Without it the capsule can meet a >45 cm side before the terrain pad lifts
+    # its feet, even though the centre of the approach is walkable.
+    column(p(0.0, -0.6, 0.0), 6.85, 6.85, 0.6, 20, SHEIKAH, SHEIKAH_LIT, false)
+    # the hood: fins curving over the lift, with glowing edges
+    loop i in [0..9):
+        a = PI * (0.15 + 0.7 * f64(i) / 8.0)
+        loop j in [0..5):
+            t0 = f64(j) / 5.0
+            t1 = f64(j + 1) / 5.0
+            rr0 = 4.8 - t0 * t0 * 3.0
+            rr1 = 4.8 - t1 * t1 * 3.0
+            y0 = t0 * 7.0
+            y1 = t1 * 7.0
+            q0 = p(-cos(a) * rr0, y0, -sin(a) * rr0)
+            q1 = p(-cos(a) * rr1, y1, -sin(a) * rr1)
+            mid = (q0 + q1) * 0.5
+            d = q1 - q0
+            l = f64(length(d))
+            pitch = asin(clamp(f64(d.y) / l, -1.0, 1.0))
+            yaw = atan2(-f64(d.z), f64(d.x))
+            glow: f32 = if i % 2 == 0: 1.6 else: 0.0
+            box_m(translation(mid) * rotation_y(yaw) * rotation_z(pitch) * scaling(v3(l + 0.1, 0.5, 1.5)), SHEIKAH, vec4(-1.0, 0.0, glow, 0.0), false)
+    end_named()
+    add_cyl(o - vec3(0, 0.6, 0), 6.85, 0.6, false, .stone)
+    add_cyl(o - vec3(0, 1.0, 0), 6.3, 1.2, false, .stone)
+    # the terminal (its own mesh: it lights up)
+    begin_named(s.name + "_terminal")
+    t = s.terminal
+    column(v3(f64(t.x), gy(f64(t.x), f64(t.z)) - 0.2, f64(t.z)), 0.45, 0.35, 1.2, 6, SHEIKAH, PLAIN, false)
+    box_m(translation(v3(f64(t.x), gy(f64(t.x), f64(t.z)) + 1.1, f64(t.z))) * rotation_y(s.rot) * rotation_x(-0.6) * scaling(v3(0.9, 0.12, 0.7)), SHEIKAH, vec4(0.0, 0.0, 1.5, 0.0), false)
+    end_named()
+    add_cyl(v3(f64(t.x), gy(f64(t.x), f64(t.z)) - 0.2, f64(t.z)), 0.45, 1.3, false, .stone)
+
+shrine_names = ["Ohman Ow", "Jaba Badge", "Owa Dime", "Kay Nomut"]
+
+find_shrines = ():
+    ents: Actor[]
+    terms: Actor[]
+    loop a in actors:
+        if a.name == "DgnObj_DungeonEntrance_A_01": ents.push(a)
+        if a.name == "DgnObj_EntranceTerminal_A_01": terms.push(a)
+    loop e in ents:
+        x = f64(e.pos.x)
+        z = f64(e.pos.z)
+        onp = x > -1600.0 and x < -350.0 and z > 1400.0 and z < 2400.0
+        if not onp:
+            far_shrines.push(e.pos)
+            continue
+        best = e.pos
+        bd = 1e9
+        loop t in terms:
+            d = f64(length(t.pos - e.pos))
+            if d < bd:
+                bd = d
+                best = t.pos
+        nm = "Ohman Ow"
+        if x > -460.0: nm = "Jaba Badge"
+        else if z > 2300.0: nm = "Owa Dime"
+        else if x < -1400.0: nm = "Kay Nomut"
+        shrines.push(Shrine(nm, e.pos, e.rot, best))
+
+# ---------------- the Great Plateau Tower (rises from the ground) ----------------
+# A Sheikah tower: a tapering six-sided shaft of dark stone, a ledge every eleven meters, glowing
+# panels on every face, and a wide round platform with the terminal at the top.
+tower = ():
+    burn_mark(f64(TOWER.x), f64(TOWER.z), 16.0, 3, 3.0)
+    o = TOWER
+    begin_named("tower")
+    h = 74.0
+    seg = 7
+    loop k in [0..seg):
+        y0 = -3.0 + f64(k) * (h + 3.0) / f64(seg)
+        y1 = y0 + (h + 3.0) / f64(seg)
+        r0 = 4.4 - f64(k) / f64(seg) * 1.1
+        r1 = 4.4 - f64(k + 1) / f64(seg) * 1.1
+        column(o + v3(0.0, y0, 0.0), r0, r1, y1 - y0, 6, SHEIKAH, SHEIKAH_LIT, false)
+        column(o + v3(0.0, y1 - 0.5, 0.0), r1 + 0.7, r1 + 0.7, 0.5, 6, SHEIKAH, PLAIN, false)
+        loop f in [0..6):
+            a = TAU * (f64(f) + 0.5) / 6.0
+            rr = (r0 + r1) * 0.5 * cos(PI / 6.0) + 0.06
+            q = o + v3(cos(a) * rr, (y0 + y1) * 0.5, sin(a) * rr)
+            box(q - vec3(0.0, 1.6, 0.0), v3(0.1, 3.2, 0.25), -a, SHEIKAH, vec4(0.0, 0.0, 1.2, 0.0), false)
+            box(q - vec3(0.0, -2.6, 0.0), v3(0.1, 0.12, 2.4), -a, SHEIKAH, vec4(0.0, 0.0, 1.5, 0.0), false)
+    # gold trim: a band round the shaft at each joint
+    loop k in [1..seg):
+        y0 = -3.0 + f64(k) * (h + 3.0) / f64(seg)
+        rk = 4.4 - f64(k) / f64(seg) * 1.1
+        column(o + v3(0.0, y0 - 0.15, 0.0), rk + 0.78, rk + 0.78, 0.18, 6, TOWER_GOLD, PLAIN, false)
+    # four legs splayed from the lower shaft down into the ground it broke out of
+    loop k in [0..4):
+        a = TAU * f64(k) / 4.0 + 0.4
+        top = o + v3(cos(a) * 3.6, 14.0, sin(a) * 3.6)
+        knee = o + v3(cos(a) * 7.0, 5.0, sin(a) * 7.0)
+        fx = f64(TOWER.x) + cos(a) * 9.0
+        fz = f64(TOWER.z) + sin(a) * 9.0
+        foot = v3(fx, height_at(fx, fz) - f64(o.y) - 1.0, fz) + vec3(0, o.y, 0)
+        tube(top, knee, 0.8, 0.75, 8, SHEIKAH, SHEIKAH_M)
+        tube(knee, foot, 0.75, 0.9, 8, SHEIKAH, SHEIKAH_M)
+        column(knee - vec3(0, 0.3, 0), 0.95, 0.95, 0.6, 10, TOWER_GOLD, PLAIN, false)
+    # rails up the six corners, and earth still clinging to the lower shaft where it broke out
+    loop f in [0..6):
+        a = TAU * f64(f) / 6.0
+        loop k in [0..seg):
+            y0 = -3.0 + f64(k) * (h + 3.0) / f64(seg)
+            rr = 4.4 - (f64(k) + 0.5) / f64(seg) * 1.1 + 0.1
+            box(o + v3(cos(a) * rr, y0, sin(a) * rr), v3(0.5, (h + 3.0) / f64(seg) - 0.6, 0.5), -a, SHEIKAH_STONE, PLAIN, false)
+    seed_random(41)
+    loop k in [0..26):
+        a = random(0.0, TAU)
+        y = random(-3.0, 1.0) + random() * random() * 18.0
+        r_ = 4.4 - y / h * 1.1
+        sz = random(0.6, 1.6) * (1.0 - y / 25.0)
+        if sz < 0.25: continue
+        box_m(translation(o + v3(cos(a) * r_, y, sin(a) * r_)) * rotation_y(random(0.0, 3.0)) * rotation_x(random(-0.4, 0.4)) * scaling(v3(sz * 1.6, sz, sz * 1.3)), EARTH, PLAIN, false)
+    # the crown: a ribbed bowl flaring out under a round deck with a glowing rim, and the terminal
+    column(o + v3(0.0, h - 9.0, 0.0), 3.5, 4.2, 3.0, 12, SHEIKAH, SHEIKAH_LIT, false)
+    column(o + v3(0.0, h - 6.0, 0.0), 4.2, 8.6, 5.6, 16, SHEIKAH_STONE, SHEIKAH_M, false)
+    loop k in [0..16):
+        a = TAU * (f64(k) + 0.5) / 16.0
+        mid = o + v3(cos(a) * 6.4, h - 4.4, sin(a) * 6.4)
+        box_m(translation(mid) * rotation_y(-a) * rotation_z(0.86) * scaling(v3(7.2, 0.45, 0.5)), SHEIKAH_STONE, SHEIKAH_M, false)
+    column(o + v3(0.0, h - 0.6, 0.0), 8.9, 8.9, 0.6, 24, SHEIKAH, SHEIKAH_LIT, false)
+    column(o + v3(0.0, h, 0.0), 8.6, 8.6, 0.4, 24, SHEIKAH_STONE, SHEIKAH_M, false)
+    # the rim: a low parapet in segments
+    loop k in [0..24):
+        if k % 6 == 0: continue
+        a = TAU * (f64(k) + 0.5) / 24.0
+        box(o + v3(cos(a) * 8.4, h + 0.4, sin(a) * 8.4), v3(0.35, 0.7, 2.0), -a, SHEIKAH_STONE, SHEIKAH_M, false)
+    # over the deck, four arms curving up from its rim to a ring overhead: the tower's crown
+    loop k in [0..4):
+        a = TAU * (f64(k) + 0.5) / 4.0
+        prev = o + v3(cos(a) * 8.2, h + 0.3, sin(a) * 8.2)
+        loop j in [1..7):
+            t = f64(j) / 6.0
+            rr = 8.2 - 2.2 * t * t
+            q = o + v3(cos(a) * rr, h + 0.3 + sin(t * PI * 0.5) * 8.5, sin(a) * rr)
+            tube(prev, q, 0.42, 0.38, 8, SHEIKAH_STONE, SHEIKAH_M)
+            prev = q
+    column(o + v3(0.0, h + 8.4, 0.0), 6.4, 6.0, 0.9, 32, SHEIKAH_STONE, SHEIKAH_M, false)
+    column(o + v3(0.0, h + 8.1, 0.0), 6.5, 6.5, 0.3, 32, TOWER_GOLD, SHEIKAH_LIT, false)
+    column(o + v3(0.0, h + 9.3, 0.0), 5.6, 1.2, 1.2, 32, SHEIKAH, SHEIKAH_M, false)
+    # the deck's face: rings and spokes of light let into the stone round the terminal, a ring
+    # of raised slabs between them
+    loop rr in [2.6, 5.2, 7.6]:
+        column(o + v3(0.0, h + 0.4, 0.0), rr + 0.08, rr + 0.08, 0.02, 40, SHEIKAH, vec4(0.0, 0.0, 1.1, 0.0), false)
+        column(o + v3(0.0, h + 0.4, 0.0), rr - 0.08, rr - 0.08, 0.025, 40, SHEIKAH_STONE, SHEIKAH_M, false)
+    loop k in [0..12):
+        a = TAU * f64(k) / 12.0
+        mid = o + v3(cos(a) * 5.1, h + 0.41, sin(a) * 5.1)
+        box(mid, v3(4.8, 0.02, 0.1), -a, SHEIKAH, vec4(0.0, 0.0, (if k % 3 == 0: 1.3 else: 0.8), 0.0), false)
+    loop k in [0..8):
+        a = TAU * (f64(k) + 0.5) / 8.0
+        box(o + v3(cos(a) * 3.9, h + 0.4, sin(a) * 3.9), v3(1.6, 0.12, 1.1), -a, SHEIKAH_STONE, SHEIKAH_M, false)
+    # the terminal on its plinth in the middle
+    column(o + v3(0.0, h + 0.4, 0.0), 1.6, 1.4, 0.3, 12, SHEIKAH, SHEIKAH_LIT, false)
+    column(o + v3(0.0, h + 0.7, 0.0), 0.55, 0.45, 1.0, 6, SHEIKAH, vec4(0.0, 0.0, 1.8, 0.0), false)
+    box_m(translation(o + v3(0.0, h + 1.75, 0.0)) * rotation_x(-0.55) * scaling(v3(0.95, 0.12, 0.7)), SHEIKAH, vec4(0.0, 0.0, 1.6, 0.0), false)
+    end_named()
+    # its pedestal (the guidance stone) at the foot
+    begin_named("tower_pedestal")
+    pp = v3(-566.0, height_at(-566.0, 1708.0) - 0.1, 1708.0)
+    column(pp, 0.55, 0.45, 1.15, 6, SHEIKAH, PLAIN, false)
+    box_m(translation(pp + vec3(0, 1.15, 0)) * rotation_x(-0.55) * scaling(v3(0.95, 0.12, 0.7)), SHEIKAH, vec4(0.0, 0.0, 1.6, 0.0), false)
+    end_named()
+    add_cyl(pp, 0.55, 1.2, false, .stone)
+    # the ground it broke out of: heaved slabs and rocks around the foot
+    seed_random(42)
+    loop k in [0..22):
+        a = random(0.0, TAU)
+        d = random(5.0, 11.0)
+        x = f64(TOWER.x) + cos(a) * d
+        z = f64(TOWER.z) + sin(a) * d
+        sz = random(0.8, 2.4)
+        box_m(translation(v3(x, height_at(x, z) - sz * 0.3, z)) * rotation_y(a) * rotation_z(random(-0.6, 0.6)) * rotation_x(random(-0.3, 0.3)) * scaling(v3(sz * 1.8, sz * 0.6, sz * 1.3)), (if k % 3 == 0: EARTH else: GREY_DARK), BLOCK, true)
+
+tower_ruins = ():
+    # what it threw up as it came: broken Sheikah masonry half in the earth, and torn roots
+    seed_random(43)
+    loop k in [0..14):
+        a = random(0.0, TAU)
+        d = random(9.0, 16.0)
+        x = f64(TOWER.x) + cos(a) * d
+        z = f64(TOWER.z) + sin(a) * d
+        sz = random(1.2, 2.4)
+        box_m(translation(v3(x, height_at(x, z) - sz * 0.2, z)) * rotation_y(random(0.0, TAU)) * rotation_z(random(-0.7, 0.7)) * rotation_x(random(-0.5, 0.5)) * scaling(v3(sz * 2.2, sz * 0.7, sz * 1.1)), SHEIKAH_STONE, SHEIKAH_M, false)
+    loop k in [0..8):
+        a = random(0.0, TAU)
+        d0 = random(4.5, 6.0)
+        p0 = TOWER + v3(cos(a) * d0, random(0.5, 3.0), sin(a) * d0)
+        x1 = f64(TOWER.x) + cos(a + random(-0.3, 0.3)) * random(8.0, 12.0)
+        z1 = f64(TOWER.z) + sin(a + random(-0.3, 0.3)) * random(8.0, 12.0)
+        p1 = v3(x1, height_at(x1, z1) - 0.2, z1)
+        mid = (p0 + p1) * 0.5 + vec3(0, f32(random(0.5, 1.5)), 0)
+        tube(p0, mid, 0.22, 0.16, 6, EARTH, WOODM)
+        tube(mid, p1, 0.16, 0.06, 6, EARTH, WOODM)
+
+# the tower's colliders: they move with it (set by the story as it rises)
+tower_colliders: int[]
+tower_col_bases: vec3[]
+tower_add_colliders = ():
+    o = TOWER
+    # Match the seven shaft courses and their existing gold rest ledges. A single
+    # uninterrupted 77 m cylinder made these visible shelves impossible to stand on.
+    loop k in [0..7):
+        y = -3.0 + f64(k) * 11.0
+        r = 4.4 - f64(k) / 7.0 * 1.1
+        q = o + v3(0.0, y, 0.0)
+        tower_col_bases.push(q)
+        tower_colliders.push(add_cyl(q, r, 10.5, true, .metal))
+        q = o + v3(0.0, y + 10.5, 0.0)
+        tower_col_bases.push(q)
+        tower_colliders.push(add_cyl(q, r - 1.1 / 7.0 + 0.78, 0.5, true, .metal))
+    # The existing flared crown joins the narrow shaft to the wide deck; without
+    # these courses descending from the rim dropped straight through the visible bowl.
+    loop k in [0..8):
+        q = o + v3(0.0, 65.0 + f64(k), 0.0)
+        tower_col_bases.push(q)
+        tower_colliders.push(add_cyl(q, 3.9 + f64(k) * 0.64, 1.0, true, .metal))
+    q = o + v3(0.0, 73.0, 0.0)
+    tower_col_bases.push(q)
+    tower_colliders.push(add_cyl(q, 8.4, 1.4, true, .metal))
+
+tower_set_lift = (lift: f64):
+    loop i in [0..tower_colliders.len()):
+        colliders[tower_colliders[i]].pos = tower_col_bases[i] + v3(0.0, lift, 0.0)
+
+# ---------------- camps, guardians ----------------
+lookouts = ():
+    loop a in actors:
+        if a.name != "FldObj_EnemyLookout_B_01": continue
+        x = f64(a.pos.x)
+        z = f64(a.pos.z)
+        if x < -1600.0 or x > -350.0 or z < 1400.0 or z > 2420.0: continue
+        g = gy(x, z)
+        # as tall as the archer standing on it in the original
+        h = 5.5
+        loop b in actors:
+            if b.name == "Enemy_Bokoblin_Guard_Junior_TreeHouseTop" and hypot(f64(b.pos.x) - x, f64(b.pos.z) - z) < 6.0:
+                h = clamp(f64(b.pos.y) - g, 3.0, 12.0)
+        loop sx in [-1.0, 1.0]:
+            loop sz in [-1.0, 1.0]:
+                q = lp(v3(x, g - 0.5, z), a.rot, sx * 1.4, 0.0, sz * 1.4)
+                column(q, 0.18, 0.15, h + 1.6, 6, WOOD_DARK, WOODM, false)
+        box(v3(x, g + h - 0.2, z), v3(3.6, 0.3, 3.6), a.rot, WOOD, WOODM, true, true)
+        # Open rails and diagonal braces read as lashed timber. The existing
+        # deck and shaft colliders remain exact; dressing adds no obstacles.
+        local = (xx: f64, yy: f64, zz: f64) -> vec3: lp(v3(x,g,z),a.rot,xx,yy,zz)
+        loop k in [0..9):
+            xx = -1.6 + f64(k)*0.4
+            box(local(xx,h+0.102,0.0),v3(0.375,0.018,3.6),a.rot,darken(WOOD,hash2(f64(k),x)*0.16),WOODM,false)
+        rope = stone(0.37,0.29,0.18)
+        loop k in [0..4):
+            frame = a.rot + f64(k)*PI/2.0
+            rail = (xx: f64, yy: f64) -> vec3: lp(v3(x,g,z),frame,xx,yy,1.43)
+            tube(rail(-1.56,h+0.79),rail(1.56,h+0.91),0.070,0.055,7,WOOD_DARK,WOODM)
+            # Lower rail broken back from the ladder's entrance.
+            if k != 0:
+                tube(rail(-1.48,h+0.34),rail(1.50,h+0.39),0.050,0.065,6,WOOD,WOODM)
+                tube(rail(-1.38,max(0.35,h-3.0)),rail(1.38,h-0.24),0.075,0.058,7,WOOD_DARK,WOODM)
+            loop side in [-1.0,1.0]:
+                loop band in [0..3):
+                    yy = h+0.72+f64(band)*0.055 + (if side>0.0:0.12 else:0.0)
+                    tube(rail(side*1.38-0.12,yy),rail(side*1.38+0.12,yy+0.04),0.018,0.018,5,rope,PLAIN)
+        add_cyl(v3(x, g - 0.5, z), 1.6, h, true, .wood)
+        # a ladder up one side
+        lq = lp(v3(x, g - 0.2, z), a.rot, 0.0, 0.0, 1.9)
+        loop sx in [-0.3, 0.3]: box(lq + transform_dir(rotation_y(a.rot), v3(sx, 0.0, 0.0)), v3(0.08, h + 0.4, 0.08), a.rot, WOOD_DARK, WOODM, false)
+        loop k in [0..int(h / 0.4)): box(lq + vec3(0, f32(0.3 + f64(k) * 0.4), 0), v3(0.6, 0.06, 0.06), a.rot, WOOD, WOODM, false)
+
+# Bokoblin camps: by each fire with monsters round it, a hide tent on bent poles and a rack of meat
+HIDE = stone(0.27, 0.19, 0.12)
+# the camps' tents (they can burn: elements.jo)
+camp_tents: vec3[]
+camp_tent_colliders: int[]
+# Select dressing around the authored enemies, never on top of a ground spawn.
+# Does not consume random numbers, so other camp dressing remains deterministic.
+camp_tent_angle = (fx: f64, fz: f64, angle: f64) -> f64:
+    best = angle
+    best_clearance = -1.0
+    loop k in [0..24):
+        a = angle + f64(k) * TAU / 24.0
+        x = fx + cos(a) * 5.5
+        z = fz + sin(a) * 5.5
+        clearance = 100.0
+        loop e in actors:
+            if starts_with(e.name, "Enemy_Bokoblin"):
+                clearance = min(clearance, hypot(f64(e.pos.x) - x, f64(e.pos.z) - z))
+        if clearance >= 3.6: return a
+        if clearance > best_clearance:
+            best_clearance = clearance
+            best = a
+    best
+
+camps = ():
+    seed_random(33)
+    n = 0
+    loop f in actors:
+        if f.name != "FireWood" and f.name != "Obj_FireWoodBundle": continue
+        fx = f64(f.pos.x)
+        fz = f64(f.pos.z)
+        if fx < -1600.0 or fx > -350.0 or fz < 1400.0 or fz > 2420.0: continue
+        if hypot(fx + 943.0, fz - 1880.0) < 15.0: continue
+        boko = 0
+        loop e in actors:
+            if starts_with(e.name, "Enemy_Bokoblin") and hypot(f64(e.pos.x) - fx, f64(e.pos.z) - fz) < 10.0: boko += 1
+        if boko < 2: continue
+        n += 1
+        # the ground round the fire trampled short where they sit and sleep
+        burn_mark(fx, fz, 6.5, 1, 1.8)
+        # the tent: hides thrown over a ridge pole on crossed poles, open at both ends
+        a = random(0.0, TAU)
+        tent_angle = camp_tent_angle(fx, fz, a)
+        tx = fx + cos(tent_angle) * 5.5
+        tz = fz + sin(tent_angle) * 5.5
+        g = gy(tx, tz)
+        yaw = -tent_angle + PI / 2.0
+        q = (x: f64, y: f64, z: f64) -> vec3: lp(v3(tx, g, tz), yaw, x, y, z)
+        # (named: the tent can burn, and then its charred remains show instead)
+        tk = camp_tents.len()
+        camp_tents.push(v3(tx, g, tz))
+        burn_mark(tx, tz, 1.6, 3, 3.0)
+        begin_named("camp_tent{tk}")
+        # Two true A frames meet under a round ridge pole. Hides hang from
+        # the ridge to the ground; their concave panels share every seam vertex.
+        loop ez in [-1.65, 1.65]:
+            loop sx in [-1.0, 1.0]:
+                tube(q(sx * 1.43, 0.02, ez), q(-sx * 0.12, 2.35, ez), 0.065, 0.048, 8, WOOD_DARK, WOODM)
+            loop y in [2.08, 2.14, 2.20]:
+                tube(q(-0.13, y, ez + 0.065), q(0.13, y, ez + 0.065), 0.02, 0.02, 6, stone(0.58, 0.45, 0.27), PLAIN)
+        tube(q(0.0, 2.18, -2.0), q(0.0, 2.18, 2.0), 0.075, 0.065, 10, WOOD, WOODM)
+        loop sx in [-1.0, 1.0]:
+            hide_p = (u: f64, z: f64) -> vec3:
+                sag = sin(u * PI) * (0.10 + 0.10 * cos(z * 0.8))
+                q(sx * (u * 1.46 - sag * 0.45), 2.20 * (1.0 - u) + 0.12 * u - sag, z)
+            __begin(q(0.0, 1.0, 0.0))
+            loop panel in [0..3):
+                z0 = -1.62 + f64(panel) * 1.08
+                tone = if panel == 1: stone(0.43, 0.29, 0.15) else: stone(0.56, 0.40, 0.23)
+                loop row in [0..6):
+                    u0 = f64(row) / 6.0
+                    u1 = f64(row + 1) / 6.0
+                    pa = hide_p(u0, z0)
+                    pb = hide_p(u1, z0)
+                    pc = hide_p(u1, z0 + 1.08)
+                    pd = hide_p(u0, z0 + 1.08)
+                    normal = normalize(cross(pb - pa, pd - pa)) * f32(-sx)
+                    if sx > 0.0:
+                        __quad(cur, pa, pd, pc, pb, normal, tone, HIDEM)
+                        __quad(cur, pa, pb, pc, pd, -normal, darken(tone, 0.24), HIDEM)
+                    else:
+                        __quad(cur, pa, pb, pc, pd, normal, tone, HIDEM)
+                        __quad(cur, pa, pd, pc, pb, -normal, darken(tone, 0.24), HIDEM)
+            __end()
+            # Raised seams, bone stitches, a scalloped hide hem, and guy ropes.
+            loop z in [-1.62, -0.54, 0.54, 1.62]:
+                loop row in [0..6):
+                    u0 = f64(row) / 6.0
+                    u1 = f64(row + 1) / 6.0
+                    off = v3(sx * 0.016, 0.012, 0.0)
+                    tube(hide_p(u0, z) + off, hide_p(u1, z) + off, 0.012, 0.012, 5, stone(0.24, 0.15, 0.075), PLAIN)
+                    tube(hide_p((u0 + u1) * 0.5, z - 0.045) + off, hide_p((u0 + u1) * 0.5, z + 0.045) + off, 0.009, 0.009, 5, stone(0.70, 0.57, 0.36), PLAIN)
+            loop k in [0..12):
+                z = -1.6 + f64(k) * 0.27
+                __begin(q(0.0, 0.0, 0.0))
+                __tri(cur, hide_p(0.93, z), hide_p(1.0, z + 0.12) - vec3(0, 0.10, 0), hide_p(0.93, z + 0.26), stone(0.31, 0.20, 0.11), HIDEM)
+                __end()
+            loop z in [-1.52, 1.52]:
+                tube(hide_p(0.65, z), q(sx * 2.0, 0.08, z * 1.15), 0.013, 0.013, 5, stone(0.52, 0.40, 0.24), PLAIN)
+                tube(q(sx * 2.0, 0.0, z * 1.15), q(sx * 2.04, 0.28, z * 1.15), 0.04, 0.03, 6, WOOD_DARK, WOODM)
+        # a horned skull lashed to the ridge pole over the opening
+        bone_c = stone(0.85, 0.82, 0.72)
+        sk_ = translation(q(0.0, 2.1, 1.75)) * rotation_y(yaw)
+        box_m(sk_ * scaling(v3(0.26, 0.2, 0.22)), bone_c, PLAIN, false)
+        box_m(sk_ * translation(v3(0.0, -0.06, 0.16)) * scaling(v3(0.16, 0.12, 0.18)), bone_c, PLAIN, false)
+        loop ex in [-1.0, 1.0]:
+            box_m(sk_ * translation(v3(ex * 0.06, 0.02, 0.11)) * scaling(v3(0.06, 0.06, 0.02)), stone(0.06, 0.05, 0.04), PLAIN, false)
+            box_m(sk_ * translation(v3(ex * 0.17, 0.12, 0.0)) * rotation_z(ex * -0.8) * scaling(v3(0.05, 0.26, 0.05)), stone(0.7, 0.65, 0.55), PLAIN, false)
+        end_named()
+        camp_tent_colliders.push(add_box(q(0.0, 0.0, 0.0), v3(1.1, 1.0, 1.7), yaw, true, .wood))
+        # what is left once it has burnt: a blackened pole or two lying across a scatter of ash
+        begin_named("camp_ash{tk}")
+        box_m(translation(q(0.0, 0.03, 0.0)) * rotation_y(yaw) * scaling(v3(2.6, 0.04, 3.4)), stone(0.06, 0.055, 0.05), PLAIN, false)
+        box_m(translation(q(0.3, 0.1, 0.2)) * rotation_y(yaw + 0.3) * scaling(v3(0.1, 0.1, 3.2)), stone(0.08, 0.06, 0.05), WOODM, false)
+        box_m(translation(q(-0.5, 0.1, -0.4)) * rotation_y(yaw - 0.8) * scaling(v3(0.1, 0.1, 2.4)), stone(0.08, 0.06, 0.05), WOODM, false)
+        box_m(translation(q(0.62, 0.55, 1.65)) * rotation_y(yaw) * rotation_z(0.63) * scaling(v3(0.09, 1.3, 0.09)), stone(0.08, 0.06, 0.05), WOODM, false)
+        end_named()
+        # a rack: two forked posts, a pole, meat hanging
+        b = a + random(1.4, 2.2)
+        rx = fx + cos(b) * 4.0
+        rz = fz + sin(b) * 4.0
+        gr = gy(rx, rz)
+        ry = -b
+        rq = (x: f64, y: f64, z: f64) -> vec3: lp(v3(rx, gr, rz), ry, x, y, z)
+        loop sx in [-1.0, 1.0]: column(rq(sx, 0.0, 0.0), 0.06, 0.05, 1.7, 5, WOOD_DARK, WOODM, false)
+        box_m(translation(rq(0.0, 1.65, 0.0)) * rotation_y(ry) * scaling(v3(2.3, 0.07, 0.07)), WOOD_DARK, WOODM, false)
+        # haunches on strings: a fat end hanging down, the bone sticking up, seared dark outside
+        loop k in [0..3):
+            m = rq(-0.6 + f64(k) * 0.6 + random(-0.1, 0.1), 0.0, 0.0)
+            drop = random(0.0, 0.12)
+            fat = random(0.11, 0.15)
+            column(m + vec3(0, f32(1.42 - drop), 0), 0.006, 0.006, 0.23 + drop, 3, stone(0.6, 0.55, 0.45), PLAIN, false)
+            column(m + vec3(0, f32(0.98 - drop), 0), fat * 0.8, fat, 0.12, 8, stone(0.42, 0.13, 0.1), PLAIN, false)
+            column(m + vec3(0, f32(1.1 - drop), 0), fat, fat * 0.45, 0.24, 8, stone(0.5, 0.17, 0.12), PLAIN, false)
+            column(m + vec3(0, f32(1.32 - drop), 0), 0.028, 0.034, 0.1, 6, stone(0.88, 0.85, 0.76), PLAIN, false)
+        # gnawed bones and a crate by the fire
+        loop k in [0..5):
+            ba = a + PI * 0.7 + f64(k) * 0.5
+            br = 2.0 + 1.2 * hash2(f64(k), fx)
+            bx = fx + cos(ba) * br
+            bz = fz + sin(ba) * br
+            bgy = gy(bx, bz)
+            box_m(translation(v3(bx, bgy + 0.05, bz)) * rotation_y(hash2(fz, f64(k)) * TAU) * scaling(v3(0.5, 0.07, 0.07)), stone(0.82, 0.78, 0.68), PLAIN, false)
+            box_m(translation(v3(bx, bgy + 0.06, bz)) * rotation_y(hash2(f64(k), fz) * TAU) * scaling(v3(0.12, 0.1, 0.12)), stone(0.85, 0.8, 0.7), PLAIN, false)
+        cx_ = fx + cos(a - 1.3) * 3.4
+        cz_ = fz + sin(a - 1.3) * 3.4
+        box(v3(cx_, gy(cx_, cz_) - 0.05, cz_), v3(0.8, 0.7, 0.8), a, WOOD, WOODM, true, true)
+        box(v3(cx_, gy(cx_, cz_) + 0.65, cz_), v3(0.84, 0.08, 0.84), a, WOOD_DARK, WOODM, false)
+        # Read as assembled camp timber, not a solid brown cube. All battens and
+        # seams are visual only; the original body retains its one climb collider.
+        crate = translation(v3(cx_, gy(cx_, cz_), cz_)) * rotation_y(a)
+        loop side in [0..4):
+            face = crate * rotation_y(f64(side) * PI / 2.0)
+            loop y in [0.07, 0.57]:
+                box_m(face * translation(v3(0.0,y,0.414)) * scaling(v3(0.82,0.065,0.035)), WOOD_DARK, WOODM, false)
+            loop x in [-0.35, 0.35]:
+                box_m(face * translation(v3(x,0.32,0.414)) * scaling(v3(0.065,0.50,0.035)), WOOD_DARK, WOODM, false)
+            loop y in [0.20, 0.35, 0.50]:
+                box_m(face * translation(v3(0.0,y,0.402)) * scaling(v3(0.64,0.012,0.008)), WOOD_DARK, WOODM, false)
+        loop plank in [0..5):
+            box_m(crate * translation(v3(-0.324+f64(plank)*0.162,0.737,0.0)) * scaling(v3(0.15,0.016,0.79)), WOOD * f32(0.83+f64(plank%3)*0.07), WOODM, false)
+        # a skull on a stake
+        sx = fx + cos(a + PI) * 4.5
+        sz = fz + sin(a + PI) * 4.5
+        gs = gy(sx, sz)
+        column(v3(sx, gs, sz), 0.05, 0.04, 1.6, 5, WOOD_DARK, WOODM, false)
+        # a horned skull: a domed crown, a long snout, dark eye holes, two curled horns
+        bone = stone(0.85, 0.82, 0.72)
+        sy = random(0.0, TAU)
+        sk = translation(v3(sx, gs + 1.65, sz)) * rotation_y(sy)
+        dome(v3(sx, gs + 1.65, sz), 0.2, 0.2, 10, 3, bone, PLAIN, rotation_y(sy))
+        box_m(sk * translation(v3(0.0, -0.04, 0.2)) * rotation_x(0.2) * scaling(v3(0.2, 0.14, 0.3)), bone, PLAIN, false)
+        loop ex in [-1.0, 1.0]:
+            box_m(sk * translation(v3(ex * 0.1, 0.06, 0.16)) * scaling(v3(0.08, 0.07, 0.04)), stone(0.08, 0.06, 0.05), PLAIN, false)
+            box_m(sk * translation(v3(ex * 0.2, 0.12, 0.0)) * rotation_z(ex * -0.9) * scaling(v3(0.06, 0.28, 0.06)), stone(0.7, 0.65, 0.55), PLAIN, false)
+    eprint("camps dressed: {n}")
+
+# Curved, bevelled shell sectors. Moss is pigment in the same surface, not
+# floating green polygons; normals follow the dome through the panel interiors.
+guardian_shell_panel = (o: vec3, frame: mat4, az: f64, el: f64, seed: f64):
+    __begin(o)
+    point = (u: f64, v: f64) -> vec3:
+        aa = az + u*0.247
+        ee = el + v*0.178
+        bevel = smoothstep(0.72,1.0,max(abs(u),abs(v)))
+        radius = 3.29 - bevel*0.055
+        o + transform_dir(frame,v3(cos(aa)*cos(ee)*radius,sin(ee)*(2.68-bevel*0.05),sin(aa)*cos(ee)*radius))
+    normal = (u: f64, v: f64) -> vec3:
+        aa=az+u*0.247
+        ee=el+v*0.178
+        normalize(transform_dir(frame,v3(cos(aa)*cos(ee)/3.29,sin(ee)/2.68,sin(aa)*cos(ee)/3.29)))
+    loop row in [0..4):
+        loop col in [0..6):
+            u0=f64(col)/3.0-1.0
+            u1=f64(col+1)/3.0-1.0
+            v0=f64(row)/2.0-1.0
+            v1=f64(row+1)/2.0-1.0
+            tone=0.84+hash2(seed,3.0)*0.17
+            moss=smoothstep(0.43,0.78,hash2(seed+floor(f64(col)/2.0),floor(f64(row)/2.0)))
+            c=mix(stone(0.36*tone,0.35*tone,0.285*tone),stone(0.19,0.265,0.135),f32(moss*0.65))
+            __quad_n(cur,point(u0,v0),point(u0,v1),point(u1,v1),point(u1,v0),normal(u0,v0),normal(u0,v1),normal(u1,v1),normal(u1,v0),c,vec4(-1,0.85,0,0))
+    __end()
+
+# Open annulus and a recessed, flat dead lens. Generic capped tubes would
+# put their conical end caps in front of the lens and fill the eye socket.
+guardian_dead_eye = (eye: vec3, axis: vec3, right: vec3):
+    up = cross(axis,right)
+    __begin(eye)
+    depths = [-0.24,0.12,0.16,-0.055]
+    radii = [0.71,0.68,0.56,0.50]
+    loop ring in [0..3):
+        col = if ring==2:stone(0.045,0.055,0.049) else:stone(0.125,0.145,0.13)
+        loop k in [0..24):
+            a=TAU*f64(k)/24.0
+            b=TAU*f64(k+1)/24.0
+            r0=right*f32(cos(a))+up*f32(sin(a))
+            r1=right*f32(cos(b))+up*f32(sin(b))
+            n0=normalize(r0*f32(depths[ring+1]-depths[ring])+axis*f32(radii[ring]-radii[ring+1]))
+            n1=normalize(r1*f32(depths[ring+1]-depths[ring])+axis*f32(radii[ring]-radii[ring+1]))
+            p=eye+axis*f32(depths[ring])
+            q=eye+axis*f32(depths[ring+1])
+            __quad_n(cur,p+r0*f32(radii[ring]),p+r1*f32(radii[ring]),q+r1*f32(radii[ring+1]),q+r0*f32(radii[ring+1]),n0,n1,n1,n0,col,PLAIN)
+    disk = (center: vec3, radius: f64, col: vec4):
+        loop k in [0..24):
+            a=TAU*f64(k)/24.0
+            b=TAU*f64(k+1)/24.0
+            __tri(cur,center,center+(right*f32(cos(a))+up*f32(sin(a)))*f32(radius),center+(right*f32(cos(b))+up*f32(sin(b)))*f32(radius),col,PLAIN)
+    disk(eye-axis*0.052,0.50,stone(0.04,0.06,0.055))
+    disk(eye-axis*0.048,0.34,stone(0.095,0.165,0.17))
+    disk(eye-axis*0.044,0.17,stone(0.024,0.033,0.032))
+    disk(eye-axis*0.040-right*0.13+up*0.14,0.043,stone(0.40,0.52,0.48))
+    __end()
+
+guardian_husks = ():
+    # Track only geometry appended by this builder; adjoining ruins keep their paint.
+    starts: {int: int} = {}
+    loop key,b in __bchunks: starts[key]=b.verts.len()
+    # Fallen shells, split armor and seized joints, half buried in the turf.
+    seed_random(21)
+    # ancient metal gone rust-brown, its seams green with moss
+    metal = stone(0.15, 0.175, 0.16)
+    loop a in actors:
+        if a.name != "FldObj_RuinGuardian_A_01": continue
+        x = f64(a.pos.x)
+        z = f64(a.pos.z)
+        if x < -1600.0 or x > -350.0 or z < 1400.0 or z > 2420.0: continue
+        g = gy(x, z)
+        # fallen long ago: half sunk, tipped over, grown over
+        frame = rotation_y(a.rot) * rotation_x(random(-0.85, -0.22)) * rotation_z(random(-0.7, 0.7))
+        # The old tilt buried the eye beneath the turf on many shells. Keep the same
+        # random samples and footprint, but expose the socket above the sunken skirt.
+        o = v3(x, g - random(0.5, 1.0), z)
+        # (the shell: Sheikah stone gone to a teal-green patina, its traces all but dark)
+        dome(o, 3.2, 2.6, 28, 9, stone(0.115, 0.145, 0.135), vec4(-1.0, 0.95, 0.12, 0.45), frame)
+        loop row in [0..3):
+            elevation = 0.22 + f64(row) * 0.39
+            radius = cos(elevation) * 3.22
+            y = sin(elevation) * 2.65
+            loop k in [0..12):
+                ang = TAU * (f64(k) + f64(row % 2) * 0.5) / 12.0
+                # one broken panel exposes the dark shell beneath
+                if row == 1 and k == 3: continue
+                guardian_shell_panel(o,frame,ang,elevation,x+f64(k)*7.0+f64(row)*51.0)
+        column(o + v3(0.0, -0.6, 0.0), 2.95, 3.2, 0.7, 18, darken(metal, 0.25), vec4(0.0, 0.7, 0.0, 0.0), false)
+        # the head's rim: a heavy ring round the base of the dome, and a small crown on top
+        tube(o + transform_dir(frame, v3(0.0, -0.05, 0.0)), o + transform_dir(frame, v3(0.0, 0.4, 0.0)), 3.45, 3.35, 20, darken(metal, 0.3), vec4(0.0, 0.5, 0.0, 0.0))
+        tube(o + transform_dir(frame,v3(0.0,1.95,0.0)), o + transform_dir(frame,v3(0.0,2.4,0.0)),1.25,1.30,24,darken(metal,0.2),PLAIN)
+        dome(o + transform_dir(frame, v3(0.0, 2.28, 0.0)), 1.46, 1.08, 28, 8, stone(0.29,0.30,0.255), vec4(-1.0, 0.85, 0.0, 0.0), frame)
+        # the great eye: a deep round socket standing out of the shell, a heavy rim, the dead
+        # lens dark with a dull ember of light deep in it
+        en = normalize(transform_dir(frame, v3(0.0, 0.16, 0.987)))
+        eye = o + transform_dir(frame, v3(0.0, 2.72, 1.25)) + en*0.28
+        guardian_dead_eye(eye,en,transform_dir(frame,vec3(1,0,0)))
+        loop vine in [0..3):
+            angle = f64(vine) * 2.1 + hash2(x, z) * 2.0
+            point = (t: f64) -> vec3:
+                elevation = 1.35 - t * 1.22
+                az = angle + sin(t * 5.0 + f64(vine)) * 0.12
+                o + transform_dir(frame, v3(cos(az) * cos(elevation) * 3.42, sin(elevation) * 2.79, sin(az) * cos(elevation) * 3.42))
+            loop j in [0..7):
+                q = point(f64(j) / 7.0)
+                end = point(f64(j + 1) / 7.0)
+                tube(q, end, 0.032, 0.023, 4, stone(0.17, 0.24, 0.10), PLAIN)
+                # Small paired leaves hug the armor instead of forming a freestanding bush.
+                loop side in [-1.0, 1.0]:
+                    leaf = q + transform_dir(frame, v3(cos(angle + PI / 2.0) * side * 0.11, 0.025, sin(angle + PI / 2.0) * side * 0.11))
+                    dome(leaf, 0.15, 0.065, 5, 2, stone(0.25, 0.36, 0.13), PLAIN, frame)
+        loop k in [0..8):
+            ang = TAU * f64(k) / 8.0
+            tangent = transform_dir(frame, v3(cos(ang), sin(ang) * 0.987, -sin(ang) * 0.16))
+            bolt = eye + en * 0.13 + tangent * 0.61
+            tube(bolt, bolt + en * 0.035, 0.045, 0.035, 8, metal, PLAIN)
+        # a darker band of plates round the dome's middle
+        tube(o + transform_dir(frame, v3(0.0, 0.75, 0.0)), o + transform_dir(frame, v3(0.0, 1.1, 0.0)), 3.12, 2.95, 20, darken(metal, 0.2), vec4(0.0, 0.4, 0.0, 0.0))
+        # six legs: each a thigh up from the hip, a long shin down, a clawed foot; tubes with knuckles
+        loop k in [0..6):
+            # (collapsed long ago: legs splayed flat and sunk in the turf, one or two gone, one snapped)
+            fate = random()
+            if fate < 0.25: continue
+            ang = a.rot + f64(k) * TAU / 6.0 + random(-0.25, 0.25)
+            out_ = v3(cos(ang), 0.0, sin(ang))
+            hip = o + out_ * 2.6 + v3(0.0, 0.6, 0.0)
+            knee = o + out_ * random(5.2, 6.2) + v3(0.0, random(2.0, 3.0), 0.0)
+            ankle = o + out_ * random(8.0, 9.5) + v3(0.0, random(0.9, 1.6), 0.0)
+            # Ground each collapsed limb on its own patch of slope. Keep the
+            # random stream/leg fates so other husks and fauna stay deterministic.
+            knee.y = f32(gy(f64(knee.x),f64(knee.z))+0.30)
+            ankle.y = f32(gy(f64(ankle.x),f64(ankle.z))-0.10)
+            foot = ankle + out_ * 0.7 + v3(0.0, -0.25, 0.0)
+            segs = if fate < 0.4: [(hip, knee, 0.55)] else: [(hip, knee, 0.55), (knee, ankle, 0.4), (ankle, foot, 0.28)]
+            loop seg_ in segs:
+                d = seg_.1 - seg_.0
+                l = f64(length(d))
+                mid = (seg_.0 + seg_.1) * 0.5
+                yaw = atan2(-f64(d.z), f64(d.x))
+                pitch = asin(clamp(f64(d.y) / l, -1.0, 1.0))
+                # Ribs overlap the dark inner limb; the last collar holds the joint.
+                tube(seg_.0, seg_.1, seg_.2 * 0.95, seg_.2 * 0.8, 10, stone(0.16, 0.18, 0.2), vec4(-1.0, 0.8, 0.0, 0.4))
+                loop rib in [1..5):
+                    t = f32(rib) / 5.0
+                    tube(seg_.0 + d * (t - 0.055), seg_.0 + d * (t + 0.055), seg_.2 * 1.10, seg_.2 * 0.98, 8, stone(0.29, 0.29, 0.25), vec4(0.0, 0.4, 0.0, 0.0))
+                tube(seg_.1 - d * f32(0.08), seg_.1 + d * f32(0.04), seg_.2 * 1.05, seg_.2 * 1.05, 10, darken(metal, 0.35), PLAIN)
+            loop jp in (if fate < 0.4: [hip, knee] else: [hip, knee, ankle]):
+                dome(jp - vec3(0, 0.1, 0), 0.5, 0.42, 10, 4, darken(metal, 0.3), vec4(-1.0, 0.8, 0.0, 0.4))
+                axle = v3(-sin(ang), 0.0, cos(ang))
+                tube(jp - axle * 0.52, jp + axle * 0.52, 0.27, 0.27, 10, stone(0.14, 0.17, 0.17), PLAIN)
+                loop side in [-1.0, 1.0]:
+                    cap = jp + axle * f32(side * 0.53)
+                    tube(cap, cap + axle * f32(side * 0.04), 0.16, 0.14, 8, stone(0.33, 0.30, 0.22), PLAIN)
+            if fate < 0.4:
+                loop wire in [-0.15, 0.0, 0.15]:
+                    end = knee + v3(wire, 0.0, -wire)
+                    tube(end, end + out_ * 0.5 + v3(0.0, -0.2, 0.0), 0.045, 0.02, 5, stone(0.09, 0.12, 0.12), PLAIN)
+        # Turf follows the ground at the buried rim, instead of brown freestanding lumps.
+        loop k in [0..9):
+            # Preserve the old earth mounds' random draws so later shells keep their poses.
+            am = TAU * f64(k) / 9.0 + random(-0.2, 0.2)
+            random(0.8, 1.3) # preserve later shell poses after removing the turf fan
+            px = x + cos(am) * 3.35
+            pz = z + sin(am) * 3.35
+            __begin(v3(px, gy(px, pz), pz))
+            # The terrain and living grass already cover the rim. A fan touching
+            # only sampled heights cuts across curved slopes and floats as a card.
+            # Small tapered grass blades around the half-buried edge, matching the meadow.
+            loop blade in [0..9):
+                h = hash2(x + f64(k) * 9.0, f64(blade))
+                xx = px + (h - 0.5) * 1.3
+                zz = pz + (hash2(z + f64(k), f64(blade)) - 0.5) * 1.3
+                base = v3(xx, gy(xx, zz) + 0.035, zz)
+                high = 0.19 + h * 0.30
+                side = v3(cos(am) * 0.038, 0.0, sin(am) * 0.038)
+                __tri(cur, base - side, base + side, base + v3(cos(am) * 0.13, high, sin(am) * 0.13), stone(0.34 + h * 0.05, 0.45 + h * 0.07, 0.14), PLAIN)
+            __end()
+        add_cyl(o - vec3(0, 0.6, 0), 3.2, 3.2, true, .metal)
+
+    # Weathered mineral planes, warm oxide and subdued moss, all in the
+    # existing vertices/materials. No added geometry, draws or shader work.
+    loop key in __bchunks.keys():
+        b=__bchunks[key]
+        first=starts.get(key) ?? 0
+        if first==b.verts.len(): continue
+        loop i in [first..b.verts.len()):
+            v=b.verts[i]
+            p=v.pos
+            patch=0.5+0.5*sin(f64(p.x)*1.7+f64(p.y)*2.3+sin(f64(p.z)*2.1))
+            grain=0.5+0.5*sin(f64(p.x)*6.7-f64(p.z)*5.3+f64(p.y)*4.9)
+            up=smoothstep(-0.3,0.7,f64(v.normal.y))
+            green=smoothstep(0.01,0.09,f64(v.color.y-v.color.x))
+            grey=(v.color.x+v.color.y+v.color.z)/3.0
+            c=mix(v.color.xyz,vec3(grey*0.96,grey,grey*0.88),f32(green*0.38))
+            wash=0.73+0.20*patch+0.10*up+0.05*grain
+            oxide=(1.0-up)*patch*(1.0-green)*0.12
+            c=mix(c,vec3(0.13,0.12,0.085),f32(oxide))
+            v.color=vec4(c*f32(wash),v.color.w)
+            v.mat.y*=0.48
+            b.verts[i]=v
+        __bchunks[key]=b
+
+# set by main: the shrines' chambers are added to the same build
+shrines_build_hook: () -> void = (): pass
+
+# ---------------- everything ----------------
+# A shallow natural alcove; the dry thorns/rubble occupy its open south face.
+element_puzzle_nooks = ():
+    loop xy in [FOREST_THORNS,RIVER_CRACKS]:
+        p = v3(f64(xy.x),gy(f64(xy.x),f64(xy.y)),f64(xy.y))
+        loop side in [-1.0,1.0]:
+            rock_lump(p+v3(side*2.0,1.0,-1.4),vec3(0.85,1.4,1.8),mat4(),f64(xy.x)+side*3.0,stone(0.32,0.30,0.255),vec4(0,0.7,0,5))
+            add_box(p+v3(side*2.0,0.0,-1.4),vec3(0.65,1.1,1.65),climbable=true,surf=.rock)
+        rock_lump(p+vec3(0,1.1,-3.0),vec3(2.5,1.5,0.8),mat4(),f64(xy.y),stone(0.30,0.285,0.25),vec4(0,0.6,0,5))
+        add_box(p+vec3(0,0,-3.0),vec3(2.0,1.2,0.55),climbable=true,surf=.rock)
+        if xy==FOREST_THORNS:
+            rock_lump(p+vec3(0,2.5,-1.5),vec3(2.8,0.7,1.9),mat4(),72.0,stone(0.32,0.30,0.26),vec4(0,0.8,0,5))
+            add_box(p+vec3(0,2.25,-1.5),vec3(2.0,0.35,1.75),climbable=true,surf=.rock)
+
+# A split local outcrop: a small stable archer shelf, sloping broken shoulders,
+# and an elongated root buried into the hillside. Flat facets replace the drum.
+camp_lookout_rock = (origin: vec3):
+    # Use metre-scale fractured rock pigment, not the distant cliff's broad beds.
+    # The shelf and all collision/support geometry stay exactly as authored.
+    __begin(origin)
+    shelf_outline: vec2[] = [vec2(-2.2, -1.1), vec2(-0.9, -2.0), vec2(1.1, -1.6), vec2(2.0, -0.6), vec2(1.6, 0.9), vec2(0.3, 1.5), vec2(-1.4, 1.4), vec2(-2.0, 0.3)]
+    point = (k: int, ring: int) -> vec3:
+        q = shelf_outline[k % 8]
+        if ring == 3: return origin + vec3(q.x * 0.55, f32(CAMP_LOOKOUT_HEIGHT), q.y * 0.55)
+        if ring == 2:
+            crest = [2.1, 2.4, 2.25, 1.5, 1.15, 1.6, 2.2, 2.05][k % 8]
+            return origin + vec3(q.x, f32(crest), q.y)
+        scale = if ring == 0: 1.55 + f64(k % 3) * 0.22 else: 1.1 + f64(k % 2) * 0.17
+        offset = if ring == 0: vec2(-1.6, -0.7) else: vec2(-0.55, -0.25)
+        xz = q * f32(scale) + offset
+        y = if ring == 0: height_at(f64(origin.x + xz.x), f64(origin.z + xz.y)) - f64(origin.y) - 0.55 else: 0.65 + f64(k % 3) * 0.36
+        origin + vec3(xz.x, f32(y), xz.y)
+    loop ring in [0..3):
+        loop k in [0..8):
+            a = point(k, ring)
+            b = point(k + 1, ring)
+            c = point(k + 1, ring + 1)
+            d = point(k, ring + 1)
+            n = normalize(cross(d - a, b - a))
+            col = GREY * f32(0.83 + f64(k % 3) * 0.07)
+            __quad(cur, a, d, c, b, n, col, vec4(0, 0, 0, 3))
+    loop k in [0..8): __tri(cur, origin + vec3(0, f32(CAMP_LOOKOUT_HEIGHT), 0), point(k + 1, 3), point(k, 3), GREY, vec4(0, 0, 0, 3))
+    __end()
+
+structures_generate = ():
+    find_shrines()
+    perimeter_wall()
+    temple()
+    loop a in actors:
+        if a.name == "TwnObj_TempleOfTime_Bravery_A_01" or a.name == "TwnObj_TempleOfTime_Strength_A_01" or a.name == "TwnObj_TempleOfTime_Wisdom_A_01":
+            abbey(v3(f64(a.pos.x), gy(f64(a.pos.x), f64(a.pos.z)), f64(a.pos.z)), a.rot, 10.0)
+    eastern_abbey()
+    cabin()
+    old_road()
+    fountain()
+    sor_mouth()
+    cliff_outcrops()
+    loop s in shrines: shrine_exterior(s)
+    tower()
+    tower_ruins()
+    tower_add_colliders()
+    lookouts()
+    lookout_rock = v3(f64(CAMP_LOOKOUT.x), gy(f64(CAMP_LOOKOUT.x), f64(CAMP_LOOKOUT.y)), f64(CAMP_LOOKOUT.y))
+    camp_lookout_rock(lookout_rock)
+    add_cyl(lookout_rock, 1.85, 1.35, true, .rock)
+    add_cyl(lookout_rock, 0.8, CAMP_LOOKOUT_HEIGHT, true, .rock)
+    guardian_husks()
+    camps()
+    element_puzzle_nooks()
+    shrines_build_hook()
+structures_build = ():
+    t0 = time()
+    structures_generate()
+    build_finish()
+    __cliff_finish()
+    eprint("structures {time() - t0:.2}s, {colliders.len()} colliders, {bchunks.len()} chunks, shrines {shrines.len()}")

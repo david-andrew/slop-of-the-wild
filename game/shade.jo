@@ -1,0 +1,219 @@
+# Shader-side library: noise, the painterly light model, aerial perspective, shadows.
+# (plain Jot functions: the shader translator turns them into GLSL where shaders call them)
+
+hash12 = (p: vec2) -> f32:
+    q = fract(p * 0.1031)
+    q = q + vec2(dot(q, vec2(q.y + 33.33, q.x + 33.33)), dot(q, vec2(q.y + 33.33, q.x + 33.33)))
+    fract((q.x + q.y) * q.x * 1.37 + q.y * 0.71)
+
+hash13 = (p: vec3) -> f32:
+    fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453)
+
+vnoise = (p: vec2) -> f32:
+    i = floor(p)
+    f = p - i
+    u = f * f * (vec2(3, 3) - f * 2.0)
+    a = hash12(i)
+    b = hash12(i + vec2(1, 0))
+    c = hash12(i + vec2(0, 1))
+    d = hash12(i + vec2(1, 1))
+    lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y)
+
+fbm3 = (p: vec2) -> f32:
+    v = vnoise(p) * 0.5
+    v = v + vnoise(p * 2.03 + vec2(17.1, 3.7)) * 0.25
+    v + vnoise(p * 4.07 + vec2(5.3, 41.2)) * 0.125
+
+fbm5 = (p: vec2) -> f32:
+    v = vnoise(p) * 0.5
+    v = v + vnoise(p * 2.03 + vec2(17.1, 3.7)) * 0.25
+    v = v + vnoise(p * 4.07 + vec2(5.3, 41.2)) * 0.125
+    v = v + vnoise(p * 8.11 + vec2(9.9, 1.3)) * 0.0625
+    v + vnoise(p * 16.3 + vec2(2.1, 7.7)) * 0.03125
+
+luma = (c: vec3) -> f32: dot(c, vec3(0.299, 0.587, 0.114))
+
+# the painterly light: a soft terminator (a broad cel band, not a hard one), cool shade,
+# warm light, and a bright rim facing the sky
+paint_light = (albedo: vec3, n: vec3, l: vec3, v: vec3, sun: vec3, sky: vec3, ground: vec3, shadow: f32, wrap: f32) -> vec3:
+    ndl = dot(n, l)
+    soft = clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0)
+    band = smoothstep(0.0, 0.35, soft)
+    d = lerp(soft, band, f32(0.6)) * shadow
+    hemi = mix(ground, sky, n.y * 0.5 + 0.5)
+    # shade is cool: a little extra blue where the sun does not reach
+    # (a painter's shadow: a soft violet, lighter than the sky alone would make it)
+    c = albedo * (hemi * vec3(1.04, 0.98, 0.98) + sun * d) + albedo * (sky * 0.5 + vec3(0.12, 0.1, 0.16)) * vec3(0.32, 0.26, 0.42) * (1.0 - d)
+    # (and light bounced up from the sunlit land into the shade: warm, so a wall's dark side is a
+    # warm grey, not navy)
+    c = c + albedo * sun * vec3(1.0, 0.9, 0.75) * 0.12 * (1.0 - d) * clamp(0.6 - n.y * 0.4, 0.0, 1.0)
+    rim = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0)
+    c + (sky * 0.5 + sun * 0.5 * d) * rim * 0.35 * albedo
+
+# shadows of the clouds drifting over the land (cover: env.clouds)
+cloud_shade = (xz: vec2, t: f32, cover: f32) -> f32:
+    if cover >= 0.85: return 1.0
+    p = xz * 0.0016 + vec2(t * 0.005, t * 0.002)
+    n = fbm3(p)
+    1.0 - smoothstep(0.86 - cover * 0.9, 1.0 - cover * 0.9, n) * 0.6 * shadow_direct(cover)
+
+# aerial perspective: blue haze that thickens with distance (less up high), warmer toward the sun
+atmos = (c: vec3, world: vec3, cam: vec3, l: vec3, haze: vec3, sun: vec3, density: f32, falloff: f32) -> vec3:
+    dv = world - cam
+    dist = length(dv)
+    dir = dv / max(dist, 0.001)
+    h = max(min(world.y, cam.y) - 0.0, 0.0)
+    # (the first 150 m clear: the haze is for the far land, the plateau keeps its color)
+    amt = 1.0 - exp(-max(dist - 150.0, dist * 0.15) * density * exp(-h * falloff))
+    sunamt = pow(max(dot(dir, l), 0.0), 6.0)
+    fc = mix(haze, haze * 0.6 + sun * 0.45, sunamt * 0.7)
+    mix(c, fc, clamp(amt, 0.0, 1.0))
+
+# Cloud cover travels in the orthographic projector's homogeneous W (see shadows.jo).
+# Clear skies keep the existing taps; overcast broadens them and removes direct shadows.
+shadow_direct = (cover: f32) -> f32: 1.0 - smoothstep(0.52, 0.85, cover)
+shadow_softness = (cover: f32) -> f32: 1.0 + smoothstep(0.45, 0.85, cover) * 4.0
+
+# percentage-closer filtering of one shadow map: 12 taps on a spiral (a Vogel disk) turned by
+# a per-pixel angle, so the edge is a soft painted gradient instead of texel steps
+pcf = (sm: Texture, sp: vec4, texel: f32, bias: f32, rot: f32, radius: f32) -> f32:
+    cover = clamp(sp.w - 1.0, 0.0, 1.0)
+    strength = shadow_direct(cover)
+    p = sp.xyz / sp.w * 0.5 + vec3(0.5, 0.5, 0.5)
+    if p.x < 0.0 or p.x > 1.0 or p.y < 0.0 or p.y > 1.0 or p.z > 1.0: return -1.0
+    if strength <= 0.0: return 1.0
+    spread = radius * shadow_softness(cover)
+    lit: f32 = 0.0
+    loop k in [0..12):
+        fk = f32(k)
+        r = sqrt((fk + 0.5) / 12.0) * spread
+        a = fk * 2.39996 + rot
+        d = sample(sm, p.xy + vec2(cos(a), sin(a)) * (r * texel)).x
+        if p.z - bias * (1.0 + r * 0.25) <= d: lit += 1.0
+    lerp(f32(1.0), lit / 12.0, strength)
+
+# four taps, for foliage (its own noise hides the coarser filter, and it is drawn many times over)
+pcf4 = (sm: Texture, sp: vec4, texel: f32, bias: f32, rot: f32, radius: f32) -> f32:
+    cover = clamp(sp.w - 1.0, 0.0, 1.0)
+    strength = shadow_direct(cover)
+    p = sp.xyz / sp.w * 0.5 + vec3(0.5, 0.5, 0.5)
+    if p.x < 0.0 or p.x > 1.0 or p.y < 0.0 or p.y > 1.0 or p.z > 1.0: return -1.0
+    if strength <= 0.0: return 1.0
+    spread = radius * shadow_softness(cover)
+    lit: f32 = 0.0
+    loop k in [0..4):
+        a = f32(k) * 1.5708 + rot
+        d = sample(sm, p.xy + vec2(cos(a), sin(a)) * (spread * 0.7 * texel)).x
+        # A narrow depth ramp and the wider disk soften leaf-shaped cut-outs,
+        # with the same four texture reads. Distant cascades keep their bias.
+        lit += smoothstep(-bias * 0.35, bias * 0.35, d - p.z + bias)
+    lerp(f32(1.0), lit / 4.0, strength)
+
+# A symmetric value compression borrows the existing painted shade colour.
+# Taper it out before the near cascade ends, so no brightness ring follows the camera.
+painted_near_shadow = (s: f32, sp: vec4) -> f32:
+    edge = max(abs(sp.x / sp.w), abs(sp.y / sp.w))
+    amount = 0.20 * shadow_direct(clamp(sp.w - 1.0, 0.0, 1.0)) * (1.0 - smoothstep(0.70, 0.98, edge))
+    lerp(s, f32(0.5), amount)
+
+cascade_shadow_fast = (world: vec3, ndl: f32, vp0: mat4, vp1: mat4, vp2: mat4, sm0: Texture, sm1: Texture, sm2: Texture) -> f32:
+    # Orthographic W is uniform: a solid cloud deck skips the entire receiver filter.
+    if vp0[3].w >= 1.85: return 1.0
+    b = 1.0 - clamp(ndl, 0.0, 1.0)
+    rot = hash12(floor(world.xz * 40.0) + vec2(floor(world.y * 40.0) * 0.37, 0)) * 6.2832
+    near = vp0 * vec4(world, 1)
+    s = pcf4(sm0, near, 1.0 / 2048.0, 0.0008 + 0.0015 * b, rot, 4.5)
+    if s >= 0.0: return painted_near_shadow(s, near)
+    middle = vp1 * vec4(world, 1)
+    s = pcf4(sm1, middle, 1.0 / 2048.0, 0.001 + 0.002 * b, rot, 2.0)
+    if s >= 0.0:
+        edge = max(abs(middle.x / middle.w), abs(middle.y / middle.w))
+        return lerp(s, f32(1.0), 0.38 * smoothstep(0.72, 0.98, edge))
+    # Distant coverage becomes broad ambient shade. The near and middle
+    # filters retain local contacts while broadening foliage penumbrae.
+    far = vp2 * vec4(world, 1)
+    s = pcf4(sm2, far, 1.0 / 2048.0, 0.0012 + 0.002 * b, rot, 4.0)
+    if s >= 0.0:
+        edge = max(abs(far.x / far.w), abs(far.y / far.w))
+        return lerp(s, f32(1.0), 0.38 + 0.62 * smoothstep(0.72, 0.98, edge))
+    1.0
+
+# three cascades: the first map that covers the point decides
+cascade_shadow = (world: vec3, ndl: f32, vp0: mat4, vp1: mat4, vp2: mat4, sm0: Texture, sm1: Texture, sm2: Texture) -> f32:
+    # Orthographic W is uniform: a solid cloud deck skips the entire receiver filter.
+    if vp0[3].w >= 1.85: return 1.0
+    b = 1.0 - clamp(ndl, 0.0, 1.0)
+    rot = hash12(floor(world.xz * 40.0) + vec2(floor(world.y * 40.0) * 0.37, 0)) * 6.2832
+    near = vp0 * vec4(world, 1)
+    s = pcf(sm0, near, 1.0 / 2048.0, 0.00008 + 0.00018 * b, rot, 4.5)
+    if s >= 0.0: return painted_near_shadow(s, near)
+    middle = vp1 * vec4(world, 1)
+    s = pcf(sm1, middle, 1.0 / 2048.0, 0.0008 + 0.002 * b, rot, 2.0)
+    if s >= 0.0:
+        edge = max(abs(middle.x / middle.w), abs(middle.y / middle.w))
+        return lerp(s, f32(1.0), 0.38 * smoothstep(0.72, 0.98, edge))
+    # Distant coverage becomes broad ambient shade. The near and middle
+    # filters retain local contacts while broadening foliage penumbrae.
+    far = vp2 * vec4(world, 1)
+    s = pcf(sm2, far, 1.0 / 2048.0, 0.001 + 0.002 * b, rot, 4.0)
+    if s >= 0.0:
+        edge = max(abs(far.x / far.w), abs(far.y / far.w))
+        return lerp(s, f32(1.0), 0.38 + 0.62 * smoothstep(0.72, 0.98, edge))
+    1.0
+
+# a soft filmic curve
+filmic = (x: vec3) -> vec3:
+    a = x * (x * 2.51 + vec3(0.03, 0.03, 0.03))
+    b = x * (x * 2.43 + vec3(0.59, 0.59, 0.59)) + vec3(0.14, 0.14, 0.14)
+    clamp(a / b, 0.0, 1.0)
+
+# a warm local light (a campfire or a torch): lp = position and radius, lc = color * intensity
+point_light = (alb: vec3, n: vec3, w: vec3, lp: vec4, lc: vec3) -> vec3:
+    if lp.w <= 0.0: return vec3(0, 0, 0)
+    d = lp.xyz - w
+    dist = length(d)
+    # (a broad pool that fades to nothing at the radius, brightest close in)
+    q = clamp(1.0 - dist * dist / (lp.w * lp.w), 0.0, 1.0)
+    att = q * q * q * (0.5 + 0.5 / (1.0 + dist * dist / (lp.w * lp.w) * 6.0))
+    ndl = clamp(dot(n, d / max(dist, 0.001)) * 0.6 + 0.4, 0.0, 1.0)
+    # (firelight takes over the color it falls on: green grass by a fire glows amber, not lime)
+    la = dot(alb, vec3(0.3, 0.55, 0.15))
+    mix(alb, vec3(la, la, la), 0.48) * lc * (att * ndl)
+
+# A restrained skylight bounce for soaked characters under a cloud deck. It
+# preserves pigment and the shape of the surface; night/shrine light is excluded
+# by the wet input and daytime sky gate, and no receiver/shadow tap is added.
+canopy_bounce = (alb: vec3, n: vec3, sun: vec3, sky: vec3, wet: f32, material: f32) -> vec3:
+    overcast = smoothstep(1.5, 0.6, luma(sun) / max(luma(sky), 0.001)) * smoothstep(0.16, 0.30, luma(sky))
+    plane = 0.35 + 0.65 * smoothstep(-0.35, 0.75, dot(n, normalize(vec3(0.35, 0.8, 0.45))))
+    alb * sky * vec3(1.05, 1.0, 0.94) * overcast * wet * material * plane
+
+# Rain film: stone catches a tight reflected lobe, soil a muted sky sheen.
+# Called only for wet surfaces; no texture read or additional pass.
+wet_surface = (n: vec3, l: vec3, v: vec3, sun: vec3, sky: vec3, shadow: f32, wet: f32, stone: f32) -> vec3:
+    h = normalize(l + v)
+    shine = pow(max(dot(n, h), 0.0), 60.0) * wet * shadow
+    sun * shine * (0.15 + stone * 0.45) + sky * wet * max(n.y, 0.0) * (0.015 + stone * 0.025)
+
+# Shallow pooling in broad low patches on nearly level ground. Shared by terrain and impacts.
+puddle_mask = (xz: vec2, up: f32, wet: f32) -> f32:
+    smoothstep(0.62, 0.95, wet) * smoothstep(0.985, 0.999, up) * smoothstep(0.54, 0.69, vnoise(xz * 0.18 + vec2(8.0, 3.0)))
+
+# Creature pigment keeps its painted planes under a wet cloud deck. Only
+# creature draws opt in; this bounce never alters the forest's exposure.
+creature_bounce = (alb: vec3, n: vec3, sun: vec3, sky: vec3, wet: f32) -> vec3:
+    overcast = smoothstep(2.7, 1.25, luma(sun) / max(luma(sky), 0.001)) * smoothstep(0.14, 0.25, luma(sky))
+    plane = 0.08 + smoothstep(-0.12, 0.82, n.y) * 0.92
+    alb * sky * vec3(1.12, 1.05, 0.97) * overcast * wet * plane * 0.92
+
+# The weathered brow and its host cliff share one mineral wash. Restrict the
+# transition to the Resurrection cut; other authored cliff materials keep theirs.
+cave_cliff_cover = (w: vec3) -> f32:
+    if w.x < -1107.0 or w.x > -1031.0 or w.z < 1807.0 or w.z > 1883.0: return 0.0
+    1.0-smoothstep(22.0,38.0,length(w.xz-vec2(-1069,1845)))
+
+cave_weathered_stone = (w: vec3) -> vec3:
+    q = vec2(w.x+w.z*0.7,w.y+(w.x-w.z)*0.18)
+    wash = vnoise(q*vec2(0.045,0.065))
+    bed = vnoise(q*vec2(0.035,0.10)+vec2(7,3))
+    mix(vec3(0.225,0.25,0.27),vec3(0.295,0.315,0.325),smoothstep(0.22,0.76,wash))*(0.90+bed*0.16)

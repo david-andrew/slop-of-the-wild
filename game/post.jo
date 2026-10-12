@@ -1,0 +1,529 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'scene.jo'
+
+# Material-aware watercolor. HDR alpha is a continuous paint response, not opacity:
+# 0 smooth smoke/water/legacy figures, .15 skin, .33 cloth, .65 foliage, .85 stone,
+# 1 neutral earth/architecture. Water blends response toward 0 with optical coverage.
+# Negative alpha still marks faded occluders. The paint pass reserves (1,2] for
+# distant fine structure, where preserving the silhouette overrides material grain.
+# (2,3] carries the same protection for foliage while retaining its softer rim.
+# Sky is identified by depth and has wet washes but no paper tooth. No extra target.
+paint_foliage = (a: f32) -> f32: if a > 2.0: 1.0 else: 1.0 - smoothstep(0.055, 0.17, abs(a - 0.65))
+paint_stone = (a: f32) -> f32: 1.0 - smoothstep(0.045, 0.14, abs(a - 0.85))
+
+struct PostU:
+    src: Texture
+    soft: Texture
+    depth: Texture
+    texel: vec2
+    dir: vec2
+    near: f32
+    far: f32
+    time: f32
+    bloom: f32
+    exposure: f32
+    paint: f32
+    sat: f32
+    shadow_tint: vec3
+    light_tint: vec3
+    vignette: f32
+    fade: f32           # to black (cutscenes, waking)
+    white: f32          # to white
+    hurt: f32
+    underwater: f32
+    sun_uv = vec2(0, 0)     # the sun on screen
+    rays = 0.0              # how strong its shafts (low sun, sun in front)
+    ray_color = vec3(0, 0, 0)
+    golden = 0.0            # low sun, clear sky: the whole picture warms, shadows go violet
+    moon = 0.0              # night outdoors: colors drain toward a moonlit blue
+    projection_scale = vec2(0.83, 0.47)
+    view_up = vec3(0, 1, 0)
+    grain = Texture(0, 1, 1)
+    has_grain = 0.0
+    focus = 0.0             # a flurry rush: the world slows, drains to a cool blue, the edges darken
+
+struct PostO:
+    pos: vec4
+    uv: vec2
+
+pp_vs = (v: FsVert, u: PostU) -> PostO: PostO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+
+pp_down_fs = (i: PostO, u: PostU) -> vec4:
+    # 4-tap box at a quarter resolution
+    t = u.texel
+    c = sample(u.src, i.uv + vec2(-t.x, -t.y)).xyz + sample(u.src, i.uv + vec2(t.x, -t.y)).xyz
+    c = c + sample(u.src, i.uv + vec2(-t.x, t.y)).xyz + sample(u.src, i.uv + vec2(t.x, t.y)).xyz
+    vec4(min(c * 0.25, vec3(30, 30, 30)), 1)
+
+pp_blur_fs = (i: PostO, u: PostU) -> vec4:
+    d = u.dir * u.texel
+    c = sample(u.src, i.uv).xyz * 0.227
+    c = c + (sample(u.src, i.uv + d * 1.385).xyz + sample(u.src, i.uv - d * 1.385).xyz) * 0.316
+    c = c + (sample(u.src, i.uv + d * 3.231).xyz + sample(u.src, i.uv - d * 3.231).xyz) * 0.070
+    vec4(c, 1)
+
+# Kuwahara: in each of four overlapping squares around the pixel take the mean and variance, and
+# keep the mean of the calmest one. Edges stay; texture flattens into strokes of color.
+pp_paint_fs = (i: PostO, u: PostU) -> vec4:
+    depth = sample(u.depth, i.uv).x
+    center = sample(u.src, i.uv)
+    # Resolve lens/sight-line coverage before the sky early-out. A discarded
+    # fragment can expose sky or stone: both sides need the same filter footprint,
+    # independent of their depth/material. Otherwise the holes remain visible dots.
+    # Four bilinear taps cover every texel of a contiguous 4x4 box, matching
+    # glsl_occluder_dither's balanced tile. Any window integrates the full tile,
+    # so camera motion cannot reveal a diagonal stipple. Reuse the probes below.
+    # u.texel is the enlarged watercolor brush, not the source pixel spacing.
+    pixel = glsl_texel_size(u.src)
+    coverage_a = sample(u.src, i.uv + vec2(-0.5, -0.5) * pixel)
+    coverage_b = sample(u.src, i.uv + vec2(1.5, -0.5) * pixel)
+    coverage_c = sample(u.src, i.uv + vec2(-0.5, 1.5) * pixel)
+    coverage_d = sample(u.src, i.uv + vec2(1.5, 1.5) * pixel)
+    coverage = max(-center.w, max(max(-coverage_a.w, -coverage_b.w), max(-coverage_c.w, -coverage_d.w)))
+    if coverage > 0.001:
+        # Half-texel taps and equal weights avoid material-dependent dot contrast.
+        # Do not reintroduce depth ink at the foreground/background sample boundary.
+        return vec4((coverage_a.xyz + coverage_b.xyz + coverage_c.xyz + coverage_d.xyz) * 0.25, -coverage)
+    # Sky already has continuous cloud washes; avoid grain and preserve tiny stars.
+    if depth >= 0.9999: return center
+    material = clamp(center.w, 0.0, 1.0)
+    foliage = paint_foliage(material)
+    stone = paint_stone(material)
+    smooth = 1.0 - smoothstep(0.35, 0.55, material)
+    zc = depth * 2.0 - 1.0
+    dc = 2.0 * u.near * u.far / (u.far + u.near - zc * (u.far - u.near))
+    t = u.texel * (1.2 + 0.5 * smoothstep(20.0, 300.0, dc))
+    # Fine soft figures, rounded leaf dabs, broader angular mineral strokes.
+    # The same 25 taps and variance selection serve every material.
+    t = t * vec2(1.0 - smooth * 0.55 + foliage * 0.22 + stone * 0.65,
+                 1.0 - smooth * 0.55 + foliage * 0.12 + stone * 0.30)
+    m0 = vec3(0, 0, 0)
+    m1 = vec3(0, 0, 0)
+    m2 = vec3(0, 0, 0)
+    m3 = vec3(0, 0, 0)
+    s0 = vec3(0, 0, 0)
+    s1 = vec3(0, 0, 0)
+    s2 = vec3(0, 0, 0)
+    s3 = vec3(0, 0, 0)
+    occluder = 0.0
+    loop y in [0..3):
+        loop x in [0..3):
+            fx = f32(x)
+            fy = f32(y)
+            # The quadrant borders share taps: 25 unique locations instead of
+            # 36 reads. Keep each quadrant's original summation order.
+            a4 = if x == 0 and y == 0: center else: sample(u.src, i.uv + vec2(-fx, -fy) * t)
+            a = a4.xyz
+            b4 = if x == 0: a4 else: sample(u.src, i.uv + vec2(fx, -fy) * t)
+            b = b4.xyz
+            c4 = if y == 0: a4 else: sample(u.src, i.uv + vec2(-fx, fy) * t)
+            c = c4.xyz
+            d4 = if x == 0: c4 else: (if y == 0: b4 else: sample(u.src, i.uv + vec2(fx, fy) * t))
+            d = d4.xyz
+            # Four existing nearby taps detect coverage; a strong negative marker
+            # survives bilinear sampling even through sparse retained fragments.
+            if x == 1 and y == 1: occluder = max(max(-a4.w, -b4.w), max(-c4.w, -d4.w))
+            m0 = m0 + a
+            s0 = s0 + a * a
+            m1 = m1 + b
+            s1 = s1 + b * b
+            m2 = m2 + c
+            s2 = s2 + c * c
+            m3 = m3 + d
+            s3 = s3 + d * d
+    m0 = m0 / 9.0
+    m1 = m1 / 9.0
+    m2 = m2 / 9.0
+    m3 = m3 / 9.0
+    v0 = luma(s0 / 9.0 - m0 * m0)
+    v1 = luma(s1 / 9.0 - m1 * m1)
+    v2 = luma(s2 / 9.0 - m2 * m2)
+    v3_ = luma(s3 / 9.0 - m3 * m3)
+    best = m0
+    bv = v0
+    if v1 < bv:
+        best = m1
+        bv = v1
+    if v2 < bv:
+        best = m2
+        bv = v2
+    if v3_ < bv:
+        best = m3
+    o4 = center
+    orig = o4.xyz
+    # near things (the hero, monsters) stay crisp; the land behind is painted
+    dist = dc
+    # (the near grass and leaves painted too, a little: the hero himself stays crisp, being lit
+    # from his own pass and close)
+    k = (smoothstep(2.0, 8.0, dist) * 0.45 + smoothstep(8.0, 24.0, dist) * 0.55) * u.paint
+    # (far off a stroke would cover whole trees and towers: there the brush lightens, so
+    # silhouettes on the skyline survive)
+    k = k * (1.0 - smoothstep(120.0, 500.0, dist) * 0.75)
+    # Preserve small windows, buttresses and skyline cuts, using the four quadrant
+    # moments already accumulated above. Quiet distant hills retain their full wash.
+    mean = (m0 + m1 + m2 + m3) * 0.25
+    moment = (s0 + s1 + s2 + s3) / 36.0
+    contrast = max(luma(moment - mean * mean), 0.0) / max(luma(mean) * luma(mean), 0.025)
+    fine = smoothstep(0.008, 0.065, contrast) * smoothstep(55.0, 150.0, dist)
+    fine = fine * smoothstep(0.5, 0.65, o4.w)
+    k = k * (1.0 - fine * 0.78)
+    # (a figure keeps its outline: the brush passes over it lightly)
+    k = k * (1.0 - smooth * 0.80)
+    # (the night sky stays unpainted: the brush would wipe out the stars)
+    sky = step(0.9999, sample(u.depth, i.uv).x)
+    k = k * (1.0 - sky * smoothstep(0.25, 0.08, luma(best)))
+    # Full-resolution coverage is averaged by taps already paid for by watercolor.
+    # Depth discontinuities at the holes must not acquire black pigment/ink.
+    if occluder > 0.001:
+        best = (m0 + m1 + m2 + m3) * 0.25
+        k = 1.0
+    # Fine skyline cuts retain the established (1,2] protection encoding.
+    response = if fine > 0.01: (if foliage > 0.5: 2.0 else: 1.0) + fine else: o4.w
+    vec4(mix(orig, best, k), (if occluder > 0.001: -occluder else: response))
+
+lin_depth = (u: PostU, uv: vec2) -> f32:
+    z = sample(u.depth, uv).x * 2.0 - 1.0
+    2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
+
+# Plane-invariant ink metric, shared with the GPU regression fixture.
+ink_curvature = (d0: f32, dl: f32, dr: f32, du: f32, dd: f32) -> f32:
+    inv = 1.0 / max(d0, 0.5)
+    abs(1.0 / dl + 1.0 / dr + 1.0 / du + 1.0 / dd - inv * 4.0) / inv
+
+# Reconstruct the local plane from the coherent side of each depth derivative.
+# An upward-facing grazing surface can have a large jump at a terrain patch's
+# overlap without being an object outline. Vertical figures and trunks keep ink.
+ink_surface = (d0: f32, dl: f32, dr: f32, du: f32, dd: f32, uv: vec2, texel: vec2, projection: vec2, up: vec3) -> f32:
+    inv = 1.0 / d0
+    xl = 1.0 / dl - inv
+    xr = inv - 1.0 / dr
+    yu = 1.0 / du - inv
+    yd = inv - 1.0 / dd
+    gx = (if abs(xl) < abs(xr): xl else: xr) / (2.0 * texel.x * projection.x)
+    gy = (if abs(yu) < abs(yd): yu else: yd) / (2.0 * texel.y * projection.y)
+    ray = vec3((uv * 2.0 - vec2(1, 1)) * projection, -1)
+    n = normalize(vec3(-gx, -gy, inv - gx * ray.x - gy * ray.y))
+    facing = abs(dot(n, normalize(ray)))
+    ground = smoothstep(0.3, 0.6, dot(n, up))
+    1.0 - ground * (1.0 - smoothstep(0.16, 0.36, facing))
+
+paper = (px: vec2) -> f32:
+    # cold-press paper: a fine grain over a soft tooth
+    g = vnoise(px * 0.45) * 0.5 + vnoise(px * 1.1 + vec2(3.0, 1.0)) * 0.3 + vnoise(px * 0.09) * 0.2
+    g
+
+# Static output-space pigment fields. RGBA32F preserves their original f32
+# values. Linear sampling keeps enlarged material tooth continuous between texels.
+pp_grain = (px: vec2) -> vec4:
+    # Rotate and warp only the fine pigment; the broad wash/hue keep their values.
+    q = vec2(px.x * 0.8 - px.y * 0.6, px.x * 0.6 + px.y * 0.8)
+    warp = vec2(vnoise(q * 0.07), vnoise(q * 0.07 + vec2(19.0, 7.0))) - vec2(0.5, 0.5)
+    q = q + warp * 3.0
+    vec4(fbm3(px * 0.004 + vec2(3.0, 9.0)), vnoise(q * 0.7 + vec2(11.0, 5.0)),
+        paper(q), fbm3(px * 0.0025 + vec2(17.0, 4.0)))
+
+pp_grain_fs = (i: PostO, u: PostU) -> vec4: pp_grain(i.uv / u.texel)
+
+pp_comp_fs = (i: PostO, u: PostU) -> vec4:
+    px = i.uv / u.texel
+    # pigment bleeding: the image wobbles a little, like wet paint spreading
+    wob = vec2(vnoise(px * 0.035 + vec2(u.time * 0.05, 0)), vnoise(px * 0.035 + vec2(7.0, u.time * 0.05))) - vec2(0.5, 0.5)
+    # Alpha above one carries fine distant structure from the paint pass. It is
+    # separate from the existing figure and negative occluder markers.
+    anchor = sample(u.src, i.uv)
+    fine = clamp(anchor.w - (if anchor.w > 2.0: 2.0 else: 1.0), 0.0, 1.0)
+    material = if anchor.w > 2.0: f32(0.65) else: clamp(anchor.w, 0.0, 1.0)
+    foliage = paint_foliage(material)
+    stone = paint_stone(material)
+    smooth = 1.0 - smoothstep(0.35, 0.55, material)
+    # Round65 suppressed the established bleed/ink on figures along with water,
+    # flattening Link's value separation in overcast canopy. Restore figures'
+    # pooled contour while leaving zero-response water's smooth wash intact.
+    figure = smooth * smoothstep(0.02, 0.12, material)
+    # Broad wash/hue keep their established scale and value structure. Rescale
+    # only fine pigment; changing the broad field can erase figure/background
+    # separation in overcast light. Reuse the cache, with one extra read only
+    # for foliage/stone (no new texture or fullscreen pass).
+    wash_grain = if u.has_grain > 0.5: sample(u.grain, i.uv) else: pp_grain(px)
+    grain = wash_grain
+    if stone + foliage > 0.001:
+        grain_scale = 1.0 - stone * 0.64 - foliage * 0.43
+        grain = if u.has_grain > 0.5: sample(u.grain, i.uv * grain_scale) else: pp_grain(px * grain_scale)
+    uv = i.uv + wob * u.texel * 3.2 * u.paint * (1.0 - fine * 0.85) * (1.0 - (smooth - figure) * 0.85)
+    src = sample(u.src, uv)
+    c = src.xyz
+    occlusion = smoothstep(0.0, 0.04, -src.w)
+    soft = sample(u.soft, i.uv).xyz
+    d0 = lin_depth(u, i.uv)
+    # ink: depth discontinuities, thinner and fainter with distance
+    dl = lin_depth(u, i.uv + vec2(u.texel.x, 0))
+    dr = lin_depth(u, i.uv - vec2(u.texel.x, 0))
+    du = lin_depth(u, i.uv + vec2(0, u.texel.y))
+    dd = lin_depth(u, i.uv - vec2(0, u.texel.y))
+    # Reciprocal view depth is affine across a projected plane. Linear depth's
+    # curvature instead explodes at grazing angles and inks snow triangle joins.
+    # The same five taps still detect actual occluding silhouettes (including sky).
+    lap = ink_curvature(d0, dl, dr, du, dd)
+    ink = smoothstep(0.2, 0.6, lap) * clamp(1.0 - d0 / 160.0, 0.0, 1.0) * 0.5 * u.paint
+    sky = step(0.9999, sample(u.depth, i.uv).x)
+    ink = ink * (1.0 - sky) * (1.0 - occlusion) * (1.0 - (smooth - figure) * 0.40)
+    # Cutout leaves already have a pigment rim. Inking each coverage sample
+    # makes snowy shelves look perforated and grass tips into black wires.
+    leaf_rim = foliage
+    if ink > 0.001 and leaf_rim < 0.99:
+        # The far side of a cutout belongs to snow/sky, but must not ink a
+        # halo around every needle. Read material only at actual depth edges.
+        leaf_rim = max(leaf_rim, paint_foliage(sample(u.src, i.uv + vec2(u.texel.x, 0)).w))
+        leaf_rim = max(leaf_rim, paint_foliage(sample(u.src, i.uv - vec2(u.texel.x, 0)).w))
+        leaf_rim = max(leaf_rim, paint_foliage(sample(u.src, i.uv + vec2(0, u.texel.y)).w))
+        leaf_rim = max(leaf_rim, paint_foliage(sample(u.src, i.uv - vec2(0, u.texel.y)).w))
+    ink = ink * (1.0 - leaf_rim * 0.94)
+    if ink > 0.001: ink = ink * ink_surface(d0, dl, dr, du, dd, i.uv, u.texel, u.projection_scale, u.view_up)
+    # edge darkening: pigment pools where the image steps from light to dark
+    ed = clamp(luma(soft) - luma(c), 0.0, 1.0)
+    # (not around the sun and moon: the glow would ring them with dark pigment)
+    # (nor along the clouds' edges: pigment pooled there drew dark worms across the sky)
+    ed = ed * (1.0 - sky * 0.85) * (1.0 - occlusion) * (1.0 - fine * 0.65) * (1.0 - foliage * 0.55)
+    # (a painted edge, not a black smear beside a blazing light: steps past an ordinary edge's
+    # count for little; the lightning's glow had pooled pigment nearly black along it)
+    ed = min(ed, 0.15 + max(ed - 0.15, 0.0) * 0.2)
+    # pigment density: soft blotches and paper grain (1 = as is, above 1 = denser)
+    blot = wash_grain.x
+    # (pigment settles into the paper's tooth more in the dark washes: granulation)
+    gran = (grain.y - 0.5) * (1.0 - smoothstep(0.1, 0.6, luma(c))) * 0.5
+    # Keep the paper in quiet washes and sky; spare nearby figures and detailed edges.
+    # Reuse the paint pass's subject marker, blur and depth taps: no extra texture reads.
+    subject = 1.0 - smoothstep(0.25, 0.85, max(src.w, 0.0))
+    detail = smoothstep(0.025, 0.20, abs(luma(c) - luma(soft)) + min(lap, 0.4) * 0.25)
+    foreground = 1.0 - smoothstep(8.0, 32.0, d0)
+    tooth = 1.0 - (1.0 - sky) * foreground * max(subject * 0.80, detail * 0.65)
+    # Smooth skin/water borrow almost no paper texture. Foliage has soft clumped
+    # tooth; stone has soft irregular granulation and darker flecks in concave crevices.
+    # Sky retains only the broad, low-amplitude wet-in-wet density wash.
+    texture = (1.0 - sky) * (1.0 - smooth * 0.94) * (1.0 - fine * 0.75)
+    gran = gran * (1.0 - stone * 0.25 - foliage * 0.45)
+    # Positive reciprocal-depth curvature marks recesses; reject silhouette jumps.
+    # Reuse the five ink depths, so flat faces cannot acquire a geometric grid.
+    hollow = (1.0 / dl + 1.0 / dr + 1.0 / du + 1.0 / dd) * d0 - 4.0
+    recess = smoothstep(0.002, 0.035, hollow) * (1.0 - smoothstep(0.12, 0.3, lap))
+    gran = gran + stone * recess * smoothstep(0.42, 0.78, grain.y) * 0.24
+    # Mineral pigment stays subordinate to the modelled planes and broad washes.
+    # Keep its existing footprint; lower speckle density instead of enlarging it.
+    tooth = tooth * texture * (1.0 - stone * 0.60)
+    # Retain the shared broad pigment wash: removing its light/dark bias changed
+    # character values in storm shade. Keep broad edge pooling too: it separates
+    # a dark figure from bright overcast foliage. Only fine tooth varies here.
+    wash = 1.0 - sky * 0.80
+    dens = 1.0 + (blot - 0.5) * 0.7 * wash * u.paint + ((grain.z - 0.5) * 0.3 + gran) * tooth * u.paint + ed * 3.6 * u.paint
+    # shafts of light from a low sun: march toward it on screen counting open sky (the depth
+    # buffer's far plane) between here and there, so trees and ridges cast rays across the haze
+    if u.rays > 0.01:
+        dv = (u.sun_uv - i.uv) / 24.0
+        acc: f32 = 0.0
+        loop k in [0..24):
+            su = i.uv + dv * f32(k)
+            if su.x > 0.0 and su.x < 1.0 and su.y > 0.0 and su.y < 1.0:
+                acc = acc + step(0.9999, sample(u.depth, su).x) * (1.0 - f32(k) / 24.0)
+        fall = 1.0 - smoothstep(0.0, 1.3, length((u.sun_uv - i.uv) * vec2(1.6, 1.0)))
+        # (over the land and air in front, where they read; the sky round the sun is bright anyway)
+        here_sky = step(0.9999, sample(u.depth, i.uv).x)
+        c = c + u.ray_color * (acc / 12.0) * fall * u.rays * (1.0 - 0.75 * here_sky)
+    # bloom
+    c = c * u.exposure + max(soft * u.exposure - vec3(0.9, 0.9, 0.9), vec3(0, 0, 0)) * u.bloom
+    c = filmic(c)
+    adaptation = c   # retain the soft highlight before pigment and ink for eye adaptation
+    # watercolor density model (Bousseau 2006): c - (c - c^2)(d - 1)
+    c = c - (c - c * c) * (dens - 1.0)
+    c = c * (1.0 - ink * 0.6) + vec3(0.12, 0.08, 0.1) * ink * 0.25
+    # washes are never one flat hue: big blooms lean warm or cool; the shade is lifted and blue,
+    # as a painter leaves it, not black
+    if u.paint > 0.0:
+        hue = wash_grain.w
+        c = c * mix(vec3(1.0, 1.0, 1.0), mix(vec3(1.05, 1.0, 0.92), vec3(0.94, 0.99, 1.07), hue), u.paint * (1.0 - sky))
+        ls = luma(c)
+        c = c + vec3(0.025, 0.035, 0.07) * (1.0 - smoothstep(0.02, 0.3, ls)) * u.paint * (1.0 - u.underwater)
+    # grade: cool shadows, warm lights, a touch of saturation
+    l = luma(c)
+    c = c + u.shadow_tint * (1.0 - smoothstep(0.0, 0.5, l)) * 0.06 + u.light_tint * smoothstep(0.5, 1.0, l) * 0.04
+    c = mix(c, c * vec3(1.1, 0.98, 0.86) + vec3(0.025, 0.008, 0.0), u.golden * smoothstep(0.3, 0.75, l) * 0.6)
+    c = mix(c, c * vec3(0.82, 0.88, 1.16) + vec3(0.0, 0.005, 0.02), u.golden * (1.0 - smoothstep(0.15, 0.5, l)))
+    # moonlight: the eye loses color in the dark; what is left leans blue, a little lifted
+    lm = luma(c)
+    # (except where firelight falls: warm and bright keeps its color)
+    fire = smoothstep(0.0, 0.3, c.x - c.z) * smoothstep(0.0, 0.35, lm)
+    c = mix(c, vec3(lm, lm, lm) * vec3(0.72, 0.88, 1.25) * 1.15 + vec3(0.01, 0.015, 0.03), u.moon * 0.6 * (1.0 - fire))
+    g = vec3(luma(c), luma(c), luma(c))
+    # greens lean olive and teal rather than lime
+    green = clamp((c.y - max(c.x, c.z)) * 3.0, 0.0, 1.0)
+    c = mix(c, vec3(c.x * 1.04 + 0.012, c.y * 0.9, c.z * 1.1 + 0.025), green * 0.75)
+    # (and the strongest greens are softened, as a wash of sap green is, not a lime)
+    c = mix(g, c, u.sat * (1.0 - green * 0.1))
+    # paper shows through slightly in the lightest areas
+    c = mix(c, vec3(0.98, 0.96, 0.9), smoothstep(0.85, 1.0, l) * 0.12 * u.paint)
+    q = i.uv - vec2(0.5, 0.5)
+    c = c * (1.0 - u.vignette * dot(q, q) * 1.8)
+    c = mix(c, vec3(0.55, 0.05, 0.03), clamp(u.hurt, 0.0, 1.0) * smoothstep(0.42, 0.78, length(q)) * 0.5)
+    c = mix(c, c * vec3(0.4, 0.7, 0.85), u.underwater)
+    if u.focus > 0.0:
+        lf = luma(c)
+        c = mix(c, vec3(lf, lf, lf) * vec3(0.8, 0.95, 1.2), u.focus * 0.7)
+        c = c * (1.0 - u.focus * smoothstep(0.2, 0.75, length(q)) * 0.6)
+    # Adaptation lifts the dark figure too, but bright rock rolls into a shoulder
+    # instead of clipping after the filmic pass. Keep a little tonal separation
+    # below the warm white wash even at the mouth's peak exposure.
+    if u.white > 0.0:
+        # Blend the pre-pigment highlight into the daylight wash; dark silhouettes
+        # keep their ink while bright facets lose the hard outlined polygon effect.
+        highlight = smoothstep(0.40, 0.82, luma(adaptation)) * smoothstep(0.08, 0.55, u.white)
+        c = mix(c, adaptation, highlight * 0.65)
+        c = max(c, vec3(0, 0, 0)) * (1.0 + u.white * 1.25)
+        excess = max(c - vec3(0.62, 0.62, 0.62), vec3(0, 0, 0))
+        shoulder = min(c, vec3(0.62, 0.62, 0.62)) + excess / (vec3(1, 1, 1) + excess / 0.365)
+        c = mix(c, shoulder, smoothstep(0.0, 0.16, u.white))
+        wash = u.white * (0.16 + 0.24 * smoothstep(0.0, 0.9, luma(c))) * min(1.0, u.white * 1.4)
+        c = mix(c, vec3(1.0, 0.98, 0.93), wash)
+    c = c * (1.0 - u.fade)
+    vec4(c, 1)
+
+struct Post:
+    scene = Target()
+    q1 = Target()
+    q2 = Target()
+    w = 0
+    h = 0
+    scale = 1.0
+    ready = false
+    down_sh = Shader()
+    blur_sh = Shader()
+    comp_sh = Shader()
+    paint_sh = Shader()
+    painted = Target()
+    grain = Target()
+    grain_sh = Shader()
+    grain_source_w = 0
+    grain_source_h = 0
+    grain_supported = true
+    depth_copy = Target()      # the opaque scene's depth, for soft particles
+    bloom = 0.35
+    exposure = 0.83
+    paint = 1.0
+    sat = 1.15
+    vignette = 0.28
+    fade = 0.0
+    white = 0.0
+    hurt = 0.0
+    underwater = 0.0
+
+post = Post()
+
+# the HDR target for the frame (re-made when the window changes size)
+post_begin = () -> Target:
+    if not post.ready:
+        post.ready = true
+        post.down_sh = make_sh(shader(pp_vs, pp_down_fs))
+        post.blur_sh = make_sh(shader(pp_vs, pp_blur_fs))
+        post.comp_sh = make_sh(shader(pp_vs, pp_comp_fs))
+        post.paint_sh = make_sh(shader(pp_vs, pp_paint_fs))
+    w = max(int(f64(__screen_px_w()) * post.scale), 16)
+    h = max(int(f64(__screen_px_h()) * post.scale), 16)
+    if w != post.w or h != post.h:
+        free_target(post.scene)
+        free_target(post.q1)
+        free_target(post.q2)
+        free_target(post.painted)
+        free_target(post.depth_copy)
+        post.w = w
+        post.h = h
+        post.scene = make_target(w, h)
+        post.q1 = make_target(max(w / 4, 1), max(h / 4, 1), true, false)
+        post.q2 = make_target(max(w / 4, 1), max(h / 4, 1), true, false)
+        post.painted = make_target(w, h, true, false)
+        post.depth_copy = make_target(w, h)
+    # Full output dimensions matter: the composite runs on the output grid,
+    # with noise coordinates measured in scene pixels. Rebuild on either change.
+    ow = __screen_px_w()
+    oh = __screen_px_h()
+    if not __soft and post.grain_supported and (post.grain.w != ow or post.grain.h != oh or post.grain_source_w != w or post.grain_source_h != h):
+        free_target(post.grain)
+        post.grain = Target(w = ow, h = oh)
+        post.grain.color = color_texture(ow, oh, GL_RGBA32F, GL_RGBA, GL_FLOAT, GL_LINEAR)
+        post.grain.fbo = gl_create_framebuffer()
+        bind_target(post.grain)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(post.grain.color.id), 0)
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+            free_target(post.grain)
+            post.grain = Target()
+            post.grain_supported = false
+        else:
+            if post.grain_sh.prog == 0: post.grain_sh = make_sh(shader(pp_vs, pp_grain_fs))
+            glDisable(GL_DEPTH_TEST)
+            glDisable(GL_BLEND)
+            glDisable(GL_CULL_FACE)
+            glDepthMask(0)
+            draw_fast(post.grain_sh, fullscreen_mesh(), PostU(texel = vec2(1.0 / f32(w), 1.0 / f32(h))))
+            glDepthMask(1)
+            post.grain_source_w = w
+            post.grain_source_h = h
+            if env("BOTW_GPU_FRAME_LOG") != none: eprint("post grain cache: output {ow}x{oh} scene {w}x{h} bytes {ow * oh * 16}")
+    post.scene
+
+# copy the scene's depth so far (before the transparent things) where shaders can read it
+post_copy_depth = ():
+    if post.depth_copy.fbo == 0: return
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, u32(post.scene.fbo))
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, u32(post.depth_copy.fbo))
+    glBlitFramebuffer(0, 0, i32(post.w), i32(post.h), 0, 0, i32(post.w), i32(post.h), GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT, GL_NEAREST)
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(post.scene.fbo))
+
+__pp = (sh: Shader, dst: Target, u: PostU):
+    bind_target(dst)
+    draw_fast(sh, fullscreen_mesh(), u)
+
+post_sun_uv = vec2(0, 0)
+post_rays = 0.0
+post_ray_color = vec3(0, 0, 0)
+post_golden = 0.0
+post_moon = 0.0
+post_focus = 0.0
+
+post_end = (near: f64, far: f64):
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_BLEND)
+    glDisable(GL_CULL_FACE)
+    glDepthMask(0)
+    qt = vec2(1.0 / f32(post.q1.w), 1.0 / f32(post.q1.h))
+    st = vec2(1.0 / f32(post.w), 1.0 / f32(post.h))
+    u = PostU(post.scene.color, post.scene.color, post.scene.depth, st * 1.5, vec2(1, 0), f32(near), f32(far),
+        f32(elapsed()), f32(post.bloom), f32(post.exposure), f32(post.paint), f32(post.sat), vec3(0.1, 0.2, 0.5),
+        vec3(0.6, 0.4, 0.15), f32(post.vignette), f32(post.fade), f32(post.white), f32(post.hurt), f32(post.underwater))
+    u.sun_uv = post_sun_uv
+    u.rays = f32(post_rays)
+    u.ray_color = post_ray_color
+    u.golden = f32(post_golden)
+    u.moon = f32(post_moon)
+    u.focus = f32(post_focus)
+    u.grain = post.grain.color
+    u.has_grain = if post.grain.fbo != 0: 1.0 else: 0.0
+    sy = f32(tan(radians(sc.fov) * 0.5))
+    u.projection_scale = vec2(sy * f32(aspect_ratio()), sy)
+    u.view_up = (sc.view * vec4(0, 1, 0, 0)).xyz
+    __pp(post.down_sh, post.q1, u)
+    loop k in [0..2):
+        u.texel = qt
+        u.src = post.q1.color
+        u.dir = vec2(1, 0)
+        __pp(post.blur_sh, post.q2, u)
+        u.src = post.q2.color
+        u.dir = vec2(0, 1)
+        __pp(post.blur_sh, post.q1, u)
+    # the paint pass (strokes a couple of pixels across: brushwork you can see, not a blur)
+    u.src = post.scene.color
+    u.texel = st * 1.3
+    __pp(post.paint_sh, post.painted, u)
+    __bind_current()
+    u.src = post.painted.color
+    u.soft = post.q1.color
+    u.texel = st
+    draw_fast(post.comp_sh, fullscreen_mesh(), u)
+    glDepthMask(1)

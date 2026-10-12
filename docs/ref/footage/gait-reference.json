@@ -1,0 +1,137 @@
+{
+  "provenance": {
+    "source_page": "https://www.nintendo.com/jp/zelda/botw/world.html",
+    "source_video": "https://www.nintendo.com/jp/zelda/botw/assets/movie/run.mp4",
+    "source_discovery": "Nintendo assets/js/world.js references assets/movie/run.mp4",
+    "accessed": "2026-10-08",
+    "expected_source_sha256": "e5052714dd8f006175ef008215505978ca4fb68571594724ad373e7ec58991a5",
+    "shot": "Rear camera, character running toward temple, approximately 22\u201325 seconds",
+    "frame_numbering": "Zero-based ffprobe decoded frame order, not a player timecode",
+    "landmark": "Same viewer-right foot heel-raised/sole-visible phase; ground contact is obscured",
+    "phase_windows": [
+      [
+        659,
+        661
+      ],
+      [
+        675,
+        677
+      ],
+      [
+        691,
+        693
+      ],
+      [
+        707,
+        709
+      ],
+      [
+        724,
+        726
+      ],
+      [
+        740,
+        742
+      ]
+    ],
+    "annotation_tolerance_s": 0.034,
+    "review": "Independently inspected by critic_motion_reference using original-resolution crops; 16\u201317 frames per full same-foot cycle. An initial 13-frame hypothesis was rejected.",
+    "limitations": [
+      "Pre-release promotional source: container creation timestamp is 2016-10-20, before retail release.",
+      "Encoding cadence is not proof of unique gameplay frame rate or unaltered real-time playback.",
+      "Run versus sprint, controller input timing, platform and build are unknown; HUD is hidden.",
+      "Five adjacent cycles in one shot, not five independent controlled trials.",
+      "Tolerance is a conservative visual annotation allowance, not a statistical confidence interval.",
+      "No inference about world speed, acceleration, stopping, jump physics, or input latency."
+    ],
+    "source_sha256": "e5052714dd8f006175ef008215505978ca4fb68571594724ad373e7ec58991a5",
+    "video_stream": {
+      "codec_name": "h264",
+      "width": 1280,
+      "height": 720,
+      "r_frame_rate": "30000/1001",
+      "avg_frame_rate": "17760000/592591",
+      "duration": "118.518200",
+      "nb_frames": "3552",
+      "disposition": {
+        "default": 1,
+        "dub": 0,
+        "original": 0,
+        "comment": 0,
+        "lyrics": 0,
+        "karaoke": 0,
+        "forced": 0,
+        "hearing_impaired": 0,
+        "visual_impaired": 0,
+        "clean_effects": 0,
+        "attached_pic": 0,
+        "timed_thumbnails": 0,
+        "non_diegetic": 0,
+        "captions": 0,
+        "descriptions": 0,
+        "metadata": 0,
+        "dependent": 0,
+        "still_image": 0,
+        "multilayer": 0
+      },
+      "tags": {
+        "creation_time": "2016-10-20T07:23:04.000000Z"
+      }
+    },
+    "method": "Mean of 5 adjacent phase-center PTS differences from supplied manual windows. See annotation review field for review provenance.",
+    "phase_center_frames": [
+      660,
+      676,
+      692,
+      708,
+      725,
+      741
+    ],
+    "phase_window_pts_s": [
+      [
+        21.988633,
+        22.055367
+      ],
+      [
+        22.5225,
+        22.589233
+      ],
+      [
+        23.056367,
+        23.1231
+      ],
+      [
+        23.590233,
+        23.656967
+      ],
+      [
+        24.157467,
+        24.2242
+      ],
+      [
+        24.6913,
+        24.758033
+      ]
+    ],
+    "cycle_intervals_s": [
+      0.5338670000000008,
+      0.5338659999999997,
+      0.5338670000000008,
+      0.5672330000000017,
+      0.5338339999999988
+    ],
+    "cycle_median_s": 0.5338670000000008,
+    "local_pts_step_range_s": [
+      0.03333299999999895,
+      0.03336700000000192
+    ]
+  },
+  "metrics": {
+    "gait_cycle_s": {
+      "value": 0.5405334000000004,
+      "status": "provisional",
+      "uncertainty": 0.034,
+      "note": "Visible gait animation in one prerelease shot; locomotion mode and playback speed unverified. Do not tune physics or assert matching feel from this."
+    }
+  }
+}

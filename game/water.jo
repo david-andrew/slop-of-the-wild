@@ -1,0 +1,123 @@
+use 'gfx.jo'
+use 'terrain.jo'
+use 'physics.jo'
+from 'physics.jo' import __to_local
+
+# Water: a grid of water surface heights on the terrain's grid (from the original's map; no
+# water where it is below -9000), plus the river's flow.
+
+water_grid: f32[]
+__wg_n = 0
+__wg_x0 = 0.0
+__wg_z0 = 0.0
+__wg_cell = 2.0
+
+water_grid_set = (levels: f32[], n: int, x0: f64, z0: f64, cell: f64):
+    water_grid = levels
+    __wg_n = n
+    __wg_x0 = x0
+    __wg_z0 = z0
+    __wg_cell = cell
+
+# the water surface at (x, z), if there is water there
+water_level = (x: f64, z: f64) -> f64?:
+    if __wg_n == 0: return none
+    xi = int(round((x - __wg_x0) / __wg_cell))
+    zi = int(round((z - __wg_z0) / __wg_cell))
+    if xi < 0 or zi < 0 or xi >= __wg_n or zi >= __wg_n: return none
+    l = water_grid[zi * __wg_n + xi]
+    if l < -9000.0: return none
+    f64(l)
+
+# depth of water at a point (0 when dry)
+water_depth = (x: f64, z: f64) -> f64:
+    if let l = water_level(x, z): return max(0.0, l - height_at(x, z))
+    0.0
+
+# the River of the Dead drifts west toward its waterfall
+water_flow = (x: f64, z: f64) -> vec2:
+    if x < -1030.0 and x > -1460.0 and z > 1800.0 and z < 2140.0: return vec2(-0.6, -0.15)
+    vec2(0, 0)
+
+# Accepted links are retained so electricity can render exactly the flood it damages.
+struct ConductionPath:
+    from: vec3
+    to: vec3
+
+water_paths: ConductionPath[]
+water_cell_pos = (k: int) -> vec3:
+    v3(__wg_x0 + f64(k % __wg_n) * __wg_cell, f64(water_grid[k]), __wg_z0 + f64(k / __wg_n) * __wg_cell)
+
+water_solid_at = (p: vec3) -> bool:
+    loop id in nearby(f64(p.x), f64(p.z), 0.1):
+        c = colliders[id]
+        if not c.active or p.y < c.pos.y or p.y > c.pos.y + c.half.y * 2.0: continue
+        q = __to_local(c, p)
+        if c.kind == 0:
+            if length(vec2(q.x, q.z)) <= c.half.x: return true
+        else if abs(q.x) <= c.half.x and abs(q.z) <= c.half.z: return true
+    false
+
+# Center-to-center links also test their endpoints: raycasts alone miss a source
+# inside a solid. Sampling prevents narrow dry banks between stored wet cells.
+water_link_clear = (a: vec3, b: vec3) -> bool:
+    if water_solid_at(a) or water_solid_at(b): return false
+    delta = b - a
+    dist = f64(length(delta))
+    if dist > 0.001 and raycast(a, delta, dist, true, false).hit: return false
+    steps = max(1, int(ceil(dist / 0.25)))
+    loop j in [0..steps + 1):
+        q = lerp(a, b, f32(j) / f32(steps))
+        if water_depth(f64(q.x), f64(q.z)) <= 0.01: return false
+    true
+
+# A strike floods only nearby, edge-connected wet cells. Dry ground (including terrain
+# above a stored water height) and distinct surface levels split conductive regions.
+water_cell = (p: vec3) -> int:
+    if __wg_n == 0: return -1
+    x = int(round((f64(p.x) - __wg_x0) / __wg_cell))
+    z = int(round((f64(p.z) - __wg_z0) / __wg_cell))
+    if x < 0 or z < 0 or x >= __wg_n or z >= __wg_n: return -1
+    z * __wg_n + x
+
+water_region = (p: vec3, reach: f64) -> {int: bool}:
+    water_paths.clear()
+    region: {int: bool} = {}
+    start = water_cell(p)
+    if start < 0 or water_depth(f64(p.x), f64(p.z)) <= 0.01: return region
+    source = p
+    source.y = water_cell_pos(start).y
+    if not water_link_clear(source, water_cell_pos(start)): return region
+    water_paths.push(ConductionPath(source, water_cell_pos(start)))
+    queue = [start]
+    region[start] = true
+    head = 0
+    loop head < queue.len():
+        k = queue[head]
+        head += 1
+        x = k % __wg_n
+        z = k / __wg_n
+        loop step in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx = x + step.0
+            nz = z + step.1
+            if nx < 0 or nz < 0 or nx >= __wg_n or nz >= __wg_n: continue
+            nk = nz * __wg_n + nx
+            if region.has(nk) or water_grid[nk] < -9000.0: continue
+            wx = __wg_x0 + f64(nx) * __wg_cell
+            wz = __wg_z0 + f64(nz) * __wg_cell
+            if hypot(wx - f64(p.x), wz - f64(p.z)) > reach + __wg_cell: continue
+            if f64(water_grid[nk]) <= height_at(wx, wz) + 0.01 or abs(water_grid[nk] - water_grid[k]) > 0.6: continue
+            a = water_cell_pos(k)
+            b = water_cell_pos(nk)
+            if not water_link_clear(a, b): continue
+            water_paths.push(ConductionPath(a, b))
+            region[nk] = true
+            queue.push(nk)
+    region
+
+water_region_has = (region: {int: bool}, p: vec3) -> bool:
+    k = water_cell(p)
+    if not region.has(k) or water_depth(f64(p.x), f64(p.z)) <= 0.01: return false
+    q = p
+    q.y = water_cell_pos(k).y
+    water_link_clear(water_cell_pos(k), q)

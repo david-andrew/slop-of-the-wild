@@ -1,0 +1,648 @@
+use 'gfx.jo'
+use 'physics.jo'
+use 'terrain.jo'
+use 'player.jo'
+from 'player.jo' import player_view_begin, player_view_turn
+use 'input.jo'
+use 'structures.jo'
+use 'enemies.jo'
+use 'combat.jo'
+from 'physics.jo' import __to_local, __to_world_dir
+
+# The chase camera: orbits the player (mouse / right stick), follows gently behind while
+# running, pulls in against walls, and widens for sprinting and gliding. Defaults from the
+# original's CameraChase parameters: 50 degree vertical field of view, 5.3 m away.
+
+struct Cam:
+    yaw = 0.0                 # camera forward = (sin, 0, -cos)
+    pitch = 0.22              # elevation above the target (radians, positive looks down)
+    dist = 5.3
+    dist_cur = 5.3
+    target = vec3(0, 0, 0)    # smoothed look point
+    tvel = vec3(0, 0, 0)
+    pos = vec3(0, 0, 0)
+    fov = 50.0
+    idle_t = 10.0             # time since the player last turned the camera
+    shake = 0.0
+    lock_pos = vec3(0, 0, 0)
+    locked = false
+    lock_side = -1.0          # keep the nearest shoulder for this lock acquisition
+    lock_side_chosen = false
+    crowd_frame = 0.0         # eased space for three-enemy windups and foreground equipment
+    lock_frame = 0.0          # enter the paired combat view over 0.4 s; ease its release
+    aiming = false            # drawing the bow: close over the right shoulder
+    override = false          # cutscenes set pos/target directly
+    o_pos = vec3(0, 0, 0)
+    o_target = vec3(0, 0, 0)
+    o_fov = 50.0
+    blend = 0.0               # 0 = player camera, 1 = override
+    was_override = false
+    handoff_t = 1.0
+    handoff_duration = 0.75   # a title crane gets a longer return to the chase view
+    return_settle = false    # damp the chase endpoint while control resumes on the slope
+    shown = false
+    shown_pos = vec3(0, 0, 0)
+    shown_target = vec3(0, 0, 0)
+    shown_fov = 50.0
+    from_pos = vec3(0, 0, 0)
+    from_target = vec3(0, 0, 0)
+    from_fov = 50.0
+    climb_offset = 0.0       # retained side choice around a thin climbing occluder
+    combat_side = 0.0        # shoulder separation for an unselected nearby foe
+    climb_recovery = false  # finish returning the view gently after leaving the wall
+    climb_clear = 0.0        # delay release so marginal visibility cannot chatter
+    climb_dist = 6.6         # pull in immediately; restore the boom gently
+    collision_active = false
+    collision_dist = 5.3      # retract for solids immediately; restore without a wall-edge pop
+    hurt_frame = 0.0          # eased elevated view of a prone body, retained through recovery
+    step_remaining = 0.0
+    step_player = vec3(0, 0, 0)
+    pending_look = vec2(0, 0)
+    lift = 0.0                # extra pitch to see over a rise of the ground between camera and player
+
+cam = Cam()
+# (set by the game: false where the camera is under the land, in a cave mouth: the ground
+# tests that keep it over a crest would lift it through the roof)
+cam_open_ground = true
+cave_mouth = vec3(0, -10000, 0)      # the cave's mouth, and the way into it (set by the game)
+cave_in = vec3(1, 0, 0)
+
+# how far the line from the look point back toward the camera runs before it meets the ground
+__cam_free = (t: vec3, b: vec3, d: f64) -> f64:
+    loop i in [1..13):
+        s = 0.8 + (d - 0.8) * f64(i) / 12.0
+        q = t + b * f32(s)
+        if f64(q.y) < height_at(f64(q.x), f64(q.z)) + 0.35: return 0.8 + (d - 0.8) * f64(i - 1) / 12.0
+    d
+__cam_back = (yaw: f64, pitch: f64) -> vec3:
+    f = forward_of(yaw)
+    v3(-f64(f.x) * cos(pitch), sin(pitch), -f64(f.z) * cos(pitch))
+
+# Camera-only sweep: poles need clearance around the lens, not just the centre ray.
+# Tower legs are render-only tubes; mirror their endpoints here without changing movement.
+__cam_segment_distance = (p: vec3, a: vec3, b: vec3) -> f64:
+    ab = b - a
+    t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.001), 0.0, 1.0)
+    f64(length(p - (a + ab * t)))
+
+camera_climb_clearance = (target: vec3, back: vec3, dist: f64, foreground: bool = true) -> f64:
+    limit = dist
+    # Nine rays cover the view frustum, including the upper/lower architectural corners.
+    # Stop short of the held surface: the wall Link is climbing belongs behind him.
+    right = normalize(cross(back, vec3(0, 1, 0)))
+    loop side in [-0.35, 0.0, 0.35]:
+        hit = raycast(target + right * f32(side), back, dist + 0.35, true, false)
+        if hit.hit and (foreground or hit.dist > dist - 1.0): limit = min(limit, max(0.8, hit.dist - 0.45))
+    up = normalize(cross(right, back))
+    px = pixel_size()
+    aspect = if px.y > 0.0: f64(px.x / px.y) else: 16.0 / 9.0
+    if foreground:
+        lens = target + back * f32(dist)
+        half_h = dist * tan(cam.fov * PI / 360.0)
+        loop x in [-1.0, 0.0, 1.0]:
+            loop y in [-1.0, 0.0, 1.0]:
+                end = target + right * f32(x * half_h * aspect) + up * f32(y * half_h)
+                delta = end - lens
+                hit = raycast(lens, delta, f64(length(delta)) * 0.45, true, false)
+                if hit.hit:
+                    depth = f64(dot(lens + normalize(delta) * f32(hit.dist) - target, back))
+                    limit = min(limit, max(0.8, depth - 0.45))
+    if tower_colliders.len() > 0:
+        shaft = colliders[tower_colliders[0]]
+        if shaft.active and length(target.xz - TOWER.xz) < 22.0:
+            lift = f64(shaft.pos.y - TOWER.y) + 3.0
+            loop leg in [0..4):
+                a = TAU * f64(leg) / 4.0 + 0.4
+                top = TOWER + v3(cos(a) * 3.6, 14.0 + lift, sin(a) * 3.6)
+                knee = TOWER + v3(cos(a) * 7.0, 5.0 + lift, sin(a) * 7.0)
+                x = f64(TOWER.x) + cos(a) * 9.0
+                z = f64(TOWER.z) + sin(a) * 9.0
+                foot = v3(x, height_at(x, z) - 1.0 + lift, z)
+                step = 0.8
+                loop step <= limit:
+                    p = target + back * f32(step)
+                    # The foreground footprint grows away from the lens. Testing only
+                    # its centre let a splayed leg occupy a third of the image.
+                    radius = 1.3 + (if foreground and step > dist * 0.65: max(0.0, dist - step) * tan(cam.fov * PI / 360.0) * aspect else: 0.0)
+                    if __cam_segment_distance(p, top, knee) < radius or __cam_segment_distance(p, knee, foot) < radius:
+                        limit = max(0.8, step - 0.2)
+                        break
+                    step += 0.15
+    limit
+
+# A camera lens is a sphere, not a walking capsule: the player push-out permits
+# a 45 cm step down through a collider top, then ejects sideways. That permission
+# made a falling view pop across a lift/ledge. Resolve the nearest solid face in 3D.
+# A moving rock body is a union of solid cylinders. Its sampled section caps
+# are internal faces; resolving them one-by-one can ratchet a lens up the body.
+# Intersect an exit ray with the live solid queries, merge overlapping intervals,
+# and project once through the nearest exterior face. No mesh vertex assumptions.
+__camera_body_exit = (p: vec3, dir: vec3, ids: int[]) -> f64:
+    spans: vec2[]
+    loop id in ids:
+        c = colliders[id]
+        if not c.active or c.tag != -5600: continue
+        radius = f64(c.half.x) + 0.35
+        q = p - c.pos
+        aa = f64(dot(dir.xz, dir.xz))
+        bb = f64(dot(q.xz, dir.xz))
+        cc = f64(dot(q.xz, q.xz)) - radius * radius
+        lo = -10000.0
+        hi = 10000.0
+        if aa < 0.000001:
+            if cc > 0.0: continue
+        else:
+            disc = bb * bb - aa * cc
+            if disc < 0.0: continue
+            lo = (-bb - sqrt(disc)) / aa
+            hi = (-bb + sqrt(disc)) / aa
+        low = -0.35
+        high = 2.0 * f64(c.half.y) + 0.35
+        if abs(f64(dir.y)) < 0.000001:
+            if f64(q.y) < low or f64(q.y) > high: continue
+        else:
+            a = (low - f64(q.y)) / f64(dir.y)
+            b = (high - f64(q.y)) / f64(dir.y)
+            lo = max(lo, min(a, b))
+            hi = min(hi, max(a, b))
+        if lo <= hi and hi >= 0.0: spans.push(vec2(f32(lo), f32(hi)))
+    dist = 0.0
+    loop merge in [0..spans.len() + 1):
+        last = dist
+        loop span in spans:
+            if f64(span.x) <= dist + 0.001: dist = max(dist, f64(span.y))
+        if dist == last: break
+    dist
+
+camera_lens_push = (p: mut vec3) -> vec3:
+    original = p
+    ids = nearby(f64(p.x), f64(p.z), 0.5)
+    embedded = false
+    radial = vec3(0, 0, 1)
+    loop id in ids:
+        c = colliders[id]
+        if not c.active or c.tag != -5600: continue
+        d = p - c.pos
+        if d.y > -0.35 and d.y < c.half.y * 2.0 + 0.35 and length(d.xz) < c.half.x + 0.35:
+            embedded = true
+            if length(d.xz) > 0.001: radial = normalize(vec3(d.x, 0, d.z))
+    if embedded:
+        best = 10000.0
+        direction = radial
+        loop dir in [radial, vec3(0, 1, 0), vec3(0, -1, 0), vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 0, 1), vec3(0, 0, -1)]:
+            dist = __camera_body_exit(p, dir, ids)
+            if dist < best:
+                best = dist
+                direction = dir
+        p += direction * f32(best + 0.002)
+    loop id in ids:
+        c = colliders[id]
+        if not c.active or c.tag == -5600: continue
+        low = f64(c.pos.y) - 0.35
+        high = f64(c.pos.y) + 2.0 * f64(c.half.y) + 0.35
+        if f64(p.y) <= low or f64(p.y) >= high: continue
+        vertical = if f64(p.y) - low < high - f64(p.y): low - f64(p.y) else: high - f64(p.y)
+        if c.kind == 0:
+            d = p.xz - c.pos.xz
+            r = f64(c.half.x) + 0.35
+            len_ = f64(length(d))
+            if len_ >= r: continue
+            if abs(vertical) < r - len_: p.y += f32(vertical)
+            else:
+                n = if len_ > 0.0001: d / f32(len_) else: vec2(1, 0)
+                p += vec3(n.x, 0, n.y) * f32(r - len_)
+        else:
+            l = __to_local(c, p)
+            dx = f64(c.half.x) + 0.35 - abs(f64(l.x))
+            dz = f64(c.half.z) + 0.35 - abs(f64(l.z))
+            if dx <= 0.0 or dz <= 0.0: continue
+            if abs(vertical) < min(dx, dz): p.y += f32(vertical)
+            else if dx < dz:
+                p += __to_world_dir(c, v3((if l.x >= 0.0: 1.0 else: -1.0) * dx, 0.0, 0.0))
+            else:
+                p += __to_world_dir(c, v3(0.0, 0.0, (if l.z >= 0.0: 1.0 else: -1.0) * dz))
+    p - original
+
+camera_snap = ():
+    cam.return_settle = false
+    cam.hurt_frame = 0.0
+    cam.lock_frame = 0.0
+    cam.crowd_frame = 0.0
+    cam.step_remaining = 0.0
+    cam.step_player = pl.pos
+    cam.pending_look = vec2(0, 0)
+    cam.target = pl.pos + vec3(0, 1.5, 0)
+    cam.tvel = vec3(0, 0, 0)
+    cam.dist_cur = cam.dist
+    cam.climb_offset = 0.0
+    cam.climb_clear = 0.0
+    cam.climb_recovery = false
+    cam.climb_dist = 6.6
+    cam.collision_dist = cam.dist
+    cam.collision_active = false
+
+__camera_handoff = ():
+    # Capture the view that was actually displayed, including an interrupted handoff.
+    # Scripts may force blend=1 every frame; transition timing belongs to the camera.
+    if cam.override != cam.was_override:
+        cam.from_pos = if cam.shown: cam.shown_pos else: cam.o_pos
+        cam.from_target = if cam.shown: cam.shown_target else: cam.o_target
+        cam.from_fov = if cam.shown: cam.shown_fov else: cam.o_fov
+        cam.handoff_t = 0.0
+        cam.was_override = cam.override
+    # Scripts can also force blend on a render frame without a physics tick.
+    cam.blend = if cam.override: cam.handoff_t else: 1.0 - cam.handoff_t
+
+__camera_step = (dt: f64):
+    cam.handoff_t = min(1.0, cam.handoff_t + dt / cam.handoff_duration)
+    cam.blend = if cam.override: cam.handoff_t else: 1.0 - cam.handoff_t
+    __camera_turn(dt)
+    hurt = pl.state == .hurt or pl.state == .dead
+    cam.hurt_frame = approach(cam.hurt_frame, (if hurt: 1.0 else: 0.0), (if hurt: 8.0 else: 2.0), dt)
+    cam.lock_frame = clamp(cam.lock_frame + (if cam.locked: dt / 0.4 else: -dt / 0.4), 0.0, 1.0)
+    nearby = 0
+    if cam.locked:
+        loop e in enemies:
+            if enemy_melee_body(e) and e.hp > 0.0 and e.state != .buried and e.alert > 0.5 and length(e.pos - pl.pos) < 10.0: nearby += 1
+    cam.crowd_frame = approach(cam.crowd_frame, if nearby >= 3: 1.0 else: 0.0, 4.0, dt)
+    # distance by activity
+    want_d = 5.3
+    tgt_h = 1.5             # LookPosOffsetY
+    match pl.state:
+        glide: want_d = 7.2
+        climb:
+            want_d = 6.6
+            tgt_h = 1.2
+        swim:
+            want_d = 3.4
+            tgt_h = 1.35
+        _:
+            if pl.sprinting: want_d = 5.9
+            if pl.sneaking: tgt_h = 1.25
+    # Close the boom and lower the look point together: Link's feet stay inside
+    # the tighter cone while the opponent grows, rather than leaving a chase shot.
+    want_d = lerp(want_d, lerp(4.4, 6.4, cam.crowd_frame), cam.lock_frame)
+    tgt_h = lerp(tgt_h, 1.2, cam.lock_frame)
+    # (in the narrow of the cave the camera follows close, inside the rock round him)
+    if not cam_open_ground: want_d = min(want_d, 2.8)
+    if use_terrain and not cam.aiming and not cam.locked:
+        want_d = lerp(want_d, max(want_d, 4.8), cam.hurt_frame)
+    if cam.aiming:
+        want_d = 2.1
+        tgt_h = 1.6
+    if use_terrain and not cam.aiming and not cam.locked: tgt_h = lerp(tgt_h, 0.65, cam.hurt_frame)
+    cam.dist = want_d
+    cam.dist_cur = approach(cam.dist_cur, cam.dist, (if cam.locked: 16.0 else: (if hurt: 4.5 else: 2.5)), dt)
+    # the look point: springs toward the player (looser vertically: jumps do not jerk the view)
+    # Response coefficients are implementation choices, not identified BotW follow/lag values.
+    goal = pl.pos + vec3(0, f32(tgt_h), 0) + vec3(pl.vel.x, 0, pl.vel.z) * 0.08
+    # The forward look offset also works beyond 15 m; cap it so Link stays framed.
+    if cam.lock_frame > 0.0:
+        lv = cam.lock_pos - pl.pos
+        lh = vec3(lv.x, 0, lv.z)
+        if f64(length(lh)) > 0.1: goal += normalize(lh) * f32(min(f64(length(lh)) * 0.25, 1.2) * cam.lock_frame)
+    dxz = goal - cam.target
+    k = 1.0 - exp(-dt * 10.0)
+    # (a jump's rise and fall stay soft; a long drop or a glide is followed closely)
+    dropping = pl.state == .glide or pl.state == .slide or (pl.state == .air and f64(pl.vel.y) < -5.0)
+    ky = 1.0 - exp(-dt * (if pl.state == .air and not dropping: 3.0 else: 8.0))
+    cam.target = cam.target + vec3(dxz.x * f32(k), dxz.y * f32(ky), dxz.z * f32(k))
+    # keep the player in view when falling far
+    lag = if dropping: 0.6 else: 1.5
+    if f64(goal.y) < f64(cam.target.y) - lag: cam.target.y = goal.y + f32(lag)
+    # place the camera
+    if cam.aiming:
+        rgt = v3(cos(cam.yaw), 0.0, sin(cam.yaw))
+        cam.target = pl.pos + vec3(0, 1.6, 0) + rgt * 0.55
+    # a crest between the camera and the player (or the player dropping off an edge below it):
+    # look down from higher until he is in sight, and settle back once the way is clear
+    # (a wall of rock right behind cannot be looked over: the camera pulls in against it instead)
+    want_lift = 0.0
+    if use_terrain and cam_open_ground and not cam.aiming and cam.blend < 0.99:
+        loop want_lift < 0.65 and __cam_free(cam.target, __cam_back(cam.yaw, cam.pitch + want_lift), cam.dist_cur) < cam.dist_cur: want_lift += 0.1
+        if want_lift >= 0.65: want_lift = 0.0
+        # still hemmed in (sliding down a face, the slope rising right behind): swing round to
+        # look along the slope instead, where the ground falls away
+        if want_lift == 0.0 and cam.idle_t > 0.5 and not cam.locked:
+            here = __cam_free(cam.target, __cam_back(cam.yaw, cam.pitch), cam.dist_cur)
+            if here < cam.dist_cur * 0.7:
+                best = cam.yaw
+                bf = here
+                loop i in [1..5):
+                    loop sgn in [-1.0, 1.0]:
+                        y = cam.yaw + sgn * f64(i) * 0.35
+                        fr = __cam_free(cam.target, __cam_back(y, cam.pitch), cam.dist_cur)
+                        if fr > bf + 0.5:
+                            bf = fr
+                            best = y
+                cam.yaw += wrap_angle(best - cam.yaw) * min(1.0, 2.5 * dt)
+    cam.lift = approach(cam.lift, want_lift, (if want_lift > cam.lift: 2.0 else: 0.5), dt)
+    # (never straight down on him: past 45 degrees the view is only the face he is on)
+    pitch = min(cam.pitch + cam.lift, max(cam.pitch, 0.8))
+    if use_terrain and not cam.aiming: pitch = max(pitch, lerp(cam.pitch, 0.28, cam.hurt_frame))
+    view_yaw = cam.yaw
+    # A close foe directly beyond Link must not share his head silhouette.
+    # Apply a small shoulder orbit during engaged combat after manual look
+    # settles; bow aiming and deliberate pans keep their view.
+    want_side = 0.0
+    if not cam.locked and not cam.aiming and cam.blend < 0.01 and cam.idle_t > 0.35 and fight.weapon_out and (pl.state == .ground or pl.state == .hurt):
+        right = v3(cos(cam.yaw),0.0,sin(cam.yaw))
+        forward = forward_of(cam.yaw)
+        loop e in enemies:
+            if not enemy_melee_body(e) or e.hp <= 0.0 or e.alert < 0.5: continue
+            d = e.pos - pl.pos
+            ahead = f64(dot(d,forward))
+            side = f64(dot(d,right))
+            if ahead > 1.0 and ahead < 8.0 and abs(side) < 0.65:
+                want_side = -0.45
+                break
+    cam.combat_side = approach(cam.combat_side,want_side,(if cam.idle_t < 0.35: 8.0 else: 1.2),dt)
+    view_yaw += cam.combat_side
+    if pl.state == .climb and not cam.locked and not cam.aiming and cam.blend < 0.99:
+        cam.climb_recovery = true
+        current = camera_climb_clearance(cam.target, __cam_back(cam.yaw + cam.climb_offset, pitch), cam.dist_cur)
+        straight = camera_climb_clearance(cam.target, __cam_back(cam.yaw, pitch), cam.dist_cur)
+        if straight >= cam.dist_cur - 0.15: cam.climb_clear += dt
+        else: cam.climb_clear = 0.0
+        if current < cam.dist_cur - 0.5:
+            best = cam.climb_offset
+            score = current - abs(best) * 0.7
+            # Prefer the retained side unless another view is materially clearer.
+            loop offset in [-1.05, -0.7, -0.35, 0.0, 0.35, 0.7, 1.05]:
+                free = camera_climb_clearance(cam.target, __cam_back(cam.yaw + offset, pitch), cam.dist_cur)
+                candidate = free - abs(offset) * 0.7
+                if offset * cam.climb_offset < 0.0: candidate -= 0.8
+                if candidate > score + 0.35:
+                    score = candidate
+                    best = offset
+            cam.climb_offset = approach(cam.climb_offset, best, 4.0, dt)
+        else if cam.climb_clear > 0.6:
+            cam.climb_offset = approach(cam.climb_offset, 0.0, 1.2, dt)
+        view_yaw += cam.climb_offset
+        free = camera_climb_clearance(cam.target, __cam_back(view_yaw, pitch), cam.dist_cur, false)
+        if free < cam.climb_dist: cam.climb_dist = free
+        else: cam.climb_dist = approach(cam.climb_dist, free, 1.4, dt)
+    else:
+        cam.climb_offset = approach(cam.climb_offset, 0.0, 2.0, dt)
+        cam.climb_clear = 0.0
+        if cam.climb_recovery:
+            cam.climb_dist = approach(cam.climb_dist, cam.dist_cur, 1.4, dt)
+            view_yaw += cam.climb_offset
+            if abs(cam.climb_offset) < 0.001 and abs(cam.climb_dist - cam.dist_cur) < 0.01: cam.climb_recovery = false
+        else: cam.climb_dist = cam.dist_cur
+    back = __cam_back(view_yaw, pitch)
+    boom = if pl.state == .climb or cam.climb_recovery: min(cam.dist_cur, cam.climb_dist) else: cam.dist_cur
+    want_pos = cam.target + back * f32(boom)
+    # collision: pull in toward the look point
+    # (just out of the cave the camera is still in it, under the hill: the land's surface over
+    # the cave must not push it up through the roof)
+    in_mouth = f64(length(cam.target - cave_mouth)) < 14.0 and f64(dot(want_pos - cave_mouth, cave_in)) > -1.0
+    h = raycast(cam.target, back, boom + 0.3, true, not in_mouth)
+    # On adjacent climb faces, visibility uses the broad fade rather than an
+    # abrupt boom collapse at a wall edge. Lens clearance still prevents embedding.
+    if h.hit and (pl.state != .climb or h.dist > boom - 1.0): want_pos = cam.target + back * f32(max(h.dist - 0.35, 0.8))
+    # Ground traversal needs the same lens radius as climbing. A centre ray can
+    # miss a doorway jamb; its edge can still contain the camera capsule.
+    if pl.state != .climb:
+        right = normalize(cross(back, vec3(0, 1, 0)))
+        loop side in [-0.35, 0.35]:
+            edge = raycast(cam.target + right * f32(side), back, boom + 0.3, true, false)
+            if edge.hit:
+                limit = max(0.8, edge.dist - 0.45)
+                if limit < f64(length(want_pos - cam.target)): want_pos = cam.target + back * f32(limit)
+    free = f64(length(want_pos - cam.target))
+    if free < cam.collision_dist - 0.0001:
+        cam.collision_active = true
+        cam.collision_dist = free
+    else: cam.collision_dist = approach(cam.collision_dist, free, (if hurt: 4.5 else: 1.4), dt)
+    want_pos = cam.target + back * f32(min(free, cam.collision_dist))
+    if use_terrain and cam_open_ground and cam.blend < 0.99:
+        fr = __cam_free(cam.target, back, f64(length(want_pos - cam.target)))
+        want_pos = cam.target + back * f32(max(fr, 0.8))
+    if use_terrain and not in_mouth:
+        gy = height_at(f64(want_pos.x), f64(want_pos.z)) + lerp(0.9, 1.8, cam.hurt_frame)
+        if f64(want_pos.y) < gy:
+            # Raising a prone-body view must not project the lens through a porch roof.
+            if cam.hurt_frame > 0.01:
+                ceiling = raycast(want_pos, vec3(0, 1, 0), gy - f64(want_pos.y) + 0.35, true, false)
+                if ceiling.hit: gy = min(gy, f64(want_pos.y) + max(0.0, ceiling.dist - 0.35))
+            want_pos.y = f32(gy)
+    # Terrain projection can replace the point; lens clearance is the final goal constraint.
+    if length(camera_lens_push(want_pos)) > 0.001: cam.collision_active = true
+    if cam.override: cam.return_settle = false
+    if cam.return_settle:
+        # The slope beyond the overlook pulls the collision boom in. Damp that
+        # moving endpoint too, and finish settling after the crane blend ends.
+        # Dropping the damping on the last blend frame would expose its lag as a pop.
+        cam.pos = mix(cam.pos, want_pos, f32(1.0 - exp(-dt * 6.0)))
+        if cam.blend <= 0.0 and length(cam.pos - want_pos) < 0.025: cam.return_settle = false
+    else if cam.collision_active and cam.shown:
+        # Retraction at a roof edge can change the boom by metres in one frame.
+        # Settle the lens in free space, sliding along solids on the way; projecting
+        # only the final point can teleport it through a doorway's nearest face.
+        goal_pos = mix(cam.pos, want_pos, f32(k))
+        steps = max(1, int(ceil(f64(length(goal_pos - cam.pos)) / 0.15)))
+        delta = (goal_pos - cam.pos) / f32(steps)
+        loop step in [0..steps):
+            next = cam.pos + delta
+            camera_lens_push(next)
+            cam.pos = next
+        if length(cam.pos - want_pos) < 0.01 and abs(cam.collision_dist - free) < 0.01 and free >= boom - 0.01: cam.collision_active = false
+    else: cam.pos = want_pos
+    if cam.shake > 0.0:
+        cam.shake = max(0.0, cam.shake - dt * 2.5)
+        s = f32(cam.shake * cam.shake * 0.25)
+        cam.pos += vec3(f32(random(-1.0, 1.0)) * s, f32(random(-1.0, 1.0)) * s, f32(random(-1.0, 1.0)) * s)
+    # Movement follows the displayed view while a crane returns to control.
+    # Using the hidden chase yaw made held forward input change direction at release.
+    cam_yaw_global = if cam.return_settle: yaw_of(view_target() - view_pos()) else: cam.yaw
+    if cam.handoff_t >= 1.0: cam.handoff_duration = 0.75
+    combat_fov = lerp(cam.fov, lerp(min(cam.fov, 44.0), max(cam.fov, 54.0), cam.crowd_frame), cam.lock_frame)
+    aim_fov = approach(aim_fov, (if cam.aiming: 38.0 else: combat_fov), (if cam.lock_frame > 0.0: 20.0 else: 8.0), dt)
+    __camera_record_view()
+
+__camera_record_view = ():
+    cam.shown_pos = view_pos()
+    cam.shown_target = view_target()
+    cam.shown_fov = view_fov()
+    cam.shown = true
+
+# The same orientation solve drives movement between physics ticks. Predict only
+# yaw/pitch/idle time; leave lens integration and world/combat corrections for the
+# normal post-world camera replay. No second collision solve is needed.
+__camera_turn = (dt: f64):
+    if not cam.locked: cam.lock_side_chosen = false
+    # turning
+    if length(act.look) > 0.0:
+        cam.yaw += f64(act.look.x)
+        cam.pitch = clamp(cam.pitch + f64(act.look.y), -1.15, 1.35)
+        cam.idle_t = 0.0
+    else: cam.idle_t += dt
+    moving = pl.speed > 1.0 and pl.state == .ground
+    # follow: swing slowly behind the direction of travel (not while the player steers the camera)
+    if cam.idle_t > 0.5 and (moving or pl.state == .glide or pl.state == .swim or (pl.state == .climb and pl.speed > 0.2)) and not cam.locked:
+        behind = pl.face
+        d = wrap_angle(behind - cam.yaw)
+        # only when running sideways or away; running toward the camera stays put
+        if abs(d) < 2.4:
+            k = 0.55 * clamp(pl.speed / RUN_SPEED, 0.0, 1.3)
+            if pl.state == .glide: k = 0.9
+            # (on a wall: round to square behind him, so the face is seen, not hugged)
+            if pl.state == .climb: k = 0.7
+            cam.yaw += d * min(1.0, k * dt)
+        # drift the pitch back toward the default (walking out of the cave, level: the light at
+        # the mouth opens on the view, not on the ground at his feet)
+        out_ = not cam_open_ground and f64(length(pl.pos - cave_mouth)) < 18.0
+        cam.pitch = approach(cam.pitch, (if pl.state == .glide: 0.3 else: (if out_: 0.04 else: 0.22)), (if out_: 0.25 else: 0.4), dt)
+    if cam.locked:
+        # face the lock-on target over the player's shoulder
+        dv = cam.lock_pos - pl.pos
+        facing = yaw_of(vec3(dv.x, 0, dv.z))
+        if not cam.lock_side_chosen:
+            # Reacquiring from the opposite shoulder must not orbit through
+            # Link's silhouette during the foe's windup. Retain the nearest
+            # side until release rather than changing sides as the foe moves.
+            cam.lock_side = if wrap_angle(cam.yaw-facing) > 0.0: 1.0 else: -1.0
+            cam.lock_side_chosen = true
+        # (from a little to one side: Link and the foe side by side, not one behind the other)
+        # Close melee needs a clearer side view of the head, weapon and shield.
+        # Ease back to narrower distant framing so a 20 m lock stays inside
+        # the narrow paired field of view.
+        close = 1.0-smoothstep(8.0,18.0,f64(length(dv.xz)))
+        shoulder = lerp(lerp(0.58,0.85,close),lerp(0.95,1.22,close),cam.crowd_frame)
+        # In a narrow portal a broad shoulder can put the lens into a jamb,
+        # retracting it until the paired actors no longer fit. Keep the side,
+        # but reduce its angle while a smaller orbit preserves the full boom.
+        paired = pl.pos + vec3(0,1.2,0)
+        if length(dv.xz) > 0.1: paired += normalize(vec3(dv.x,0,dv.z)) * f32(min(f64(length(dv.xz))*0.25,1.2))
+        boom = lerp(4.4,6.4,cam.crowd_frame)
+        chosen = shoulder
+        best_free = -1.0
+        loop scale_ in [1.0,0.8,0.6,0.45]:
+            candidate = max(0.38,shoulder*scale_)
+            back = __cam_back(facing+candidate*cam.lock_side,cam.pitch)
+            hit = raycast(paired,back,boom+0.35,true,false)
+            free = if hit.hit: hit.dist else: boom+0.35
+            if free > best_free+0.35:
+                chosen = candidate
+                best_free = free
+            if free >= boom: break
+        shoulder = chosen
+        want = facing + shoulder * cam.lock_side
+        turn_rate = lerp(2.4, 5.2, cam.crowd_frame)
+        cam.yaw += clamp(wrap_angle(want - cam.yaw) * (1.0 - exp(-dt * lerp(8.0, 14.0, cam.crowd_frame))), -turn_rate * dt, turn_rate * dt)
+        cam.pitch = approach(cam.pitch, lerp(0.18, 0.32, cam.crowd_frame), 3.0, dt)
+
+# Float cancellation can leave a microscopic delta after look is released.
+# Discard it before it repeatedly resets the idle/follow timer.
+__camera_tick_look = (available: f64, look: vec2) -> vec2:
+    if available < PLAYER_STEP - 1e-9 or length(look) < 0.0000001: return vec2(0, 0)
+    look * f32(min(1.0, PLAYER_STEP / available))
+
+__movement_cam = Cam()
+__movement_look = vec2(0, 0)
+__movement_begin = (dt: f64):
+    __movement_cam = cam
+    available = cam.step_remaining + clamp(dt, 0.0, 0.5)
+    __movement_look = __camera_tick_look(available, cam.pending_look + act.look)
+__movement_turn = (dt: f64):
+    # Controllers that never evaluate a view supply their own movement yaw.
+    if not cam.shown or cam.override or cam.return_settle: return
+    saved_cam = cam
+    saved_look = act.look
+    cam = __movement_cam
+    act.look = __movement_look
+    __camera_turn(dt)
+    __movement_cam = cam
+    cam = saved_cam
+    act.look = saved_look
+    cam_yaw_global = __movement_cam.yaw
+
+__install_player_view = ():
+    player_view_begin = __movement_begin
+    player_view_turn = __movement_turn
+__install_player_view()
+
+# Integrate the moving target and lens at the same bounded rate as traversal.
+# Split look deltas (mouse radians, not a rate) exactly once across those ticks.
+camera_update = (dt: f64):
+    # An override edge belongs to the displayed frame, even below PLAYER_STEP.
+    # Do not advance the chase simulation or consume pending look to capture it.
+    __camera_handoff()
+    cam.step_remaining += clamp(dt, 0.0, 0.5)
+    cam.pending_look += act.look
+    ticks = int(floor((cam.step_remaining + 1e-9) / PLAYER_STEP))
+    if ticks <= 0:
+        # Override endpoints can animate even on a frame without a chase tick.
+        __camera_record_view()
+        return
+    saved_player = pl
+    saved_pos = pl.pos
+    saved_look = act.look
+    start = if cam.shown: cam.step_player else: pl.pos
+    replay = player_view_steps.len() == ticks
+    correction = vec3(0, 0, 0)
+    external_state = false
+    if replay:
+        last = player_view_steps[ticks - 1]
+        # Combat and world effects run after traversal. Retain their displacement
+        # and state change when replaying the target's physics path for the lens.
+        correction = saved_pos - last.pos
+        external_state = saved_player.state != last.state
+    # Keep the look belonging to the unintegrated time with that remainder.
+    # Consuming it all early made tiny frames advance the view ahead of physics.
+    act.look = __camera_tick_look(cam.step_remaining, cam.pending_look)
+    cam.pending_look -= act.look * f32(ticks)
+    if length(cam.pending_look) < 0.0000001: cam.pending_look = vec2(0, 0)
+    loop k in [0..ticks):
+        if replay:
+            sample = player_view_steps[k]
+            pl.pos = sample.pos + correction
+            pl.vel = sample.vel
+            pl.face = sample.face
+            pl.speed = sample.speed
+            pl.state = if external_state: saved_player.state else: sample.state
+            pl.sprinting = sample.sprinting
+            pl.sneaking = sample.sneaking
+            if external_state:
+                pl.vel = saved_player.vel
+                pl.face = saved_player.face
+                pl.speed = saved_player.speed
+                pl.sprinting = saved_player.sprinting
+                pl.sneaking = saved_player.sneaking
+        else: pl.pos = mix(start, saved_pos, f32(k + 1) / f32(ticks))
+        __camera_step(PLAYER_STEP)
+        cam.step_remaining = max(0.0, cam.step_remaining - PLAYER_STEP)
+    pl = saved_player
+    player_view_steps.clear()
+    act.look = saved_look
+    cam.step_player = saved_pos
+
+# Blend camera orientation independently of the look-point distance. A crane's
+# target can be hundreds of metres away; interpolating that point into a chase
+# target left almost the entire turn for the last two frames of the handoff.
+camera_aim_blend = (a: vec3, at: vec3, b: vec3, bt: vec3, k: f64) -> vec3:
+    if k <= 0.0: return at
+    if k >= 1.0: return bt
+    av = at - a
+    bv = bt - b
+    ay = yaw_of(av)
+    by = yaw_of(bv)
+    ap = atan2(f64(av.y), f64(length(av.xz)))
+    bp = atan2(f64(bv.y), f64(length(bv.xz)))
+    yaw = ay + wrap_angle(by - ay) * k
+    pitch = lerp(ap, bp, k)
+    direction = forward_of(yaw) * f32(cos(pitch)) + v3(0.0, sin(pitch), 0.0)
+    mix(a, b, f32(k)) + direction * f32(lerp(f64(length(av)), f64(length(bv)), k))
+
+# the camera actually used this frame (player camera blended with a cutscene camera)
+view_pos = () -> vec3: if cam.override: mix(cam.from_pos, cam.o_pos, f32(smooth01(cam.blend))) else: mix(cam.pos, cam.from_pos, f32(smooth01(cam.blend)))
+view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, cam.target, cam.from_pos, cam.from_target, smooth01(cam.blend))
+aim_fov = 50.0
+view_fov = () -> f64: if cam.override: lerp(cam.from_fov, cam.o_fov, smooth01(cam.blend)) else: lerp(aim_fov, cam.from_fov, smooth01(cam.blend))
+__camdbg = env("BOTW_CAMDBG") != none
+__camdbg_n = 0
+cam_debug = ():
+    if not __camdbg: return
+    __camdbg_n += 1
+    if __camdbg_n % 10 == 0: eprint("cam {__camdbg_n} st={pl.state} pl={pl.pos} vel={pl.vel} tgt={cam.target} pos={cam.pos} pitch={cam.pitch:.2} lift={cam.lift:.2} d={cam.dist_cur:.1} blend={cam.blend:.2} view={view_pos()} look={view_target()} fov={view_fov():.2} climb_offset={cam.climb_offset:.3} clearance={cam.climb_dist:.3}")

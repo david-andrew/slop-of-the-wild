@@ -1,0 +1,30 @@
+# Authored Temple scrub stays visible in the middle distance without expanding shadows.
+# Headless; no buffers are uploaded and no graphics context is created.
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/vegetation.jo'
+from '../game/vegetation.jo' import __cull_one, __vcells, __vcells_build
+
+check_clutter = ():
+    vmodels = [VModel("Bush_Common", [], 1.0, 1.0)]
+    buckets = [VBucket([], InstBuf(), []), VBucket([], InstBuf(), []), VBucket([], InstBuf(), [])]
+    plain = VPlace(0, mat4(), rgb(1,1,1), vec3(180,0,0), 1.0, 1.0, false)
+    authored = plain
+    authored.view_reach = 320.0
+    f = frustum_from(mat4())
+    __cull_one(plain,f,vec3(0,0,0),1800.0,0.0,0,45.0,true)
+    assert(buckets[0].items.len() == 0, "ordinary small plants keep the existing size limit")
+    __cull_one(authored,f,vec3(0,0,0),1800.0,0.0,0,45.0,true)
+    assert(buckets[0].items.len() == 1, "authored Temple cluster remains visible at 180m")
+    __cull_one(authored,f,vec3(-200,0,0),1800.0,0.0,0,45.0,true)
+    assert(buckets[0].items.len() == 1, "authored detail still has a bounded far limit")
+    __cull_one(authored,f,vec3(0,0,0),1800.0,0.0,1,45.0,true)
+    assert(buckets[1].items.len() == 0, "authored reach never expands a shadow pass")
+    places = [authored]
+    __vcells.clear()
+    __vcells_build()
+    assert(__vcells.len()==1 and __vcells[0].view_reach==320.0, "cell cull retains the cluster before individual culling")
+    assert(not authored.collide and authored.height==1.0, "view reach cannot change geometry or collision")
+    print("PASS Temple clutter: authored 180m view, bounded 320m reach, unchanged ordinary/shadow limits and collision, retained cell bounds")
+
+check_clutter()

@@ -1,0 +1,45 @@
+use '../game/music.jo'
+t0 = time()
+piano_init()
+eprint("piano bank {time() - t0:.2}s, {piano.notes.len()} notes")
+# render a short phrase offline into a wav for listening
+sr = MIX_RATE
+total = sr * 14
+mixb = fill(f32(0), total * 2)
+put = (midi: int, at: f64, vel: f64):
+    k = clamp((midi - PIANO_LO + PIANO_STEP / 2) / PIANO_STEP, 0, piano.notes.len() - 1)
+    base = PIANO_LO + k * PIANO_STEP
+    pitch = pow(2.0, f64(midi - base) / 12.0)
+    s = piano.notes[k].samples
+    nf = s.len() / 2
+    start = int(at * f64(sr))
+    pos = 0.0
+    loop i in [start..total):
+        ip = int(pos)
+        if ip + 1 >= nf: break
+        fr = f32(pos - f64(ip))
+        mixb[i * 2] += (s[ip * 2] + (s[ip * 2 + 2] - s[ip * 2]) * fr) * f32(vel)
+        mixb[i * 2 + 1] += (s[ip * 2 + 1] + (s[ip * 2 + 3] - s[ip * 2 + 1]) * fr) * f32(vel)
+        pos += pitch
+notes = [(62, 0.0), (66, 0.45), (69, 0.9), (74, 1.6), (38, 0.0), (71, 3.0), (69, 3.5), (66, 4.4), (64, 6.0), (62, 6.6), (45, 6.6), (57, 9.0), (62, 9.4), (69, 10.1), (66, 10.8)]
+loop n in notes: put(n.0, n.1, 0.8)
+peak: f32 = 0.0
+loop s in mixb: peak = max(peak, abs(s))
+eprint("peak {peak}")
+# wav
+b: u8[]
+w32 = (v: int):
+    loop k in [0..4): b.push(u8((v >> (8 * k)) & 255))
+w16 = (v: int):
+    loop k in [0..2): b.push(u8((v >> (8 * k)) & 255))
+loop c in "RIFF": b.push(c)
+w32(36 + total * 4)
+loop c in "WAVEfmt ": b.push(c)
+w32(16); w16(1); w16(2); w32(sr); w32(sr * 4); w16(4); w16(16)
+loop c in "data": b.push(c)
+w32(total * 4)
+loop s in mixb:
+    v = int(clamp(f64(s) / f64(max(peak, 1.0)), -1.0, 1.0) * 32000.0)
+    w16(v & 0xFFFF)
+mkdir("build/piano-test")
+write_bytes("build/piano-test/piano.wav", b)

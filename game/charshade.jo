@@ -1,0 +1,371 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'water.jo'
+
+# Character shading: GPU-skinned meshes lit with the game's painterly model (shade.jo), tuned
+# for characters: painted value groups, cool shade, a restrained sky rim, a little
+# emissive fill so figures read against the landscape, cascaded shadows and aerial haze.
+# Output is linear HDR (the post pass tonemaps).
+#
+# Skinning: bone matrices live in an RGBA32F "palette" texture, one row per skinned instance,
+# 3 texels per bone (the rows of the 3x4 matrix world * inverse-bind, see skel.jo).
+# Texture alpha holds an emissive mask (glowing eyes etc.).
+
+struct ChVert:
+    pos: vec3
+    nrm: vec3
+    uv: vec2
+    col: vec4           # pigment RGB; alpha: 0 authored hair, 1 other materials
+    jnt: vec4           # bone indices (as floats)
+    wgt: vec4
+
+# the scene values every lit pass in the game uses (see TerrU in terrain.jo)
+struct CharScene:
+    vp: mat4
+    cam: vec3
+    sun_dir: vec3       # toward the light that casts shadows
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    falloff: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+    time: f32
+    lp = vec4(0, 0, 0, 0)    # the one local light (campfire, torch): position, radius
+    lc = vec3(0, 0, 0)
+    wet = 0.0                # out in the rain: damp pigment darkens
+
+# build the scene uniforms (call once per frame with the values the terrain pass gets)
+char_scene = (vp: mat4, cam: vec3, sun_dir: vec3, sun_color: vec3, sky: vec3, ground: vec3, haze: vec3,
+        density: f64, falloff: f64, vp0: mat4, vp1: mat4, vp2: mat4, sm0: Texture, sm1: Texture, sm2: Texture,
+        time: f64 = 0.0) -> CharScene:
+    CharScene(vp, cam, sun_dir, sun_color, sky, ground, haze, f32(density), f32(falloff), vp0, vp1, vp2, sm0, sm1, sm2, f32(time))
+
+# per-draw look controls
+struct CharParams:
+    variant = 0                     # texture set (bokoblin: 0 red, 1 blue, 2 black, 3 green)
+    tint = vec4(1, 1, 1, 1)         # multiplies the base color
+    rim = 1.0                       # rim light strength
+    fill = 1.0                      # emissive fill strength (keeps figures readable in shade)
+    flash = vec4(0, 0, 0, 0)        # rgb, amount: hit flash / freeze / shock tint
+    dissolve = 0.0                  # 0..1: dithered fade-out (death puff, despawn)
+    glow = 1.0                      # emissive mask strength (texture alpha)
+    hide = 0                        # bitmask of parts not to draw (see part_index)
+    wake_shape = 0.0                # pose corrective, zero outside the bare wake
+    creature = 0.0                 # creature-only wet skylight response
+    hero_material = 0.0             # hero-only cloth/leather/skin response from painted albedo
+    recolor = vec4(0, 0, 0, 0)      # rgb, amount: a new base color, keeping the texture's light and shade
+
+struct ChU:
+    vp: mat4
+    model: mat4
+    cam: vec3
+    bones: Texture
+    row: f32
+    tex: Texture
+    tint: vec4
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    falloff: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+    rim: f32
+    fill: f32
+    flash: vec4
+    dissolve: f32
+    glow: f32
+    two_sided: f32
+    lp = vec4(0, 0, 0, 0)
+    lc = vec3(0, 0, 0)
+    recolor = vec4(0, 0, 0, 0)
+    wet = 0.0
+    wake_shape = 0.0                # pose corrective, zero outside the bare wake
+    creature = 0.0                 # creature-only wet skylight response
+    hero_material = 0.0
+    waterline: f32 = -10000.0
+    submerged: f32 = 0.0
+
+struct ChO:
+    pos: vec4
+    world: vec3
+    nrm: vec3
+    uv: vec2
+    col: vec4
+
+struct ChRows:
+    a: vec4
+    b: vec4
+    c: vec4
+
+# the blended 3x4 skinning matrix of a vertex (rows)
+ch_skin_rows = (bones: Texture, row: f32, j: vec4, w: vec4) -> ChRows:
+    y = int(row + 0.5)
+    x0 = int(j.x + 0.5) * 3
+    x1 = int(j.y + 0.5) * 3
+    x2 = int(j.z + 0.5) * 3
+    x3 = int(j.w + 0.5) * 3
+    a = glsl_fetch(bones, x0, y) * w.x + glsl_fetch(bones, x1, y) * w.y + glsl_fetch(bones, x2, y) * w.z + glsl_fetch(bones, x3, y) * w.w
+    b = glsl_fetch(bones, x0 + 1, y) * w.x + glsl_fetch(bones, x1 + 1, y) * w.y + glsl_fetch(bones, x2 + 1, y) * w.z + glsl_fetch(bones, x3 + 1, y) * w.w
+    c = glsl_fetch(bones, x0 + 2, y) * w.x + glsl_fetch(bones, x1 + 2, y) * w.y + glsl_fetch(bones, x2 + 2, y) * w.z + glsl_fetch(bones, x3 + 2, y) * w.w
+    ChRows(a, b, c)
+
+ch_cell = (w: vec3) -> vec3:
+    a = floor(w.xy)
+    b = floor(vec2(w.z, 0))
+    vec3(a.x, a.y, b.x)
+
+# A continuous wake-only corrective removes the compressed deltoid mound and
+# restores a little volume at the elbow crease. It is zero at the wrists and
+# never changes the bind mesh, influences, skeleton or hand-contact vertices.
+ch_wake_point = (p: vec3, weight: f32) -> vec3:
+    q=p
+    x=abs(p.x)
+    band=smoothstep(1.12,1.21,p.y)*(1.0-smoothstep(1.39,1.49,p.y))*weight
+    shoulder=smoothstep(0.09,0.16,x)*(1.0-smoothstep(0.25,0.34,x))*band
+    elbow=(1.0-smoothstep(0.035,0.105,abs(x-0.4122)))*band
+    # The refined deltoid loops need less compression, retaining a round arm
+    # while it bends. A broader scapular correction softens the folded back.
+    q.y+=(1.29585-p.y)*(shoulder*0.14-elbow*0.16)
+    q.z+=(-0.060-p.z)*(shoulder*0.24-elbow*0.16)
+    back=(1.0-smoothstep(0.13,0.22,x))*smoothstep(1.10,1.21,p.y)*(1.0-smoothstep(1.34,1.41,p.y))
+    back*=1.0-smoothstep(-0.04,-0.01,p.z)
+    q.z+=(-0.085-p.z)*back*weight*0.12
+    # The temple-reaching right humerus presses into the rib cage after the
+    # contact solve. Lift its middle section off the chest in bind space;
+    # taper to zero at the shoulder origin and elbow so sockets stay exact.
+    upper=smoothstep(0.16,0.24,-p.x)*(1.0-smoothstep(0.30,0.54,-p.x))*band
+    q.y+=0.015*upper
+    q.z-=0.012*upper
+    # Restore a rounded humerus cross-section in this compressed pose. Bound
+    # the surface adjustment to 8 mm, clear of shoulder origin and wrist.
+    round_arm=smoothstep(0.22,0.27,-p.x)*(1.0-smoothstep(0.37,0.43,-p.x))*band
+    radial=vec3(0,q.y-1.29585,q.z+0.062)
+    radius=length(radial)
+    round_arm*=1.0-smoothstep(0.055,0.080,radius)
+    q+=radial/max(radius,0.001)*clamp(0.036-radius,-0.008,0.008)*round_arm
+    q
+
+ch_vs = (v: ChVert, u: ChU) -> ChO:
+    r = ch_skin_rows(u.bones, u.row, v.jnt, v.wgt)
+    point=v.pos
+    normal=v.nrm
+    if u.wake_shape>0.0:
+        point=ch_wake_point(v.pos,u.wake_shape)
+        tangent=normalize(cross(v.nrm,(if abs(v.nrm.y)<0.9:vec3(0,1,0) else:vec3(1,0,0))))
+        bitangent=cross(v.nrm,tangent)
+        a=ch_wake_point(v.pos+tangent*0.0005,u.wake_shape)-ch_wake_point(v.pos-tangent*0.0005,u.wake_shape)
+        b=ch_wake_point(v.pos+bitangent*0.0005,u.wake_shape)-ch_wake_point(v.pos-bitangent*0.0005,u.wake_shape)
+        normal=normalize(cross(a,b))
+        # A radial shading frame keeps the compressed strip convex after
+        # blending the shoulder/elbow transforms, rather than lighting a sheet.
+        rounded=smoothstep(0.20,0.25,-v.pos.x)*(1.0-smoothstep(0.44,0.51,-v.pos.x))
+        rounded*=smoothstep(1.20,1.25,v.pos.y)*(1.0-smoothstep(1.35,1.40,v.pos.y))
+        radial=normalize(vec3(0.001,point.y-1.29585,point.z+0.062))
+        normal=normalize(mix(normal,radial,rounded*u.wake_shape*0.70))
+    p4 = vec4(point, 1)
+    n4 = vec4(normal, 0)
+    sp = vec3(dot(r.a, p4), dot(r.b, p4), dot(r.c, p4))
+    sn = vec3(dot(r.a, n4), dot(r.b, n4), dot(r.c, n4))
+    w = u.model * vec4(sp, 1)
+    wn = (u.model * vec4(sn, 0)).xyz
+    col=v.col
+    if u.wake_shape>0.0:
+        # Pose-bound rounded arm wash and the contact crescent on the back.
+        # Vertex-only pigment uses the existing wake gate; no light sample or draw.
+        arm=smoothstep(0.20,0.26,-v.pos.x)*(1.0-smoothstep(0.53,0.62,-v.pos.x))
+        arm*=smoothstep(1.16,1.24,v.pos.y)*(1.0-smoothstep(1.38,1.46,v.pos.y))
+        underside=1.0-smoothstep(-0.35,0.55,normal.y)
+        core=arm*(0.025+0.16*underside)
+        contact=(1.0-smoothstep(0.018,0.047,abs(v.pos.x+0.17)))
+        contact*=smoothstep(1.22,1.255,v.pos.y)*(1.0-smoothstep(1.30,1.33,v.pos.y))
+        contact*=1.0-smoothstep(-0.065,-0.015,v.pos.z)
+        col=vec4(col.xyz*(1.0-u.wake_shape*max(core,contact*0.18)),col.w)
+    ChO(u.vp * w, w.xyz, wn, v.uv, col)
+
+# Shared painted diffuse values, a cool shade side, hemisphere ambient and sky rim.
+ch_light = (alb: vec3, n: vec3, v: vec3, l: vec3, u: ChU, shadow: f32, skin_: f32) -> vec3:
+    ndl = dot(n, l)
+    # Three broad painted values shared by skin, cloth, creatures and the monk.
+    # Skin wraps gently through the terminator; cloth and bone keep the
+    # original broad value bands. No new light or shadow sample is required.
+    band = smoothstep(-0.14 - skin_ * 0.30, 0.23 + skin_ * 0.30, ndl)
+    top = smoothstep(0.64, 0.90, ndl)
+    skin_shadow = mix(shadow, 0.12 + shadow * 0.88, skin_)
+    d = (0.10 + band * 0.73 + top * (0.08 - skin_ * 0.045)) * skin_shadow
+    hemi = mix(u.ground, u.sky, 0.45 + smoothstep(-0.35, 0.65, n.y) * 0.22)
+    amb = hemi * mix(vec3(0.83, 0.91, 1.07), vec3(1, 1, 1), band * skin_shadow)
+    c = alb * (amb * 1.08 + u.sun_color * d)
+    # A broad warm pigment transition, not a view-dependent highlight. It
+    # disappears on the fully lit and fully shaded planes and under occlusion.
+    warmth = band * (1.0-band) * skin_ * skin_shadow
+    c += alb * u.sun_color * vec3(0.16,0.045,0.012) * warmth
+    # Diffuse flesh bounce retains a little warmth under the blue chamber sky.
+    c += alb * hemi * vec3(0.15,0.038,0.008) * skin_ * (1.0-band*0.5)
+    # A quiet blue-grey paint edge, never a white sun/specular lobe.
+    nv = clamp(dot(n, v), 0.0, 1.0)
+    edge = smoothstep(0.72, 0.97, 1.0 - nv) * smoothstep(-0.4, 0.5, n.y)
+    c = c + alb * u.sky * vec3(0.78, 0.93, 1.10) * edge * u.rim * (0.32 - skin_ * 0.12)
+    # A narrow cool rim on the moon-facing silhouette, fading into overcast.
+    moon = smoothstep(0.8, 0.35, luma(u.sky)) * smoothstep(1.8, 2.2, luma(u.sun_color) / max(luma(u.sky), 0.001))
+    c = c + vec3(0.08, 0.14, 0.25) * edge * smoothstep(-0.2, 0.65, ndl) * moon * u.rim
+    # Soft overcast fill keeps soaked figures separate from the dark forest floor (Sol3).
+    if u.wet > 0.0:
+        overcast = smoothstep(1.8, 0.7, luma(u.sun_color) / max(luma(u.sky), 0.001)) * smoothstep(0.16, 0.3, luma(u.sky))
+        c = c + alb * u.sky * overcast * u.wet * (0.3 + 0.15 * u.hero_material)
+    c + alb * (u.sky * 0.16 + vec3(0.02, 0.02, 0.02)) * u.fill
+
+# Fire and chamber lights use the same painted terminator as daylight. Their
+# distance falloff remains soft, but smooth mesh normals do not add glossy-looking
+# anatomical gradients inside an otherwise flat painted scene.
+ch_point_light = (alb: vec3, n: vec3, w: vec3, lp: vec4, lc: vec3, skin_: f32) -> vec3:
+    if lp.w <= 0.0: return vec3(0, 0, 0)
+    d = lp.xyz - w
+    dist = length(d)
+    q = clamp(1.0 - dist * dist / (lp.w * lp.w), 0.0, 1.0)
+    att = q * q * q * (0.5 + 0.5 / (1.0 + dist * dist / (lp.w * lp.w) * 6.0))
+    ndl = dot(n, d / max(dist, 0.001))
+    band = smoothstep(-0.20 - skin_ * 0.38, 0.32 + skin_ * 0.34, ndl)
+    value = 0.28 + band * 0.58 + smoothstep(0.64, 0.90, ndl) * (0.05 - skin_ * 0.035)
+    la = dot(alb, vec3(0.3, 0.55, 0.15))
+    paint = mix(alb, vec3(la, la, la), 0.18)
+    paint * lc * att * (vec3(value,value,value) + vec3(0.14,0.038,0.009) * band * (1.0-band) * skin_)
+
+# Keep wet-fibre pigment while preserving the actual lighting's luminance.
+# Rain cannot add a new orange lobe or brighten the silhouette through this.
+ch_fibre_wet = (lit: vec3, pigment: vec3, wet: f32, fibre: f32) -> vec3:
+    neutral = pigment * (luma(lit)/max(luma(pigment),0.001))
+    mix(lit,neutral,wet*fibre*0.80)
+
+ch_fs = (i: ChO, u: ChU) -> vec4:
+    if u.dissolve > 0.0:
+        h = hash13(ch_cell(i.world * 40.0))
+        glsl_discard(h < u.dissolve)
+    tx = sample(u.tex, i.uv)
+    alb = tx.xyz * i.col.xyz * u.tint.xyz
+    if u.recolor.w > 0.0:
+        # (the shading of a dark texture, stretched, under the new color)
+        lum = clamp(dot(tx.xyz * i.col.xyz, vec3(0.3, 0.55, 0.15)) * 5.0, 0.0, 1.0)
+        alb = mix(alb, u.recolor.xyz * (0.55 + 0.6 * lum), u.recolor.w)
+    n = normalize(i.nrm)
+    v = normalize(u.cam - i.world)
+    if u.two_sided > 0.5 and dot(n, v) < -0.1: n = n * -1.0
+    l = normalize(u.sun_dir)
+    sh = cascade_shadow(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2)
+    # The hero's painted palette separates light warm skin, dark brown leather and cloth.
+    # Opt-in keeps this approximation off monster and wildlife textures.
+    # Bake-authored hairline/locks, independent of texture hue. Other models
+    # keep alpha=1. Vertex alpha is a material mask, not opacity.
+    hair_ = clamp(1.0-i.col.w,0.0,1.0)
+    skin_ = (1.0-hair_) * smoothstep(0.07, 0.20, tx.x - tx.z) * smoothstep(0.22, 0.36, tx.y) * smoothstep(0.40, 0.63, tx.x) * u.hero_material
+    leather = (1.0-hair_) * smoothstep(0.025, 0.12, tx.x - tx.z) * (1.0 - smoothstep(0.30, 0.53, tx.y)) * (1.0 - skin_) * u.hero_material
+    # Soaked cloth absorbs more light than skin and leather.
+    alb = alb * (1.0 - u.wet * (0.38 - skin_ * 0.25 - leather * 0.04 + hair_ * 0.04))
+    # Texture-space strokes deform with the garment and its painted folds.
+    # Skin keeps fine mesh-bound pigment beneath the scene's shared value wash.
+    cloth = (1.0 - hair_) * (1.0 - skin_) * (1.0 - leather) * u.hero_material
+    weave = vnoise(i.uv * vec2(180.0, 34.0) + vec2(tx.y * 3.0, 0.0))
+    pigment = vnoise(i.uv * 620.0)
+    alb = alb * (1.0 + (weave - 0.5) * cloth * 0.095 + (pigment - 0.5) * (0.018 + leather * 0.02))
+    c = ch_light(alb, n, v, l, u, sh, skin_)
+    if u.creature > 0.0 and u.wet > 0.0:
+        # Lift the lowest creature pigments without flattening their texture or
+        # giving pale patches a white wash. The normal still divides the planes.
+        bounce_alb = mix(alb, vec3(sqrt(max(alb.x, 0.0)), sqrt(max(alb.y, 0.0)), sqrt(max(alb.z, 0.0))) * 0.5, 0.65)
+        c = c + creature_bounce(bounce_alb, n, u.sun_color, u.sky, u.wet) * u.creature
+    # Keep pale skin, warm leather and dyed cloth distinct beneath storm foliage.
+    # Their existing albedo masks supply the material response, not a white wash.
+    if u.wet > 0.0 and u.hero_material > 0.0:
+        response = (0.055 + skin_ * 0.13 + leather * 0.065) * u.hero_material * (1.0-hair_)
+        c = c + canopy_bounce(alb, n, u.sun_color, u.sky, u.wet, response)
+    if u.wet > 0.0:
+        # Damp pigment darkens above; a broad sky edge replaces glossy wet blobs.
+        edge = smoothstep(0.72, 0.98, 1.0 - clamp(dot(n, v), 0.0, 1.0))
+        c = c + alb * u.sky * edge * u.wet * 0.10
+    c = c + ch_point_light(alb, n, i.world, u.lp, u.lc, skin_) * 1.3
+    # Wet fibres absorb light as a scalar. Preserve the painted pigment under
+    # overcast bounce instead of letting additive warm fill turn blond ginger.
+    c = ch_fibre_wet(c,alb,u.wet,hair_)
+    c = c + tx.xyz * tx.w * u.glow * 2.5
+    c = submerged_pigment(c, i.world.y, u.waterline, u.submerged)
+    c = atmos(c, i.world, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
+    # Hit light remains visible through haze; retain a little volume in the white silhouette.
+    c = mix(c, u.flash.xyz * (0.85 + 0.15 * max(dot(n, l), 0.0)), u.flash.w)
+    # Continuous paint response in HDR alpha; see post.jo. Both remain figures.
+    vec4(c, 0.15 + cloth * 0.18)
+
+# ---- depth only (shadow maps) ----
+struct ChSU:
+    vp: mat4
+    model: mat4
+    bones: Texture
+    row: f32
+    dissolve: f32
+    wake_shape = 0.0
+
+struct ChSO:
+    pos: vec4
+    world: vec3
+
+ch_shadow_vs = (v: ChVert, u: ChSU) -> ChSO:
+    r = ch_skin_rows(u.bones, u.row, v.jnt, v.wgt)
+    point=v.pos
+    if u.wake_shape>0.0: point=ch_wake_point(v.pos,u.wake_shape)
+    p4 = vec4(point, 1)
+    w = u.model * vec4(dot(r.a, p4), dot(r.b, p4), dot(r.c, p4), 1)
+    ChSO(u.vp * w, w.xyz)
+
+ch_shadow_fs = (i: ChSO, u: ChSU) -> vec4:
+    if u.dissolve > 0.0:
+        h = hash13(ch_cell(i.world * 40.0))
+        glsl_discard(h < u.dissolve)
+    vec4(1, 1, 1, 1)
+
+# ---- shaders (made on first use) ----
+struct ChShaders:
+    lit = Shader()
+    depth = Shader()
+    ready = false
+
+ch_shaders = ChShaders()
+
+ch_init_shaders = ():
+    if ch_shaders.ready: return
+    ch_shaders.ready = true
+    ch_shaders.lit = make_sh(shader(ch_vs, ch_fs))
+    ch_shaders.depth = make_sh(shader(ch_shadow_vs, ch_shadow_fs))
+
+# The queried surface is shared with gameplay/foam; only submerged fragments
+# receive absorption, rather than tinting the whole character when feet get wet.
+character_waterline = (foot: vec3, hero: f64) -> vec2:
+    result = vec2(-10000, 0)
+    if hero <= 0.0: return result
+    if let level = water_level(f64(foot.x), f64(foot.z)):
+        result = vec2(f32(level), f32(smoothstep(0.015, 0.10, level - f64(foot.y))))
+    result
+
+submerged_pigment = (color: vec3, y: f32, level: f32, amount: f32) -> vec3:
+    underwater = smoothstep(0.015, 0.30, level - y) * amount
+    mix(color, color * vec3(0.56, 0.77, 0.83), underwater * 0.85)
+
+ch_uniforms = (s: CharScene, p: CharParams, model: mat4, bones: Texture, row: int, tex: Texture, two_sided: bool) -> ChU:
+    u = ChU(s.vp, model, s.cam, bones, f32(row), tex, p.tint, s.sun_dir, s.sun_color, s.sky, s.ground, s.haze,
+        s.density, s.falloff, s.vp0, s.vp1, s.vp2, s.sm0, s.sm1, s.sm2, f32(p.rim), f32(p.fill), p.flash,
+        f32(p.dissolve), f32(p.glow), (if two_sided: f32(1.0) else: f32(0.0)), s.lp, s.lc, p.recolor, s.wet, p.wake_shape, p.creature, p.hero_material)
+    water = character_waterline(model[3].xyz, p.hero_material)
+    u.waterline = water.x
+    u.submerged = water.y
+    u

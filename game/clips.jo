@@ -1,0 +1,56 @@
+use 'skel.jo'
+
+# How fast each locomotion clip carries the body over the ground at rate 1: the game plays a clip
+# at speed / this, so the feet stay put. Measured by clip_ground_speed after shortening the run
+# (tools/stride_check.jo prints it; tools/feel_test.jo checks these against it).
+const CLIP_WALK = 0.900
+const CLIP_RUN = 3.218
+const CLIP_SPRINT = 5.891
+const CLIP_SNEAK = 1.105
+
+# shorten the run to a 0.541 s cycle at 5.556 m/s, and the sprint a little less, to about 0.48 s
+# at 8.1 m/s: quicker steps than the run's (at full reach its cycle was the slower, 0.608 s)
+load_humanoid_anims = () -> AnimLib:
+    lib = load_anims("assets/models/humanoid.anim")
+    limbs = ["thigh_l", "calf_l", "foot_l", "ball_l", "thigh_r", "calf_r", "foot_r", "ball_r",
+        "upperarm_l", "lowerarm_l", "upperarm_r", "lowerarm_r"]
+    clip_scale_swing(lib, clip_index(lib, "run"), limbs, 0.623)
+    clip_scale_swing(lib, clip_index(lib, "sprint"), limbs, 0.79)
+    lib
+
+locomotion_rate = (name: str, speed: f64) -> f64:
+    match name:
+        "walk": speed / CLIP_WALK
+        "run": speed / CLIP_RUN
+        "sprint": speed / CLIP_SPRINT
+        "sneak": max(speed / CLIP_SNEAK, 0.6)
+        _: 1.0
+
+clip_stride_cycle = (lib: AnimLib, name: str, speed: f64) -> f64:
+    clip_duration(lib, clip_index(lib, name)) / max(locomotion_rate(name, speed), 0.001)
+
+# the planted foot's backward speed mid-stance (the clips are in place): the 70th percentile of
+# the lower foot's speed while it is clearly down (touch-downs linger)
+clip_ground_speed = (m: Model, lib: AnimLib, name: str) -> f64:
+    feet = [bone_index(m, "foot_l"), bone_index(m, "foot_r")]
+    c = clip_index(lib, name)
+    if c < 0 or feet[0] < 0 or feet[1] < 0: return 0.0
+    dur = clip_duration(lib, c)
+    n = 480
+    dt = dur / f64(n)
+    pts: vec3[][]
+    loop k in [0..n + 1):
+        p = sample_clip(lib, c, f64(k) * dt, true)
+        pts.push([loop f in feet: transform_point(bone_world(m, p, f), vec3(0, 0, 0))])
+    # (each foot against its own lowest point: with a shortened stride neither foot reaches the
+    # other's low, and a shared floor found no stance at all)
+    lo = [1e9, 1e9]
+    loop q in pts:
+        loop i in [0..2): lo[i] = min(lo[i], f64(q[i].y))
+    vs: f64[]
+    loop k in [0..n):
+        j = if f64(pts[k][0].y) - lo[0] < f64(pts[k][1].y) - lo[1]: 0 else: 1
+        if f64(pts[k][1 - j].y) - lo[1 - j] > 0.04 and f64(pts[k][j].y) - lo[j] < 0.06:
+            vs.push(f64(pts[k][j].z - pts[k + 1][j].z) / dt)
+    vs.sort()
+    if vs.len() > 0: vs[vs.len() * 7 / 10] else: 0.0

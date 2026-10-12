@@ -1,0 +1,65 @@
+Round 74 environment/weather pass against e4abc0d
+
+Creature shading uses an explicit per-draw response on boars, birds, foxes and
+Bokoblins. Wet cloud-deck bounce preserves pigment and normal planes; dark
+skinned creature pigments receive a compressed bounce value. Hero and landscape
+lighting retain their existing controls. Clear-boar body crops remain identical.
+
+Cloud organization mixes broad banks with smaller lobes. The density boundary
+is narrower than the baseline; interior pigment steps blend with the existing
+volume lighting. Title camera, lettering reserve and composition are unchanged.
+The first trial's hard interior patches were rejected at normal size.
+
+Fire cards retain the existing simulation, lifetimes, instance count and RNG.
+GPU shape varies low broad licks, thinner tall tongues and emissive intensity.
+Existing embers remain in the front. No extra CPU emission or per-particle work.
+
+West whitewater uses patchy strand-dependent shelf foam and carries the falling
+water shading across the two real benches, breaking their dark reflective bars.
+
+The camp rock has an asymmetric buried root, broken crest and small archer shelf
+at the original 2.4 m height. Its lower body and upper shelf have climbable rock
+colliders. The initial regular pyramid trial was rejected at normal size.
+
+Weather fixture observations now hold a static snow camera and pin the exterior
+camera after the shrine lift. Fixture-only invulnerability lets the weather
+sequence finish with outdoor AI active. Combat camera turns and game-over had
+contaminated the old brightness assertion. Each render releases its own flock.
+
+Evidence stays under build/round74. Every render used one non-nested
+/tmp/botw-render.lock acquisition per game process. No build artifacts are staged.
+
+Final validation
+- 19 selected CPU checks from run_all_checks.sh, plus combat_check,
+  enemy_model_check, cliff_climb_check and collision_query_check: PASS.
+- Fire test/query/scan and round70_heat_check rechecked after final shader: PASS.
+- element_puzzle_visual_check: thorns and cracks closed/open assertions PASS.
+- weather_transition_check: cabin/shelter, forest, snow and shrine exit PASS;
+  largest non-flash steps 9.1, 10.5 and 6.5 respectively (limit 12).
+- weather_silhouette_check: all 12 meadow/canopy/pond weather combinations PASS;
+  minimum contrast 0.174 against required 0.12.
+- title panorama/handoff checks PASS. Matched no-atlas contrast at frames
+  600/750/900: minimum 3.4312/3.5728/3.5679:1 (required 3:1).
+- tools/prepare_assets.sh and tools/prepared_assets_check.sh: PASS after final
+  rock and water changes; full generated/prepared byte equivalence.
+
+Fire timing: three 1200-frame release runs each at exact 1280x720, scale 1;
+GPU mode, client window, fixed 1/60 simulation, warm shader cache, prepared
+assets disabled for both binaries, no stage trace. Nearest-rank pooled frames
+241..1200: 2880 steady samples per side, no outliers removed.
+before: CPU wall p50/p99 3.734/14.108 ms; main-thread p50/p99 3.637/13.744 ms.
+after: CPU wall p50/p99 3.715/13.722 ms; main-thread p50/p99 3.620/13.322 ms.
+Both p99 measures decreased. The shared machine's late fire tail differs
+from the earlier 720-frame batch (wall p99 10.489 -> 8.199 ms); use matched
+current captures, rather than treating the critic's 8.4-9 ms as fixed hardware.
+The final GPU batch median is 4.32 ms. Fire particle simulation/RNG and pool
+budget retain their original code; visual metadata only tags existing cards.
+
+Accepted 1280x720 pairs: build/round74/{before,after}/, including title frames
+600, 750 and 900. trial1/ keeps rejected hard cloud patches/pedestal geometry.
+ready/ contains the final grounded fire; finish/ the full-bench waterfall;
+ship/ the final camp rock; review/ the other accepted captures.
+Raw timings: before/performance-final/0/, before/performance-rest/ and
+ready/performance/. Aggregation: fire-performance-final.json.
+Weather: weather-final-verify.log. Silhouette: silhouette-verify.log.
+Prepared assets: prepared-assets-finish.log. Image hashes: accepted-pairs.json.

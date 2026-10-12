@@ -1,0 +1,100 @@
+# Rain-impact diversity and shelter behavior through the production emitter, no GPU.
+use '../game/fx.jo'
+use '../game/water.jo'
+use '../game/terrain.jo'
+use '../game/env.jo'
+use '../game/physics.jo'
+use '../game/shade.jo'
+checks = 0
+check = (ok: bool, name: str):
+    if not ok:
+        eprint("FAIL: {name}")
+        exit(1)
+    checks += 1
+# Merge regression: only scorch kind 14 is a flat ground decal. Hit
+# outlines (15/16) share their camera-facing plane with sparks, while stroke 13
+# keeps its width in world units rather than multiplying by segment length.
+pu = PartU(mat4(), vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 10), vec3(0, 0, 0), 0.0)
+corner = QuadV(vec2(1, 1))
+loop kind in [14.0, 15.0, 16.0]:
+    o = part_vs(corner, PInst(vec4(0, 0, 0, 1), vec4(1, 1, 1, 1), vec4(0, f32(kind), 0, 0)), pu)
+    check((if kind == 14.0: abs(o.pos.y) < 0.0001 and abs(o.pos.z - 0.65) < 0.0001 else: abs(o.pos.y - 1.0) < 0.0001 and abs(o.pos.z) < 0.0001), "scorch flat; hit-spark outline camera-facing")
+loop half_length in [0.02, 2.0]:
+    o = part_vs(QuadV(vec2(1, 0)), PInst(vec4(0, 0, 0, f32(half_length)), vec4(1, 1, 1, 1), vec4(0, 13, 0, f32(PI / 2.0))), pu)
+    check(abs(o.pos.x - 0.002) < 0.00001, "stroke minimum width independent of length")
+hf.n = 64
+hf.cell = 1.0
+hf.x0 = -32.0
+hf.z0 = -32.0
+hf.h = fill(f32(-2), 4096)
+water_grid_set(fill(f32(0), 4096), 64, -32.0, -32.0, 1.0)
+env.rain = 1.0
+seed_random(53)
+loop k in [0..60): fx_rain_ground(vec3(0, 2, 0), 1.0 / 60.0, false)
+check(particles.len() >= 900 and particles.len() < 1000, "bounded impact overlap")
+small = 0
+large = 0
+faint = 0
+bright = 0
+short = 0
+long = 0
+loop p in particles:
+    check(p.kind == .ring and p.pos.y > 0.0 and p.pos.y < 0.04, "impacts lie on water")
+    if p.size < 0.09: small += 1
+    if p.size > 0.22: large += 1
+    if p.color.w < 0.18: faint += 1
+    if p.color.w > 0.28: bright += 1
+    if p.life < 0.35: short += 1
+    if p.life > 0.6: long += 1
+check(small > 100 and large > 50, "independent small and large impacts")
+check(faint > 100 and bright > 100, "independent faint and bright impacts")
+check(short > 100 and long > 100, "independent short and long lifetimes")
+print("rain diversity: {particles.len()} waves; small/large {small}/{large}, faint/bright {faint}/{bright}, short/long {short}/{long}")
+particles.clear()
+fx_rain_ground(vec3(0, 2, 0), 1.0, true)
+check(particles.len() == 0, "no indoor rain")
+set_snow = (value: bool): snowing = value
+set_snow(true)
+fx_rain_ground(vec3(0, 2, 0), 1.0, false)
+check(particles.len() == 0, "no snow ripples")
+set_snow(false)
+a = vec3(-16, 4, -16)
+b = vec3(16, 4, -16)
+c = vec3(16, 4, 16)
+d = vec3(-16, 4, 16)
+add_rain_face(a, b, c, "weather_test_roof")
+add_rain_face(a, c, d, "weather_test_roof")
+fx_rain_ground(vec3(0, 2, 0), 1.0, false)
+check(particles.len() == 0, "roof excludes water impacts")
+# Flat wet earth pools share the production material mask. Slopes, dry ground and roofs
+# cannot create rings; snow/indoor rejection above applies to both lakes and puddles.
+rain_sync({"weather_test_roof": true}, {})
+water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+hf.h = fill(f32(0), 4096)
+env.wet = 1.0
+particles.clear()
+seed_random(55)
+fx_rain_ground(vec3(0, 2, 0), 1.0, false)
+pools = 0
+drops = 0
+loop p in particles:
+    if p.kind == .ring:
+        pools += 1
+        check(p.pos.y > 0.0 and p.pos.y < 0.04, "ground pool ring on surface")
+        check(puddle_mask(p.pos.xz, 1.0, 1.0) > 0.15, "ring agrees with wet terrain")
+    if p.kind == .splash: drops += 1
+check(pools > 20 and drops > 200, "mixed pooled and unpooled wet ground")
+check(particles.len() <= 1800, "pool rings replace drops within existing impact budget")
+particles.clear()
+env.wet = 0.0
+fx_rain_ground(vec3(0, 2, 0), 1.0, false)
+loop p in particles: check(p.kind == .splash, "dry ground has no pool rings")
+check(puddle_mask(vec2(0, 0), 0.95, 1.0) == 0.0, "slopes cannot pool")
+particles.clear()
+env.wet = 1.0
+rain_sync({}, {})
+fx_rain_ground(vec3(0, 2, 0), 1.0, false)
+loop p in particles:
+    check(p.kind == .splash and p.pos.y > 4.0, "roof intercepts ground pool rings")
+print("ground rain: {pools} puddle rings, {drops} droplets; bounded replacement")
+print("{checks} weather FX checks passed")

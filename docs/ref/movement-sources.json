@@ -1,0 +1,31 @@
+{
+  "accessed": "2026-10-09",
+  "parameter_commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+  "files": [
+    {
+      "local": "Player_Link.aiprog.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/Player_Link.aiprog.yml",
+      "upstream_sha256": "09904f9cfc5a5a467e8bbfb8b04143c07ec1e422ba3f17f669c6f84236c4d64b",
+      "local_sha256": "09904f9cfc5a5a467e8bbfb8b04143c07ec1e422ba3f17f669c6f84236c4d64b",
+      "byte_identical": true
+    },
+    {
+      "local": "Player_Link.gparamlist.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/Player_Link.gparamlist.yml",
+      "upstream_sha256": "8e5a5f1860983c7172ecd78cb43a0d1c7c4e29b31badf339871297610e12b7c5",
+      "local_sha256": "8e5a5f1860983c7172ecd78cb43a0d1c7c4e29b31badf339871297610e12b7c5",
+      "byte_identical": true
+    },
+    {
+      "local": "phys.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/Physics/Player_Link.physics.yml",
+      "upstream_sha256": "6d5a42ddfed31eb1d39c555d8a25618fc48984b197dbb14098c30a93895ed7b7",
+      "local_sha256": "6d5a42ddfed31eb1d39c555d8a25618fc48984b197dbb14098c30a93895ed7b7",
+      "byte_identical": true
+    }
+  ],
+  "supplementary_root_motion_report": {
+    "url": "https://github.com/ntngel1/botw-renderer/blob/656ceeb6ab2dd0eb0d6fa352cd1a3adddf0ec10b/docs/research/wiiu-as-frame-ctrl.md",
+    "limits": "Independent research report, not our dump extraction; stop, startup and curve-turn measurements are not available as complete root tracks."
+  }
+}

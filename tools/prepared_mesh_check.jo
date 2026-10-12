@@ -1,0 +1,71 @@
+build:
+    opt = release
+use '../game/architecture_assets.jo'
+use '../game/build.jo'
+use '../game/worldgen.jo'
+use '../game/water_render.jo'
+use '../game/farland.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/terrain.jo'
+use '../game/terrain_assets.jo'
+assert(env("BOTW_ASSET_CHECK") != none)
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+scatter_materials = hf.mat
+terrain_hit = terrain_asset_load()
+if not terrain_hit: terrain_prepare_cpu()
+assert(terrain_hit or env("BOTW_NO_PREPARED_ASSETS") != none)
+# A texture can roundtrip byte-identically while being invalid in both paths.
+# Encoded terrain normals must point upward and remain approximately unit length.
+assert(terrain_normal_pixels.len() == hf.n * hf.n * 4)
+# The dressed upload must leave the CPU scatter map intact. Otherwise a path
+# repaint changes eligibility/RNG and silently moves unrelated solid outcrops.
+assert(terrain_material_pixels.len() == hf.mat.len())
+painted_samples = 0
+loop k in [0..hf.mat.len()):
+    assert(hf.mat[k] == scatter_materials[k], "terrain dressing changed scatter materials")
+    if k % 4 != 3: assert(terrain_material_pixels[k] == hf.mat[k], "terrain dressing changed rock/snow/forest masks")
+    else:
+        assert(terrain_material_pixels[k] >= hf.mat[k], "terrain dressing erased an existing path")
+        if terrain_material_pixels[k] > hf.mat[k]: painted_samples += 1
+assert(painted_samples > 0, "missing meadow dressing upload")
+q = terrain_normal_pixels
+loop k in [0..hf.n * hf.n):
+    normal = vec3(f32(q[k * 4]), f32(q[k * 4 + 1]), f32(q[k * 4 + 2])) / 255.0 * 2.0 - vec3(1, 1, 1)
+    assert(q[k * 4 + 1] >= 127 and abs(length(normal) - 1.0) < 0.02, "invalid terrain normal upload payload")
+water_build()
+farland_build()
+assert(env("BOTW_NO_PREPARED_ASSETS") != none or (water_prepared_hit and farland_prepared_hit))
+init_dressing = ():
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+init_dressing()
+mixed = args().contains("--architecture-miss")
+path = if mixed: "build/prepared-check/header.bin" else: "assets/prepared/structures.bin"
+if not architecture_load(path):
+    assert(mixed or env("BOTW_NO_PREPARED_ASSETS") != none, "prepared architecture must hit")
+    farland_castle_prepare()
+    sor_interior()
+    structures_build()
+mode = if mixed: "mixed" else if env("BOTW_NO_PREPARED_ASSETS") != none: "generated" else: "prepared"
+root = "build/prepared-check/" + mode
+assert(mkdir(root))
+assert(terrain_asset_write(root + "/terrain.bin"))
+assert(water_asset_write(root + "/water.bin"))
+assert(farland_asset_write(root + "/farland.bin"))
+assert(architecture_write(root + "/structures.bin"))
+print("mesh buffers/collision/roof maps/ownership/RNG exported: {mode}")
+# Serialized maps sort their keys, hiding submission-order differences in bytes.
+# Export the actual renderer order as well, including the architecture-miss path.
+print("draw named {named_meshes.keys()}")
+
+# Exercise restored broad phases and function hooks, beyond serializing their bytes.
+# These results are compared between fresh prepared/generated processes.
+use '../game/physics.jo'
+loop p in [vec3(-1068, 245, 1845), vec3(-818, 222, 2001), vec3(-784, 194, 2255), vec3(-1490, 180, 1790), vec3(-365, 260, 1720)]:
+    ids = nearby(f64(p.x), f64(p.z), 2.0)
+    hit = surface_ray(p + vec3(0, 2, 0), vec3(0, -1, 0), 300.0)
+    pushed = surface_push(p, 0.4, 1.7)
+    print("physics {p} nearby {ids} rain {rain_streak_height(f64(p.x), f64(p.z))} cliff {hit} push {pushed}")

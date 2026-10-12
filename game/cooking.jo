@@ -1,0 +1,72 @@
+use 'gfx.jo'
+use 'items.jo'
+use 'player.jo'
+use 'elements.jo'
+use 'chars.jo'
+use 'skel.jo'
+use 'scene.jo'
+use 'hero_motion.jo'
+use 'music.jo'
+from 'music.jo' import __later
+
+# The pot must be burning: an unlit pot only receives dropped raw materials.
+cooking_pot_lit = (p: vec3) -> bool:
+    loop b in bonfires:
+        if b.pot and b.lit and length(b.pos - p) < 0.5: return true
+    false
+
+cooking_drop_held = ():
+    f = forward_of(pl.face)
+    loop i in 0.. and id in inv_release_held():
+        side = vec3(f.z, 0, -f.x) * f32((f64(i) - 2.0) * 0.09)
+        spawn_item(id, pl.pos + vec3(0, 1.2, 0) + f * 0.85 + side, f * 1.5 + vec3(0, 1, 0), dropped = true)
+
+cooking_jingle = (failed: bool):
+    notes = if failed: [64, 63, 58, 52] else: [72, 76, 79, 76, 81, 84]
+    loop i in 0.. and note in notes: __later(f64(i) * 0.22, note, 0.55)
+
+# Overlay just the arm chains on the final locomotion skin, keeping the planted
+# feet and pelvis from hero_animate. The five materials sit between raised palms.
+cooking_carry_draw = ():
+    if inv.held.len() == 0 or not chars_ready: return
+    pose = anim_pose(human, hero_anim)
+    loop side in ["l", "r"]:
+        motion_arm(hero_m, human, pose, bone_index(hero_m, "upperarm_" + side),
+            bone_index(hero_m, "lowerarm_" + side), bone_index(hero_m, "hand_" + side),
+            v3((if side == "l": -0.22 else: 0.22), 1.92, 0.14))
+    carry = skin_cpu(hero_m, pose)
+    # Copy arm subtrees by their library mask; skin upload stays in the renderer.
+    mask = bone_mask(human, "upperarm_l")
+    right = bone_mask(human, "upperarm_r")
+    loop i in [0..hero_skin.world.len()):
+        c = hero_m.canon[i]
+        if c < 0 or c >= mask.len() or (mask[c] <= 0.0 and right[c] <= 0.0): continue
+        parent = hero_m.parent[i]
+        anchor = if parent >= 0: hero_skin.world[parent] * inverse(carry.world[parent]) else: mat4()
+        hero_skin.world[i] = anchor * carry.world[i]
+        k = hero_skin.world[i] * hero_m.ibm[i]
+        loop row in [0..3):
+            loop col in [0..4): hero_skin.mats[i * 12 + row * 4 + col] = k[col][row]
+    hero_skin.frame = -1
+    hero_skin.row = -1
+    left = bone_world(hero_m, hero_skin, "hand_l")[3].xyz
+    right_hand = bone_world(hero_m, hero_skin, "hand_r")[3].xyz
+    palms = (left + right_hand) * 0.5
+    loop i in 0.. and id in inv.held:
+        row = i / 3
+        count = min(3, inv.held.len() - row * 3)
+        x = (f64(i % 3) - f64(count - 1) * 0.5) * 0.14
+        at = palms + v3(x, 0.05 + f64(row) * 0.11, 0.0)
+        draw_prop(shape_mesh(item(id).shape), hero_world * translation(at), vec4(1, 1, 1, 1), 0.0, 0.35)
+
+# The selected ingredients visibly tumble above the actual pot while its jingle
+# plays. No materials are created; the list is a render-only transaction snapshot.
+cooking_ingredients: str[]
+cooking_pot_draw = ():
+    if pot_cook_t <= 0.0 or sc.shadow: return
+    t = 2.2 - pot_cook_t
+    loop i in 0.. and id in cooking_ingredients:
+        phase = t * 9.0 + f64(i) * 1.7
+        hop = abs(sin(phase)) * 0.5 * min(1.0, pot_cook_t * 3.0)
+        p = pot_cook_pos + v3(sin(phase * 0.6) * 0.2, 0.64 + hop, cos(phase * 0.6) * 0.2)
+        draw_prop(shape_mesh(item(id).shape), translation(p) * rotation_z(phase * 0.35) * scaling(v3(0.65, 0.65, 0.65)), vec4(1, 1, 1, 1), 0.0, 0.25)

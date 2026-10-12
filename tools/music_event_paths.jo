@@ -1,0 +1,48 @@
+# Headless sound-only slice of main's production player event dispatch.
+# The source audit below rejects drift in any gain, pan, variation or event rule.
+use '../game/sfx.jo'
+use '../game/player.jo'
+use '../game/items.jo'
+use '../game/combat.jo'
+use '../game/camera.jo'
+use '../game/post.jo'
+use '../game/ui.jo'
+
+music_step_n = 0
+music_player_events = ():
+    loop e in pl.events:
+        match e:
+# @PLAYER_SOUND_BEGIN@
+            "step":
+                music_step_n += 1
+                sl = match pl.ground.surf:
+                    snow: sfx.step_snow
+                    rock, stone, wood: sfx.step_stone
+                    _: sfx.step_grass
+                v = if pl.sprinting: 0.55 else: 0.4
+                if pl.sneaking: v = 0.12
+                sfx_play(sl[music_step_n % sl.len()], v, (if music_step_n % 2 == 0: -0.15 else: 0.15), random(0.9, 1.1))
+            "jump": sfx_play(sfx.cloth, 0.25, 0.0, 1.3)
+            "land": sfx_play(sfx.land, 0.4)
+            "hard_land":
+                sfx_play(sfx.land, 0.8, 0.0, 0.7)
+                cam.shake = 0.6
+            "swing":
+                w = equipped_weapon()
+                play((if len(w) > 0 and item(w).two_handed: sfx.swing_heavy else: sfx.swing), 0.45, 0.0, random(0.9, 1.15))
+            "hurt":
+                sfx_play(sfx.hurt, 0.6)
+                cam.shake = 0.5
+                post.hurt = 1.0
+                ui.hearts_flash = 0.4
+            "block": sfx_play(sfx.block, 0.6)
+# @PLAYER_SOUND_END@
+            _: pass
+
+music_event_source_check = ():
+    helper = read_file("tools/music_event_paths.jo")!
+    body = split(split(helper, "# @PLAYER_SOUND_BEGIN@\n")[1], "# @PLAYER_SOUND_END@")[0]
+    # The local counter has a distinct name; the production dispatch is otherwise verbatim.
+    body = replace(body, "music_step_n", "__step_n")
+    assert(contains(read_file("game/main.jo")!, body), "music render event dispatch drifted from production play_events")
+    print("PASS music event paths: production player dispatch source audit")

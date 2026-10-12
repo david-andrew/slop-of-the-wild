@@ -1,0 +1,47 @@
+# Headless: prove the sliced cell list is a conservative, ordered superset.
+use '../game/vegetation.jo'
+from '../game/vegetation.jo' import __vcells, __vcells_build, __veg_cell_work, __veg_cells_step, __vcell_reach_factor
+
+comparisons = 0
+verify = (vpass: int, cam: vec3, reach: f64):
+    w = __veg_cell_work[vpass]
+    if not w.ready or w.reach != reach or length(vec2(cam.x - w.anchor.x, cam.z - w.anchor.z)) > 32.0: return
+    previous = -1
+    loop ci in w.cells:
+        assert(ci > previous, "cell order preserves placement/LOD ties")
+        previous = ci
+    loop ci in [0..__vcells.len()):
+        c = __vcells[ci]
+        delta = vec2(max(c.lo.x - cam.x, max(cam.x - c.hi.x, 0.0)), max(c.lo.z - cam.z, max(cam.z - c.hi.z, 0.0)))
+        limit = max(reach * __vcell_reach_factor(ci, c.hmax), (if vpass == 0: c.view_reach else: 0.0))
+        if f64(length(delta)) <= limit: assert(w.cells.contains(ci), "no reachable cell omitted")
+        comparisons += 1
+
+loop z in [0..20):
+    loop x in [0..20):
+        h = f64(1 + (x * 7 + z * 3) % 20)
+        places.push(VPlace(0, mat4(), vec4(1, 1, 1, 1), vec3(f32(x * 64 - 640), 0, f32(z * 64 - 640)), 2.0, h, false, view_reach = (if x == 19: 1200.0 else: 0.0)))
+__vcells_build()
+loop vpass in [0..3):
+    reach = [1800.0, 60.0, 140.0][vpass]
+    loop point in [vec3(0, 10, 0), vec3(14, 10, 9), vec3(500, 40, -600), vec3(-400, 10, 300)]:
+        loop frame in [0..10):
+            old = __veg_cell_work[vpass].cursor
+            __veg_cells_step(vpass, point, reach)
+            cursor = __veg_cell_work[vpass].cursor
+            if old >= 0 and cursor >= 0: assert(cursor - old <= 64, "bounded cell work per call")
+            verify(vpass, point, reach)
+        assert(__veg_cell_work[vpass].ready)
+        # Triangle inequality keeps every exact boundary result inside the envelope.
+        loop angle in [0..16):
+            a = f64(angle) * TAU / 16.0
+            verify(vpass, point + vec3(f32(cos(a) * 31.99), 0, f32(sin(a) * 31.99)), reach)
+    __veg_cells_step(vpass, vec3(0, 0, 0), reach * 0.5)
+    assert(__veg_cell_work[vpass].cursor >= 0, "changed reach rebuilds before reuse")
+# Rebuilding the authored cells invalidates the previous conservative snapshots.
+__vcells.clear()
+places[0].height = 30.0
+__vcells_build()
+__veg_cells_step(0, vec3(0, 0, 0), 1800.0)
+assert(not __veg_cell_work[0].ready)
+print("vegetation tail: {comparisons} exact reach/order comparisons, movement envelope, teleport/reach/edit invalidation, 64-cell budget PASS")

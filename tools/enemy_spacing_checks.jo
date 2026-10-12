@@ -1,0 +1,268 @@
+# Shared round-57 production-controller regressions (fauna and integration).
+use '../game/gfx.jo'
+use '../game/items.jo'
+use '../game/enemies.jo'
+use '../game/combat.jo'
+use '../game/hero_motion.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/physics.jo'
+from '../game/physics.jo' import __col_grid
+use '../game/terrain.jo'
+use '../game/water.jo'
+use '../game/worldgen.jo'
+use '../game/fx.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+
+enemy_spacing_checks = 0
+spacing_check = (ok: bool, name: str):
+    assert(ok, name)
+    enemy_spacing_checks += 1
+
+spacing_course = ():
+    colliders.clear()
+    __col_grid = {}
+    enemies.clear()
+    player_hits.clear()
+    witems.clear()
+    particles.clear()
+    inv = Inventory()
+    items_init()
+    act = Actions()
+    fight = Fight()
+    hf.n = 96
+    hf.cell = 1.0
+    hf.x0 = -48.0
+    hf.z0 = -48.0
+    hf.h = fill(f32(0), 9216)
+    hf.mat = fill(u8(0), 9216 * 4)
+    areas = fill(u8(46), 9216)
+    edge_sd = fill(f32(-100), 9216)
+    water_grid_set(fill(f32(-10000), 9216), 96, -48.0, -48.0, 1.0)
+    use_terrain = true
+    pl = Player(pos = vec3(0, 0, 0), hp = 120, hp_max = 120)
+
+spacing_hero_rig = () -> Model:
+    r = BinR(read_bytes("assets/models/hero_bare.mdl") ?? [])
+    r_u32(r)
+    r_u32(r)
+    m = Model(name = r_str(r), skeleton = r_str(r))
+    n = r_u32(r)
+    loop i in [0..n):
+        m.bones.push(r_str(r))
+        m.parent.push(r_i32(r))
+        m.canon.push(r_i32(r))
+        m.use_t.push(r_u8(r) != 0)
+        m.rest_t.push(r_v3(r))
+        m.rest_r.push(r_v4(r))
+        m.rest_s.push(r_v3(r))
+        m.ibm.push(r_m4(r))
+    m.tscale = f64(r_f32(r))
+    m
+
+enemy_spacing_test_suite = ():
+    enemy_spacing_checks = 0
+    loop hz in [30, 60, 120]:
+        dt = 1.0 / f64(hz)
+        loop course in ["open", "wall", "steps"]:
+            spacing_course()
+            if course == "wall": add_box(vec3(3, 0, 0), vec3(0.5, 3, 9), 0.0, false, .stone)
+            if course == "steps": add_box(vec3(0, 0, 0), vec3(2, 0.4, 2), 0.0, false, .stone)
+            loop i in [0..6):
+                # Start a crowd already pressed against Link and the wall.
+                p = v3(1.8, (if course == "steps": 0.8 else: 0.0), 0.05 * f64(i))
+                k = spawn_enemy((if i % 2 == 0: EKind.stalkoblin else: EKind.blue_bokoblin), p, "boko_club")
+                enemies[k].state = .chase
+                enemies[k].alert = 1.0
+            minimum_player = 100.0
+            minimum_pair = 100.0
+            ring_error = 0.0
+            maximum_wall = 0.0
+            doubles = 0
+            blows = 0
+            waiting = 0
+            samples = 0
+            # One minute includes a stationary target, a moving target, recoil,
+            # knockdown, and a player standing above lower enemies on steps.
+            loop frame in [0..hz * 60):
+                t = f64(frame) * dt
+                if t < 30.0: pl.pos = v3(0.0, (if course == "steps": 0.8 else: 0.0), 0.0)
+                else: pl.pos = v3(sin(t * 0.8) * 0.7, (if course == "steps": 0.8 else: 0.0), sin(t * 0.5) * 1.0)
+                pl.invuln = 1000.0
+                pl.state = .ground
+                pl.grounded = true
+                if frame == hz * 15:
+                    enemies[0].state = .stagger
+                    enemies[0].t = 0.0
+                    enemies[0].recoil = vec3(1, 0, 0)
+                    enemies[1].state = .knocked
+                    enemies[1].t = 0.0
+                    enemies[1].vel = vec3(-4, 3, 2)
+                enemies_update(dt, true)
+                swinging = 0
+                engaged = 0
+                loop i in [0..enemies.len()):
+                    e = enemies[i]
+                    if e.state == .windup or e.state == .attack: swinging += 1
+                    if e.state == .windup and e.t < dt + 0.00001: blows += 1
+                    if e.may_engage: engaged += 1
+                    gap = f64(length(vec2(e.pos.x - pl.pos.x, e.pos.z - pl.pos.z)))
+                    if body_vertical_overlap(e.pos, enemy_body_height(e), pl.pos, HEIGHT):
+                        minimum_player = min(minimum_player, gap)
+                        ring_error = max(ring_error, enemy_attack_ring(e) - gap)
+                    if not e.may_engage and e.state == .chase and gap > 4.5: waiting += 1
+                    candidate = e.pos
+                    push_out(candidate, enemy_body_radius(e), enemy_body_height(e))
+                    maximum_wall = max(maximum_wall, f64(length(candidate - e.pos)))
+                    loop j in [i + 1..enemies.len()):
+                        other = enemies[j]
+                        if body_vertical_overlap(e.pos, enemy_body_height(e), other.pos, enemy_body_height(other)):
+                            minimum_pair = min(minimum_pair, f64(length(vec2(e.pos.x - other.pos.x, e.pos.z - other.pos.z))))
+                    samples += 1
+                if swinging > 1: doubles += 1
+                spacing_check(engaged <= 2, "at most two melee fighters {hz}Hz {course}")
+            print("spacing {hz}Hz {course}: player_min={minimum_player:.6}m pair_min={minimum_pair:.6}m ring_error={ring_error:.6}m world_error={maximum_wall:.6}m blows={blows} double_frames={doubles} waiting={waiting} samples={samples}")
+            spacing_check(minimum_player >= RADIUS + 0.4 - 0.01, "player capsules never overlap {hz}Hz {course}")
+            spacing_check(minimum_pair >= 2.1 - 0.01, "alert fighters retain visible body clearance {hz}Hz {course}")
+            spacing_check(ring_error <= 0.01, "minimum attack ring maintained {hz}Hz {course}")
+            spacing_check(maximum_wall <= 0.01, "crowd stays out of scenery {hz}Hz {course}")
+            spacing_check(blows > 10 and doubles == 0 and waiting > hz * 30, "turn taking and outer ring persist {hz}Hz {course}")
+        # Four ordinary Bokoblins can be put directly into chase by scripts or
+        # encounter callbacks with zero alert. Capsule-only/alert-only clearance
+        # allowed that case to become a single overlapping animated mass.
+        spacing_course()
+        loop i in [0..4):
+            k = spawn_enemy(.bokoblin, v3(1.8, 0.0, f64(i)*0.02), "boko_club")
+            enemies[k].state = .chase
+            enemies[k].alert = 0.0
+        minimum_pair = 100.0
+        waiting = 0
+        loop frame in [0..hz * 10):
+            pl.invuln = 1000.0
+            enemies_update(dt, false)
+            loop i in [0..4):
+                e = enemies[i]
+                if not e.may_engage and length(e.pos-pl.pos)>4.5: waiting += 1
+                loop j in [i+1..4):
+                    minimum_pair = min(minimum_pair, f64(length((e.pos-enemies[j].pos).xz)))
+        print("four zero-alert fighters {hz}Hz: visible pair_min={minimum_pair:.6}m waiting={waiting}")
+        spacing_check(minimum_pair >= 2.49 and waiting > hz*5, "four zero-alert fighters spread and retain their waiting ring {hz}Hz")
+        spacing_course()
+        pl.pos = vec3(0, 0, 15)
+        k = spawn_enemy(.stalkoblin, vec3(0, 18, 0))
+        enemies[k].state = .buried
+        enemies[k].night_only = true
+        minimum_hp = 6.0
+        detached = false
+        knocked = false
+        loop frame in [0..hz * 10):
+            pl.invuln = 1000.0
+            enemies_update(dt, true)
+            minimum_hp = min(minimum_hp, enemies[k].hp)
+            detached = detached or enemies[k].skull_out
+            knocked = knocked or enemies[k].state == .knocked
+        print("stalk rise {hz}Hz: minimum_hp={minimum_hp:.1}/{enemies[k].hp_max:.1} detached={detached} knocked={knocked} floor={enemies[k].pos.y:.3}")
+        spacing_check(minimum_hp == 6.0 and not detached and not knocked and abs(enemies[k].pos.y) < 0.01, "elevated actor emergence cannot damage bones {hz}Hz")
+        spacing_course()
+        k = spawn_enemy(.talus, vec3(0, 0, 0))
+        pl.pos = vec3(0, 0, 14)
+        events = 0
+        motion = 0.0
+        loop frame in [0..hz * 2):
+            enemies_update(dt, false)
+            motion = max(motion, abs(enemies[k].face) + abs(f64(enemies[k].pos.y)))
+            loop e in enemy_events:
+                if e.kind == "rise": events += 1
+        print("talus telegraph {hz}Hz: range=14m state={enemies[k].state} rumble_events={events} particles={particles.len()} motion={motion:.6}")
+        spacing_check(enemies[k].state == .sleep and enemies[k].hp == 300.0 and not in_combat() and events >= 2 and particles.len() >= 22 and motion > 0.005, "approach telegraph precedes reveal without HP loss {hz}Hz")
+        pl.pos = vec3(0, 0, 6.5)
+        enemies_update(dt, false)
+        spacing_check(enemies[k].state == .notice and in_combat(), "close approach retains boss reveal {hz}Hz")
+        spacing_course()
+        pl.face = 0.0
+        inv_add("travelers_sword")
+        fight.act = .swing
+        accepted = hit_player(1, vec3(0, 0, 2), 4.0, .vertical)
+        initial_turn = abs(wrap_angle(pl.face))
+        spacing_check(accepted and pl.hp == 119 and pl.state == .hurt and fight.act == .hit and fight.hit_rear and initial_turn >= 0.5, "rear wound immediately turns and interrupts swing {hz}Hz")
+        loop frame in [0..int(f64(hz) * 0.3)): combat_update(dt, enemy_pos, 0)
+        error = abs(wrap_angle(pl.face - PI))
+        print("rear reaction {hz}Hz: initial_turn={initial_turn:.3}rad facing_error_300ms={error:.3}rad act={fight.act}")
+        spacing_check(error < 0.3 and fight.act == .hit, "rear wound tracks attacker during flinch {hz}Hz")
+        face = pl.face
+        timer = fight.t
+        hit_player(1, vec3(2, 0, 0), 4.0)
+        spacing_check(pl.face == face and fight.t == timer, "invulnerability cannot restart flinch {hz}Hz")
+    spacing_course()
+    target = spawn_enemy(.bokoblin, vec3(0, 0, -3))
+    fight = Fight(act = .swing, target = target)
+    act.lock = true
+    hit_player(1, vec3(0, 0, 2), 4.0, .vertical)
+    loop frame in [0..18): combat_update(1.0 / 60.0, enemy_pos, enemies.len())
+    locked_error = abs(wrap_angle(pl.face - PI))
+    print("rear wound with held forward lock: facing error_300ms={locked_error:.3}rad")
+    spacing_check(locked_error < 0.3 and fight.act == .hit, "held lock cannot cancel the rear-hit turn")
+    spacing_course()
+    rig = spacing_hero_rig()
+    lib = load_humanoid_anims()
+    head = bone_index(rig, "head")
+    idle = sample_clip(lib, clip_index(lib, "idle"), 0.0, true)
+    baseline = motion_point(rig, idle, head)
+    hit_player(1, vec3(0, 0, 2), 4.0, .vertical)
+    pose = idle
+    motion = HeroMotion()
+    world = translation(pl.pos) * rotation_y(PI-pl.face) * scaling(vec3(0.86, 1, 0.88))
+    hero_motion_apply(motion, rig, lib, pose, world, 0.0, true)
+    flinch = f64(length(motion_point(rig, pose, head) - baseline))
+    print("hero rear flinch: immediate head displacement={flinch:.6}m")
+    spacing_check(flinch > 0.05, "first struck pose visibly moves the hero's head before animation fade")
+    # A converged stationary crowd must not ping-pong between scenery and Link.
+    spacing_course()
+    add_box(vec3(3, 0, 0), vec3(0.5, 3, 9), 0.0, false, .stone)
+    loop i in [0..6):
+        k = spawn_enemy(.bokoblin, vec3(1.8, 0, 0), "boko_club")
+        enemies[k].state = .windup
+        enemies[k].alert = 1.0
+    loop frame in [0..30): enemies_separate()
+    drift = 0.0
+    loop frame in [0..120):
+        before = [loop e in enemies: e.pos]
+        enemies_separate()
+        loop i in [0..enemies.len()): drift = max(drift, f64(length(enemies[i].pos - before[i])))
+    print("stationary crowd: maximum solver drift={drift:.9}m")
+    spacing_check(drift < 0.001, "stationary wall contacts settle without jitter")
+    # Actual night actors from the critic's location include one authored
+    # 4.51 m above terrain. Exercise emergence at all requested frame rates.
+    actors.clear()
+    worldgen_load()
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    loop hz in [30, 60, 120]:
+        enemies.clear()
+        player_hits.clear()
+        witems.clear()
+        colliders.clear()
+        __col_grid = {}
+        fight = Fight()
+        pl = Player(pos = v3(-672.0, height_at(-672.0, 1535.0), 1535.0), invuln = 1000.0)
+        enemies_place()
+        healthy = true
+        unstruck = true
+        active = 0
+        offset = 0.0
+        loop e in enemies:
+            if e.kind == .stalkoblin and length(e.pos-pl.pos) < 60.0:
+                offset = max(offset, f64(e.pos.y)-height_at(f64(e.pos.x),f64(e.pos.z)))
+        loop frame in [0..hz * 10):
+            enemies_update(1.0 / f64(hz), true)
+            loop e in enemies:
+                if e.kind != .stalkoblin or not enemy_alive(e) or length(e.pos-pl.pos) > 60.0: continue
+                healthy = healthy and e.hp == e.hp_max
+                # Subsequent chases may legitimately fall off an unpadded
+                # terrain ledge. The emergence itself must be undamaged.
+                if e.state == .notice and e.t < 1.0 / f64(hz) + 0.00001:
+                    unstruck = unstruck and not e.skull_out
+                if frame == hz*10-1: active += 1
+        print("Plateau night {hz}Hz: active={active} actor_offset={offset:.3}m full_hp={healthy} unstruck={unstruck}")
+        spacing_check(active >= 2 and offset > 4.0 and healthy and unstruck, "critic night actors emerge healthy on terrain {hz}Hz")
+    print("enemy spacing suite: {enemy_spacing_checks} checks passed")

@@ -1,0 +1,540 @@
+use 'gfx.jo'
+use 'asset_stream.jo'
+use 'terrain.jo'
+use 'water.jo'
+
+# The world: the plateau's heightfield (built from the original's map data by
+# tools/heightmap.jo), its water, climate areas and actor placements; fine relief and the
+# ground materials are added here.
+# (Coordinates are the original's: x east, z south, y up, meters.)
+
+const HF_N = 2048
+const HF_CELL = 2.0
+const HF_X0 = -3018.0
+const HF_Z0 = -133.0
+
+struct Actor:
+    name: str
+    pos: vec3
+    rot: f64
+    scale: f64
+
+actors: Actor[]
+edge_sd: f32[]            # signed distance to the plateau's edge (negative on top)
+areas: u8[]
+
+# building pads and other flattened places (center, radius, height, falloff)
+struct Pad:
+    x: f64
+    z: f64
+    r: f64
+    h: f64
+    fall: f64
+
+pads: Pad[]
+
+__read_f32 = (path: str, n: int) -> f32[]:
+    out = fill(f32(0), n)
+    when TARGET == "linux":
+        s = asset_open(path)
+        defer asset_close(s)
+        if s.ok: asset_read(s, data(out) as *u8, min(s.left, n * 4))
+    else:
+        b = read_bytes(path) ?? []
+        mem_copy(data(out) as *u8, data(b), min(b.len(), n * 4))
+    out
+
+area_at = (x: f64, z: f64) -> int:
+    xi = clamp(int((x - hf.x0) / hf.cell), 0, hf.n - 1)
+    zi = clamp(int((z - hf.z0) / hf.cell), 0, hf.n - 1)
+    int(areas[zi * hf.n + xi])
+
+edge_at = (x: f64, z: f64) -> f64:
+    xi = clamp(int((x - hf.x0) / hf.cell), 0, hf.n - 1)
+    zi = clamp(int((z - hf.z0) / hf.cell), 0, hf.n - 1)
+    f64(edge_sd[zi * hf.n + xi])
+
+is_snow_area = (x: f64, z: f64) -> bool: area_at(x, z) == 47
+
+load_actors = ():
+    t = read_file("assets/actors.tsv") ?? ""
+    loop line in lines(t):
+        f = split(line, "\t")
+        if f.len() < 6: continue
+        actors.push(Actor(f[0], v3(to_float(f[1]) ?? 0.0, to_float(f[2]) ?? 0.0, to_float(f[3]) ?? 0.0), to_float(f[4]) ?? 0.0, to_float(f[5]) ?? 1.0))
+
+actors_named = (prefix: str) -> Actor[]:
+    [loop a in actors: if starts_with(a.name, prefix): a]
+
+# the base heightfield and water from the assets
+worldgen_load = ():
+    hf.n = HF_N
+    hf.cell = HF_CELL
+    hf.x0 = HF_X0
+    hf.z0 = HF_Z0
+    n = HF_N
+    hf.h = __read_f32("assets/height.f32", n * n)
+    wl = __read_f32("assets/water.f32", n * n)
+    edge_sd = __read_f32("assets/edge.f32", n * n)
+    areas = read_bytes("assets/area.u8") ?? fill(u8(0), n * n)
+    water_grid_set(wl, n, HF_X0, HF_Z0, HF_CELL)
+    load_actors()
+
+ridged2 = (x: f64, z: f64) -> f64:
+    n = 1.0 - abs(noise(x, z) * 2.0 - 1.0)
+    n * n
+
+# Composed shoulders: elongated drainage cuts and isolated bedding shelves, feathered
+# into the source relief. Baked into the height/material grids; no frame-time noise.
+slope_composition = (x: f64, z: f64, h: f64, slope: f64) -> vec3:
+    if x < -1490.0 or x > -970.0 or z < 1690.0 or z > 2210.0: return vec3(0, 0, 0)
+    west = 1.0 - smoothstep(0.55, 1.0, hypot((x + 1330.0) / 145.0, (z - 1790.0) / 88.0))
+    shoulder = 1.0 - smoothstep(0.5, 1.0, hypot((x + 1125.0) / 100.0, (z - 2110.0) / 135.0))
+    overlook = 1.0 - smoothstep(0.45, 1.0, hypot((x + 1120.0) / 90.0, (z - 1850.0) / 75.0))
+    amount = max(west, max(shoulder, overlook)) * smoothstep(0.32, 0.8, slope)
+    if amount < 0.001: return vec3(0, 0, 0)
+    bend = noise(x * 0.016 + 18.0, z * 0.021) * 7.0
+    drainage = noise(x * 0.12 + bend, z * 0.014 + h * 0.002)
+    cut = smoothstep(0.62, 0.88, drainage)
+    shelf = smoothstep(0.54, 0.78, noise(x * 0.034 + h * 0.025, z * 0.031 + 11.0))
+    # Sub-metre channels preserve the route; broad exposed strata carry the distant read.
+    v3(amount * (shelf * 0.32 - cut * 0.52), amount * shelf * 0.72, amount * cut)
+
+# Small off-route gaps interrupt the circular procedural understory beds. Their open
+# centres and irregular fern margins share the material/placement habitat.
+route_clearing = (x: f64, z: f64) -> f64:
+    if x < -1130.0 or x > -920.0 or z < 1680.0 or z > 1830.0: return 0.0
+    a = hypot((x + 1082.0) / 16.0, (z - 1732.0) / 11.0)
+    b = hypot((x + 983.0) / 18.0, (z - 1774.0) / 12.0)
+    c = hypot((x + 1056.0) / 13.0, (z - 1788.0) / 17.0)
+    1.0 - smoothstep(0.45, 1.0, min(a, min(b, c)))
+
+# A short graded pass through the southern Hylia bank. Its centre is walkable
+# in both directions; broad feathering meets the untouched mountain relief.
+hylia_pass = (x: f64, z: f64) -> f64:
+    if z < 2088.0 or z > 2176.0: return 0.0
+    centre = -1322.0 - (z - 2132.0) * 0.35
+    across = 1.0 - smoothstep(7.0, 25.0, abs(x - centre))
+    across * smoothstep(2088.0, 2108.0, z) * (1.0 - smoothstep(2156.0, 2176.0, z))
+
+# The prominent northern cone in the overview is outside the playable wall.
+# A west shoulder, lower east spur and two drainage cuts replace its round cap.
+# All relief ends north of the field scatter and opening/journey routes.
+northern_crown = (x: f64, z: f64) -> f64:
+    if x < -1400.0 or x > -1130.0 or z < 1280.0 or z > 1430.0: return 0.0
+    mass = (cx: f64, cz: f64, rx: f64, rz: f64) -> f64:
+        d = hypot((x-cx)/rx,(z-cz)/rz)
+        1.0-smoothstep(0.0,1.0,d)
+    d = mass(-1295.0,1380.0,88.0,43.0)*17.0
+    d += mass(-1216.0,1340.0,72.0,48.0)*9.0
+    d -= mass(-1250.0,1363.0,35.0,40.0)*12.0
+    d -= mass(-1235.0,1358.0,30.0,36.0)*10.0
+    # An oblique gully opens the saddle down its south-east flank.
+    across = abs(x-(-1212.0-(z-1380.0)*0.38))
+    d -= (1.0-smoothstep(5.0,19.0,across))*mass(-1212.0,1380.0,62.0,50.0)*7.0
+    d
+
+# Two visible crowns have unequal shoulders and a shallow drainage saddle.
+# These broad changes survive the overview mesh; they are off the opening route.
+plateau_crowns = (x: f64, z: f64) -> f64:
+    if x < -1430.0 or x > -1030.0 or z < 1620.0 or z > 1850.0: return 0.0
+    mass = (cx: f64, cz: f64, rx: f64, rz: f64) -> f64:
+        d = hypot((x-cx)/rx,(z-cz)/rz)
+        1.0-smoothstep(0.0,1.0,d)
+    west = mass(-1315.0,1730.0,62.0,68.0)
+    d = -west*7.0 + mass(-1360.0,1710.0,66.0,43.0)*9.0
+    d -= mass(-1273.0,1739.0,29.0,58.0)*7.0
+    d += mass(-1149.0,1786.0,64.0,45.0)*10.0
+    d -= mass(-1106.0,1788.0,27.0,46.0)*6.0
+    # A tapering north-facing gully separates the crown from its low eastern spur.
+    centre = -1080.0-(z-1760.0)*0.22
+    gully = (1.0-smoothstep(4.0,17.0,abs(x-centre))) * mass(-1080.0,1767.0,65.0,70.0)
+    d -= gully*5.0
+    # Leave the mouth, standing overlook and southern footpath at their old height.
+    d * (1.0-smoothstep(1810.0,1838.0,z))
+
+# fine relief: gentle undulation on meadows, broken rock on steep ground, none on pads and water
+__detail = (x: f64, z: f64, h: f64, slope: f64, sd: f64) -> f64:
+    d = (fbm(x * 0.03, z * 0.03, 3) - 0.5) * 2.2 + (noise(x * 0.11, z * 0.11) - 0.5) * 0.5
+    rock = smooth01((slope - 0.45) / 0.4)
+    d += (ridged2(x * 0.045, z * 0.045) * 1.6 + ridged2(x * 0.13 + 7.0, z * 0.13) * 0.4) * rock
+    # cliff faces: horizontal ledges (strata)
+    if abs(sd) < 30.0 and slope > 0.8: d += (sin(h * 0.7 + noise(x * 0.05, z * 0.05) * 6.0) * 0.5) * 0.4
+    # Hylia: sharp radial spurs and sheltered gullies below the summit, eroded bedding
+    # shelves on its eastern shoulder. Heightfield relief keeps climbing and tree roots exact.
+    if x > -1550.0 and x < -1025.0 and z > 1960.0 and z < 2480.0:
+        dx = x + 1288.0
+        dz = z - 2221.0
+        r = hypot(dx, dz)
+        a = atan2(dz, dx)
+        # The source summit/tomb actors stand at 417 m; interpolation from the surrounding
+        # ground actors had flattened this to 349 m. Restore a small walkable summit and
+        # taper its uplift into the existing mountain over 140 m.
+        summit = pow(clamp((140.0 - r) / 132.0, 0.0, 1.0), 1.4)
+        d += max(0.0, 417.0 - h) * summit
+        envelope = smoothstep(12.0, 48.0, r) * (1.0 - smoothstep(130.0, 245.0, r)) * smoothstep(285.0, 360.0, h)
+        rib = pow(max(0.0, cos(a * 4.0 + r * 0.009 + 0.5)), 2.0)
+        d += envelope * (rib * 13.0 - 1.0)
+        shelf = smoothstep(0.46, 0.57, noise(x * 0.018, z * 0.018))
+        d += envelope * shelf * sin(h * 0.24 + x * 0.016) * 3.0
+    d += northern_crown(x, z)
+    d += plateau_crowns(x, z)
+    d += f64(slope_composition(x, z, h, slope).x)
+    # The off-route east face of the overlook needs broken shoulders, not one
+    # pale ramp beside the glider. Long ribs and recessed rain gullies belong
+    # to the heightfield itself, so feet, climbing and roots see the same rock.
+    # Keep the standing overlook, cave mouth and southern walking trail clear.
+    if x > -1020.0 and x < -952.0 and z > 1766.0 and z < 1848.0:
+        face = smoothstep(-1020.0, -1008.0, x) * (1.0 - smoothstep(-976.0, -952.0, x))
+        face *= smoothstep(1766.0, 1782.0, z) * (1.0 - smoothstep(1818.0, 1848.0, z))
+        face *= smoothstep(0.58, 1.05, slope)
+        bend = (noise(x * 0.018, z * 0.016) - 0.5) * 5.0
+        rib = noise((z + bend) * 0.095, x * 0.012 + 7.0)
+        d += face * (smoothstep(0.40, 0.72, rib) * 3.0 - smoothstep(0.48, 0.22, rib) * 2.4)
+    # none along the plateau's edge: the wall stands there
+    d * smooth01((abs(sd - 4.0) - 6.0) / 10.0)
+
+worldgen_finish = ():
+    if world_asset_load(): return
+    tw = time()
+    n = HF_N
+    base = hf.h
+    # slopes of the base (for where rock goes)
+    detailed = fill(f32(0), n * n)
+    dst = data(detailed)
+    jobs = parallel_range(n, (z: int):
+        loop x in [0..n):
+            k = z * n + x
+            xm = max(x - 1, 0)
+            xp = min(x + 1, n - 1)
+            zm = max(z - 1, 0)
+            zp = min(z + 1, n - 1)
+            gx = (f64(base[z * n + xp]) - f64(base[z * n + xm])) / (2.0 * HF_CELL)
+            gz = (f64(base[zp * n + x]) - f64(base[zm * n + x])) / (2.0 * HF_CELL)
+            slope = atan(sqrt(gx * gx + gz * gz))
+            wx = HF_X0 + f64(x) * HF_CELL
+            wz = HF_Z0 + f64(z) * HF_CELL
+            h = f64(base[k])
+            dd = __detail(wx, wz, h, slope, f64(edge_sd[k]))
+            if water_grid[k] > -9000.0: dd = min(dd, 0.0) * 0.3
+            pass_weight = hylia_pass(wx, wz)
+            pass_height = 344.0 + (wz - 2132.0) * 0.67 + (wx + 1322.0) * 0.14
+            dst[k] = f32(lerp(h + dd, pass_height, pass_weight))
+        true
+    )
+    hf.h = detailed
+    # Neighbour reads are finished; release the original grid before shore work.
+    base = []
+    detailed = []
+    # building pads: blend toward their heights
+    loop p in pads:
+        r = p.r + p.fall
+        loop zi in [int((p.z - r - hf.z0) / hf.cell)..int((p.z + r - hf.z0) / hf.cell) + 1]:
+            loop xi in [int((p.x - r - hf.x0) / hf.cell)..int((p.x + r - hf.x0) / hf.cell) + 1]:
+                if xi < 0 or zi < 0 or xi >= n or zi >= n: continue
+                wx = hf.x0 + f64(xi) * hf.cell
+                wz = hf.z0 + f64(zi) * hf.cell
+                d = hypot(wx - p.x, wz - p.z)
+                t = 1.0 - smooth01((d - p.r) / max(p.fall, 0.01))
+                k = zi * n + xi
+                hf.h[k] = f32(lerp(f64(hf.h[k]), p.h, t))
+    tl = time()
+    __smooth_shores()
+    t2 = time()
+    __water_fill()
+    __west_fall_course()
+    t3 = time()
+    __materials()
+    if env("BOTW_LOADTIME") != none: eprint("    detail+pads {tl - tw:.2}s shores {t2 - tl:.2}s water {t3 - t2:.2}s materials {time() - t3:.2}s")
+
+# The west fall strikes two exposed rock benches before its receiving pool.
+# This is baked into the gameplay height/water grids: the map, swimming and
+# collision see the same stepped course that water_build triangulates.
+__west_fall_course = ():
+    xs = [-1494.0, -1480.0, -1470.0, -1462.0, -1452.0, -1444.0, -1430.0, -1418.0, -1406.0]
+    ys = [103.5, 105.0, 141.0, 144.0, 192.0, 194.0, 241.0, 247.0, 249.8]
+    loop zi in [int((1805.0 - hf.z0) / hf.cell)..int((1844.0 - hf.z0) / hf.cell) + 1]:
+        loop xi in [int((-1496.0 - hf.x0) / hf.cell)..int((-1404.0 - hf.x0) / hf.cell) + 1]:
+            k = zi * hf.n + xi
+            if water_grid[k] < -9000.0: continue
+            x = hf.x0 + f64(xi) * hf.cell
+            z = hf.z0 + f64(zi) * hf.cell
+            bank = abs(z - 1823.0 - (noise(x * 0.055, 7.0) - 0.5) * 2.5)
+            width = 12.5 + (1.0 - smooth01((x + 1470.0) / 48.0)) * 3.0
+            amount = ((1.0 - smooth01((bank - width + 3.0) / 4.0))
+                * smooth01((x + 1496.0) / 6.0) * (1.0 - smooth01((x + 1412.0) / 8.0)))
+            if amount < 0.001: continue
+            q = x + (noise(z * 0.16, x * 0.016) - 0.5) * 1.8
+            level = f64(water_grid[k])
+            shelf = false
+            loop j in [0..xs.len() - 1):
+                if q < xs[j] or q > xs[j + 1]: continue
+                f = clamp((q - xs[j]) / (xs[j + 1] - xs[j]), 0.0, 1.0)
+                level = lerp(ys[j], ys[j + 1], f)
+                shelf = j == 2 or j == 4
+            water_grid[k] = f32(lerp(f64(water_grid[k]), level, amount))
+            # Benches are rock under shallow spreading water. Between benches,
+            # a recessed wall leaves the curtain free to fall. The lower basin
+            # deepens into a plunge pool, with its original shore feathered in.
+            bed = if shelf: level - 0.65 else: min(f64(hf.h[k]), level - 2.5)
+            pool = 1.0 - smooth01(hypot((x + 1487.0) / 17.0, (z - 1823.0) / 15.0))
+            bed -= pool * 3.5
+            hf.h[k] = f32(lerp(f64(hf.h[k]), bed, amount))
+    water_grid_set(water_grid, HF_N, HF_X0, HF_Z0, HF_CELL)
+
+# water spreads over neighboring ground lower than its surface (the map's outlines are coarse)
+__water_fill = ():
+    n = HF_N
+    # (by fronts: only the dry cells next to water can change in a step, and only those next to
+    # cells that just filled in the step after; the same as sweeping the whole grid each time)
+    front: int[]
+    mark = fill(u8(0), n * n)
+    loop z in [1..n - 1):
+        loop x in [1..n - 1):
+            k = z * n + x
+            if water_grid[k] > -9000.0: continue
+            if water_grid[k + 1] > -9000.0 or water_grid[k - 1] > -9000.0 or water_grid[k + n] > -9000.0 or water_grid[k - n] > -9000.0:
+                front.push(k)
+                mark[k] = 1
+    loop it in [0..14):
+        fill_k: int[]
+        fill_v: f32[]
+        loop k in front:
+            mark[k] = 0
+            best: f32 = -10000.0
+            loop d in [1, -1, n, -n]:
+                if water_grid[k + d] > best: best = water_grid[k + d]
+            if best > -9000.0 and hf.h[k] < best - 0.02:
+                fill_k.push(k)
+                fill_v.push(best)
+        if fill_k.len() == 0: break
+        loop i in 0.. and k in fill_k: water_grid[k] = fill_v[i]
+        front.clear()
+        loop k in fill_k:
+            loop d in [1, -1, n, -n]:
+                q = k + d
+                x = q % n
+                z = q / n
+                if x < 1 or z < 1 or x >= n - 1 or z >= n - 1: continue
+                if water_grid[q] > -9000.0 or mark[q] != 0: continue
+                mark[q] = 1
+                front.push(q)
+    water_grid_set(water_grid, n, HF_X0, HF_Z0, HF_CELL)
+
+# the lake beds were cut from a blocky mask: soften the ground in and around the water
+__smooth_shores = ():
+    n = HF_N
+    near = fill(u8(0), n * n)
+    loop z in [0..n):
+        loop x in [0..n):
+            if water_grid[z * n + x] > -9000.0:
+                loop dz in [-4..4]:
+                    loop dx in [-4..4]:
+                        xx = x + dx
+                        zz = z + dz
+                        if xx >= 0 and zz >= 0 and xx < n and zz < n: near[zz * n + xx] = 1
+    loop it in [0..4):
+        h2 = hf.h
+        loop z in [1..n - 1):
+            loop x in [1..n - 1):
+                k = z * n + x
+                if near[k] == 0: continue
+                s_ = 0.0
+                loop dz in [-1..1]:
+                    loop dx in [-1..1]: s_ += f64(hf.h[k + dz * n + dx])
+                h2[k] = f32(s_ / 9.0)
+        hf.h = h2
+
+# ground materials (RGBA): r forest floor, g rock, b snow, a path / bare dirt
+__materials = ():
+    n = HF_N
+    hf.mat = fill(u8(0), n * n * 4)
+    # paths: along the old road pieces and pillars (and a footpath, below)
+    path_pts: vec3[]
+    loop a in actors:
+        if starts_with(a.name, "FldObj_HighwayHylia"): path_pts.push(a.pos)
+    # forest floor: where broadleaf trees stand close together
+    canopy = fill(f32(0), (n / 8) * (n / 8))
+    loop a in actors:
+        if starts_with(a.name, "Obj_TreeBroadleaf") or starts_with(a.name, "Obj_TreeWhiteBirch"):
+            cx = int((f64(a.pos.x) - hf.x0) / (hf.cell * 8.0))
+            cz = int((f64(a.pos.z) - hf.z0) / (hf.cell * 8.0))
+            loop dz in [-2..2]:
+                loop dx in [-2..2]:
+                    xx = cx + dx
+                    zz = cz + dz
+                    if xx >= 0 and zz >= 0 and xx < n / 8 and zz < n / 8: canopy[zz * (n / 8) + xx] += f32(0.35 / (1.0 + f64(dx * dx + dz * dz)))
+    # the snow area, feathered: the share of snow cells within 72 m (a summed-area table)
+    sat = fill(i32(0), (n + 1) * (n + 1))
+    loop z in [0..n):
+        run = i32(0)
+        loop x in [0..n):
+            if areas[z * n + x] == 47: run += 1
+            sat[(z + 1) * (n + 1) + x + 1] = sat[z * (n + 1) + x + 1] + run
+    dst = data(hf.mat)
+    jobs = parallel_range(n, (z: int):
+        loop x in [0..n):
+            k = z * n + x
+            wx = HF_X0 + f64(x) * HF_CELL
+            wz = HF_Z0 + f64(z) * HF_CELL
+            sd = f64(edge_sd[k])
+            # rock: the cliffs around the edge and their foot
+            rock = smooth01((sd - 3.0) / 3.0) * (1.0 - smooth01((sd - 25.0) / 10.0))
+            # the rocky shrine ridge and river banks
+            ar = int(areas[k])
+            if ar == 50: rock = max(rock, (noise(wx * 0.04, wz * 0.04) - 0.68) * 3.0)
+            R = 36
+            x0 = max(x - R, 0)
+            x1 = min(x + R + 1, n)
+            z0 = max(z - R, 0)
+            z1 = min(z + R + 1, n)
+            c = sat[z1 * (n + 1) + x1] - sat[z0 * (n + 1) + x1] - sat[z1 * (n + 1) + x0] + sat[z0 * (n + 1) + x0]
+            snowf = f32(f64(c) / f64((x1 - x0) * (z1 - z0)))
+            # Wind-combed narrow tongues feather through the tundra apron.
+            # Ridge exposure breaks their continuity; the climate cells and
+            # deep snow stay unchanged. Baked once into the material grid.
+            windx = wx * 0.8 + wz * 0.6
+            windz = wz * 0.8 - wx * 0.6
+            tongue = noise(windx * 0.028, windz * 0.009)
+            snow = smooth01((f64(snowf) - 0.08 + (tongue - 0.5) * 0.34) / 0.88)
+            # Tongues only grow from the cold apron. Noise alone must never
+            # seed tiny snow weights across warm meadow or erode deep snow.
+            snow *= smoothstep(0.0, 0.12, f64(snowf))
+            if snowf >= 0.995: snow = 1.0
+            if snowf > 0.02 and snowf < 0.98:
+                around = (f64(hf.h[z * n + max(x - 8, 0)]) + f64(hf.h[z * n + min(x + 8, n - 1)])
+                    + f64(hf.h[max(z - 8, 0) * n + x]) + f64(hf.h[min(z + 8, n - 1) * n + x])) * 0.25
+                exposed = max(0.0, f64(hf.h[k]) - around)
+                snow *= 1.0 - clamp(exposed * 0.12, 0.0, 0.55)
+                # Two thaw gullies run from the Temple-facing meadow into the
+                # drifts, with unequal widths and a bend through the lower one.
+                # Keep these in the shared map so turf and snow agree.
+                lower = exp(-((wx + 1010.0 + (wz - 2090.0) * 0.35) / 24.0)^2.0)
+                lower *= exp(-((wz - 2090.0) / 62.0)^2.0)
+                upper = exp(-((wx + 1018.0 - (wz - 2178.0) * 0.18) / 15.0)^2.0)
+                upper *= exp(-((wz - 2178.0) / 43.0)^2.0)
+                snow *= 1.0 - max(lower, upper) * 0.46
+            # (bilinear between the 16 m canopy cells, its edge broken by noise: no squares)
+            fx = f64(x) / 8.0 - 0.5
+            fz = f64(z) / 8.0 - 0.5
+            ix = clamp(int(floor(fx)), 0, n / 8 - 2)
+            iz = clamp(int(floor(fz)), 0, n / 8 - 2)
+            tx = clamp(fx - f64(ix), 0.0, 1.0)
+            tz = clamp(fz - f64(iz), 0.0, 1.0)
+            m8 = n / 8
+            c0 = lerp(f64(canopy[iz * m8 + ix]), f64(canopy[iz * m8 + ix + 1]), tx)
+            c1 = lerp(f64(canopy[(iz + 1) * m8 + ix]), f64(canopy[(iz + 1) * m8 + ix + 1]), tx)
+            wob = sin(f64(x) * 0.21 + sin(f64(z) * 0.13) * 2.0) * sin(f64(z) * 0.17 + sin(f64(x) * 0.11) * 2.0)
+            forest = clamp(lerp(c0, c1, tz) + wob * 0.15, 0.0, 1.0)
+            # (the Forest of Spirits: a mossy floor under the whole wood, its clearings too)
+            fsd = hypot(wx + 1040.0, wz - 1640.0)
+            forest = max(forest, smooth01((125.0 - fsd) / 40.0) * (0.75 + wob * 0.2))
+            if wx > -1490.0 and wx < -970.0 and wz > 1690.0 and wz < 2210.0:
+                gx = f64(hf.h[z * n + min(x + 1, n - 1)] - hf.h[z * n + max(x - 1, 0)]) / (HF_CELL * 2.0)
+                gz = f64(hf.h[min(z + 1, n - 1) * n + x] - hf.h[max(z - 1, 0) * n + x]) / (HF_CELL * 2.0)
+                composition = slope_composition(wx, wz, f64(hf.h[k]), hypot(gx, gz))
+                rock = max(rock, f64(composition.y))
+                forest *= 1.0 - f64(composition.y) * 0.65
+                snow *= 1.0 - f64(composition.y) * 0.30
+            forest *= 1.0 - route_clearing(wx, wz) * 0.58
+            dst[k * 4] = u8(forest * 255.0)
+            dst[k * 4 + 1] = u8(clamp(rock, 0.0, 1.0) * 255.0)
+            dst[k * 4 + 2] = u8(clamp(snow, 0.0, 1.0) * 255.0)
+            dst[k * 4 + 3] = 0
+        true
+    )
+    sat = []
+    # paths
+    loop p in path_pts:
+        cx = int((f64(p.x) - hf.x0) / hf.cell)
+        cz = int((f64(p.z) - hf.z0) / hf.cell)
+        loop dz in [-3..3]:
+            loop dx in [-3..3]:
+                xx = cx + dx
+                zz = cz + dz
+                if xx < 0 or zz < 0 or xx >= n or zz >= n: continue
+                d = sqrt(f64(dx * dx + dz * dz)) / 3.0
+                wob = noise(f64(xx) * 0.5, f64(zz) * 0.5)
+                k = (zz * n + xx) * 4 + 3
+                hf.mat[k] = u8(max(f64(hf.mat[k]), clamp(1.0 - d - wob * 0.5, 0.0, 1.0) * 150.0))
+
+    # a footpath worn by the old man: from the cave's mouth past the overlook, down the hill to his
+    # fire, and on to the Temple of Time; wandering a little, not on rock
+    trail = [vec2(-1046.0, 1826.0), vec2(-1030.0, 1810.0), vec2(-1010.0, 1828.0), vec2(-985.0, 1852.0),
+        vec2(-962.0, 1872.0), vec2(-946.0, 1879.0), vec2(-915.0, 1893.0), vec2(-880.0, 1912.0),
+        vec2(-850.0, 1932.0), vec2(-831.0, 1941.0), vec2(-812.0, 1946.0), vec2(-809.3, 1951.8)]
+    loop i in [0..trail.len() - 1):
+        a = trail[i]
+        b = trail[i + 1]
+        len_ = f64(length(b - a))
+        side = normalize(vec2(-(b - a).y, (b - a).x))
+        steps = int(len_ / 0.7)
+        loop j in [0..steps):
+            t = f64(j) / f64(steps)
+            q = a + (b - a) * f32(t) + side * f32(sin(t * PI) * (noise(f64(i) * 13.0 + t * 3.0, 4.0) - 0.5) * 1.6)
+            cx = int((f64(q.x) - hf.x0) / hf.cell)
+            cz = int((f64(q.y) - hf.z0) / hf.cell)
+            loop dz in [-2..2]:
+                loop dx in [-2..2]:
+                    xx = cx + dx
+                    zz = cz + dz
+                    if xx < 0 or zz < 0 or xx >= n or zz >= n: continue
+                    k = (zz * n + xx) * 4
+                    if hf.mat[k + 1] > 100: continue
+                    wx = hf.x0 + f64(xx) * hf.cell
+                    wz = hf.z0 + f64(zz) * hf.cell
+                    width = if i >= 8: 3.2 else: 2.4
+                    d = hypot(wx - f64(q.x), wz - f64(q.y)) / width
+                    wear = clamp((1.0 - d) * 1.8 + (noise(wx * 0.8, wz * 0.8) - 0.5) * 0.18, 0.0, 1.0)
+                    hf.mat[k + 3] = u8(max(f64(hf.mat[k + 3]), wear * 195.0))
+
+# the far scenery is not part of the heightfield: Hyrule beyond the walls is drawn separately
+
+# rocks heaped round the Shrine of Resurrection's mouth (x, y, z, size): structures.jo sets
+# them out, vegetation.jo places the rock models
+sor_rocks: vec4[]
+
+# Optional build-time detail, shore spreading and material preparation. Pads and all
+# relevant source/input contents are part of the key; malformed files regenerate.
+const WORLD_ASSET_MAGIC = 0x4257574F524C4431
+world_asset_key = () -> int:
+    base = asset_key(["game/worldgen.jo", "game/terrain.jo", "game/structures.jo", "game/interiors.jo",
+        "game/physics.jo", "game/water.jo", "game/gfx.jo", "game/shade.jo", "game/asset_stream.jo",
+        "sloppy/lib/core/math.jo", "assets/height.f32", "assets/water.f32", "assets/edge.f32",
+        "assets/area.u8", "assets/actors.tsv"])
+    key = "{base}"
+    loop p in pads:
+        # Exact IEEE bits: tools may call finish with a different pad set.
+        loop value in [p.x, p.z, p.r, p.h, p.fall]: key += "|{((&value) as *u64)[0]}"
+    int(__str_hash(key))
+world_asset_load = () -> bool:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_NO_PREPARED_ASSETS") != none: return false
+    s = asset_open("assets/prepared/world.bin")
+    defer asset_close(s)
+    if not s.ok or asset_int(s) != WORLD_ASSET_MAGIC or asset_int(s) != world_asset_key(): return false
+    n = HF_N * HF_N
+    if s.left != n * 12: return false
+    # Upload consumers and physics keep exactly one height/material/water grid.
+    asset_read(s, data(hf.h) as *u8, n * 4)
+    hf.mat = fill(u8(0), n * 4)
+    asset_read(s, data(hf.mat), n * 4)
+    asset_read(s, data(water_grid) as *u8, n * 4)
+    if not s.ok:
+        hf.h = __read_f32("assets/height.f32", n)
+        water_grid = __read_f32("assets/water.f32", n)
+        hf.mat = []
+        return false
+    water_grid_set(water_grid, HF_N, HF_X0, HF_Z0, HF_CELL)
+    true
+world_asset_write = () -> bool:
+    s = asset_create("assets/prepared/world.bin.tmp")
+    asset_put_int(s, WORLD_ASSET_MAGIC)
+    asset_put_int(s, world_asset_key())
+    asset_write(s, data(hf.h) as *u8, hf.h.len() * 4)
+    asset_write(s, data(hf.mat), hf.mat.len())
+    asset_write(s, data(water_grid) as *u8, water_grid.len() * 4)
+    asset_close(s)
+    if not s.ok: return false
+    when TARGET == "linux":
+        return syscall(82, data("assets/prepared/world.bin.tmp\0"), data("assets/prepared/world.bin\0")) == 0
+    else: return false

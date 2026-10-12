@@ -1,0 +1,1260 @@
+use 'malice_shape.jo'
+use 'gfx.jo'
+use 'cputime.jo'
+use 'shade.jo'
+use 'env.jo'
+use 'scene.jo'
+use 'items.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'water.jo'
+use 'post.jo'
+use 'water_render.jo'
+use 'enemies.jo'
+use 'player.jo'
+use 'elements.jo'
+use 'element_puzzles.jo'
+use 'wildlife.jo'
+use 'chars.jo'
+use 'skel.jo'
+
+# Particles: flames, smoke, embers, sparks, dust, splashes, leaves, the purple smoke of a
+# defeated monster, and the rain. Simulated on the CPU, drawn as camera-facing soft sprites in
+# instanced draws per blend mode, with smooth smoke accumulated at half scene resolution.
+
+enum PKind: flame, smoke, ember, spark, dust, splash, leaf, poof, glow, snow, ring, arc, slash, breath, steam
+
+struct Particle:
+    kind: PKind
+    pos: vec3
+    vel: vec3
+    life: f64
+    age = 0.0
+    size: f64
+    color: vec4
+    grav = 0.0
+    drag = 0.0
+    rot = 0.0
+    visible_life = 1.0       # render-only envelope; retain simulation/RNG pool lifetime
+
+struct PInst:
+    pos: vec4           # xyz, size
+    color: vec4
+    data: vec4          # x age fraction (negative for Calamity smoke), y kind, z rotation, w stretch
+
+struct PartU:
+    vp: mat4
+    cam_right: vec3
+    cam_up: vec3
+    cam: vec3
+    haze: vec3
+    density: f32
+    depth = Texture(0, 1, 1)     # the opaque scene's depth (soft edges where particles meet it)
+    near = 0.1
+    far = 1000.0
+    wind = vec2(0, 0)
+    sun_dir = vec3(0, 1, 0)
+    scene = Texture(0, 1, 1)
+    time = 0.0
+    ground_heights = Texture(0, 1, 1)
+    ground_grid = vec4(0, 0, 1, 0)
+
+struct PartO:
+    pos: vec4
+    uv: vec2
+    color: vec4
+    data: vec4
+    clip: vec4
+    size: f32
+
+struct QuadV:
+    corner: vec2
+
+# The existing terrain texture supplies roots on the GPU. Elevated tree flames
+# keep their original cards; no terrain queries or tags are added to particles.
+flame_ground = (xz: vec2, u: PartU) -> f32:
+    t = (xz - u.ground_grid.xy) / u.ground_grid.z
+    b = floor(t)
+    f = fract(t)
+    a = glsl_fetch(u.ground_heights, int(b.x), int(b.y)).x
+    c = glsl_fetch(u.ground_heights, int(b.x) + 1, int(b.y)).x
+    d = glsl_fetch(u.ground_heights, int(b.x), int(b.y) + 1).x
+    e = glsl_fetch(u.ground_heights, int(b.x) + 1, int(b.y) + 1).x
+    mix(mix(a, c, f.x), mix(d, e, f.x), f.y)
+
+# Near-fire height is bounded independently of particle size. The camera-up
+# contribution preserves vertical screen extent when looking steeply down.
+flame_near_corner = (front: vec2, corner: vec2, close: f32) -> vec2:
+    vec2(front.x * mix(1.0, 0.70, close), mix(front.y, min(front.y * 2.0, (corner.y + 1.0) * 0.48), close))
+
+flame_near_up = (cam_up: vec3, close: f32) -> vec3:
+    normalize(mix(vec3(0, 1, 0), cam_up, close * 0.35))
+
+flame_front_corner = (corner: vec2, size: f32, seed: f32, age: f32) -> vec2:
+    # A continuous triangle wave keeps rotating seeds from popping at wraps.
+    shape = abs(fract(seed * 3.655) * 2.0 - 1.0)
+    tall = smoothstep(0.68, 0.98, shape)
+    # Low broad roots overlap; rare taller tongues break up the top edge.
+    width = max(size * 1.65, 0.38) * (1.0 - smoothstep(0.55, 1.0, age) * 0.35)
+    # Each clump mixes low crawling flame with occasional rising sheets.
+    # A seeded floor also varies the small particles that used to share one height.
+    pulse = 0.86 + sin(seed * 2.3 + age * 8.0) * 0.14
+    height = max(size * (0.38 + shape * 0.38 + tall * 0.28) * pulse, 0.12 + shape * 0.09)
+    vec2(corner.x * width + (corner.y + 1.0) * size * 0.07 * sin(seed * 3.0 + age * 9.0), (corner.y + 1.0) * height)
+
+part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
+    s = i.pos.w
+    # Tag fire smoke once at emission, rather than classify every live smoke
+    # particle on the CPU each draw. Decode its ordinary angle on the GPU.
+    fire_smoke = i.data.y > 0.5 and i.data.y < 1.5 and i.data.x >= 0.0 and i.data.z > 1000.0
+    a = i.data.z - (if fire_smoke: 1024.0 else: 0.0)
+    c = cos(a)
+    sn = sin(a)
+    q = vec2(v.corner.x * c - v.corner.y * sn, v.corner.x * sn + v.corner.y * c)
+    # Calamity coils retain a long axis along their world-space ring tangent.
+    if i.data.x < 0.0 and i.data.x > -1.0 and i.data.y > 0.5 and i.data.y < 1.5:
+        q = vec2(v.corner.x * 1.05 * c - v.corner.y * 0.82 * sn, v.corner.x * 1.05 * sn + v.corner.y * 0.82 * c)
+    up = u.cam_up
+    flame_sink: f32 = 0.0
+    if i.data.y > 9.5 and i.data.y < 11.5:
+        # a column of light: upright, a quarter as wide as tall
+        up = vec3(0, 1, 0)
+        if i.data.y > 10.5: up = u.sun_dir / max(u.sun_dir.y, 0.35)
+        q = vec2(v.corner.x * (if i.data.z > 0.0: i.data.z else: 0.22), v.corner.y)
+    else if i.data.w > 0.0:
+        # streaks (rain): stretched along the fall direction, slanting with the wind
+        up = normalize(vec3(-u.wind.x * 0.22, 1.0, -u.wind.y * 0.22))
+        # Fine distant threads and a few larger nearby drops have distinct scale.
+        depth_width = mix(1.0, 0.45, smoothstep(6.0, 26.0, length(i.pos.xyz - u.cam)))
+        q = vec2(v.corner.x * (0.014 + 0.019 * fract(i.data.z)) * depth_width, v.corner.y * i.data.w)
+    if i.data.w < 0.0:
+        # Flames: low, broad licks with a few taller tongues; rooted at the source.
+        up = vec3(0, 1, 0)
+        if i.data.y < -0.5:
+            # Mostly low broad licks, with a sparse set of longer hot tongues.
+            shape = fract(i.data.z * 7.31)
+            tall = smoothstep(0.92, 0.995, shape)
+            height = 0.30 + shape * 0.25 + tall * 0.28
+            wid = 1.12 - shape * 0.24
+            flame_sink = i.data.x * s * 2.8 * (1.0 - tall)
+            q = vec2(v.corner.x * wid + (v.corner.y + 1.0) * 0.14 * sin(i.data.z * 3.0 + i.data.x * 9.0), ((v.corner.y + 1.0) * height - 1.0) * -i.data.w)
+        else:
+            # Attached cues hug the pose, leaving the face and equipment readable.
+            wid = 1.05 + 0.22 * fract(i.data.z * 7.31)
+            q = vec2(v.corner.x * wid + (v.corner.y + 1.0) * 0.10 * sin(i.data.z * 3.0 + i.data.x * 9.0), v.corner.y * -i.data.w * (0.38 + 0.16 * fract(i.data.z * 3.17)))
+    right = u.cam_right
+    if i.data.w < 0.0:
+        # Oblique cards retain projected width but have real depth and parallax.
+        turn = (fract(i.data.z * 1.73) - 0.5) * 1.8
+        right = u.cam_right * cos(turn) + cross(vec3(0, 1, 0), u.cam_right) * sin(turn)
+    w = i.pos.xyz + right * (q.x * s) + up * (q.y * s) - vec3(0, flame_sink, 0)
+    # the wind leans flames over, the tips furthest
+    if i.data.w < 0.0: w = w + vec3(u.wind.x, 0.0, u.wind.y) * ((v.corner.y + 1.0) * 0.5 * s * 0.35)
+    # Vapor keeps a narrow footprint instead of reusing the spherical smoke card.
+    if i.data.y > 16.5 and i.data.y < 18.5:
+        steam = i.data.y > 17.5
+        rise = if steam: normalize(mix(u.cam_up, vec3(0, 1, 0), 0.70)) else: u.cam_up
+        w = i.pos.xyz + u.cam_right * (v.corner.x * s * (if steam: 0.50 else: 0.90)) + rise * (v.corner.y * s * (if steam: 1.35 else: 0.28))
+    # rings on water: flat on the surface
+    if i.data.y > 7.5 and i.data.y < 9.5: w = i.pos.xyz + vec3(v.corner.x * s, 0.0, v.corner.y * s)
+    if i.data.y > 12.5 and i.data.y < 13.5:
+        # A continuous world-space stroke, camera-facing across its narrow width.
+        along = vec3(sin(a) * cos(i.data.w), sin(i.data.w), cos(a) * cos(i.data.w))
+        across = normalize(cross(along, u.cam - i.pos.xyz))
+        w = i.pos.xyz + along * (v.corner.y * (s + max(i.data.x, 0.002))) + across * (v.corner.x * max(i.data.x, 0.002))
+    if i.data.y > 13.5 and i.data.y < 14.5: w = i.pos.xyz + vec3(v.corner.x * s, 0.0, v.corner.y * s * 0.65)
+    data = i.data
+    if fire_smoke: data.z = a
+    if i.data.y < -0.5 and i.data.w < 0.0 and u.ground_grid.w > 0.5:
+        ground = flame_ground(i.pos.xz, u)
+        if i.pos.y - ground < 1.1 and i.pos.y - ground > -0.4:
+            # Root both ends at their own terrain height, including on slopes.
+            # Neighbouring clumps share a slow fuel envelope, while each lick
+            # retains its own seeded shape and age. No new particle/RNG work.
+            fuel = sin(i.pos.x * 0.73 + i.pos.z * 0.51)
+            data.z = i.data.z + fuel * 2.0
+            front = flame_front_corner(v.corner, s, data.z, i.data.x)
+            outer = 1.0 - smoothstep(0.58, 0.72, i.color.y / max(i.color.x, 0.01))
+            front.x *= mix(0.40, 1.0, outer)
+            close = 1.0 - smoothstep(7.0, 15.0, length(i.pos.xyz - u.cam))
+            # Keep the distant continuous ribbon. Near the player, turn toward
+            # the camera and give each soft tongue enough height to read above
+            # its ember bed, including under a steep downward view.
+            facing = normalize(mix(right, u.cam_right, close))
+            front = flame_near_corner(front, v.corner, close)
+            rise = flame_near_up(u.cam_up, close)
+            w = i.pos.xyz + facing * front.x
+            w.y = flame_ground(w.xz, u) + 0.025
+            if i.data.w > -1.35 and close > 0.0:
+                # Reuse the lower crossed card as a soft ember bed. It has no
+                # crest or cut-out perimeter, and requires no extra instances.
+                along = cross(vec3(0, 1, 0), u.cam_right)
+                w += along * (v.corner.y * max(s * 1.4, 0.28) * close)
+                w.y = flame_ground(w.xz, u) + 0.04 + front.y * (1.0 - close)
+                data.y = -4.0 - close
+            else:
+                w += rise * front.y
+                w.xz += u.wind * front.y * 0.20
+                data.y = -2.0 - close
+    if fire_smoke:
+        # Fire's existing small smoke particles become rising wisps nearby;
+        # the larger grass-front billows retain their original shape.
+        close = 1.0 - smoothstep(7.0, 15.0, length(i.pos.xyz - u.cam))
+        wisp = i.pos.xyz + u.cam_right * (v.corner.x * s * 0.55) + u.cam_up * (v.corner.y * s * 1.25)
+        w = mix(w, wisp, close)
+    cp = u.vp * vec4(w, 1)
+    PartO(cp, v.corner * 0.5 + vec2(0.5, 0.5), i.color, data, cp, s)
+
+part_fs = (o: PartO, u: PartU) -> vec4:
+    d = length(o.uv - vec2(0.5, 0.5)) * 2.0
+    k = o.data.y
+    a = smoothstep(1.0, 0.2, d)
+    if k > 16.5 and k < 18.5:
+        q = (o.uv - vec2(0.5, 0.5)) * 2.0
+        edge = max(0.0, 1.0 - dot(q, q))
+        drift = vnoise(vec2(q.x * 2.7 + o.data.z, q.y * 2.0 - o.data.x * 2.6))
+        opacity = edge * edge * (0.24 + drift * 0.46) * o.color.w
+        glsl_discard(opacity < 0.008)
+        if u.near > 0.0:
+            uv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
+            z = sample(u.depth, uv).x * 2.0 - 1.0
+            depth = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
+            opacity *= clamp((depth - o.clip.w) / max(o.size * 0.6, 0.035), 0.0, 1.0)
+        return vec4(min(o.color.xyz, vec3(0.82, 0.85, 0.87)), opacity)
+    if k > 14.5:
+        # Source-over ink behind the additive contact. A local value drop makes
+        # the light stroke readable even over the noon meadow's pale blades.
+        body = smoothstep(1.0, 0.28, d)
+        if k > 15.5:
+            q = abs((o.uv - vec2(0.5, 0.5)) * 2.0)
+            body = max(smoothstep(0.24, 0.08, q.x) * smoothstep(1.0, 0.05, q.y), smoothstep(0.24, 0.08, q.y) * smoothstep(1.0, 0.05, q.x))
+        return vec4(o.color.xyz, o.color.w * body)
+    if k > 11.5 and k < 12.5:
+        # Refract the existing opaque-scene copy; no extra capture or full-screen pass.
+        uv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
+        z = sample(u.depth, uv).x * 2.0 - 1.0
+        sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
+        mask = a * smoothstep(0.0, 0.5, sd - o.clip.w) * smoothstep(2.0, 5.0, o.clip.w)
+        wave = sin(o.uv.y * 19.0 - u.time * 8.0 + o.data.z)
+        offset = vec2(wave, cos(o.uv.x * 13.0 + u.time * 5.0 + o.data.z) * 0.35)
+        offset = offset * (0.006 * mask * min(1.0, 8.0 / max(o.clip.w, 1.0)))
+        return vec4(sample(u.scene, uv + offset).xyz, mask * o.color.w)
+    if k > 12.5 and k < 13.5:
+        core = smoothstep(0.50, 0.06, abs(o.uv.x - 0.5))
+        return vec4(o.color.xyz, o.color.w * core)
+    if k > 13.5:
+        # A dark absorbed margin with a broad, quiet sky reflection inside it.
+        body = smoothstep(1.0, 0.4, d)
+        sheen = smoothstep(0.6, 0.1, d) * (0.5 + 0.5 * sin(o.uv.y * 17.0 + u.time * 1.6 + o.data.z))
+        return vec4(mix(o.color.xyz, vec3(0.28, 0.34, 0.40), sheen * 0.26), body * o.color.w)
+    if o.data.w < 0.0:
+        y = o.uv.y
+        x = abs(o.uv.x - 0.5)
+        edge = vnoise(vec2(o.uv.x * 6.0, y * 4.0 - o.data.x * 6.0)) * 0.12
+        core: f32 = 0.0
+        ember: f32 = 0.0
+        bed_mode = o.data.y < -3.5
+        close = clamp((if bed_mode: -4.0 else: -2.0) - o.data.y, 0.0, 1.0)
+        coal: f32 = 0.0
+        if o.data.y < -1.5:
+            # A ragged low ribbon with several crests, rather than one candle.
+            crest = 0.40 + fract(o.data.z * 3.17) * 0.22 + 0.18 * sin(o.uv.x * (11.0 + fract(o.data.z * 1.73) * 9.0) + o.data.z * 3.0 + o.data.x * 7.0) + edge
+            shoulder = smoothstep(0.51, 0.31, x)
+            a = shoulder * smoothstep(crest + 0.10, crest - 0.12, y) * smoothstep(0.0, 0.13, y)
+            core = shoulder * smoothstep(0.42, 0.12, y) * 0.65
+            ember = shoulder * smoothstep(0.015, 0.07, y) * (1.0 - smoothstep(0.12, 0.24, y))
+            if bed_mode:
+                # Feathered coals share the lower card's original transition.
+                radius = length((o.uv - vec2(0.5, 0.5)) * 2.0)
+                bed = pow(smoothstep(1.0, 0.0, radius), 1.5)
+                coal = smoothstep(0.55, 0.0, radius)
+                a = mix(a, bed * 0.85, close)
+                ember *= 1.0 - close
+            else if close > 0.0:
+                # Unequal licks rise, merge and tear apart along each fuel clump.
+                # Wide translucent shoulders soften the painted silhouette.
+                shape = abs(fract(o.data.z * 3.655) * 2.0 - 1.0)
+                breakup = abs(fract(o.data.z * 1.585) * 2.0 - 1.0)
+                # Curves travel upward through the sheet. Unequal broad and
+                # slender shoulders merge instead of repeating rigid cones.
+                bend = sin(y * 7.5 + o.data.z * 2.0 - o.data.x * 9.0) * y * (0.10 + shape * 0.055)
+                taper = pow(max(1.0 - y, 0.0), 0.42 + breakup * 0.46)
+                center = abs(o.uv.x - (0.40 + shape * 0.18) - bend)
+                left = abs(o.uv.x - (0.18 + breakup * 0.13) + bend * 0.5)
+                right_lick = abs(o.uv.x - (0.70 + shape * 0.16) + bend * 0.7)
+                tongue = smoothstep(0.19 * taper + 0.025, 0.045 * taper, center) * smoothstep(0.74 + shape * 0.24, 0.42 + shape * 0.24, y)
+                outer = 1.0 - smoothstep(0.58, 0.72, o.color.y / max(o.color.x, 0.01))
+                tongue = max(tongue, smoothstep(0.15 * taper + 0.025, 0.035 * taper, left) * smoothstep(0.43 + breakup * 0.40, 0.18 + breakup * 0.30, y) * outer * (0.45 + shape * 0.55))
+                tongue = max(tongue, smoothstep(0.14 * taper + 0.025, 0.035 * taper, right_lick) * smoothstep(0.85 - breakup * 0.38, 0.46 - breakup * 0.26, y) * outer * (1.0 - shape * 0.45))
+                # Advected gaps open above the connected ember roots.
+                tear = smoothstep(0.34, 0.68, vnoise(vec2(o.uv.x * 7.0 + o.data.z, y * 5.0 - o.data.x * 5.0)))
+                tongue *= smoothstep(0.0, 0.10, y) * (1.0 - tear * smoothstep(0.28, 0.85, y) * 0.70)
+                a = mix(a, tongue, close)
+                core = mix(core, tongue * smoothstep(0.50, 0.08, y) * 0.60, close)
+                ember *= 1.0 - close
+        else:
+            # Attached burn cues retain one small tapered tongue.
+            wdt = 0.40 * pow(1.0 - y, 0.65) * smoothstep(-0.1, 0.3, y) + 0.02
+            a = smoothstep(wdt + edge, wdt * 0.1, x) * smoothstep(1.0, 0.45, y)
+            core = smoothstep(wdt * 0.6, 0.0, x) * smoothstep(0.7, 0.2, y)
+        glsl_discard(o.color.w * a < 0.008)
+        # (soft where it meets the ground and rises from behind a rise: no hard seam)
+        if u.near > 0.0:
+            fuv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
+            fz = sample(u.depth, fuv).x * 2.0 - 1.0
+            fsd = 2.0 * u.near * u.far / (u.far + u.near - fz * (u.far - u.near))
+            softness = mix(max(o.size * 0.5, 0.05), 0.055, (if bed_mode: close else: 0.0))
+            a = a * clamp((fsd - o.clip.w) / softness, 0.0, 1.0)
+        # (a flame right at the lens fades: it would fill the view with a blurred sheet)
+        a = a * smoothstep(1.5, 4.5, o.clip.w)
+        # Source-over composition bounds overlap at the hottest tongue's colour.
+        # A narrow hot ember seam joins the broad orange roots without whitening overlap.
+        root = mix(vec3(0.58, 0.16, 0.045), vec3(1, 1, 1), smoothstep(0.02, 0.34, y))
+        intensity = if o.data.y < -0.5: 0.66 + abs(fract(o.data.z * 1.585) * 2.0 - 1.0) * 0.34 else: 1.0
+        ink = o.color.xyz * root * (intensity + core * 0.18)
+        ink = mix(ink, vec3(1.65, 0.48, 0.055), ember * 0.72)
+        if bed_mode: ink = mix(ink, mix(vec3(0.85, 0.12, 0.015), vec3(1.85, 0.48, 0.035), coal), close)
+        return vec4(ink, o.color.w * a)
+    # Charcoal flakes tumble as tapered slivers, never circular glowing coins. Keep the
+    # soft shoulder dim enough that watercolor edge pigment cannot draw a broad dark ring.
+    if k > 2.5 and k < 3.5:
+        q = (o.uv - vec2(0.5, 0.5)) * 2.0
+        flake = abs(q.x + q.y * 0.22) * 2.8 + abs(q.y) * 0.8
+        a = smoothstep(1.0, 0.08, flake)
+        a = a * a * smoothstep(0.7, 2.5, o.clip.w)
+    # smoke and dust: soft, lumpy puffs
+    if k > 0.5 and k < 1.5:
+        # The outer corners are exactly transparent: avoid noise/depth reads there.
+        glsl_discard(d >= 1.0)
+        ink = o.color.xyz
+        if o.data.x < 0.0:
+            # Transparent density folds follow the winding arms. Broad fading
+            # shoulders and eroded gaps dissolve each card into the surrounding air.
+            q = (o.uv - vec2(0.5, 0.5)) * 2.0
+            if o.data.x < -1.0:
+                a = pow(smoothstep(1.0, 0.0, d), 2.0)
+            else:
+                flow = q.y + sin(q.x * 4.0 + o.data.z + u.time * 0.045) * 0.24
+                billow = vnoise(vec2(q.x * 3.6 + o.data.z * 2.1 - u.time * 0.025, flow * 3.0))
+                radius = length(vec2(q.x, flow * 1.05))
+                edge = smoothstep(1.0, 0.12, radius + (billow - 0.5) * 0.28)
+                a = edge * mix(0.35, 1.0, smoothstep(0.20, 0.74, billow))
+                fold = smoothstep(-0.6, 0.5, flow + (billow - 0.5) * 0.3)
+                ink = mix(vec3(0.035, 0.008, 0.055), o.color.xyz, fold)
+                inner = smoothstep(0.42, 0.03, abs(flow + 0.18)) * smoothstep(0.9, 0.2, abs(q.x))
+                ink = ink + vec3(0.16, 0.004, 0.018) * inner * billow
+        else:
+            # Broad painted lobes, shaded beneath, with no fine noise field.
+            q = (o.uv - vec2(0.5, 0.5)) * 2.0
+            lobe = sin(q.x * 4.0 + o.data.z) * sin(q.y * 3.0 - o.data.x * 2.0)
+            a = smoothstep(1.0, 0.18, d + lobe * 0.1) * smoothstep(1.0, 0.72, d) * 0.72
+            body = clamp(0.9 - q.y * 0.22 + lobe * 0.08, 0.68, 1.18)
+            ink = o.color.xyz * body
+        hz0 = clamp(1.0 - exp(-o.clip.w * u.density * 0.22), 0.0, 0.6)
+        sa = a
+        if u.near > 0.0:
+            suv0 = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
+            z0 = sample(u.depth, suv0).x * 2.0 - 1.0
+            sd0 = 2.0 * u.near * u.far / (u.far + u.near - z0 * (u.far - u.near))
+            sa = sa * clamp((sd0 - o.clip.w) / max(o.size * 0.7, 0.05), 0.0, 1.0)
+        if o.data.x >= 0.0: glsl_discard(o.color.w * sa < 0.01)
+        return vec4(mix(ink, u.haze, hz0), o.color.w * sa)
+    if k > 3.5 and k < 4.5: a = smoothstep(1.0, 0.0, d) * 0.7
+    # Hit sparks have pointed rays; glow motes keep their soft round shape.
+    if k > 4.5 and k < 5.5:
+        q = abs((o.uv - vec2(0.5, 0.5)) * 2.0)
+        a = max(smoothstep(0.14, 0.02, q.x) * smoothstep(1.0, 0.0, q.y), smoothstep(0.14, 0.02, q.y) * smoothstep(1.0, 0.0, q.x))
+    # Contact shade belongs on the receiver, never on the figure crossing its
+    # horizontal card. The elevated chamber pad otherwise paints ankle cuffs
+    # (and seated-arm bands) even though the skin mesh and normals are welded.
+    if k > 8.5 and k < 9.5:
+        a = pow(smoothstep(1.0, 0.0, d), 1.6)
+        suv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
+        material = sample(u.scene, suv).w
+        figure = smoothstep(0.02, 0.12, material) * (1.0 - smoothstep(0.35, 0.55, material))
+        a *= 1.0 - figure
+    # a light column: soft at its sides, fading toward the floor and up into the dark
+    # (and gone when the camera is right at it: no hard bar across the view)
+    if k > 9.5: a = pow(smoothstep(0.5, 0.0, abs(o.uv.x - 0.5)), 1.5) * smoothstep(0.0, 0.25, o.uv.y) * smoothstep(1.0, 0.6, o.uv.y) * smoothstep(2.0, 6.0, o.clip.w)
+    # ripples: a thin ring that fades as it spreads
+    if k > 7.5 and k < 8.5:
+        # Break the bright circumference into soft arcs; each impact has its own seed.
+        q = o.uv - vec2(0.5, 0.5)
+        arc = 0.55 + 0.45 * sin(q.x * 17.0 + q.y * 11.0 + o.data.z)
+        a = smoothstep(0.085 + 0.03 * fract(o.data.z), 0.015, abs(d - 0.8)) * arc
+    # leaves: an oval
+    if k > 5.5 and k < 6.5: a = smoothstep(0.55, 0.45, length((o.uv - vec2(0.5, 0.5)) * vec2(1.0, 2.2)))
+    # soft: fade where the sprite meets the scene behind it (no hard line through hills and walls)
+    # (not for things lying flat on the ground: ripples, firelight)
+    if u.near > 0.0 and k < 7.5:
+        suv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
+        z = sample(u.depth, suv).x * 2.0 - 1.0
+        sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
+        a = a * clamp((sd - o.clip.w) / max(o.size * 0.7, 0.05), 0.0, 1.0)
+    # far things sink into the haze like the land around them
+    hz = clamp(1.0 - exp(-o.clip.w * u.density * 0.22), 0.0, 0.6)
+    vec4(mix(o.color.xyz, u.haze, hz), o.color.w * a)
+
+particles: Particle[]
+__pinst_flame: PInst[]
+__pinst_add: PInst[]
+__pinst_alpha: PInst[]
+__pinst_smoke: PInst[]
+__pinst_heat: PInst[]
+__pinst_electric: PInst[]
+__electric_sh = Shader()
+player_shock_t = 0.0
+player_burn_t = 0.0
+__pbuf_smoke = InstBuf()
+__smoke_rt = Target()
+__smoke_comp = Shader()
+__smoke_fullres = env("BOTW_FX_FULLRES") != none
+__pbuf_add = InstBuf()
+__pbuf_alpha = InstBuf()
+part_sh: Shader
+part_quad: Mesh
+__fx_ready = false
+
+struct SmokeU:
+    src: Texture
+
+smoke_comp_vs = (v: FsVert, u: SmokeU) -> PostO: PostO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+smoke_comp_fs = (i: PostO, u: SmokeU) -> vec4:
+    puff = sample(u.src, i.uv)
+    # Only visible smoke writes the smooth response. Transparent fullscreen
+    # pixels retain their receiver, and RGB keeps premultiplied coverage.
+    glsl_discard(puff.w < 0.01)
+    puff
+
+# Smoke is low-frequency color/opacity. Accumulate premultiplied color at half scene
+# resolution, sampling full-resolution opaque depth for soft intersections; composite once.
+# Flames, sparks, rain, leaves, rings and contact shadows retain full scene resolution.
+fx_smoke_draw = (u: PartU):
+    if __pinst_smoke.len() == 0: return
+    # Visible smoke writes response zero, avoiding intermediate foliage/stone tags.
+    if __smoke_fullres:
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ZERO)
+        inst_update(__pbuf_smoke, __pinst_smoke)
+        draw_static(part_sh, part_quad, __pbuf_smoke, u)
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+        return
+    w = max(post.w / 2, 1)
+    h = max(post.h / 2, 1)
+    if __smoke_rt.w != w or __smoke_rt.h != h:
+        free_target(__smoke_rt)
+        __smoke_rt = make_target(w, h, true, false)
+    bind_target(__smoke_rt)
+    glDisable(GL_DEPTH_TEST)
+    glClearColor(0, 0, 0, 0)
+    glClear(GL_COLOR_BUFFER_BIT)
+    # The offscreen alpha stores coverage; RGB is premultiplied by this blend.
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    inst_update(__pbuf_smoke, __pinst_smoke)
+    draw_static(part_sh, part_quad, __pbuf_smoke, u)
+    bind_target(post.scene)
+    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ZERO)
+    draw_fast(__smoke_comp, fullscreen_mesh(), SmokeU(__smoke_rt.color))
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    glEnable(GL_DEPTH_TEST)
+
+__guardian_laser_mesh: Mesh
+
+fx_init = ():
+    part_sh = make_sh(shader(part_vs, part_fs))
+    __electric_sh = make_sh(shader(part_vs, electric_fs))
+    __smoke_comp = make_sh(shader(smoke_comp_vs, smoke_comp_fs))
+    part_quad = mesh([QuadV(vec2(-1, -1)), QuadV(vec2(1, -1)), QuadV(vec2(1, 1)), QuadV(vec2(-1, -1)), QuadV(vec2(1, 1)), QuadV(vec2(-1, 1))])
+    __pbuf_add = inst_buffer([PInst(vec4(0, 0, 0, 0), vec4(0, 0, 0, 0), vec4(0, 0, 0, 0))])
+    __pbuf_alpha = inst_buffer([PInst(vec4(0, 0, 0, 0), vec4(0, 0, 0, 0), vec4(0, 0, 0, 0))])
+    __pbuf_smoke = inst_buffer([PInst(vec4(0, 0, 0, 0), vec4(0, 0, 0, 0), vec4(0, 0, 0, 0))])
+    laser = MeshB()
+    mb_cyl(laser, vec3(0, 0, 0), vec3(0, 0, 1), 0.03, 0.03, rgb(1, 1, 1), 5)
+    __guardian_laser_mesh = mesh(laser.vs, laser.idx)
+    __fx_ready = true
+
+emit = (k: PKind, pos: vec3, vel: vec3, life: f64, size: f64, color: vec4, grav: f64 = 0.0, drag: f64 = 0.0):
+    if particles.len() > 6000: return
+    particles.push(Particle(k, pos, vel, life, size = size, color = color, grav = grav, drag = drag, rot = random(0.0, TAU)))
+
+# Cosmetic cues use a fixed rotation so observing a control or feeling cold never
+# consumes chemistry/weather RNG. Keep the same shared particle budget.
+fx_feedback = (k: PKind, pos: vec3, vel: vec3, life: f64, size: f64, color: vec4):
+    if particles.len() >= 6000: return
+    particles.push(Particle(k, pos, vel, life, size = size, color = color, rot = 0.0, drag = 0.8, age = life * 0.125))
+
+# Wading feedback never consumes the shared chemistry/weather RNG. Rings stay
+# where a step touched the surface, and the bounded entry fan falls back into it.
+__wade_foot = 0
+fx_wade = (p: vec3, level: f64, vel: vec3, entry: bool):
+    surface = vec3(p.x, f32(level + 0.045), p.z)
+    forward = if length(vel.xz) > 0.03: normalize(vel.xz) else: vec2(0, 1)
+    side = vec3(-forward.y, 0, forward.x)
+    contacts = if entry: 2 else: 1
+    loop leg in [0..contacts):
+        foot = if entry: leg else: __wade_foot % 2
+        sign = if foot == 0: -1.0 else: 1.0
+        fx_feedback(.ring, surface + side * f32(sign * 0.17), vec3(0, 0, 0), 0.85, if entry: 0.42 else: 0.35, rgba(0.82, 0.94, 0.92, 0.32))
+    __wade_foot += 1
+    if not entry: return
+    loop k in [0..10):
+        if particles.len() >= 6000: return
+        angle = f64(k) * 2.39996
+        velocity = v3(cos(angle) * 1.25, 0.68 + f64(k % 3) * 0.12, sin(angle) * 1.25) + vel * 0.12
+        fx_feedback(.splash, surface + v3(cos(angle) * 0.18, 0.05, sin(angle) * 0.18), velocity, 0.30, 0.028 + f64(k % 3) * 0.008, rgba(0.85, 0.96, 0.97, 0.82))
+        particles[particles.len() - 1].grav = 6.0
+
+# Keep the bright core at least six pixels at 1080p through a 54-degree FOV.
+# Use each segment's 3D range: upper branches viewed from below are further
+# from the eye than the ground strike, and must not collapse into a hairline.
+# Scripted inspection strikes meet the centre ray near its terrain contact.
+# A lower bound keeps the ordinary preset outside Link's water shock radius.
+scripted_lightning_target = (eye: vec3, gaze: vec3) -> vec2:
+    hit = ray_terrain(eye, gaze, 160.0, 0.4)
+    horizontal = vec3(gaze.x, 0, gaze.z)
+    ahead = if length(horizontal) > 0.001: normalize(horizontal) else: vec3(0, 0, -1)
+    distance = if hit.hit: clamp(f64(length(vec3(hit.pos.x - eye.x, 0, hit.pos.z - eye.z))), 24.0, 80.0) else: 55.0
+    vec2(eye.x + ahead.x * f32(distance), eye.z + ahead.z * f32(distance))
+
+lightning_halfwidth = (pos: vec3, cam: vec3) -> f64:
+    max(0.11, f64(length(pos - cam)) * 0.0065)
+
+# Lightning enters the glow envelope at full opacity on its strike frame.
+# Other glow motes retain their fade-in, and the shared pool cap still applies.
+emit_bolt = (pos: vec3, life: f64, size: f64, color: vec4):
+    next = particles.len()
+    emit(.glow, pos, vec3(0, 0, 0), life, size, color)
+    if particles.len() > next: particles[next].age = life * 0.125
+
+# Storm filaments share the three scene-light pulses; ordinary electric arcs
+# keep their shorter continuous flicker. The marker is inert for arc physics.
+emit_lightning = (a: vec3, b: vec3, width: f64, color: vec4):
+    next = particles.len()
+    emit(.arc, (a + b) * 0.5, b - a, 0.46, width, color)
+    if particles.len() > next: particles[next].drag = -2.0
+
+fx_lightning_path = (strike: vec3, cam: vec3):
+    saved_rng = __global_rng
+    seed_random(int(f64(strike.x) * 31.0 + f64(strike.z) * 17.0 + f64(strike.y) * 11.0))
+    x = f64(strike.x)
+    g = f64(strike.y)
+    z = f64(strike.z)
+    p = strike
+    loop k in [1..169):
+        # The pond camera sees a narrow air gap above the canopy. Keep fine,
+        # unequal bends throughout that gap, with broader upper-cloud turns.
+        low = min(f64(k) / 144.0, 1.0)
+        high = max(f64(k - 144) / 24.0, 0.0)
+        h = low * 44.0 + high * 336.0 + sin(f64(k) * 2.17) * 0.06
+        sway = 0.18 + low * 0.66 + high * 13.0
+        zig = if random() < 0.5: -1.0 else: 1.0
+        q = v3(x + (random(-0.35, 0.35) + zig) * sway, g + h, z + random(-sway, sway))
+        center = (p + q) * 0.5
+        # Fine near bends retain a three-pixel core at 1080p; the distant
+        # trunk retains its six-pixel core instead of merging nearby teeth.
+        width = lightning_halfwidth(center, cam)
+        if k <= 144: width *= lerp(0.5, 1.0, smoothstep(35.0, 120.0, f64(length(center - cam))))
+        emit_lightning(p, q, width, rgba(0.88, 0.96, 1, 1))
+        if k == 20 or k == 64 or k == 106 or k == 156:
+            fp = q
+            side = v3(random(-1.0, 1.0), 0.0, random(-1.0, 1.0))
+            loop m in [0..7):
+                # Turn each branch; terminate at ground instead of flattening
+                # the remaining segments into a horizontal laser.
+                turn = random(-0.95, 0.95)
+                side = transform_dir(rotation_y(turn), side)
+                fq = fp + side * f32(random(1.5, 5.5)) + v3(random(-1.5, 1.5), random(-4.5, -1.2), random(-1.5, 1.5))
+                if f64(fq.y) < g + 0.25: break
+                branch_center = (fp + fq) * 0.5
+                width = lightning_halfwidth(branch_center, cam) * lerp(0.6, 0.22, f64(m) / 6.0)
+                previous = fp
+                perpendicular = normalize(vec3(-side.z, 0, side.x))
+                loop bend in [1..7):
+                    bt = f32(bend) / 6.0
+                    jag = (if bend % 2 == 0: -1.0 else: 1.0) * random(0.20, 0.42)
+                    point = mix(fp, fq, bt) + perpendicular * f32(jag)
+                    if bend == 6: point = fq
+                    emit_lightning(previous, point, width, rgba(0.88, 0.96, 1, 0.85))
+                    previous = point
+                fp = fq
+        p = q
+    __global_rng = saved_rng
+
+rv = (s: f64) -> vec3: v3(random(-s, s), random(-s, s), random(-s, s))
+
+fx_fire = (p: vec3, strength: f64, dt: f64):
+    n = int(strength * 40.0 * dt + random())
+    loop k in [0..n):
+        first = particles.len()
+        # Layered narrow yellow interiors and darker orange outer tongues.
+        if k % 3 == 2:
+            emit(.flame, p + rv(0.1 * strength) * vec3(1, 0.2, 1), v3(random(-0.15, 0.15), random(0.8, 1.5) * strength, random(-0.15, 0.15)), random(0.25, 0.45), 0.22 * strength, rgba(1.0, 0.85, 0.45, 1.0), -1.0, 1.0)
+        else:
+            emit(.flame, p + rv(0.48 * strength) * vec3(1, 0.45, 1), v3(random(-0.35, 0.35), random(1.2, 2.6) * strength, random(-0.35, 0.35)), random(0.45, 0.9), random(0.3, 0.48) * strength, rgba(1.0, 0.45, 0.12, 0.85), -1.0, 1.0)
+        # Preserve the legacy RNG calls: effects must not change the grass-fire
+        # simulation. Existing rotation supplies independent visual variation.
+        if particles.len() > first:
+            particles[first].visible_life = 0.84
+            seed = fract(particles[first].rot * 1.73)
+            particles[first].size *= 0.72 + seed * 0.40
+            particles[first].vel.y *= f32(0.42 + seed * 0.30)
+            if fract(particles[first].rot * 7.31) < 0.32:
+                particles[first].size *= 0.58
+                particles[first].visible_life *= 0.68
+                particles[first].color = rgba(1.0, 0.85, 0.45, 1.0)
+    first_smoke = particles.len()
+    if random() < dt * 8.0 * strength: emit(.smoke, p + v3(0.0, 1.0 * strength, 0.0), v3(random(-0.3, 0.3), random(0.8, 1.6), random(-0.3, 0.3)), random(1.5, 3.0), 0.6 * strength, rgba(0.3, 0.3, 0.32, 0.35), -0.3, 0.3)
+    if particles.len() > first_smoke:
+        particles[first_smoke].visible_life = 0.75
+        particles[first_smoke].rot += 1024.0    # render-only wisp tag; no extra RNG or particles
+    if random() < dt * 4.0 * strength: emit(.ember, p, v3(random(-1.0, 1.0), random(2.0, 4.0), random(-1.0, 1.0)), random(0.8, 1.6), 0.04, rgba(1.0, 0.6, 0.2, 1.0), -0.5, 0.2)
+
+# Steam rises as transparent wisps, using the existing emission/RNG budget.
+fx_steam = (p: vec3, n: int = 14):
+    loop k in [0..n): emit(.steam, p + rv(0.16) + vec3(0, 0.2, 0), v3(random(-0.16, 0.16), random(0.8, 1.4), random(-0.16, 0.16)), random(0.45, 0.85), random(0.10, 0.18), rgba(0.70, 0.76, 0.78, 0.20), -0.6, 0.8)
+
+# Brief local dousing feedback uses no chemistry RNG and no persistent emitter.
+fx_equipment_douse = (p: vec3):
+    loop k in [0..6):
+        a = f64(k) * 2.39996
+        offset = v3(cos(a) * 0.10, 0.08 + f64(k % 2) * 0.06, sin(a) * 0.10)
+        fx_feedback((if k < 2: PKind.smoke else: PKind.steam), p + offset, v3(cos(a) * 0.18, 0.55 + f64(k % 3) * 0.12, sin(a) * 0.18), 0.48 + f64(k % 3) * 0.08, 0.13 + f64(k % 2) * 0.035, if k < 2: rgba(0.24, 0.23, 0.22, 0.40) else: rgba(0.70, 0.76, 0.78, 0.20))
+
+fx_charcoal = (p: vec3):
+    fx_poof(p, 1)
+
+fx_material_remains = (first: int, stone: bool):
+    loop i in [first..particles.len()):
+        ash = particles[i]
+        ash.color = if stone: rgba(0.42, 0.39, 0.32, 0.40) else: rgba(0.22, 0.19, 0.15, 0.45)
+        ash.size *= 0.65
+        ash.visible_life = 0.65
+        if ash.kind == .glow:
+            ash.kind = .leaf
+            ash.color = rgba(0.13, 0.10, 0.07, 1)
+            ash.grav = 3.0
+            ash.size = 0.09
+        particles[i] = ash
+
+fx_poof = (p: vec3, material: int = 0):
+    first = particles.len()
+    # the defeated monster's dark smoke: a dense purple-black burst, a few glowing motes
+    loop k in [0..28): emit(.poof, p + rv(0.4) + vec3(0, 0.7, 0), rv(2.4) + vec3(0, 1.4, 0), random(0.5, 0.9), random(0.3, 0.55), rgba(0.2, 0.06, 0.24, 0.9), 0.0, 3.5)
+    loop k in [0..10): emit(.poof, p + rv(0.3) + vec3(0, 0.9, 0), rv(1.5) + vec3(0, 2.0, 0), random(0.4, 0.7), random(0.2, 0.32), rgba(0.55, 0.15, 0.5, 0.8), 0.0, 2.0)
+    loop k in [0..10): emit(.glow, p + rv(0.6) + vec3(0, 0.9, 0), rv(2.0) + vec3(0, 1.5, 0), random(0.5, 1.0), 0.05, rgba(0.9, 0.35, 0.8, 1.0), -0.5, 1.0)
+    # A corpse already falls before this effect. Soot leaves that silhouette
+    # readable instead of hiding a fire death in a bright purple burst.
+    remains = material
+    if remains == 0 and fire_remains_near(p, 6.0): remains = 1
+    # Wildlife keeps its material state until the settled body drops its loot.
+    if remains == 0:
+        loop a in animals:
+            if a.state == .gone and length(a.pos - p) < 0.15 and a.el.burning > 0.0: remains = 1
+    loop barrier in element_puzzles:
+        if barrier.opened and length(barrier.pos - p) < 1.5:
+            remains = if barrier.thorn: 1 else: 2
+            break
+    if remains > 0: fx_material_remains(first, remains == 2)
+
+fx_sparks = (p: vec3, n: int = 14, col: vec4 = rgba(1.0, 0.85, 0.5, 1.0)):
+    # The first dab reads on the contact frame; the rest fan out into short bright sparks.
+    # Keep the existing particle budget, including the white core. A contact can lie
+    # inside the body capsule: bias the sprites toward its visible surface.
+    front = p + normalize(sc.cam - p + vec3(0, 0.0001, 0)) * 0.55
+    loop k in [0..n):
+        a = f64(k) * 2.39996
+        v = v3(cos(a) * 5.0, sin(a) * 4.0 + 1.5, sin(a * 1.7) * 3.0)
+        if k == 0: emit(.spark, front, vec3(0, 0, 0), 0.10, 0.14, rgba(1, 1, 1, 1))
+        else: emit(.spark, front + v * 0.06, v, random(0.12, 0.24), random(0.065, 0.09), col, 9.0, 1.0)
+
+fx_dust = (p: vec3, n: int = 6):
+    loop k in [0..n): emit(.dust, p + rv(0.3), v3(random(-1.0, 1.0), random(0.3, 1.0), random(-1.0, 1.0)), random(0.5, 1.0), random(0.25, 0.45), rgba(0.75, 0.7, 0.6, 0.35), 0.0, 2.0)
+
+fx_splash = (p: vec3, n: int = 18):
+    loop k in [0..n): emit(.splash, p + rv(0.3), v3(random(-1.5, 1.5), random(2.0, 4.5), random(-1.5, 1.5)), random(0.4, 0.8), 0.09, rgba(0.85, 0.92, 1.0, 0.8), 9.8, 0.3)
+
+fx_explosion = (p: vec3):
+    loop k in [0..40): emit(.flame, p + rv(1.0), rv(6.0) + vec3(0, 2.0, 0), random(0.3, 0.7), random(0.6, 1.2), rgba(1.0, 0.5, 0.15, 1.0), 0.0, 3.0)
+    loop k in [0..20): emit(.smoke, p + rv(1.5), rv(2.0) + vec3(0, 2.0, 0), random(1.5, 3.0), random(1.0, 1.6), rgba(0.2, 0.2, 0.22, 0.5), -0.2, 1.0)
+    fx_sparks(p, 30)
+
+fx_leaves = (p: vec3, n: int = 6):
+    loop k in [0..n): emit(.leaf, p + rv(2.0), v3(random(-1.0, 1.0), random(-0.5, 0.2), random(-1.0, 1.0)), random(2.0, 4.0), 0.09, rgba(0.35, 0.55, 0.2, 1.0), 1.2, 1.5)
+
+fx_update = (dt: f64):
+    player_shock_t = max(0.0, player_shock_t - dt)
+    player_burn_t = max(0.0, player_burn_t - dt * (if pl.state == .swim or env.rain > 0.5: 4.0 else: 1.0))
+    loop mut p in particles:
+        p.age += dt
+        if p.kind == .arc: continue
+        p.vel.y -= f32(p.grav * dt)
+        p.vel = p.vel * f32(max(0.0, 1.0 - p.drag * dt))
+        if p.kind == .leaf:
+            p.vel.x += f32(sin(p.age * 3.0 + p.rot) * 2.0 * dt + f64(env.wind.x) * 0.5 * dt)
+            p.vel.z += f32(cos(p.age * 2.7 + p.rot) * 2.0 * dt + f64(env.wind.y) * 0.5 * dt)
+        if p.kind == .smoke or p.kind == .flame or p.kind == .breath or p.kind == .steam:
+            # (leaning harder in the gusts: a storm lays the smoke over)
+            p.vel.x += f32(f64(env.wind.x) * 0.6 * env.gust * dt)
+            p.vel.z += f32(f64(env.wind.y) * 0.6 * env.gust * dt)
+        p.pos += p.vel * f32(dt)
+        p.rot += dt * 0.6
+    # Preserve alpha draw order without shifting the whole tail for each expired ember.
+    kept = 0
+    loop i in [0..particles.len()):
+        if particles[i].age >= particles[i].life: continue
+        if kept != i: particles[kept] = particles[i]
+        kept += 1
+    particles.truncate(kept)
+
+# where the rain lands: droplets bouncing off the ground, rings spreading on water
+fx_rain_ground = (cam: vec3, dt: f64, indoor: bool):
+    if indoor or snowing or env.rain < 0.1: return
+    n = int(env.rain * 900.0 * dt + random())
+    loop k in [0..n):
+        x = f64(cam.x) + random(-14.0, 14.0)
+        z = f64(cam.z) + random(-14.0, 14.0)
+        cover = rain_cover_height(x, z)
+        if let wl = water_level(x, z):
+            if cover > wl + 0.1: continue
+            # (mostly small quick rings, now and then a bigger drop; a second ring inside some)
+            if height_at(x, z) < wl:
+                rs = 0.045 + pow(random(), 2.2) * 0.26
+                life = random(0.22, 0.72)
+                opacity = random(0.12, 0.33)
+                emit(.ring, v3(x, wl + 0.03, z), v3(0.0, 0.0, 0.0), life, rs, rgba(0.8, 0.86, 0.95, opacity))
+                # A minority of impacts leave a second, independently fading wave.
+                if rs > 0.18 and random() < 0.35: emit(.ring, v3(x + random(-0.02, 0.02), wl + 0.031, z), v3(0.0, 0.0, 0.0), life * random(0.6, 0.85), rs * random(0.4, 0.65), rgba(0.8, 0.86, 0.95, opacity * 0.6))
+            continue
+        ground = height_at(x, z)
+        y = max(ground, cover)
+        if abs(y - f64(cam.y)) > 15.0: continue
+        # Shallow ground pools use exactly the terrain shader's wet/flat/noise mask.
+        # Roof hits remain droplets; a pool replaces two droplets with one ring.
+        if env.wet > 0.62 and cover < ground + 0.04:
+            dx = height_at(x + 0.5, z) - height_at(x - 0.5, z)
+            dz = height_at(x, z + 0.5) - height_at(x, z - 0.5)
+            up = f32(1.0 / sqrt(1.0 + dx * dx + dz * dz))
+            pool = puddle_mask(vec2(f32(x), f32(z)), up, f32(env.wet))
+            if pool > 0.15:
+                emit(.ring, v3(x, ground + 0.025, z), vec3(0, 0, 0), random(0.22, 0.5), random(0.07, 0.18), rgba(0.72, 0.79, 0.88, 0.28 * f64(pool)))
+                continue
+        loop j in [0..2): emit(.splash, v3(x, y + 0.04, z), v3(random(-0.5, 0.5), random(0.9, 1.7), random(-0.5, 0.5)), random(0.15, 0.3), 0.025, rgba(0.85, 0.9, 1.0, 0.6), 9.8, 0.0)
+
+# rain: streaks in a box that follows the camera
+rain_streaks: vec3[]
+
+__rain_fill = ():
+    loop k in [0..6200): rain_streaks.push(v3(random(-30.0, 30.0), random(-2.0, 22.0), random(-30.0, 30.0)))
+    # Redistribute the same 8200 streaks toward the lens, without increasing draw work.
+    loop k in [0..2000): rain_streaks.push(v3(random(-9.0, 9.0), random(-2.0, 22.0), random(-9.0, 9.0)))
+
+far_plumes: vec4[]          # smoke columns far away (xyz base, scale)
+shafts: vec4[]              # soft columns of light from above (xyz foot, w strength; set each frame)
+contact_shadows: vec4[]     # soft dark pools under feet (xyz on the ground, w radius; set each frame)
+beams: vec3[]               # light columns over the shrines as they wake
+beams_from = -100.0         # when they lit (they fade over half a minute)
+fire_glows: vec3[]          # lit fires: a warm pool of light on the ground round each after dark (set each frame)
+malice_center = vec3(0, 0, 0)
+malice = 0.0                # the Calamity's cloud round the castle (strength; set by the renderer)
+# Density cards follow the same complete coil as the mesh, including its climbs.
+calamity_coil = (k: int, tt: f64) -> vec3:
+    malice_spine(f32(k) / 89.0, f32(tt))
+
+calamity_radius = (k: int) -> f64:
+    f64(malice_thickness(f32(k) / 89.0)) * 0.95
+
+calamity_tangent = (k: int, tt: f64) -> vec3:
+    if k == 89: calamity_coil(k, tt) - calamity_coil(k - 1, tt)
+    else: calamity_coil(k + 1, tt) - calamity_coil(k, tt)
+
+# Both depth halves and their tangents reuse these exact spine samples. The
+# bounded buffer warms once; cosmetic curls need only 90 evaluations per frame.
+__calamity_points: vec3[]
+calamity_cache = (tt: f64):
+    __calamity_points.resize(90)
+    loop k in [0..90): __calamity_points[k] = calamity_coil(k, tt)
+
+calamity_cached_tangent = (k: int) -> vec3:
+    if k == 89: __calamity_points[k] - __calamity_points[k - 1]
+    else: __calamity_points[k + 1] - __calamity_points[k]
+
+fx_set_malice = (k: f64): malice = k
+__fall_out: vec3[]
+fx_light = vec3(1, 1, 1)       # how lit the air is (set by the game from the sky and the sun)
+snowing = false             # set by the game: in the cold areas the rain falls as snow
+
+# Analytic drifting motes use world cells and local hashes, never the gameplay RNG.
+# At most 36 tiny sprites and a handful of shafts share the existing additive batch.
+__air_canopy = (x: f64, z: f64) -> f64:
+    if canopy_cov.len() == 0: return 0.0
+    ix = int(floor((x - hf.x0) / (hf.cell * f64(hf.n)) * f64(CANOPY_N)))
+    iz = int(floor((z - hf.z0) / (hf.cell * f64(hf.n)) * f64(CANOPY_N)))
+    if ix < 0 or iz < 0 or ix >= CANOPY_N or iz >= CANOPY_N: return 0.0
+    f64(canopy_cov[iz * CANOPY_N + ix])
+
+__air_dressing = (cam: vec3, indoor: bool):
+    morning = smoothstep(6.0, 7.0, env.hour) * (1.0 - smoothstep(9.0, 12.0, env.hour))
+    clear_air = (1.0 - smoothstep(0.0, 0.01, env.rain)) * (1.0 - smoothstep(0.18, 0.65, env.dark))
+    strength = if indoor: 1.0 else: morning * clear_air
+    if strength < 0.001: return
+    cell = if indoor: 6.0 else: 10.0
+    cx = int(floor(f64(cam.x) / cell))
+    cz = int(floor(f64(cam.z) / cell))
+    tt = elapsed()
+    loop dz in [-1..1]:
+        loop dx in [-1..1]:
+            x = f64(cx + dx) * cell
+            z = f64(cz + dz) * cell
+            seed = hash2(x + 71.0, z - 29.0)
+            ax = x + cell * (0.2 + seed * 0.6)
+            az = z + cell * (0.2 + hash2(z, x + 4.0) * 0.6)
+            canopy = if indoor: 1.0 else: __air_canopy(ax, az)
+            if canopy < 0.15: continue
+            ground = if indoor: floor(f64(cam.y) / 4.0) * 4.0 - 1.0 else: height_at(ax, az)
+            # Closed woods only, below the crown; nothing over ponds or above the forest.
+            if not indoor and (water_depth(ax, az) > 0.1 or f64(cam.y) > ground + 12.0): continue
+            loop j in [0..4):
+                fj = f64(j)
+                phase = fract(tt * 0.025 + seed + fj * 0.271)
+                q = v3(ax + sin(tt * 0.17 + seed * 19.0 + fj * 2.4) * cell * 0.32,
+                    ground + 0.6 + phase * (if indoor: 4.0 else: 5.0),
+                    az + cos(tt * 0.13 + seed * 27.0 + fj * 1.7) * cell * 0.32)
+                distance = f64(length(q - cam))
+                fade = smoothstep(1.5, 3.0, distance) * (1.0 - smoothstep(cell * 0.7, cell * 1.4, distance))
+                fade *= sin(phase * PI) * strength * canopy
+                if fade < 0.005: continue
+                size = 0.018 + hash2(ax + fj, az) * 0.018
+                col = if indoor: vec3(0.36, 0.58, 0.65) else: vec3(1.0, 0.83, 0.48)
+                __pinst_add.push(PInst(vec4(q, f32(size)), vec4(col, f32(fade * 0.24)), vec4(0, 2, 0, 0)))
+            if not indoor and seed > 0.48:
+                hh = 3.8 + seed * 1.4
+                foot = v3(ax, ground + 0.3, az)
+                q = foot + env.sun_dir * f32(hh / max(f64(env.sun_dir.y), 0.35))
+                fade = 1.0 - smoothstep(14.0, 25.0, f64(length(foot - cam)))
+                __pinst_add.push(PInst(vec4(q, f32(hh)), vec4(1.0, 0.86, 0.62, f32(0.045 * strength * canopy * fade)), vec4(0, 11, f32(0.07 + seed * 0.035), 0)))
+
+fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
+    if not __fx_ready: return
+    cpu_mark("fx_list_build")
+    right = vec3(view[0].x, view[1].x, view[2].x)
+    up = vec3(view[0].y, view[1].y, view[2].y)
+    __pinst_flame.clear()
+    __pinst_add.clear()
+    __pinst_alpha.clear()
+    __pinst_smoke.clear()
+    __pinst_heat.clear()
+    __pinst_electric.clear()
+    frustum = frustum_from(vp)
+    loop p in particles:
+        # Fire remnants keep their simulation lifetime after their visible fade.
+        # Skip them before constructing and testing six-plane bounds.
+        f = p.age / (p.life * p.visible_life)
+        if f >= 1.0: continue
+        # Include the shimmer above a tongue as well as smoke growth.
+        radius = f32(if p.kind == .arc: f64(length(p.vel)) * 0.5 + p.size * 5.0 else: (if p.kind == .flame: p.size * 4.6 + 0.3 else: p.size * 3.0))
+        if not box_visible(frustum, p.pos - vec3(radius, radius, radius), p.pos + vec3(radius, radius, radius)): continue
+        a = p.color.w * f32(clamp((1.0 - f) * 3.0, 0.0, 1.0) * clamp(f * 8.0, 0.0, 1.0))
+        if p.kind == .spark or p.kind == .slash: a = p.color.w * f32(1.0 - smoothstep(0.15, 1.0, f))
+        s = p.size
+        col = p.color
+        match p.kind:
+            flame:
+                s = min(p.size, 0.65) * (1.0 - f * 0.5)
+                # Flames right at the lens lose opacity before they fill the view.
+                a *= f32(smoothstep(2.0, 4.0, f64(length(p.pos - cam))))
+                # Young orange tongues cool toward dark red as their visible life ends.
+                col = mix(p.color, rgba(0.8, 0.12, 0.02, 1.0), f32(f)) * 1.55
+                col.w = a * 0.82
+                # A sparse bounded band above the tongues, sharing the alpha buffer.
+                if __pinst_heat.len() < 48 and fract(p.rot * 7.31) < 0.22 and f > 0.15 and f < 0.7:
+                    q = p.pos + v3(0.0, s * 2.8 + 0.3, 0.0)
+                    __pinst_heat.push(PInst(vec4(q, f32(s * 1.65)), vec4(1, 1, 1, a * 0.65), vec4(f32(f), 12, f32(p.rot), 0)))
+                __pinst_flame.push(PInst(vec4(p.pos.x, p.pos.y + f32(s * 0.7), p.pos.z, f32(s)), col, vec4(f32(f), -1, f32(p.rot), -1.45)))
+                if p.color.y < 0.7:
+                    # A lower crossed tongue gives the front a body in depth.
+                    # Small footprint and shorter visible life keep fill below the old sheets.
+                    q = p.pos + v3(cos(p.rot)*s*0.3, s*0.45, sin(p.rot)*s*0.3)
+                    __pinst_flame.push(PInst(vec4(q, f32(s*0.72)), vec4(col.xyz*0.85, col.w*0.55), vec4(f32(f), -1, f32(p.rot+2.17), -1.25)))
+            arc:
+                delta = p.vel
+                dist = f64(length(delta))
+                if dist < 0.001: continue
+                pulse = if p.drag < 0.0: lightning_pulse(max(0.0, 1.0 - p.age * 2.2)) else: (1.0 - smoothstep(0.45, 1.0, f)) * (0.78 + 0.22 * sin(f * 43.0 + p.rot))
+                electric_stroke(p.pos - delta * 0.5, p.pos + delta * 0.5, s, p.color.w * f32(pulse))
+            ember, spark, glow, slash:
+                ember = p.kind == .ember
+                if ember:
+                    s = min(s, 0.045) * (0.65 + 0.35 * fract(p.rot * 3.17)) * (1.0 - f * 0.35)
+                if p.kind == .spark or p.kind == .slash:
+                    ink = vec4(0.018, 0.024, 0.035, a * 0.9)
+                    __pinst_alpha.push(PInst(vec4(p.pos, f32(s * 1.45)), ink, vec4(f32(f), (if p.kind == .spark: 16 else: 15), f32(p.rot), 0)))
+                    if p.kind == .spark and length(p.vel) < 0.001:
+                        # One soft darkening behind the contact core, lasting its
+                        # existing tenth-second envelope; no screen-wide tint.
+                        __pinst_alpha.push(PInst(vec4(p.pos, f32(s * 2.8)), vec4(0.035, 0.040, 0.05, a * 0.55), vec4(f32(f), 15, 0, 0)))
+                col = p.color * (if ember: 1.9 else: 3.0)
+                col.w = a
+                __pinst_add.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(s)), col, vec4(f32(f), (if ember: 3 else: (if p.kind == .spark: 5 else: 2)), f32(p.rot), 0)))
+                if ember:
+                    # Two fine satellites share its rise but separate in depth.
+                    # No random draws or extra simulated particles are required.
+                    loop side in [-1.0, 1.0]:
+                        drift = v3(cos(p.rot+side)*0.3, side*0.22, sin(p.rot+side)*0.3)*f32(0.3+f)
+                        q = p.pos + drift
+                        __pinst_add.push(PInst(vec4(q, f32(s*0.65)), vec4(col.xyz, a*0.7), vec4(f32(f), 3, f32(p.rot+side), 0)))
+            smoke, poof, breath, steam:
+                vapor = p.kind == .breath
+                if vapor or p.kind == .steam:
+                    s = if vapor: min(p.size, 0.065) * (1.0 + f * 0.15) else: p.size * (1.0 + f * 0.7)
+                    col = vec4(p.color.xyz * min(fx_light, vec3(0.85, 0.85, 0.85)), a)
+                    __pinst_alpha.push(PInst(vec4(p.pos, f32(s)), col, vec4(f32(f), (if vapor: 17 else: 18), f32(p.rot), 0)))
+                    continue
+                # Ordinary smoke retains its broad billows and scene lighting.
+                s = p.size * (1.0 + f * 2.0)
+                col = vec4(p.color.xyz * fx_light, a)
+                __pinst_smoke.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(s)), col, vec4(f32(f), 1, f32(p.rot), 0)))
+            dust, splash, snow:
+                col.w = a
+                __pinst_alpha.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(s)), col, vec4(f32(f), 4, f32(p.rot), 0)))
+            ring:
+                col.w = min(0.6, p.color.w * 1.65) * f32(smoothstep(0.0, 0.08, f) * pow(1.0 - f, 1.5))
+                __pinst_alpha.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(p.size * (0.15 + f * 1.2))), col, vec4(f32(f), 8, f32(p.rot), 0)))
+            leaf:
+                col.w = a
+                __pinst_alpha.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(s)), col * vec4(env.sun_color * 0.4 + env.sky_amb, 1), vec4(f32(f), 6, f32(p.rot * 3.0), 0)))
+            _: pass
+    __air_dressing(cam, indoor)
+    # Local pooled wear on exposed, nearly flat paths. The existing alpha batch
+    # receives at most 49 patches; terrain, roofs, snow and pond boundaries reject them.
+    if not indoor and not snowing and env.wet > 0.62:
+        cx = floor(f64(cam.x) / 3.0) * 3.0
+        cz = floor(f64(cam.z) / 3.0) * 3.0
+        loop iz in [-3..3]:
+            loop ix in [-3..3]:
+                x = cx + f64(ix) * 3.0
+                z = cz + f64(iz) * 3.0
+                mt = material_at(x, z)
+                if mt.w < 0.15 or mt.z > 0.1 or water_depth(x, z) > 0.0: continue
+                ground = height_at(x, z)
+                if abs(ground - f64(cam.y)) > 12.0 or rain_cover_height(x, z) > ground + 0.04: continue
+                pool = f64(puddle_mask(vec2(f32(x), f32(z)), normal_at(x, z).y, f32(env.wet)))
+                if pool < 0.05: continue
+                fade = 1.0 - smoothstep(7.0, 12.0, hypot(x - f64(cam.x), z - f64(cam.z)))
+                __pinst_alpha.push(PInst(vec4(f32(x), f32(ground + 0.028), f32(z), f32(0.8 + hash2(x, z) * 0.7)), vec4(0.05, 0.06, 0.065, f32(pool * fade * 0.55)), vec4(0, 14, f32(hash2(z, x) * TAU), 0)))
+    # far smoke (Death Mountain): big soft puffs climbing and leaning with the wind
+    if not indoor:
+        tt = elapsed()
+        loop pf in far_plumes:
+            loop k in [0..16):
+                t = fract(f64(k) / 16.0 + tt * 0.004)
+                q = pf.xyz + vec3(f32(t * t * 1300.0 + sin(f64(k) * 2.1) * 60.0), f32(t * 1000.0), f32(-t * t * 500.0 + cos(f64(k) * 1.7) * 60.0))
+                a = f32(0.55 * smoothstep(0.0, 0.08, t) * (1.0 - t))
+                # lit by the day above, by the crater's glow below
+                lit = clamp(luma(env.sun_color) * 0.3 + luma(env.sky_amb), 0.12, 1.0)
+                c = mix(vec3(0.62, 0.3, 0.16), vec3(0.24, 0.21, 0.21) * f32(lit), f32(smoothstep(0.0, 0.25, t)))
+                __pinst_smoke.push(PInst(vec4(q.x, q.y, q.z, f32(160.0 + t * 380.0)), vec4(c.x, c.y, c.z, a), vec4(f32(t), 1, f32(f64(k) * 1.3), 0)))
+    # The continuous vortex carries translucent folds around a dim crimson core.
+    # Mesh and density cards share the spine projected by the title check.
+    if malice > 0.0 and not indoor:
+        tt = elapsed()
+        # A dim inner glow sits behind the darker foreground density folds.
+        toward = normalize(vec3(cam.x - malice_center.x, 0, cam.z - malice_center.z))
+        core = malice_center + vec3(0, 174, 0) + toward * 130.0
+        # The energy keeps a dim crimson presence after the surrounding sky darkens.
+        night = f32(smoothstep(0.3, 0.85, env.night))
+        core_col = vec3(0.58, 0.018, 0.065) * vec3(1.0 + night * 1.8, 1.0, 1.0 + night * 0.5)
+        __pinst_alpha.push(PInst(vec4(core, 145), vec4(core_col, f32(malice * 0.32)), vec4(-2, 1, 0, 0)))
+        # Submit rear halves first, then foreground halves. The fixed 90 cards
+        # share the ordinary alpha draw, bypassing the reduced smoke target.
+        calamity_cache(tt)
+        loop side in [-1.0, 1.0]:
+            loop k in [0..90):
+                q = __calamity_points[k]
+                outward = normalize(vec3(q.x, 0, q.z))
+                if f64(dot(outward, toward)) * side < 0.0: continue
+                tangent = calamity_cached_tangent(k)
+                angle = atan2(f64(dot(tangent, up)), f64(dot(tangent, right)))
+                world = malice_center + q
+                fk = f64(k)
+                pigment = 0.5 + 0.5 * sin(fk * 1.7 + tt * 0.035)
+                col = mix(vec3(0.17, 0.012, 0.03), vec3(0.13, 0.014, 0.14), f32(pigment))
+                col = col * vec3(1.0 + night * 2.2, 1.0, 1.0 + night * 0.8)
+                phase = f64(k) / 89.0
+                density = (0.42 + 0.18 * pigment) * smoothstep(0.0, 0.06, phase) * (1.0 - smoothstep(0.94, 1.0, phase))
+                __pinst_alpha.push(PInst(vec4(world, f32(calamity_radius(k))), vec4(col, f32(malice * density)), vec4(-0.3, 1, f32(angle), 0)))
+    # mist off the foot of each waterfall: big pale billows rolling up and drifting
+    tt2 = elapsed()
+    loop fi in 0.. and fp in fall_feet:
+        if f64(length(fp - cam)) > 400.0: continue
+        west = fp.x > -1505.0 and fp.x < -1450.0 and fp.z > 1800.0 and fp.z < 1848.0 and fp.y < 120.0
+        loop k in [0..14):
+            ph = fract(f64(k) / 14.0 + tt2 * 0.06 + f64(fi) * 0.37)
+            q = fp + vec3(f32(sin(f64(k) * 2.3 + tt2 * 0.2) * 7.0), f32(ph * (if west: 18.0 else: 30.0) - 3.0), f32(cos(f64(k) * 1.9 + tt2 * 0.17) * 7.0))
+            a = f32((if west: 0.65 else: 0.5) * sin(ph * PI))
+            __pinst_smoke.push(PInst(vec4(q.x, q.y, q.z, f32((if west: 6.0 else: 7.0) + ph * (if west: 10.0 else: 14.0))), vec4(0.9, 0.93, 0.96, a), vec4(f32(ph), 1, f32(f64(k)), 0)))
+    # spray off the falling sheet: pale puffs torn off it all the way down, thicker toward the foot,
+    # and white water churning where it lands
+    # (out from the rock face behind the sheet, so the spray hangs in front of it)
+    if __fall_out.len() != fall_cells.len():
+        __fall_out.clear()
+        loop fc in fall_cells:
+            nn = normal_at(f64(fc.x), f64(fc.y))
+            __fall_out.push(normalize(vec3(nn.x, 0, nn.z) + vec3(0.0001, 0, 0)))
+    loop ci in 0.. and fc in fall_cells:
+        cc = vec3(fc.x, (fc.z + fc.w) * 0.5, fc.y)
+        if f64(length(cc - cam)) > 300.0: continue
+        # Dry cells spanning the canyon wall must not blow white puffs out of rock.
+        if height_at(f64(fc.x), f64(fc.y)) > f64(cc.y) + 2.0: continue
+        loop k in [0..3):
+            hk = fract(sin(f64(ci) * 12.9898 + f64(k) * 78.233) * 43758.5453)
+            ph = fract(tt2 * 0.45 + hk)
+            # (falling with the water: from the lip down, blown out from it as it goes)
+            yy = f64(fc.z) + (f64(fc.w) - f64(fc.z)) * ph
+            q = vec3(fc.x + f32((hk - 0.5) * 3.0), f32(yy), fc.y + f32((fract(hk * 7.3) - 0.5) * 3.0)) + __fall_out[ci] * f32(1.5 + ph * 3.0)
+            a = f32(0.4 * sin(ph * PI) * (0.4 + 0.6 * ph))
+            __pinst_smoke.push(PInst(vec4(q.x, q.y, q.z, f32(1.5 + ph * 3.5)), vec4(0.92, 0.95, 0.97, a), vec4(f32(ph), 1, f32(hk * 10.0), 0)))
+    # Baked triangle/shelf intersections anchor spray on the real sheet, rather
+    # than at dry grid-cell centres. Existing smoke and alpha batches carry it.
+    loop si in 0.. and shelf in fall_shelves:
+        if length(shelf.pos - cam) > 300.0: continue
+        west = shelf.pos.x > -1496.0 and shelf.pos.x < -1404.0 and shelf.pos.z > 1805.0 and shelf.pos.z < 1844.0
+        loop k in [0..3):
+            ph = fract(tt2 * 0.65 + f64(si) * 0.317 + f64(k) / 3.0)
+            side = cross(shelf.out, vec3(0, 1, 0))
+            fan = shelf.pos + shelf.out * f32((if west: 4.5 else: 0.0) + ph * 3.0) + side * f32((f64(k) - 1.0) * 1.4)
+            fan.y += f32(sin(ph * PI) * 2.2 - ph * 1.2)
+            a = f32(sin(ph * PI) * 0.64)
+            __pinst_smoke.push(PInst(vec4(fan, f32((if west: 2.2 else: 1.6) + ph * 2.8)), vec4((if west: vec3(0.92, 0.96, 0.98) else: vec3(0.87, 0.94, 0.96)), a), vec4(f32(ph), 1, f32(si + k), 0)))
+            __pinst_alpha.push(PInst(vec4(fan + shelf.out * f32(ph * 1.5), f32(0.45 + ph * 0.65)), vec4(0.9, 0.96, 0.98, a), vec4(f32(ph), 4, f32(si + k), 0)))
+    loop fi in 0.. and fp in fall_feet:
+        if f64(length(fp - cam)) > 300.0: continue
+        # Three low broken rings spread from the impact, below the existing plume.
+        # They share the ripple instance draw and fade before the next ring starts.
+        loop ring in [0..3):
+            age = fract(tt2 * 0.24 + f64(ring) / 3.0 + f64(fi) * 0.21)
+            rr = 3.0 + age * 11.0
+            __pinst_alpha.push(PInst(vec4(fp.x, fp.y + 0.12, fp.z, f32(rr)), vec4(0.86, 0.94, 0.95, f32(sin(age * PI) * 0.38)), vec4(f32(age), 8, f32(fi + ring) * 2.7, 0)))
+        loop k in [0..10):
+            ph = fract(f64(k) / 10.0 + tt2 * 0.3 + f64(fi) * 0.21)
+            ang = f64(k) * 2.4 + tt2 * 0.1
+            rr = 2.0 + ph * 6.0
+            q = fp + vec3(f32(cos(ang) * rr), f32(0.5 + ph * 3.0), f32(sin(ang) * rr))
+            __pinst_smoke.push(PInst(vec4(q.x, q.y, q.z, f32(3.0 + ph * 5.0)), vec4(0.95, 0.97, 0.98, f32(0.7 * (1.0 - ph))), vec4(f32(ph), 1, f32(f64(k) + 50.0), 0)))
+    # shafts of light falling from above (the monks' chambers)
+    loop sh in shafts:
+        loop j in [0..2):
+            hh = 4.5 + f64(j) * 1.5
+            __pinst_add.push(PInst(vec4(sh.x, sh.y + f32(hh), sh.z, f32(hh)), vec4(1.0, 0.86, 0.6, sh.w * f32(0.22 - f64(j) * 0.08)), vec4(0, 10, 0, 0)))
+    shafts.clear()
+    # under the feet a soft pool of shade: he stands on the ground even when the sun is low and his
+    # own shadow falls far off
+    if not indoor:
+        loop b in barrels:
+            if b.alive and length(b.pos - cam) < 42.0: contact_shadows.push(vec4(b.pos.x, b.pos.y, b.pos.z, 0.55))
+        loop e in enemies:
+            if e.state == .dead or e.state == .gone or e.state == .buried or e.state == .knocked or e.kind == .keese: continue
+            if length(e.pos - cam) > 42.0 or e.lift > 0.25: continue
+            radius = if e.kind == .guardian: 1.7 else: 0.65
+            contact_shadows.push(vec4(e.pos.x, e.pos.y, e.pos.z, f32(radius)))
+    loop c in contact_shadows:
+        # The entry pad is decorative geometry 11 cm above collision floor. Lift the
+        # small hero pool above it so the pool no longer disappears inside the pad.
+        hero = c.w == 0.42
+        y = c.y + (if indoor and hero: f32(0.125) else: f32(0.035))
+        radius = if indoor and hero: f32(0.62) else: c.w
+        opacity = if indoor: f32(0.66) else: f32(0.45)
+        if not box_visible(frustum, vec3(c.x - radius, y - 0.15, c.z - radius), vec3(c.x + radius, y + 0.15, c.z + radius)): continue
+        __pinst_alpha.push(PInst(vec4(c.x, y, c.z, radius), vec4(0.025, 0.028, 0.04, opacity), vec4(0, 9, 0, 0)))
+    contact_shadows.clear()
+    # the shrines' beams: tall columns of orange light, fading
+    bk = clamp((elapsed() - beams_from) / 1.0, 0.0, 1.0) * clamp((beams_from + 32.0 - elapsed()) / 6.0, 0.0, 1.0)
+    if bk > 0.0 and not indoor:
+        loop bp in beams:
+            # (a bright core inside two wider glows, reaching up into the clouds)
+            h = 420.0
+            loop j in [0..3):
+                wk = [0.014, 0.032, 0.09][j]
+                col = [vec4(2.6, 1.3, 0.45, 0.8), vec4(1.8, 0.7, 0.18, 0.5), vec4(1.4, 0.5, 0.12, 0.28)][j]
+                __pinst_add.push(PInst(vec4(bp.x, bp.y + f32(h * 0.5), bp.z, f32(h * 0.5)), vec4(col.x, col.y, col.z, col.w * f32(bk)), vec4(0, 10, f32(wk), 0)))
+    # (firelight on the ground: the point light of the nearest fire, in the shaders)
+    # rain
+    if env.rain > 0.02 and not indoor:
+        if rain_streaks.len() == 0: __rain_fill()
+        n = rain_streaks.len()
+        tt = elapsed()
+        rain_view_prepare(cam, frame_number())
+        col = vec4(0.88, 0.94, 1.05, f32(0.82 * env.rain))
+        if snowing: col = vec4(1.4, 1.45, 1.5, f32(0.85 * env.rain))
+        loop k in [0..n):
+            r = rain_streaks[k]
+            # (light rain draws a share of the streaks, near and far alike)
+            if fract(f64(k) * 0.754877) > env.rain: continue
+            if snowing:
+                # flakes drift down slowly and sway
+                y = f64(r.y) - fract(tt * 0.07 + f64(k) * 0.37) * 24.0
+                p = vec3(cam.x + r.x + f32(sin(tt * 0.8 + f64(k)) * 0.6), f32(f64(cam.y) + y), cam.z + r.z + f32(cos(tt * 0.6 + f64(k) * 1.7) * 0.6))
+                if rain_view_height(f64(p.x), f64(p.z)) > f64(p.y): continue
+                __pinst_alpha.push(PInst(vec4(p.x, p.y, p.z, 0.09), col, vec4(0, 4, 0, 0)))
+            else:
+                # (none right at the lens)
+                if f64(r.x) * f64(r.x) + f64(r.z) * f64(r.z) < 4.0: continue
+                fall = fract(tt * 1.1 + f64(k) * 0.37) * 24.0
+                y = f64(r.y) - fall
+                drift = fall * 0.22 * env.gust
+                p = vec3(cam.x + r.x + f32(f64(env.wind.x) * drift), f32(f64(cam.y) + y), cam.z + r.z + f32(f64(env.wind.y) * drift))
+                if rain_view_height(f64(p.x), f64(p.z)) > f64(p.y) - 0.6: continue
+                # (short and faint: the near ones, long on screen, fade most; the far edge of the box too)
+                # Measure after wind drift: the nearest projected streaks can
+                # originate farther out in the seed box during strong gusts.
+                rd = f64(length(p - cam))
+                # Sparse foreground drops; the distant volume supplies density.
+                depth = smoothstep(5.0, 20.0, rd)
+                keep = lerp(0.16, 1.0, depth)
+                if fract(f64(k) * 0.414213) > keep: continue
+                near_k = f32(smoothstep(2.0, 4.0, rd) * smoothstep(35.0, 24.0, rd))
+                variation = fract(f64(k) * 0.618034)
+                opacity = lerp(0.40, 0.26, depth) * (0.30 + variation * 1.15)
+                depth_length = lerp(0.24, 0.17, depth)
+                streak_length = depth_length * (0.40 + variation * 1.25)
+                __pinst_alpha.push(PInst(vec4(p.x, p.y, p.z, 1.2), vec4(col.xyz, col.w * near_k * f32(opacity)), vec4(0, 4, f32(fract(f64(k) * 0.317)), f32(streak_length))))
+    if player_shock_t > 0.0: electric_player(pl.pos, cam)
+    if player_burn_t > 0.0 and chars_ready:
+        # Body-attached tongues follow the actual recoil pose. Build at draw
+        # time without RNG so feedback cannot change the spreading fire.
+        toward = normalize(vec3(cam.x - pl.pos.x, 0, cam.z - pl.pos.z))
+        loop k in [0..5):
+            bone = ["spine_02", "upperarm_l", "upperarm_r", "calf_l", "calf_r"][k]
+            m = hero_world * bone_world(hero_m, hero_skin, bone)
+            q = m[3].xyz + toward * 0.19
+            phase = fract(pl.anim_t * 3.6 + f64(k) * 0.237)
+            size = 0.19 + 0.045 * sin(pl.anim_t * 19.0 + f64(k) * 2.7)
+            fade = f32(smoothstep(0.0, 0.22, player_burn_t))
+            __pinst_flame.push(PInst(vec4(q + vec3(0, f32(size * 0.5), 0), f32(size)), vec4(1.6, 0.52, 0.07, fade * 0.9), vec4(f32(phase), 0, f32(k) * 1.73, -1.45)))
+    cpu_mark("fx_submit")
+    u = PartU(vp, right, up, cam, env.haze, f32(env.density), post.depth_copy.depth, f32(sc.near), f32(sc.far), env.wind * f32(env.gust))
+    u.sun_dir = env.sun_dir
+    u.scene = post.depth_copy.color
+    u.time = f32(elapsed())
+    u.ground_heights = height_tex
+    u.ground_grid = vec4(f32(hf.x0), f32(hf.z0), f32(hf.cell), 1)
+    glEnable(GL_DEPTH_TEST)
+    glDepthMask(0)
+    glDisable(GL_CULL_FACE)
+    glEnable(GL_BLEND)
+    if frame_number() % 120 == 0 and (env("BOTW_GPU") != none or env("BOTW_CPU") != none):
+        smoke_scale = if __smoke_fullres: 1.0 else: 0.5
+        eprint("fx particles: frame {frame_number()} live {particles.len()} smoke {__pinst_smoke.len()} alpha {__pinst_alpha.len()} heat {__pinst_heat.len()} flames {__pinst_flame.len()} additive {__pinst_add.len()} smoke_scale {smoke_scale}")
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    if __pinst_heat.len() > 0:
+        inst_update(__pbuf_alpha, __pinst_heat)
+        draw_static(part_sh, part_quad, __pbuf_alpha, u)
+    fx_smoke_draw(u)
+    if __pinst_alpha.len() > 0:
+        inst_update(__pbuf_alpha, __pinst_alpha)
+        draw_static(part_sh, part_quad, __pbuf_alpha, u)
+    if __pinst_flame.len() > 0:
+        # Unlike emissive sparks, overlapping flame bodies must never sum to white.
+        # Reuse the alpha instance buffer after its previous draw; no new target/pass.
+        inst_update(__pbuf_alpha, __pinst_flame)
+        draw_static(part_sh, part_quad, __pbuf_alpha, u)
+    if __pinst_add.len() > 0:
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        inst_update(__pbuf_add, __pinst_add)
+        draw_static(part_sh, part_quad, __pbuf_add, u)
+    glDepthMask(1)
+    glDisable(GL_BLEND)
+
+# Guardian sight/shot rendering only; state, targeting and damage remain in enemies.jo.
+# Clip the displayed stroke to its stored target and the first visible obstruction.
+# A tracking point can lag behind Link: stop the red sight at the near side of his body.
+guardian_beam_end = (a: vec3, target: vec3) -> vec3:
+    d = target - a
+    distance = f64(length(d))
+    if distance < 0.001: return target
+    dir = d / f32(distance)
+    body = pl.pos + vec3(0, 1.0, 0)
+    along = f64(dot(body - a, dir))
+    off = f64(length(body - (a + dir * f32(along))))
+    if along > 0.0 and along < distance + 0.5 and off < 0.48:
+        distance = min(distance, max(0.0, along - sqrt(0.48 * 0.48 - off * off)))
+    hit = raycast(a, dir, distance, true)
+    if hit.hit: distance = min(distance, f64(length(hit.pos - a)))
+    a + dir * f32(distance)
+
+guardian_lasers_draw = ():
+    loop e in enemies:
+        if e.kind != .guardian: continue
+        firing = e.state == .recover and e.t < 0.12
+        if e.state != .laser and not firing: continue
+        a = e.pos + vec3(0, 2.9, 0) + transform_dir(rotation_y(PI - e.face), v3(0.0, 0.0, 1.9))
+        d = guardian_beam_end(a, e.laser_target) - a
+        l = f64(length(d))
+        if l < 0.01: continue
+        yaw = atan2(f64(d.x), f64(d.z))
+        pitch = -asin(clamp(f64(d.y) / l, -1.0, 1.0))
+        flicker = 0.62 + 0.38 * sin(e.laser_t * 47.0) * sin(e.laser_t * 23.0)
+        width = if firing: 1.6 else: 0.18 + flicker * 0.08
+        m = translation(a) * rotation_y(yaw) * rotation_x(pitch) * scaling(v3(width, width, l))
+        draw_prop(__guardian_laser_mesh, m, (if firing: rgba(0.65, 0.86, 1, 1) else: rgba(1, 0.06, 0.035, 1)), (if firing: 7.0 else: 0.6 + flicker * 0.7))
+
+# Emissive electrical batch: draw after watercolor, before HUD, with opaque-depth
+# rejection at the actual output resolution. No full-screen target, mask allocation,
+# ink metadata or pigment taps; ordinary sparks/flames still use the painted scene.
+electric_fs = (o: PartO, u: PartU) -> vec4:
+    uv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
+    z = sample(u.depth, uv).x * 2.0 - 1.0
+    sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
+    glsl_discard(o.clip.w > sd + 0.04)
+    # A capsule instead of a rectangular streak: soft rounded end caps keep
+    # broad halos from producing hard triangular fans at each lightning bend.
+    q = (o.uv - vec2(0.5, 0.5)) * 2.0
+    width = max(o.data.x, 0.002)
+    tip = max(abs(q.y) * (o.size + width) - o.size, 0.0) / width
+    core = pow(smoothstep(1.0, 0.0, length(vec2(q.x, tip))), 1.3)
+    vec4(o.color.xyz, o.color.w * core)
+
+electric_stroke = (a: vec3, b: vec3, width: f64, opacity: f32):
+    delta = b - a
+    dist = f64(length(delta))
+    if dist < 0.001: return
+    pos = vec4((a + b) * 0.5, f32(dist * 0.5))
+    data = vec4(f32(width), 13, f32(atan2(f64(delta.x), f64(delta.z))), f32(asin(f64(delta.y) / dist)))
+    halo = data
+    halo.x *= 5.0
+    __pinst_electric.push(PInst(pos, vec4(0.35, 0.60, 1.0, opacity * 0.08), halo))
+    __pinst_electric.push(PInst(pos, vec4(0.88, 0.96, 1.0, opacity), data))
+
+electric_player = (p: vec3, cam: vec3):
+    # Six short crackles hug head, torso and limbs on the visible body side.
+    # Narrow cores also bound the five-width halo at the hips and shoulders.
+    # Rebuild from the current body position so the flicker follows the flinch.
+    toward = normalize(vec3(cam.x - p.x, 0, cam.z - p.z))
+    side = vec3(toward.z, 0, -toward.x)
+    pulse = f32(0.65 + 0.35 * sin(player_shock_t * 95.0))
+    loop strand in [0..6):
+        x = if strand % 2 == 0: -0.18 else: 0.18
+        lo = if strand < 2: 0.22 else: (if strand < 4: 0.92 else: 1.23)
+        hi = if strand < 2: 0.66 else: (if strand < 4: 1.25 else: 1.43)
+        previous = p + side * f32(x) + toward * 0.26 + v3(0.0, lo, 0.0)
+        loop j in [1..5):
+            t = f64(j) / 4.0
+            zig = sin(f64(j * 13 + strand * 7) + player_shock_t * 70.0) * 0.065
+            point = p + side * f32(x + zig) + toward * 0.30 + v3(0.0, lerp(lo, hi, t), 0.0)
+            electric_stroke(previous, point, 0.012, pulse)
+            previous = point
+
+fx_electric_draw = (cam: vec3, vp: mat4, view: mat4):
+    if __pinst_electric.len() == 0 or not __fx_ready: return
+    right = vec3(view[0].x, view[1].x, view[2].x)
+    up = vec3(view[0].y, view[1].y, view[2].y)
+    cpu_mark("fx_submit")
+    u = PartU(vp, right, up, cam, env.haze, f32(env.density), post.depth_copy.depth, f32(sc.near), f32(sc.far))
+    glDisable(GL_DEPTH_TEST)
+    glDepthMask(0)
+    glDisable(GL_CULL_FACE)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+    # Reuse the additive buffer after its scene submission.
+    inst_update(__pbuf_add, __pinst_electric)
+    draw_static(__electric_sh, part_quad, __pbuf_add, u)
+    glDisable(GL_BLEND)
+    glDepthMask(1)

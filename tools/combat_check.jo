@@ -1,0 +1,419 @@
+# Geometry checks on the final animated hand socket, including spin and aerial attacks.
+use '../game/gfx.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/physics.jo'
+use '../game/terrain.jo'
+use '../game/chars.jo'
+use '../game/hero_motion.jo'
+use '../game/combat.jo'
+use '../game/camera.jo'
+use '../game/weapon_tracks.jo'
+use '../game/enemies.jo'
+from '../game/enemies.jo' import __bokoblin, __swing_lock, __blow_coming
+use '../game/enemy_contacts.jo'
+use '../game/enemy_weapon_pose.jo'
+use '../game/scene.jo'
+
+# Exercise the production animation and exact prop draw transform, independently of
+# the segment builder, at off-grid times across every active window and weapon type.
+enemy_geometry_checks = ():
+    sc.cam = vec3(0, 2, 5)
+    count = 0
+    worst_grip = 0.0
+    worst_tip = 0.0
+    worst_bake = 0.0
+    worst_wrist = 0.0
+    loop d in idefs:
+        if d.kind != .weapon: continue
+        loop move in [0..3):
+            grip_error = 0.0
+            tip_error = 0.0
+            loop variant in [0..3):
+                enemies.clear()
+                eanims.clear()
+                e = spawn_enemy(.bokoblin, vec3(0, 0, 0), d.id)
+                enemies[e].move = move
+                enemies[e].face = f64(variant) * 1.23
+                enemies[e].contact_scale = v3(1.10 + f64(variant) * 0.04, 1.11 + f64(variant) * 0.03, 1.10 + f64(variant) * 0.04)
+                enemies[e].state = .windup
+                enemies[e].t = 0.4
+                enemy_anim_update(0.4)
+                enemies[e].state = .attack
+                start = if move == 1: 0.45 else: 0.10
+                finish = if move == 1: 0.54 else: (if move == 2: 0.24 else: 0.25)
+                loop sample_ in [0..65):
+                    t = lerp(start, finish, f64(sample_) / 64.0)
+                    enemies[e].t = t
+                    enemies[e].pos = v3(f64(variant) + t * 0.37, 0.0, -t * 0.62)
+                    enemies[e].lift = enemy_attack_lift(move, t)
+                    # Body impact and planted-foot layers must not displace the weapon.
+                    enemies[e].impact = if variant == 2: 0.8 else: 0.0
+                    enemies[e].impact_t = 0.08
+                    enemies[e].recoil = vec3(0.3, 0, -0.7)
+                    enemy_anim_update(1.0 / 360.0)
+                    hand = bone_index(boko_m, "hand_r")
+                    wrist = bone_world(boko_m, eanims[e].skin, hand)[3].xyz
+                    forearm_end = transform_point(bone_world(boko_m, eanims[e].skin, boko_m.parent[hand]), boko_m.rest_t[hand])
+                    worst_wrist = max(worst_wrist, f64(length(wrist - forearm_end)))
+                    draw = boko_weapon_draw_transform(e)
+                    drawn_grip = transform_point(draw, vec3(0, 0, 0))
+                    drawn_tip = transform_point(draw, v3(0.0, weapon_length(d), 0.0))
+                    contact = enemy_contact_segment(enemies[e].pos, enemies[e].face, move, d.id, t, enemies[e].contact_scale)
+                    grip_error = max(grip_error, f64(length(drawn_grip - contact.grip)))
+                    tip_error = max(tip_error, f64(length(drawn_tip - contact.tip)))
+                    # Also check the bake against a fresh evaluation of the overlay.
+                    reference = sample_clip(human, ci(["slash1", "air_attack", "punch"][move]), t * 1.3, false)
+                    enemy_weapon_pose(boko_m, human, reference, move, t, false)
+                    socket = socket_world(boko_m, enemy_contact_world(enemies[e].pos, enemies[e].face, move, t, enemies[e].contact_scale), skin_cpu(boko_m, reference), SOCKET_HAND_R)
+                    native = enemy_weapon_draw_transform(socket, d.id)
+                    worst_bake = max(worst_bake, f64(length(drawn_grip - transform_point(native, vec3(0, 0, 0)))))
+                    bake_tip = f64(length(drawn_tip - transform_point(native, v3(0.0, weapon_length(d), 0.0))))
+                    worst_bake = max(worst_bake, bake_tip)
+                    count += 1
+            assert(grip_error < 0.003 and tip_error < 0.003, "enemy contact matches actual prop draw at grip and tip")
+            worst_grip = max(worst_grip, grip_error)
+            worst_tip = max(worst_tip, tip_error)
+            print("enemy {d.id} move {move}: grip error {grip_error:.6} m, tip error {tip_error:.6} m")
+    print("enemy attachment measured wrist gap {worst_wrist:.6} m")
+    assert(worst_wrist < 0.020, "posed forearm follows the pinned weapon wrist within 2 cm, including moving/recoiling builds")
+    print("enemy hand attachment PASS: worst forearm/wrist gap {worst_wrist:.6} m across {count} samples")
+    assert(worst_bake < 0.003, "1920 Hz socket track preserves the overlay within 3 mm")
+    print("enemy geometry PASS: {count} samples, grip {worst_grip:.6} m, tip {worst_tip:.6} m, bake {worst_bake:.6} m")
+    enemies.clear()
+    eanims.clear()
+
+presentation_clearance_checks = ():
+    use_terrain = false
+    inv = Inventory()
+    inv_add("travelers_sword")
+    inv_add("travelers_shield")
+    pl = Player(pos = vec3(0,0,0),face = 0.0)
+    fight = Fight()
+    act = Actions()
+    cam = Cam()
+    camera_snap()
+    camera_update(1.0/60.0)
+    samples = 0
+    loop side in [-1.0,1.0]:
+        loop z in [4.8,5.1,5.3,5.6]:
+            enemies.clear()
+            eanims.clear()
+            i = spawn_enemy(.blue_bokoblin,v3(side*0.2,0,z),"boko_club")
+            enemies[i].alert = 1.0
+            hero_animate(1.0/60.0,0.0)
+            enemy_anim_update(1.0/60.0)
+            combat_presentation_clear()
+            assert(length(enemies[i].pos-pl.pos) < 16.0,"near-plane body projection must keep the foe in the encounter")
+            samples += 1
+    enemies.clear()
+    eanims.clear()
+    i = spawn_enemy(.blue_bokoblin,vec3(0,0,4.8),"boko_club")
+    enemy_anim_update(1.0/60.0)
+    enemies[i].pos += vec3(0,0,8)
+    before = enemies[i].pos
+    combat_presentation_clear()
+    assert(enemies[i].pos == before,"a cached pose at the old location cannot move a teleported actor")
+    print("presentation clearance PASS: {samples} lens-straddling bodies remain in encounter; stale pose after teleport ignored")
+    enemies.clear()
+    eanims.clear()
+    inv = Inventory()
+    fight = Fight()
+    cam = Cam()
+
+locked_dodge_checks = ():
+    inv = Inventory()
+    inv_add("travelers_sword")
+    inv_add("travelers_shield")
+    samples = 0
+    loop hz in [30,60,120]:
+        dt = 1.0/f64(hz)
+        loop action in [Act.hop,Act.backflip]:
+            pl = Player(pos = vec3(0,0,0),face = 0.0)
+            fight = Fight(act = action,target = 0,hop_dir = 1.0)
+            act = Actions(lock = true)
+            loop frame in [0..hz):
+                # A dodge can leave a ledge. Continue the real combat callback
+                # with airborne state while the same physical lock is held.
+                if frame == hz/8: pl.state = .air
+                if frame == hz*3/4: pl.state = .ground
+                combat_update(dt,(i: int) -> vec3: vec3(0,0,-4),1)
+                hero_animate(dt,0.0)
+                assert(fight.target == 0 and cam.locked,"held lock survives airborne dodge and landing")
+                expected = socket_world(hero_m,hero_world,hero_skin,SOCKET_SHIELD)
+                actual = hero_shield_matrix()
+                loop p in [vec3(0,0,0),vec3(0,1,0),vec3(1,0,0)]:
+                    assert(length(transform_point(actual,p)-transform_point(expected,p)) < 0.000001,"production shield draw stays on raised hand through locked dodge")
+                samples += 1
+    print("locked dodge shield PASS: {samples} production hop/backflip/air/landing transforms at 30/60/120Hz")
+    act = Actions()
+    cam.locked = false
+    fight = Fight()
+    inv = Inventory()
+    pl = Player()
+
+main = ():
+    hf.n = 64
+    hf.cell = 1.0
+    hf.x0 = -32.0
+    hf.z0 = -32.0
+    hf.h = fill(f32(0), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    items_init()
+    chars_init()
+    presentation_clearance_checks()
+    locked_dodge_checks()
+    use_terrain = true
+    enemy_geometry_checks()
+    # Waiting ring silhouettes stay below an active windup without moving the feet.
+    loop weapon in ["boko_club", "boko_spear"]:
+        spear = item(weapon).spear
+        waiting = sample_clip(human, clip_index(human, "taunt"), 0.4, true)
+        enemy_waiting_weapon_pose(boko_m, human, waiting, spear)
+        active = sample_clip(human, clip_index(human, "attack"), 0.07, false)
+        enemy_weapon_pose(boko_m, human, active, 0, 0.2, true, false, spear)
+        h = bone_index(boko_m, "hand_r")
+        low = bone_world(boko_m, waiting, h) * SOCKET_HAND_R.offset
+        high = bone_world(boko_m, active, h) * SOCKET_HAND_R.offset
+        low_tip = transform_point(low, v3(0.0, weapon_length(item(weapon)), 0.0))
+        assert(low[3].y < high[3].y - 0.2 and low_tip.y < low[3].y, "waiting weapon hangs below the windup and points down")
+        print("PASS waiting weapon {weapon}: wrist={low[3].y:.3}, tip={low_tip.y:.3}, active wrist={high[3].y:.3}")
+    enemies.clear()
+    eanims.clear()
+    sc.cam = vec3(0, 2, 5)
+    loop speed in [0.0, 1.2, 3.8]:
+        e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+        enemies[e].state = .chase
+        enemies[e].speed = speed
+        enemies[e].may_engage = false
+        enemies[e].taunt = 1.0
+        enemy_anim_update(0.25)
+        drawn = boko_weapon_draw_transform(e)
+        grip = transform_point(drawn, vec3(0, 0, 0))
+        tip = transform_point(drawn, v3(0.0, weapon_length(item("boko_club")), 0.0))
+        assert(grip.y < 1.1 and tip.y < grip.y and tip.y > 0.1, "production waiting/approach pose stays low even while taunting or running")
+        print("PASS production waiting speed={speed:.1}: grip={grip.y:.3} tip={tip.y:.3}")
+    # The preparation event fires on the actual chase -> windup transition.
+    loop weapon in ["boko_club", "travelers_claymore"]:
+        pl = Player(pos = vec3(0, 0, 0))
+        fight = Fight()
+        e = Enemy(kind = .bokoblin, pos = vec3(0, 0, -2), home = vec3(0, 0, -2),
+            state = .chase, t = 2.0, weapon = weapon, may_engage = true, slot = -PI / 2.0)
+        __swing_lock = 0.0
+        __blow_coming = false
+        enemy_events.clear()
+        __bokoblin(e, 1.0 / 60.0, 2.0, false)
+        expected = if weapon == "travelers_claymore": "windup_heavy" else: "windup"
+        assert(e.state == .windup and enemy_events.len() == 1 and enemy_events[0].kind == expected, "heavy weapon has its distinct tell before contact")
+        print("enemy tell {weapon}: {expected} at windup start")
+
+    const DT = 1.0 / 60.0
+    checks = 0
+    worst_tip = 0.0
+    loop weapon in ["travelers_sword", "soldiers_broadsword", "travelers_claymore", "travelers_spear"]:
+        inv.weapons = [weapon]
+        inv.weapon = 0
+        d = item(weapon)
+        loop step in [0..combo_len(d)):
+            pl = Player(pos = vec3(0, 0, 0), face = 0.0)
+            fight = Fight(act = .swing, combo = step, weapon_out = true, swing_id = 1)
+            touched = false
+            loop frame in [0..60):
+                fight.t = f64(frame) * swing_for(d, step).dur / 60.0
+                player_hits.clear()
+                blade_hits(d, DT, f64(d.power), 4.0)
+                hero_animate(DT, 0.0)
+                hero_blade_hits()
+                if player_hits.len() == 0: continue
+                socket = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_R)
+                tip = transform_point(socket, v3(0.0, weapon_length(d), 0.0))
+                if attack_phase(d, fight.t) >= 0.27 and attack_phase(d, fight.t) <= 0.78: worst_tip = max(worst_tip, f64(length(player_hits[0].tip - tip)))
+                # A dummy on the blade's current path must be hit. A parallel blade 1 m
+                # above its head must miss; this also catches height-free distance checks.
+                dummy = (player_hits[0].grip + player_hits[0].tip) * 0.5 - vec3(0, 0.95, 0)
+                assert(blade_contact(player_hits[0], dummy).y > -9000.0, "animated blade through body")
+                wide = player_hits[0]
+                wide.grip += vec3(0, 2, 0)
+                wide.tip += vec3(0, 2, 0)
+                assert(blade_contact(wide, dummy).y < -9000.0, "blade above body misses")
+                loop h in player_hits:
+                    if blade_contact(h, vec3(0, 0, -1.0)).y > -9000.0: touched = true
+                checks += 1
+            print("{weapon} combo {step}: forward dummy {touched}")
+            assert(touched, "weapon can reach a dummy in front")
+    loop weapon in ["boko_spear", "travelers_claymore", "travelers_sword"]:
+        loop action in [Act.spin, Act.jump_attack, Act.flurry]:
+            inv.weapons = [weapon]
+            inv.weapon = 0
+            d = item(weapon)
+            pl = Player(pos = vec3(0, 0, 0), face = 0.0, state = (if action == .jump_attack: PState.air else: PState.ground))
+            fight = Fight(act = action, weapon_out = true, swing_id = 10)
+            samples = 0
+            loop frame in [0..60):
+                fight.t = f64(frame) * attack_duration(d) / 60.0
+                if action == .spin: pl.face = fight.t * 14.0
+                player_hits.clear()
+                blade_hits(d, DT, 5.0, 4.0)
+                hero_animate(DT, 0.0)
+                hero_blade_hits()
+                if player_hits.len() == 0: continue
+                socket = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_R)
+                tip = transform_point(socket, v3(0.0, weapon_length(d), 0.0))
+                if attack_phase(d, fight.t) >= 0.27 and attack_phase(d, fight.t) <= 0.78: worst_tip = max(worst_tip, f64(length(player_hits[0].tip - tip)))
+                samples += player_hits.len()
+            assert(samples > 0, "special attack emits blade samples")
+            print("{weapon} {action}: {samples} blade samples")
+    # Presentation retiming raises the carried club without changing the contact state.
+    wind = Enemy(kind = .bokoblin, state = .windup, t = 0.4, weapon = "boko_club")
+    pose = sample_clip(human, ci("idle"), 0.0, true)
+    boko_weapon_pose(pose, wind)
+    raised = socket_world(boko_m, mat4(), skin(boko_m, pose), SOCKET_HAND_R)
+    high = transform_point(raised, vec3(0, 0, 0))
+    axis = normalize(transform_dir(raised, vec3(0, 1, 0)))
+    assert(high.y > 1.25 and axis.y > 0.9, "windup grip over head with upright club")
+    wind.state = .attack
+    wind.t = 0.18
+    boko_weapon_pose(pose, wind)
+    strike = socket_world(boko_m, mat4(), skin(boko_m, pose), SOCKET_HAND_R)
+    assert(transform_point(strike, vec3(0, 0, 0)).y < high.y - 0.4, "club descends into existing attack window")
+    wind.state = .recover
+    wind.t = 0.08
+    pose = sample_clip(human, ci("slash1_rec"), wind.t, false)
+    boko_weapon_pose(pose, wind)
+    low = socket_world(boko_m, mat4(), skin_cpu(boko_m, pose), SOCKET_HAND_R)
+    assert(low[3].y < high.y - 0.55, "club recovery stays below the raised tell silhouette")
+    wind.weapon = "boko_spear"
+    wind.state = .windup
+    wind.t = 0.4
+    pose = sample_clip(human, ci("attack"), 0.14, false)
+    boko_weapon_pose(pose, wind)
+    spear = socket_world(boko_m, mat4(), skin_cpu(boko_m, pose), SOCKET_HAND_R)
+    spear_axis = normalize(transform_dir(spear, vec3(0, 1, 0)))
+    assert(spear_axis.z > 0.95 and abs(spear_axis.y) < 0.1, "spear tell reads as a level thrust instead of an overhead club")
+    print("enemy key silhouettes: club tell={high.y:.3} recovery={low[3].y:.3} spear forward={spear_axis.z:.3}")
+    # Independently sample the authored cutting pose: endpoint exaggeration must
+    # leave the hand and wrist unchanged throughout the active blade phase.
+    loop clip in [0..BLADE_CLIPS.len()):
+        loop phase in [0.27, 0.4, 0.62, 0.78]:
+            original = sample_clip(human, ci(BLADE_CLIPS[clip]), phase * BLADE_TIMES[clip], false)
+            keyed = original
+            attack_key_pose(hero_m, human, keyed, clip, phase)
+            source_hand = bone_world(hero_m, original, bone_index(hero_m, "hand_r"))
+            keyed_hand = bone_world(hero_m, keyed, bone_index(hero_m, "hand_r"))
+            assert(length(source_hand[3] - keyed_hand[3]) < 0.00001 and length(source_hand[1] - keyed_hand[1]) < 0.00001, "pose keys preserve the authored active grip and blade direction")
+    print("attack keys: 32 authored active grip/direction samples unchanged")
+    assert(boko_hit_flash(0.2).w > 0.5 and boko_hit_flash(0.2).w < 0.6 and boko_hit_flash(0.12).w == 0.0 and boko_hit_flash(0.0).w == 0.0, "a brief partial flash at the blow")
+    # Opposite blow directions must produce different silhouettes on the very
+    # first frozen frame, before animator blending has advanced at all.
+    heads: vec3[]
+    loop recoil in [vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 0, 1), vec3(0, 0, -1)]:
+        enemies.clear()
+        eanims.clear()
+        e = spawn_enemy(.blue_bokoblin, vec3(0, 0, 0))
+        enemies[e].state = .stagger
+        enemies[e].face = 0.0
+        enemies[e].recoil = recoil
+        enemies[e].blow_dir = recoil
+        enemies[e].impact_t = 0.16
+        enemies[e].impact = 0.65
+        enemy_anim_update(0.0)
+        head = eanims[e].world * bone_world(boko_m, eanims[e].skin, bone_index(boko_m, "Head"))
+        heads.push(head[3].xyz)
+    side_separation = f64(length(heads[0] - heads[1]))
+    front_separation = f64(length(heads[2] - heads[3]))
+    assert(side_separation > 0.08 and front_separation > 0.08, "first frozen stagger pose follows blow direction")
+    print("directional stagger: opposite head separation side {side_separation:.4} m, front/rear {front_separation:.4} m")
+    print("enemy presentation: windup grip height {high.y:.3} m, club up {axis.y:.3}")
+    # The enemy reader uses those segments and de-duplicates the four samples by swing id.
+    enemies.clear()
+    e = spawn_enemy(.blue_bokoblin, vec3(0, 0, 0))
+    enemies[e].state = .chase
+    enemies[e].alert = 1.0
+    h = PHit(vec3(0, 1, 0), vec3(0, 1, -2), vec3(0, 0, 1), 5.0, 4.0, false, 101, vec3(-0.5, 1, 0), vec3(0.5, 1, 0))
+    miss = h
+    miss.grip.z = 1.0
+    miss.tip.z = 1.0
+    player_hits = [miss]
+    enemies_take_hits()
+    assert(enemies[e].hp == 72.0 and enemies[e].last_swing == -1, "wide blade must not damage enemy")
+    player_hits = [h, h, h, h]
+    enemies_take_hits()
+    assert(enemies[e].hp == 67.0 and enemies[e].state == .stagger, "one hit per swing")
+    assert(enemies[e].impact_t > 0.0, "landed blow starts flinch")
+    enemies[e].t = 0.3
+    assert(enemy_opening(enemies[e]), "visible follow-up opening")
+    h.id += 1
+    player_hits = [h]
+    enemies_take_hits()
+    assert(enemies[e].hp == 59.5, "stagger opening grants 1.5x damage")
+    h.id += 1
+    h.knock = 5.0
+    h.finisher = true
+    h.stop = 0.11
+    player_hits = [h]
+    enemies_take_hits()
+    assert(enemies[e].state == .knocked, "finisher knocks enemy down")
+    assert(enemy_events[enemy_events.len() - 1].kind == "enemy_hit_big" and enemy_events[enemy_events.len() - 1].stop >= 0.11, "finisher carries heavy impact and hit-stop")
+    # Holding and releasing a one-hander enters the same charged spin action.
+    pl = Player(pos = vec3(0, 0, 0))
+    fight = Fight(act = .swing, t = 0.51, weapon_out = true)
+    act = Actions(attack_held = true)
+    combat_update(DT, enemy_pos, 0)
+    assert(fight.act == .charge, "one-hander can charge")
+    fight.t = 0.8
+    act = Actions()
+    combat_update(DT, enemy_pos, 0)
+    assert(fight.act == .spin and fight.charge > 0.8, "charged release spins")
+    assert(worst_tip < 0.002, "collision tip matches visible socket")
+    stalk_drawn_checks()
+    print("combat geometry PASS: {checks} swing frames, worst visible-tip error {worst_tip:.6} m")
+
+# A real posed weapon drives both torso detachment and grounded-skull destruction.
+stalk_drawn_checks = ():
+    loop mut c in colliders: c.active = false
+    enemies.clear()
+    eanims.clear()
+    inv = Inventory()
+    inv_add("travelers_sword")
+    pl = Player(pos = vec3(0, 0, 0))
+    e = spawn_enemy(.stalkoblin, vec3(0, 0, -1.25))
+    enemies[e].alert = 1.0
+    popped = false
+    loop frame in [0..60):
+        fight = Fight(act = .swing, t = f64(frame)/120.0, weapon_out = true, swing_id = 700)
+        # Production clears its per-frame contacts before posing the current swing.
+        player_hits.clear()
+        blade_hits(item("travelers_sword"), 1.0/120.0, 3.0, 2.0)
+        hero_animate(1.0/120.0, 0.0)
+        hero_blade_hits()
+        enemies_take_hits()
+        if enemies[e].skull_out:
+            popped = true
+            break
+    assert(popped and enemy_alive(enemies[e]), "drawn sword contact detaches live Stalkbonk skull")
+    enemies[e].pos = vec3(8, 0, 0)
+    enemies[e].skull_pos = vec3(0, 0.29, -1.1)
+    enemies[e].skull_roll = 1.7
+    enemy_anim_update(1.0/60.0)
+    head = bone_index(boko_m, "Head")
+    centre = inverse(boko_m.ibm[head])[3].xyz + vec3(0, 0.11, 0.025)
+    drawn = transform_point(stalk_skull_draw_transform(e) * bone_world(boko_m, eanims[e].skin, head) * boko_m.ibm[head], centre)
+    error = f64(length(drawn-enemies[e].skull_pos))
+    assert(error < 0.001, "detached skull drawn centre equals its physical hit target")
+    touched = false
+    loop action in [Act.swing, Act.spin, Act.jump_attack]:
+        loop combo in [0..3):
+            loop frame in [0..120):
+                if touched: break
+                fight = Fight(act = action, combo = combo, t = f64(frame)/120.0, charge = 1.0, weapon_out = true, swing_id = 701)
+                player_hits.clear()
+                blade_hits(item("travelers_sword"), 1.0/120.0, 3.0, 2.0)
+                hero_animate(1.0/120.0, 0.0)
+                hero_blade_hits()
+                enemies_take_hits()
+                if enemies[e].state == .dead: touched = true
+    assert(touched, "drawn weapon contact destroys grounded skull and collapses body")
+    print("Stalkbonk drawn-contact PASS: sword pops skull, grounded skull struck by posed weapon; draw/physics centre error={error:.6}m")

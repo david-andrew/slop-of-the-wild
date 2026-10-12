@@ -1,0 +1,1129 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'shader_load.jo'
+
+# Terrain: a heightfield (2 m between samples) drawn with CDLOD — a quadtree of grid patches
+# whose vertices morph smoothly into the coarser level, all in one instanced draw.
+
+const TGRID = 32                # quads per side of a patch
+
+struct Heightfield:
+    n = 0
+    cell = 2.0
+    x0 = 0.0
+    z0 = 0.0
+    h: f32[]
+    mat: u8[]                   # RGBA per sample: meadow, rock, snow, dirt/path (0..255)
+    hmin: f32[]                 # min/max per 64x64-sample block (culling)
+    hmax: f32[]
+
+hf = Heightfield()
+
+hf_sample = (x: int, z: int) -> f64:
+    xi = clamp(x, 0, hf.n - 1)
+    zi = clamp(z, 0, hf.n - 1)
+    f64(hf.h[zi * hf.n + xi])
+
+# bilinear height at a world position
+height_at = (x: f64, z: f64) -> f64:
+    fx = (x - hf.x0) / hf.cell
+    fz = (z - hf.z0) / hf.cell
+    ix = int(floor(fx))
+    iz = int(floor(fz))
+    tx = fx - f64(ix)
+    tz = fz - f64(iz)
+    a = hf_sample(ix, iz)
+    b = hf_sample(ix + 1, iz)
+    c = hf_sample(ix, iz + 1)
+    d = hf_sample(ix + 1, iz + 1)
+    (a * (1.0 - tx) + b * tx) * (1.0 - tz) + (c * (1.0 - tx) + d * tx) * tz
+
+normal_at = (x: f64, z: f64) -> vec3:
+    e = hf.cell
+    dx = height_at(x - e, z) - height_at(x + e, z)
+    dz = height_at(x, z - e) - height_at(x, z + e)
+    normalize(v3(dx, 2.0 * e, dz))
+
+in_bounds = (x: f64, z: f64) -> bool:
+    x > hf.x0 and z > hf.z0 and x < hf.x0 + hf.cell * f64(hf.n - 1) and z < hf.z0 + hf.cell * f64(hf.n - 1)
+
+# Shared meadow habitat: concave ground holds moisture, exposed convex crests dry
+# out. Two noise scales make irregular swathes and clearings within each hollow.
+# Baked into the normal map's unused alpha: grass and ground need no extra reads.
+meadow_habitat = (x: f64, z: f64) -> f64:
+    h = height_at(x, z)
+    bowl = (height_at(x - 18.0, z) + height_at(x + 18.0, z) + height_at(x, z - 18.0) + height_at(x, z + 18.0)) * 0.25 - h
+    swath = noise(x * 0.025 + 7.0, z * 0.025 + 3.0)
+    clearing = noise(x * 0.008 + 13.0, z * 0.008 - 5.0)
+    habitat = 0.48 + (swath - 0.5) * 0.95 + (clearing - 0.5) * 0.65 + clamp(bowl * 0.14, -0.3, 0.3)
+    # The Temple's open shoulders have long damp hollows and dry upper lawns.
+    # Compose broad value masses in the existing baked channel, not extra
+    # fragment noise. Feather the region before it reaches the overlook/woods.
+    temple = smoothstep(1875.0, 1930.0, z) * (1.0 - smoothstep(2120.0, 2190.0, z))
+    temple *= smoothstep(-1030.0, -985.0, x) * (1.0 - smoothstep(-705.0, -655.0, x))
+    if temple > 0.0:
+        bend = (clearing - 0.5) * 28.0
+        west = 1.0 - smoothstep(14.0, 46.0, abs(x + 938.0 + (z - 2000.0) * 0.24 + bend))
+        east = 1.0 - smoothstep(10.0, 32.0, abs(x + 752.0 - (z - 1990.0) * 0.32 - bend))
+        habitat = lerp(habitat, 0.20 + max(west, east) * 0.72 + (swath - 0.5) * 0.22, temple * 0.85)
+    clamp(habitat, 0.0, 1.0)
+
+# material weights at a world position (nearest sample): meadow, rock, snow, path
+material_at = (x: f64, z: f64) -> vec4:
+    xi = clamp(int(round((x - hf.x0) / hf.cell)), 0, hf.n - 1)
+    zi = clamp(int(round((z - hf.z0) / hf.cell)), 0, hf.n - 1)
+    k = (zi * hf.n + xi) * 4
+    vec4(f32(hf.mat[k]) / 255.0, f32(hf.mat[k + 1]) / 255.0, f32(hf.mat[k + 2]) / 255.0, f32(hf.mat[k + 3]) / 255.0)
+
+# ---------------- GPU side ----------------
+struct GridV:
+    pos: vec2
+
+struct TNode:
+    offs: vec4          # x0, z0, size, unused
+    morph: vec2         # distances where morphing starts and ends
+
+struct TerrU:
+    vp: mat4
+    cam: vec3
+    origin: vec2        # world x, z of sample (0, 0)
+    cell: f32
+    nsamp: f32
+    heights: Texture
+    normals: Texture
+    mats: Texture
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    falloff: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+    time: f32
+    wet: f32
+    snow_line: f32
+    burn: Texture       # scorch / cut grass map (r: burnt, g: cut, b: heat of a fire close by, a: paved: no grass)
+    shadow_pass: f32
+    lp = vec4(0, 0, 0, 0)
+    lc = vec3(0, 0, 0)
+    clouds = 0.0
+    water = Texture(0, 1, 1)     # supported water surface level (-10000: none)
+    has_water = 0.0
+    canopy = Texture(0, 1, 1)    # where tree crowns stand (r), for their shade past the shadow maps
+    has_canopy = 0.0
+    noise = Texture(0, 1, 1)      # exact integer hash lattice; never filtered or mipmapped
+
+struct TerrO:
+    pos: vec4
+    world: vec3
+    uv: vec2
+
+# the cold region's edge, pushed in and out by tens of meters (the snow, the bare tundra and the
+# grass all read the material map through this, so they agree): drifts and tongues, not a contour
+cold_uv = (uv: vec2, xz: vec2, size: f32) -> vec2:
+    # Wind-combed tongues at the margin, rather than broad round snow lobes.
+    q = vec2(xz.x * 0.8 + xz.y * 0.6, xz.y * 0.8 - xz.x * 0.6)
+    uv + (vec2(fbm3(q * vec2(0.020, 0.006)), fbm3(q * vec2(0.014, 0.008) + vec2(7.0, 3.0))) - vec2(0.5, 0.5)) * (64.0 / size)
+
+terr_height = (u: TerrU, xz: vec2) -> f32:
+    t = (xz - u.origin) / u.cell
+    glsl_fetch(u.heights, int(t.x + 0.5), int(t.y + 0.5)).x
+
+terrain_vs = (v: GridV, n: TNode, u: TerrU) -> TerrO:
+    size = n.offs.z
+    g = v.pos * 32.0
+    p = n.offs.xy + v.pos * size
+    h0 = terr_height(u, p)
+    d = length(vec3(p.x, h0, p.y) - u.cam)
+    m = clamp((d - n.morph.x) / (n.morph.y - n.morph.x), 0.0, 1.0)
+    odd = fract(g * 0.5) * 2.0
+    gm = g - odd * m
+    p = n.offs.xy + gm / 32.0 * size
+    h = terr_height(u, p)
+    w = vec3(p.x, h, p.y)
+    # far cliffs: buttresses and recesses pushed in and out of the face, so a rim reads as rock,
+    # not a smooth wall (only far off: up close the face is where Link's hands are)
+    far = smoothstep(28.0, 90.0, d)
+    if far > 0.0:
+        e = u.cell * 2.0
+        gx = (terr_height(u, p + vec2(e, 0)) - terr_height(u, p - vec2(e, 0))) / (2.0 * e)
+        gz = (terr_height(u, p + vec2(0, e)) - terr_height(u, p - vec2(0, e))) / (2.0 * e)
+        gl = length(vec2(gx, gz))
+        steep = smoothstep(1.0, 2.2, gl)
+        if steep > 0.0:
+            out = vec2(-gx, -gz) / max(gl, 0.001)
+            # (great buttresses tens of meters across, smaller ribs on them, and the odd overhang near the top)
+            bump = vnoise(vec2((p.x + p.y) * 0.018, h * 0.012)) * 0.55 + vnoise(vec2((p.x + p.y) * 0.07, h * 0.05)) * 0.3 + vnoise(vec2((p.x - p.y) * 0.2, h * 0.15)) * 0.15 - 0.5
+            # Uneven beds make broad shelves in the silhouette, using the existing rib field.
+            bed = fract(h * (0.067 + bump * 0.024) + bump * 1.8)
+            shelf = smoothstep(0.48, 0.78, bed) - smoothstep(0.84, 0.99, bed)
+            # The authored mouth owns its overhang. Displacing nearby turf
+            # sideways had left a lone green triangle across its seated jamb.
+            w = w + vec3(out.x, 0.0, out.y) * ((bump * 24.0 + shelf * (1.0 + bump * 2.0)) * steep * far * (1.0-cave_cliff_cover(w)))
+    TerrO(u.vp * vec4(w, 1), w, (p - u.origin) / (u.cell * u.nsamp))
+
+# The west skin and its exposed shoulders share this finish. Keep the
+# established material on other rim walls and the Resurrection host cliff.
+west_rock_cover = (w: vec3) -> f32:
+    if w.x < -1660.0 or w.x > -1230.0 or w.z < 1540.0 or w.z > 2010.0: return 0.0
+    smoothstep(-1660.0, -1600.0, w.x) * (1.0 - smoothstep(-1310.0, -1230.0, w.x)) * smoothstep(1540.0, 1600.0, w.z) * (1.0 - smoothstep(1950.0, 2010.0, w.z))
+
+# rock: layered strata, warm and cool bands, with painterly breakup
+# the strata coordinate: beds a meter or two thick, gently warped and tilted
+__rim_strata = (w: vec3) -> f32:
+    # beds of uneven thickness, warped broadly across the face
+    # (and bent along the face itself: beds that dip, swell and pinch out, not ruled lines)
+    y = w.y * 0.18 + fbm3(w.xz * 0.004) * 9.0 + fbm3(w.xz * 0.03) * 2.4 + w.x * 0.018 + vnoise(vec2((w.x + w.z) * 0.035, w.y * 0.037)) * 3.5
+    y + sin(y * 1.9) * 0.3
+
+__rim_rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
+    mouth = cave_cliff_cover(w)
+    if mouth >= 0.999: return cave_weathered_stone(w)
+    # Broad beds retain their warm/cool separation across the rim at overlook distances.
+    s = __rim_strata(w)
+    side = vec2(w.x + w.z, w.y)
+    # Warm pale beds alternate with cooler weathered layers, softened in the far haze.
+    tone = lerp(vnoise(vec2(s, 3.0)), 0.5, smoothstep(180.0, 900.0, dist) * 0.55)
+    c = mix(vec3(0.24, 0.27, 0.255), vec3(0.42, 0.415, 0.355), tone)
+    # painted across the whole face in big washes: ochre where iron stains it, cool grey-blue,
+    # and green-grey where moss and lichen hold
+    big = fbm3(vec2(side.x * 0.006, side.y * 0.01))
+    big2 = fbm3(vec2(side.x * 0.011 + 31.0, side.y * 0.017))
+    c = mix(c, vec3(0.43, 0.365, 0.265), smoothstep(0.55, 0.78, big) * 0.42)
+    c = mix(c, vec3(0.21, 0.265, 0.285), smoothstep(0.48, 0.22, big) * 0.70)
+    c = mix(c, vec3(0.235, 0.29, 0.205), smoothstep(0.53, 0.77, big2) * 0.55)
+    # tall facets: each joint-bounded column of rock a little lighter or darker
+    col = floor(side.x * 0.22 + vnoise(vec2(side.x * 0.04, side.y * 0.02)) * 3.0)
+    c = c * (0.94 + 0.12 * hash12(vec2(col, floor(w.y * 0.07))))
+    # vertical washes: tall soft streaks, and broad bays of warmer and greyer rock across the face
+    c = c * (0.76 + 0.38 * vnoise(vec2(side.x * 0.045 + w.y * 0.008, w.y * 0.012)))
+    bay = vnoise(vec2(side.x * 0.012, w.y * 0.008) + vec2(4.0, 1.0))
+    c = mix(c, c * vec3(1.12, 1.0, 0.84), smoothstep(0.55, 0.8, bay) * 0.6)
+    c = mix(c, c * vec3(0.72, 0.84, 0.94), smoothstep(0.48, 0.23, bay) * 0.7)
+    # cracks along the joints and the odd bedding seam: up close only
+    near = 1.0 - smoothstep(25.0, 90.0, dist)
+    if near > 0.0:
+        jx = fract(side.x * 0.22 + vnoise(vec2(side.x * 0.04, side.y * 0.02)) * 3.0)
+        crack = (smoothstep(0.05, 0.0, jx) + smoothstep(0.95, 1.0, jx)) * near
+        f = fract(s)
+        seam = smoothstep(0.04, 0.0, f) * near * 0.5
+        # Smooth warped pigment pools along the existing joints and bedding seams.
+        # Interpolate the lattice: a cell hash leaves hard rectangular flecks.
+        dq = vec2(side.x * 0.8 - side.y * 0.6, side.x * 0.6 + side.y * 0.8)
+        warp = vnoise(dq * 0.4 + vec2(5.0, 11.0))
+        dry = vnoise(dq * vec2(2.4, 5.5) + vec2(warp * 2.0, warp))
+        c = c * (1.0 - crack * (0.14 + dry * 0.14)) * (1.0 - seam * (0.10 + dry * 0.12))
+    # up close the stone itself: mottled grey and brown in patches a meter or two across, a
+    # fine grain, and spots of pale lichen
+    if near > 0.0:
+        mot = vnoise(side * 0.35 + vec2(w.y * 0.05, 0.0))
+        c = mix(c, vec3(luma(c), luma(c), luma(c)) * vec3(0.97, 0.97, 1.0), near * 0.3)
+        c = mix(c, c * vec3(0.84, 0.86, 0.92), smoothstep(0.42, 0.66, mot) * near * 0.8)
+        c = mix(c, c * vec3(1.08, 0.98, 0.86), smoothstep(0.6, 0.35, mot) * near * 0.5)
+        # Broad slanted mineral strokes instead of the meadow's rounded tooth.
+        dry = vnoise(vec2(side.x * 0.65 + side.y * 0.3, side.y * 2.1))
+        c = c * (1.0 + near * (smoothstep(0.25, 0.72, dry) - 0.5) * 0.25)
+        lich = smoothstep(0.78, 0.86, vnoise(side * 2.7 + vec2(13.0, 5.0))) * smoothstep(0.45, 0.6, mot) * near
+        c = mix(c, vec3(0.55, 0.57, 0.48), lich * 0.35)
+    # the ledges: a dark undercut beneath each lip and the lip's sunlit top edge
+    s2 = s * 0.5
+    f2 = fract(s2)
+    lg = smoothstep(0.35, 0.7, big2) * step(0.5, hash12(vec2(floor(s2), 7.0))) * (1.0 - smoothstep(150.0, 500.0, dist) * 0.6)
+    c = c * (1.0 - lg * 0.24 * smoothstep(0.45, 0.88, f2) * (1.0 - smoothstep(0.9, 0.93, f2)))
+    c = c * (1.0 + lg * 0.14 * smoothstep(0.93, 0.99, f2))
+    c = c * (0.92 + 0.16 * fbm3(side * 0.3))
+    # stains running down the face where water seeps: dark streaks and green-grey moss trails
+    streak = smoothstep(0.50, 0.78, vnoise(vec2(side.x * 0.085 + w.y * 0.009, w.y * 0.023)))
+    c = mix(c, c * 0.60, streak * 0.65)
+    c = mix(c, vec3(0.2, 0.25, 0.14), smoothstep(0.64, 0.86, vnoise(vec2(side.x * 0.09 + 7.0, w.y * 0.042))) * 0.4)
+    # moss and grass on ledges facing up
+    mossk = smoothstep(0.5, 0.85, n.y)
+    if mossk > 0.0: mossk = mossk * smoothstep(0.3, 0.65, fbm3(w.xz * 0.08))
+    c = mix(c, vec3(0.26, 0.38, 0.15), mossk * 0.8)
+    if mouth > 0.0: c = mix(c,cave_weathered_stone(w),mouth)
+    c
+
+# One bedding field for the cliff skin, exposed heightfield and ordinary ribs.
+# Long dips cross neighbouring planes; pigment never changes at a hash-cell edge.
+__strata = (w: vec3) -> f32:
+    bend = vnoise(w.xz * 0.018 + vec2(7.0, 3.0))
+    w.y * 0.105 + w.x * 0.008 + w.z * 0.012 + bend * 1.8
+
+__canyon_rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
+    mouth = cave_cliff_cover(w)
+    if mouth >= 0.999: return cave_weathered_stone(w)
+    s = __strata(w)
+    # Mineral changes are close in value. The light and actual recesses carry
+    # the large value masses, instead of pale masks painted over a dark base.
+    bed = vnoise(vec2(s, 3.0))
+    wash = vnoise(vec2(w.z + w.x * 0.28, w.y) * vec2(0.026, 0.008))
+    c = mix(vec3(0.205, 0.225, 0.23), vec3(0.285, 0.28, 0.26), bed * 0.70 + wash * 0.30)
+    near = 1.0 - smoothstep(70.0, 240.0, dist)
+    # Broad changes of mineral follow bedding, while actual ledges own the
+    # narrow seams. Repeated procedural outlines would rule every flat plane.
+    # Sparse brush tooth remains subordinate to the planes; no lichen flecks
+    # or green seep trails on vertical stone.
+    grain = vnoise(vec2(w.z + w.x * 0.28 + w.y * 0.16, w.y) * vec2(0.10, 0.21))
+    c = c * (0.96 + grain * 0.08 * near)
+    moss = smoothstep(0.62, 0.88, n.y) * smoothstep(0.38, 0.73, wash)
+    c = mix(c, vec3(0.22, 0.295, 0.13), moss * 0.65)
+    if mouth > 0.0: c = mix(c, cave_weathered_stone(w), mouth)
+    c
+
+rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
+    cover = west_rock_cover(w)
+    if cover <= 0.0: return __rim_rock_color(w, n, dist)
+    c = __canyon_rock_color(w, n, dist)
+    if cover >= 0.999: return c
+    mix(__rim_rock_color(w, n, dist), c, cover)
+
+# Three field-scale pigments share the blade shader's existing noise budget.
+# The 25–80 m washes stay legible beyond the grass LOD; fine strokes only give
+# their edges a painted tooth. Dry seed grass, lush turf and cool clover recur
+# within each broad meadow instead of collapsing to one averaged green.
+meadow_color = (w: vec3, t: f32) -> vec3:
+    big = fbm3(w.xz * 0.012)
+    mid = fbm3(w.xz * 0.038 + vec2(4.0, 9.0))
+    ang = vnoise(w.xz * 0.01) * 3.0
+    dir = vec2(cos(ang), sin(ang))
+    q = vec2(dot(w.xz, dir), dot(w.xz, vec2(-dir.y, dir.x)))
+    stroke = vnoise(q * vec2(0.15, 1.1))
+    lush = vec3(0.21, 0.355, 0.13)
+    dry = vec3(0.49, 0.435, 0.235)
+    deep = vec3(0.12, 0.265, 0.145)
+    c = mix(lush, dry, smoothstep(0.40, 0.66, big) * 0.90)
+    c = mix(c, deep, smoothstep(0.46, 0.72, mid) * 0.65)
+    hue = fbm3(w.xz * 0.018 + vec2(17.0, 3.0))
+    c = mix(c, vec3(0.18, 0.325, 0.185), smoothstep(0.52, 0.69, hue) * 0.75)
+    c = mix(c, vec3(0.43, 0.38, 0.215), smoothstep(0.41, 0.26, hue) * 0.55)
+    c * (0.86 + 0.14 * stroke)
+
+# Shared pigment response for turf and blades: warm sun-facing paint, violet
+# sky-facing shade during the low warm sun. The daylight light handover stays smooth.
+low_sun_turf = (c: vec3, n: vec3, l: vec3, sun: vec3, sh: f32, cover: f32) -> vec3:
+    low = (1.0-smoothstep(0.18,0.48,l.y)) * smoothstep(0.01,0.055,l.y)
+    low = low * smoothstep(0.03,0.22,luma(sun)) * smoothstep(1.03,1.25,sun.x/max(sun.z,0.01)) * cover
+    lit = smoothstep(-0.05,0.10,dot(n,l)) * sh
+    value = luma(c)
+    shade = mix(c*vec3(0.84,0.78,1.08),value*vec3(0.87,0.80,1.18),0.36)
+    warm = c*vec3(1.20,1.02,0.81)
+    mix(c,mix(shade,warm,lit),low*0.78)
+
+# (mc: the meadow's color here, sn: how much snow lies here; both computed once by the caller)
+terrain_albedo = (w: vec3, n: vec3, mt: vec4, u: TerrU, mc: vec3, sn: f32, rockk: f32, sc: vec3) -> vec3:
+    # Full snow covers this entire material stack. Keep the exact original blend.
+    if sn >= 1.0: return sc
+    c = mc
+    # Fully rock-covered pixels never reveal the underlying meadow/litter/road.
+    if rockk < 1.0:
+        # between the grass's tufts (the same noise grass.jo thins them with) the earth shows, close by
+        near = 1.0 - smoothstep(30.0, 60.0, length(w - u.cam))
+        if near > 0.0:
+            tuft = vnoise(w.xz * 0.42 + vec2(3.0, 11.0)) * 0.6 + vnoise(w.xz * 0.11 + vec2(1.0, 4.0)) * 0.4
+            gap = (1.0 - smoothstep(0.22, 0.6, tuft)) * near
+            c = mix(c, mix(vec3(0.3, 0.27, 0.17), mc * 0.7, 0.4) * (0.92 + 0.16 * vnoise(w.xz * 0.12)), gap * 0.55)
+        # Only paint materials that contribute here; all blends retain their original weights.
+        road = smoothstep(0.08, 0.67, mt.w) * smoothstep(0.62, 0.85, n.y)
+        if road > 0.0:
+            dirt = mix(vec3(0.38, 0.30, 0.205), vec3(0.50, 0.425, 0.305), vnoise(w.xz * 0.055))
+            c = mix(c, dirt, road)
+    # in the cold region the ground the wind lays bare is rock and dun tundra, not meadow
+    cold = clamp(mt.z + smoothstep(u.snow_line, u.snow_line + 60.0, w.y), 0.0, 1.0)
+    # (the rock is costly to paint: only where there is some)
+    if rockk > 0.003 or cold > 0.003:
+        # Flat thaw earth only needs a quiet mineral base beneath its broad
+        # wet/dry masses. Detailed rock shading belongs to actual rock cover.
+        rc = vec3(0.255,0.265,0.26)
+        if rockk > 0.003: rc = rock_color(w, n, length(w - u.cam))
+        c = mix(c, rc, rockk)
+        if cold > 0.003:
+            # (dark rock and frozen earth where the snow is blown off; lichen, not moss, on the ledges)
+            coldr = vec3(luma(rc), luma(rc), luma(rc)) * vec3(1.0, 0.97, 0.93)
+            # Thaw water collects below the drifts; windward shoulders hold dry
+            # grass and scree. These 20--60 m masses remain visible in the overview.
+            thaw = vnoise(w.xz * vec2(0.022, 0.035) + vec2(9.0, 4.0))
+            earth = mix(vec3(0.145, 0.155, 0.15), vec3(0.29, 0.265, 0.205), smoothstep(0.34, 0.68, thaw))
+            scree = smoothstep(0.96, 0.68, n.y) * 0.75 + smoothstep(0.62, 0.84, thaw) * 0.40
+            tundra = mix(earth, coldr * vec3(0.90, 0.94, 1.0), clamp(scree, 0.0, 1.0))
+            dry = smoothstep(0.58, 0.26, cold) * smoothstep(0.30, 0.66, thaw) * smoothstep(0.72, 0.94, n.y)
+            tundra = mix(tundra, vec3(0.38, 0.335, 0.205), dry * 0.8)
+            c = mix(c, tundra, smoothstep(0.015, 0.42, cold) * 0.95)
+    # Snow is applied once, after turf/litter in terrain_fs_surface. Applying
+    # it here too whitened half-covered ground to three-quarter coverage.
+    c
+
+# how much snow lies here: the cold region, thinner on steep ground, rock breaking through
+# on ridges and in wind-scoured patches
+snow_amount = (w: vec3, n: vec3, mt: vec4, u: TerrU) -> f32:
+    sn = clamp(mt.z + smoothstep(u.snow_line, u.snow_line + 60.0, w.y), 0.0, 1.0)
+    if sn <= 0.0: return 0.0
+    # (the region's edge broken into drifts and tongues of snow and bare patches, not a contour;
+    # only inside it)
+    # Close drifts retain a readable edge; at overlook distances broaden the mixed
+    # snow/scree margin so it does not become a white cut-out on the mountain.
+    margin = 0.08 + smoothstep(70.0, 380.0, length(w - u.cam)) * 0.03
+    sn = smoothstep(0.28 - margin, 0.72 + margin, sn + (fbm3(w.xz * vec2(0.035, 0.009) + vec2(9.0, 4.0)) - 0.5) * 0.35 + (vnoise(w.xz * vec2(0.065, 0.035)) - 0.5) * 0.24) * smoothstep(0.0, 0.2, sn)
+    sn = sn * smoothstep(0.45, 0.75, n.y + sn * 0.25)
+    if sn <= 0.0: return 0.0
+    # bared by the wind on ridges and steeps, the edge broken into tongues and patches
+    scour = fbm3(w.xz * 0.03 + vec2(3.0, 7.0)) * 0.7 + fbm3(w.xz * 0.15) * 0.3 + (n.y - 0.85) * 1.5
+    # (a ragged edge up close; far off a broad thinning band, not a cut-out)
+    # Wind strips the raised bedding on Hylia's upper faces. Broad dark bands remain
+    # legible from the plateau; snow gathers on the gentler ledges above them.
+    hylia = smoothstep(210.0, 285.0, w.y) * (1.0 - smoothstep(290.0, 460.0, length(w.xz - vec2(-1288.0, 2221.0))))
+    # Local crags interrupt the broad face, rather than horizontal contour bands.
+    crag = vnoise(w.xz * vec2(0.045, 0.022) + vec2(w.y * 0.016, scour * 2.0))
+    windward = dot(n.xz, vec2(0.8, 0.6))
+    band = smoothstep(0.34, 0.67, crag + windward * 0.32)
+    exposed = hylia * band * smoothstep(0.995, 0.78, n.y)
+    # Snow packs into lee pockets, while windward rock shoulders stay exposed.
+    sn = min(1.0, sn + hylia * smoothstep(0.05, -0.35, windward) * crag * 0.14)
+    # Windward hummocks show through the mixed margin; sheltered hollows retain drifts.
+    # Shelter only changes the mixed boundary; the established deep snow stays continuous.
+    lee = dot(n.xz, vec2(-0.8, -0.6)) * 0.12 + mt.x * 0.06
+    margin_scour = (1.0 - smoothstep(0.55, 0.95, mt.z)) * smoothstep(0.86, 0.62, n.y + lee)
+    edge = 1.0 - smoothstep(0.55, 0.97, mt.z)
+    sn * smoothstep(0.14 + edge * 0.12, 0.40 + edge * 0.24 + margin_scour * 0.16, scour) * (1.0 - exposed * 0.84)
+
+# Snow at three brush scales: blue drift hollows, wind-combed sastrugi and fine chalk grain.
+# The long ridges bend with the drift field, avoiding straight contour stripes.
+snow_color = (w: vec3) -> vec3:
+    q = vec2(w.x * 0.8 + w.z * 0.35, w.z * 0.8 - w.x * 0.35)
+    drift = vnoise(q * vec2(0.018, 0.035))
+    bend = vnoise(q * vec2(0.035, 0.07))
+    ridge = vnoise(q * vec2(0.06, 0.55) + vec2(bend * 1.5, drift * 2.0))
+    lee = smoothstep(0.42, 0.76, ridge)
+    brush = vnoise(q * vec2(0.16, 1.1) + vec2(drift * 4.0, bend * 2.0))
+    grain = vnoise(q * vec2(0.3, 0.8))
+    c = mix(vec3(0.39, 0.45, 0.59), vec3(0.78, 0.77, 0.73), smoothstep(0.22, 0.78, drift))
+    c = mix(c, c * vec3(0.76, 0.83, 0.98), lee * 0.48)
+    c * (0.88 + 0.18 * brush + 0.04 * grain)
+
+# the rock's relief: faceted columns between vertical joints, lumpy at a meter
+__rock_h = (w: vec3) -> f32:
+    side = vec2(w.x + w.z, w.y)
+    # tall facets between the joints, each leaning its own way; a faint step at the beds; lumps
+    jx = side.x * 0.22 + vnoise(vec2(side.x * 0.04, side.y * 0.02)) * 3.0
+    # (eased to nothing at the joints: a groove there, not a cliff the light draws as a black line)
+    fj = fract(jx)
+    facet = fj * (hash12(vec2(floor(jx), 1.0)) - 0.5) * 1.2 * smoothstep(1.0, 0.85, fj)
+    # some of the thicker beds end in a ledge: a lip standing out over a deep undercut (every
+    # several meters, irregularly)
+    st = __rim_strata(w) * 0.5
+    f = fract(st)
+    lg = step(0.5, hash12(vec2(floor(st), 7.0)))
+    lip = lg * (smoothstep(0.87, 0.98, f) * 0.22 - smoothstep(0.4, 0.9, f) * 0.14)
+    facet + lip + fbm3(side * 0.5) * 0.4
+
+rock_normal = (w: vec3, n: vec3) -> vec3:
+    t1 = normalize(cross(n, vec3(0, 1, 0)) + vec3(0.0001, 0, 0))
+    t2 = cross(t1, n)
+    e = 0.2
+    h0 = __rock_h(w)
+    h1 = __rock_h(w + t1 * e)
+    h2 = __rock_h(w + t2 * e)
+    normalize(n - t1 * ((h1 - h0) / e) * 0.9 - t2 * ((h2 - h0) / e) * 0.9)
+
+# Broad shoulders and recesses; only a low-frequency normal response is added
+# to heightfield stone. The authored skin already has its own geometric relief.
+__face_h = (w: vec3) -> f32:
+    cover = west_rock_cover(w)
+    if cover >= 0.999: return vnoise(vec2((w.x + w.z) * 0.032 + w.y * 0.006, w.y * 0.005)) * 12.0
+    sx = w.x + w.z
+    rim = vnoise(vec2(sx * 0.055 + w.y * 0.010, w.y * 0.012)) * 9.0 + vnoise(vec2(sx * 0.12 + 3.0, w.y * 0.055)) * 1.5
+    if cover <= 0.0: return rim
+    lerp(rim, vnoise(vec2(sx * 0.032 + w.y * 0.006, w.y * 0.005)) * 12.0, cover)
+
+face_normal = (w: vec3, n: vec3, h0: f32) -> vec3:
+    t1 = normalize(cross(n, vec3(0, 1, 0)) + vec3(0.0001, 0, 0))
+    t2 = cross(t1, n)
+    e = 1.0
+    h1 = __face_h(w + t1 * e)
+    h2 = __face_h(w + t2 * e)
+    normalize(n - t1 * ((h1 - h0) / e) - t2 * ((h2 - h0) / e))
+
+# Relief follows the same wind axes, with world-space differences for an accurate slope.
+# Irregular combed ridges avoid periodic bands and remain soft across whole slopes.
+snow_normal = (w: vec3, n: vec3) -> vec3:
+    q = vec2(w.x * 0.8 + w.z * 0.35, w.z * 0.8 - w.x * 0.35)
+    h0 = vnoise(q * vec2(0.13, 1.7)) * 0.04 + vnoise(q * vec2(0.025, 0.065)) * 0.6
+    qx = q + vec2(0.4, -0.175)
+    qz = q + vec2(0.175, 0.4)
+    hx = vnoise(qx * vec2(0.13, 1.7)) * 0.04 + vnoise(qx * vec2(0.025, 0.065)) * 0.6
+    hz = vnoise(qz * vec2(0.13, 1.7)) * 0.04 + vnoise(qz * vec2(0.025, 0.065)) * 0.6
+    normalize(n + vec3(h0 - hx, 0.0, h0 - hz) * 2.0)
+
+terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
+    if u.shadow_pass > 0.5: return vec4(1, 1, 1, 1)
+    habitat = sample(u.normals, i.uv)
+    nm = habitat.xyz * 2.0 - vec3(1, 1, 1)
+    n = normalize(nm)
+    # (the smooth normal for where snow lies: the per-triangle one below would cut it into shards)
+    nsm = n
+    # on a near-vertical face the normal map (sampled by x and z) still reads the flat rim above
+    # it: where the triangle itself is much steeper, believe the triangle
+    ng = glsl_facet(i.world)
+    if dot(ng, u.cam - i.world) < 0.0: ng = ng * -1.0
+    if ng.y < 0.0: ng = ng * -1.0
+    n = normalize(mix(n, ng, smoothstep(0.12, 0.35, n.y - ng.y)))
+    mt = sample(u.mats, i.uv)
+    canopy = vec4(0,0,0,0)
+    if u.has_canopy > 0.5:
+        canopy = glsl_lod(u.canopy, i.uv, 0.0)
+        mt = vec4(mt.x * smoothstep(0.05, 0.5, canopy.x), mt.y, mt.z, mt.w)
+    # Ignore the coarse mip's almost-zero filtering tails: they cannot produce visible
+    # snow, but would make warm meadow fragments evaluate both warp noise stacks.
+    # (a blurred read: the edge of the cold region spreads over tens of meters, not a contour)
+    if glsl_lod(u.mats, i.uv, 6.0).z > 0.015: mt = vec4(mt.x, mt.y, glsl_lod(u.mats, cold_uv(i.uv, i.world.xz, u.cell * u.nsamp), 2.5).z, mt.w)
+    # (a near-vertical face is rock: the material map, read straight down, would smear the rim's
+    # meadow and moss down it in stripes)
+    # Distant pigment follows the continuous heightfield normal rather
+    # than large LOD triangles. Fine rock breakup belongs to the close view.
+    coverage_far = smoothstep(80.0,160.0,length(i.world-u.cam))
+    coverage_y = mix(n.y,nsm.y,coverage_far)
+    stp = 1.0 - smoothstep(0.3, 0.55, mix(ng.y,nsm.y,coverage_far))
+    mt = vec4(mt.x * (1.0 - stp), max(mt.y, stp), mt.z, mt.w * (1.0 - stp))
+    w = i.world
+    dist = length(w - u.cam)
+    snk = snow_amount(w, nsm, mt, u)
+    sc = vec3(0, 0, 0)
+    if snk > 0.003: sc = snow_color(w)
+    mc = vec3(0, 0, 0)
+    rag = f32(0.0)
+    if snk < 1.0: rag = fbm3(w.xz * 0.25) - 0.5
+    rockk = clamp(mt.y + smoothstep(mix(0.66,0.54,coverage_far), mix(0.5,0.34,coverage_far), coverage_y + rag * 0.3 * (1.0-coverage_far)), 0.0, 1.0)
+    # The cut's left footing crosses a coarse terrain triangle. Seat that
+    # exposed turf corner in the same stone as its jamb, with a soft outer join.
+    if w.x > -1061.0 and w.x < -1053.0 and w.z > 1838.0 and w.z < 1846.0:
+        footing = (1.0-smoothstep(1.0,3.0,length(w.xz-vec2(-1057,1842))))*smoothstep(249.0,250.0,w.y)
+        rockk = max(rockk,footing)
+        mt = vec4(mt.x,max(mt.y,footing),mt.z,mt.w)
+    bt = sample(u.burn, i.uv)
+    # where grass grows the ground takes its color, so the blades read as a field (the same
+    # rules as grass.jo: not on rock, snow, paths, burnt or steep ground; thinner in forests)
+    slope = length(n.xz) / max(n.y, 0.05)
+    gr = (1.0 - mt.y * 1.6) * (1.0 - mt.z * 4.0) * (1.0 - mt.w * 1.8) * (1.0 - bt.x * 1.5) * (1.0 - smoothstep(0.3, 1.0, mt.x) * 0.85)
+    gr = clamp(gr * 1.3, 0.0, 1.0)
+    if gr > 0.0: gr = gr * (1.0 - smoothstep(0.85, 1.25, slope + rag * 0.5)) * (1.0 - smoothstep(u.snow_line - 30.0, u.snow_line, w.y))
+    if snk < 1.0 and (rockk < 1.0 or gr > 0.0): mc = meadow_color(w, u.time)
+    alb = terrain_albedo(w, n, mt, u, mc, snk, rockk, sc)
+    # Broad lush islands remain visible beyond the blade/flower LOD. Crests are
+    # short, warm turf; sheltered swathes have cooler, deeper green vegetation.
+    mc = mix(mc * vec3(1.20, 1.08, 0.80), mc * vec3(0.75, 0.94, 1.04), habitat.w)
+    alb = mix(alb, mc * (0.79 - habitat.w * 0.12), gr * 0.85)
+    # past where the blades end: the field painted in broad strokes, warm and cool patches
+    farm = smoothstep(35.0, 140.0, length(w - u.cam)) * gr
+    if farm > 0.003 and snk < 1.0:
+        # Wind-combed swathes replace the old static mottling. Four noise reads instead
+        # of nine, no geometry or extra pass; burnt ground still masks the entire layer.
+        q = vec2(w.x * 0.8 + w.z * 0.6, w.z * 0.8 - w.x * 0.6)
+        patch = vnoise(w.xz * 0.009 + vec2(11.0, 2.0))
+        stroke = vnoise(q * vec2(0.028, 0.13) + vec2(patch * 1.5, patch * 2.5))
+        gust = vnoise(q * vec2(0.045, 0.009) - vec2(u.time * 0.13, 0.0))
+        comb = sin(q.y * 0.85 + patch * 8.0 + gust * 2.5) * 0.5 + 0.5
+        tus = vnoise(q * vec2(0.18, 0.55) + vec2(stroke * 2.0, 0.0))
+        alb = alb * (1.0 + farm * ((stroke - 0.5) * 0.14 + (gust - 0.5) * 0.12))
+        alb = mix(alb, alb * vec3(1.26, 1.12, 0.73), farm * smoothstep(0.50, 0.78, patch) * 0.20)
+        alb = mix(alb, alb * vec3(0.78, 0.95, 1.08), farm * smoothstep(0.48, 0.22, patch) * 0.25)
+        alb = alb * (1.0 + farm * ((comb - 0.5) * 0.035 + (tus - 0.5) * 0.10))
+    # Dry shoulders show sparse soil/stone islands between cooler turf gullies.
+    # Reuse the baked moisture field and the near soil noise; no extra texture pass.
+    shoulder = smoothstep(0.96,0.74,nsm.y) * (1.0-rockk) * (1.0-snk) * (1.0-mt.w)
+    if shoulder > 0.01:
+        soil = smoothstep(0.62,0.27,habitat.w) * smoothstep(-0.18,0.22,rag)
+        alb = mix(alb,vec3(0.34,0.30,0.21)*(0.86+habitat.w*0.25),shoulder*soil*0.55)
+        alb = alb * (1.0-shoulder*habitat.w*0.16)
+    # Olive moss, muted ochre litter and warm umber root soil retain their broad
+    # colour separation at a distance instead of converging to one green wash.
+    fo = smoothstep(0.20, 0.80, mt.x)
+    if fo > 0.0 and snk < 1.0:
+        drift = vnoise(w.xz * 0.085 + vec2(3.0,8.0))
+        cushion = vnoise(w.xz * 0.19 + vec2(13.0,2.0))
+        grain = vnoise(w.xz * 0.65)
+        lit_c = mix(vec3(0.24,0.205,0.14),vec3(0.34,0.30,0.21),drift)
+        lit_c = mix(lit_c,vec3(0.16,0.22,0.10)*(0.82+grain*0.34),smoothstep(0.36,0.68,cushion))
+        roots = canopy.y * (0.7+grain*0.3)
+        lit_c = mix(lit_c,vec3(0.16,0.13,0.085)*(0.85+grain*0.3),roots*0.85)
+        # Canopy gaps keep pale new moss and warm leaf litter in their light pools.
+        lit_c = mix(lit_c,lit_c*vec3(1.12,1.10,1.04),1.0-smoothstep(0.2,0.85,canopy.x))
+        nearl = 1.0 - smoothstep(20.0, 45.0, dist)
+        if nearl > 0.0:
+            lq = w.xz * 4.5 + vec2(grain,cushion) * 1.5
+            lc = floor(lq)
+            lh = hash12(lc + vec2(31.0, 7.0))
+            lf = fract(lq) - vec2(0.5, 0.5) - (vec2(lh, hash12(lc + vec2(5.0, 13.0))) - vec2(0.5, 0.5)) * 0.4
+            la = lh * 6.28
+            lr = vec2(lf.x * cos(la) + lf.y * sin(la), lf.y * cos(la) - lf.x * sin(la))
+            leaf = (1.0 - smoothstep(0.2, 0.3, length(lr * vec2(1.0, 1.9)))) * step(0.15, lh)
+            leaf_c = mix(vec3(0.25,0.205,0.135),vec3(0.38,0.32,0.215),hash12(lc+vec2(2.0,9.0)))
+            lit_c = mix(lit_c,leaf_c,leaf*nearl*0.55*(1.0-roots*0.65))
+        alb = mix(alb, lit_c, fo * (1.0-rockk) * 0.93)
+    # (snow lies over all of it)
+    if snk > 0.003: alb = mix(alb, sc, snk)
+    # trampled (cut) grass shows the earth between the stubble
+    alb = mix(alb, vec3(0.3, 0.28, 0.17), bt.y * 0.45)
+    alb = mix(alb, vec3(0.2, 0.14, 0.08), bt.z * 0.4 * (1.0 - bt.x))
+    # bare (no grass grows here: under buildings, round the tower's broken foot): trodden earth and gravel
+    # At the mouth this mask clears grass from seated stone as well as
+    # the walking floor. Do not turn its vertical cliff into beige paving.
+    pave = smoothstep(0.3, 0.9, bt.w) * 0.85 * (1.0-cave_cliff_cover(w)*rockk)
+    if pave > 0.0: alb = mix(alb, mix(vec3(0.34, 0.29, 0.21), vec3(0.42, 0.39, 0.33), vnoise(w.xz * 1.7)), pave)
+    # Match grass stubble: the passing front chars it through the heat channel
+    # before the cell expires and stores its settled burn scar. Same soil as camp char.
+    charred = max(bt.x, bt.z)
+    if charred > 0.01:
+        drift = vnoise(w.xz * 0.65 + vec2(3.0, 1.0))
+        fleck = vnoise(w.xz * 7.0)
+        ragged = vnoise(w.xz * 1.9)
+        be = smoothstep(0.12, 0.58, charred + (ragged - 0.5) * 0.24)
+        chr = mix(vec3(0.035, 0.030, 0.025), vec3(0.12, 0.09, 0.06), drift)
+        hot = smoothstep(0.06, 0.3, bt.z)
+        ash = smoothstep(0.24, 0.64, drift) * (1.0 - hot)
+        chr = mix(chr, mix(vec3(0.19, 0.195, 0.185), vec3(0.30, 0.295, 0.27), fleck), ash)
+        # Broken stems and coal grains interrupt ash islands in the same opaque pass.
+        chr = mix(chr, vec3(0.060, 0.052, 0.040), smoothstep(0.62, 0.86, fleck) * 0.45)
+        alb = mix(alb, chr, be * 0.97)
+    # under water: the bed darkens to silt and weed with depth
+    if u.has_water > 0.5:
+        wt = (w.xz - u.origin) / u.cell
+        wi = floor(wt)
+        wf = wt - wi
+        levels = vec4(glsl_fetch(u.water, int(wi.x), int(wi.y)).x,
+            glsl_fetch(u.water, int(wi.x) + 1, int(wi.y)).x,
+            glsl_fetch(u.water, int(wi.x), int(wi.y) + 1).x,
+            glsl_fetch(u.water, int(wi.x) + 1, int(wi.y) + 1).x)
+        weights = vec4((1.0 - wf.x) * (1.0 - wf.y), wf.x * (1.0 - wf.y), (1.0 - wf.x) * wf.y, wf.x * wf.y)
+        valid = vec4(step(-9000.0, levels.x), step(-9000.0, levels.y), step(-9000.0, levels.z), step(-9000.0, levels.w))
+        coverage = dot(weights, valid)
+        # Only supported, physically wet samples contribute to the surface
+        # level. Shallow damp earth feathers into the actual rendered bed.
+        if coverage > 0.01:
+            # The CPU mask excludes dry fine-grid crests and undrawn quads;
+            # this test also excludes terrain drawn above the actual sheet.
+            wl = dot(levels * valid, weights) / coverage
+            dd = wl - w.y
+            # Entire dry quads can skip the shore/grain noise as well as its
+            # zero blend. The supported surface mask keeps this coherent.
+            if dd > -0.18:
+                fringe = (vnoise(w.xz * 0.6) - 0.5) * 0.25
+                damp = smoothstep(-0.18, 0.55, dd) * smoothstep(0.18, 0.72, coverage + fringe)
+                # The tower's shallow flooded meadow keeps its turf/earth
+                # variation through the transparent sheet. An opaque silt
+                # wash had flattened these lawns into dark geometric patches.
+                tower_apron = 1.0-smoothstep(180.0,400.0,length(w.xz-vec2(-560,1695)))
+                damp *= 1.0-tower_apron*smoothstep(0.75,0.95,n.y)*0.85
+                if damp > 0.001:
+                    bed = mix(vec3(0.20, 0.22, 0.14), vec3(0.04, 0.07, 0.06), smoothstep(0.0, 2.0, dd))
+                    bed = bed * (0.75 + 0.5 * vnoise(w.xz * 0.7))
+                    alb = mix(alb, mix(alb * 0.72, bed, smoothstep(0.55, 0.8, n.y)), damp)
+    # Spray wets the exposed rock shoulders of the west fall even in clear
+    # weather. A narrow uneven wash preserves the stone's painted relief.
+    if w.x > -1502.0 and w.x < -1408.0 and w.z > 1800.0 and w.z < 1848.0 and w.y < 249.0:
+        bank = abs(w.z - 1823.0)
+        wash = (1.0 - smoothstep(13.0, 24.0, bank + (vnoise(w.zy * vec2(0.30, 0.045)) - 0.5) * 4.0)) * rockk
+        alb = mix(alb, alb * vec3(0.54, 0.66, 0.68), wash * 0.72)
+    l = normalize(u.sun_dir)
+    v = normalize(u.cam - w)
+    ndl = dot(n, l)
+    sh = cascade_shadow(w, ndl, u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) * cloud_shade(w.xz, u.time, u.clouds)
+    # past where the shadow maps hold trees (70 m), the woods' shade from the canopy map: looked
+    # up toward the sun at a crown's height
+    if u.has_canopy > 0.5 and u.shadow_pass < 0.5:
+        ck = smoothstep(60.0, 80.0, length(w - u.cam))
+        # close by, under a canopy the shadow maps leave holes in: dappled, mostly shade
+        if ck < 1.0:
+            cn = glsl_lod(u.canopy, (w.xz - u.origin) / (u.cell * u.nsamp), 0.0).x
+            if cn > 0.0:
+                dap = smoothstep(0.55, 0.75, vnoise(w.xz * 0.35 + vec2(u.time * 0.02, 0.0)))
+                sh = sh * (1.0 - cn * (1.0 - ck) * 0.6 * (1.0 - dap))
+        if ck > 0.0:
+            q = w.xz + l.xz / max(l.y, 0.3) * 7.0
+            cv = glsl_lod(u.canopy, (q - u.origin) / (u.cell * u.nsamp), 0.0).x
+            sh = sh * (1.0 - cv * ck * 0.8)
+    # Earth absorbs rain more strongly than stone; snow retains its dry value.
+    wetness = if soaked: u.wet * (1.0 - snk) else: f32(0.0)
+    puddle = f32(0.0)
+    if wetness > 0.62: puddle = puddle_mask(w.xz, ng.y, wetness)
+    alb = alb * (1.0 - puddle * 0.18)
+    # Organic litter and root soil absorb rain more strongly than open turf.
+    # Keep their value separation from a wet cloth silhouette under a storm deck.
+    alb = alb * (1.0 - wetness * mix(0.43 + fo * 0.12, 0.28, rockk))
+    alb = mix(alb, vec3(1, 1, 1) * dot(alb, vec3(0.3, 0.55, 0.15)), wetness * 0.3)
+    rk = clamp(mt.y + smoothstep(0.66, 0.5, n.y), 0.0, 1.0) * (1.0 - snk)
+    rk = rk * (1.0 - smoothstep(60.0, 220.0, length(w - u.cam))) * (1.0 - west_rock_cover(w))
+    # (cliffs in relief at any distance, the light picking out their ribs: far off a face was one
+    # flat painted sheet)
+    # Exposed shoulders beside the glide are steep rock without being vertical.
+    # Give them the same broad ribs as the cliff, gated by the actual stone
+    # weight so gentle meadow slopes retain their soft turf lighting.
+    fk = smoothstep(0.82, 0.43, n.y) * rockk * (1.0 - snk) * (1.0-cave_cliff_cover(w))
+    if fk > 0.05:
+        fh = __face_h(w)
+        n = normalize(mix(n, face_normal(w, n, fh), fk))
+        # (and the gullies in shade, the buttresses catching the light, in shadow as well)
+        form = lerp(smoothstep(0.8, 4.4, fh) * 0.5 - 0.25, (smoothstep(2.0, 10.0, fh) - 0.5) * 0.28, west_rock_cover(w))
+        alb = alb * (1.0 + fk * form)
+    if rk > 0.05: n = normalize(mix(n, rock_normal(w, n), rk))
+    if snk > 0.01: n = normalize(mix(n, snow_normal(w, nsm), snk))
+    # Forest pigments keep their hue in low sun. Only sunlit turf receives the
+    # warm response; shade and exposed rock keep their native pigments rather
+    # than forming violet strips. Canopy sky bounce is only slightly cool.
+    alb = low_sun_turf(alb,n,l,u.sun_color,sh,(1.0-snk)*(1.0-fo)*(1.0-rockk)*smoothstep(-0.05,0.10,dot(n,l))*sh)
+    floor_sky = mix(u.sky,luma(u.sky)*vec3(1.02,1.01,0.95),fo*0.8)
+    mouth_stone = cave_cliff_cover(w)*rockk*(1.0-snk)
+    stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(0.97,1.0,1.02),mouth_stone*0.9)
+    floor_sky = mix(floor_sky,luma(floor_sky)*vec3(0.96,1.0,1.03),mouth_stone*0.92)
+    c = paint_light(alb, n, l, v, stone_sun, floor_sky, u.ground, sh, 0.45)
+    # Open turf receives sky bounce too; a broad building shadow keeps the meadow texture.
+    fo2 = smoothstep(0.45, 0.85, mt.x)
+    c = c + alb * (floor_sky * mix(vec3(0.8,0.95,1.1),vec3(1.0,1.0,0.95),fo)) * (0.12 + 0.23 * fo2) * (1.0 - sh)
+    # steep faces in shade catch warm light thrown up off the sunlit land below
+    c = c + alb * stone_sun * mix(vec3(1.0,0.8,0.55),vec3(0.98,1.0,1.02),mouth_stone) * 0.2 * clamp(1.0 - n.y * 1.4, 0.0, 1.0) * (1.0 - clamp(ndl, 0.0, 1.0) * sh)
+    if snk > 0.01:
+        # shade on snow: a soft lavender rather than a saturated blue; glints in the sun
+        lum = dot(c, vec3(0.3, 0.5, 0.2))
+        shade = 1.0 - clamp(dot(nsm, l) * sh * 1.6, 0.0, 1.0)
+        c = mix(c, lum * vec3(0.84, 0.87, 1.12), snk * shade * 0.64)
+        glitter = 1.0 - smoothstep(4.0, 12.0, dist)
+        if glitter > 0.0:
+            gx = floor(w.xz * 12.0)
+            g = hash13(vec3(gx.x, floor(w.y * 12.0), gx.y))
+            # (glints only close by and small: far off the paint pass spreads them into white scraps)
+            c = c + u.sun_color * smoothstep(0.98, 1.0, g) * pow(max(dot(n, normalize(l + v)), 0.0), 8.0) * sh * snk * 0.35 * glitter
+    c = c + point_light(alb, n, w, u.lp, u.lc)
+    # Sparse centimetre-sized embers in the hottest char, with soft shoulders.
+    # Stable world cells keep their positions fixed as the heat cools away.
+    if bt.z > 0.05:
+        cell = floor(w.xz * 2.5)
+        seed = hash13(vec3(cell.x, 71.0, cell.y))
+        offset = vec2(hash13(vec3(cell.x, 13.0, cell.y)), hash13(vec3(cell.y, 39.0, cell.x))) * 0.7 + vec2(0.15, 0.15)
+        radius = mix(0.014, 0.032, seed)
+        spot = 1.0 - smoothstep(radius * 0.18, radius, length(fract(w.xz * 2.5) - offset) / 2.5)
+        heat = bt.z * bt.z * smoothstep(0.45, 0.92, bt.z)
+        em = spot * smoothstep(0.94, 0.97, seed) * heat
+        c = c + vec3(0.8, 0.12, 0.014) * em * (0.85 + 0.15 * sin(u.time * 2.0 + seed * 17.0))
+    if soaked and u.wet > 0.0:
+        c = c + wet_surface(n, l, v, u.sun_color, u.sky, sh, wetness, max(rockk, puddle))
+        c = c + u.sky * puddle * 0.08 * (1.0 - clamp(dot(n, v), 0.0, 1.0))
+    c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
+    # Rock, turf and neutral snow/earth share one continuous response channel.
+    material = mix(1.0, 0.65, gr * (1.0 - snk))
+    material = mix(material, 0.85, rockk * (1.0 - snk))
+    vec4(c, material)
+
+terrain_depth_fs = (i: TerrO, u: TerrU) -> vec4:
+    w = i.world
+    # the cave's mouth: the hill opened where the passage comes out through its face (its shadow
+    # left whole in shadow passes, so the passage stays dark). Coverage is resolved here;
+    # the shaded pass can then use early depth rejection without a discard.
+    mq = w - vec3(-1067.0, 247.5, 1844.0)
+    ma = mq.z * 0.548 - mq.x * 0.836
+    mh = mq.y + ma * 0.144
+    across = abs(mq.x * 0.548 + mq.z * 0.836)
+    # The cut follows the taller rock lining; the old rectangular 3.6 m cut left bright
+    # terrain wedges between its ceiling and the continuous exterior soffit.
+    roof = 6.3 - smoothstep(1.8, 3.0, across) * 0.8
+    # Continue beneath the drawn ramp. Stopping 10 cm above its datum
+    # exposed a thin sunlit strip of hillside along both floor edges.
+    glsl_discard(ma > -1.3 and ma < 24.0 and across < 3.0 and mh > -0.6 and mh < roof)
+    vec4(1, 1, 1, 1)
+
+# Dry fire views compile out the wet material path; both variants use one existing draw.
+terrain_fs = (i: TerrO, u: TerrU) -> vec4: terrain_fs_surface(i, u, false)
+terrain_wet_fs = (i: TerrO, u: TerrU) -> vec4: terrain_fs_surface(i, u, true)
+
+terrain_shadow_fs = (i: TerrO, u: TerrU) -> vec4: vec4(1, 1, 1, 1)
+
+terrain_sh: Shader
+terrain_wet_sh: Shader
+terrain_depth_sh: Shader
+terrain_shadow_sh: Shader
+grid_mesh: Mesh
+height_tex = Texture(0, 0, 0)
+normal_tex = Texture(0, 0, 0)
+mat_tex = Texture(0, 0, 0)
+burn_tex = Texture(0, 0, 0)
+canopy_tex = Texture(0, 0, 0)
+canopy_cov: f32[]
+const CANOPY_N = 1024
+
+# the trees' crowns (x, z, radius) as soft discs on a map of the land, for the shade of woods
+# too far off for the shadow maps
+canopy_bake = (crowns: vec3[]):
+    size = hf.cell * f64(hf.n)
+    cov = fill(f32(0), CANOPY_N * CANOPY_N)
+    roots = fill(f32(0), CANOPY_N * CANOPY_N)
+    loop c in crowns:
+        cx = (f64(c.x) - hf.x0) / size * f64(CANOPY_N)
+        cz = (f64(c.y) - hf.z0) / size * f64(CANOPY_N)
+        r = f64(c.z) / size * f64(CANOPY_N) + 0.5
+        ri = int(ceil(r))
+        loop dz in [-ri..ri]:
+            loop dx in [-ri..ri]:
+                ix = int(cx) + dx
+                iz = int(cz) + dz
+                if ix < 0 or iz < 0 or ix >= CANOPY_N or iz >= CANOPY_N: continue
+                d = hypot(f64(ix) + 0.5 - cx, f64(iz) + 0.5 - cz) / r
+                if d < 1.0:
+                    k = iz * CANOPY_N + ix
+                    cov[k] = max(cov[k], f32(smoothstep(1.0, 0.55, d)))
+                    # The crown centre is the trunk centre. Bake a compact soil
+                    # apron into the spare channel of the existing canopy read.
+                    metres = d * r * size / f64(CANOPY_N)
+                    roots[k] = max(roots[k],f32(smoothstep(4.0,0.65,metres)))
+    px = fill(u8(0), CANOPY_N * CANOPY_N * 4)
+    loop k in [0..CANOPY_N * CANOPY_N):
+        v = u8(clamp(f64(cov[k]) * 255.0, 0.0, 255.0))
+        px[k * 4] = v
+        px[k * 4 + 1] = u8(clamp(f64(roots[k])*255.0,0.0,255.0))
+        px[k * 4 + 3] = 255
+    canopy_tex = bytes_texture(CANOPY_N, CANOPY_N, px, false, false)
+    canopy_cov = cov
+burn_px: u8[]
+burn_dirty = false
+const BURN_N = 2048
+__burn_lo = 1 << 30
+__burn_hi = -1
+__burn_xlo = 1 << 30
+__burn_xhi = -1
+__burn_upload: u8[]
+tnodes: TNode[]
+tnode_buf = InstBuf()
+
+__grid = () -> Mesh:
+    vs: GridV[]
+    idx: u32[]
+    g = TGRID
+    loop z in [0..g + 1):
+        loop x in [0..g + 1): vs.push(GridV(vec2(f32(x) / f32(g), f32(z) / f32(g))))
+    loop z in [0..g):
+        loop x in [0..g):
+            a = u32(z * (g + 1) + x)
+            b = a + u32(g + 1)
+            idx.push(a)
+            idx.push(b)
+            idx.push(a + 1)
+            idx.push(a + 1)
+            idx.push(b)
+            idx.push(b + 1)
+    mesh(vs, idx)
+
+# Cache only hash12's integer lattice, not painted material or boundary colours. Every
+# octave retains its original coordinates and cubic interpolation, at every distance.
+# RGBA16F stores four corners in one fetch. The 64 MiB lattice halves bandwidth/VRAM.
+# Half-float rounding is bounded by 1/4096; convex cubic interpolation cannot amplify it.
+# Out-of-range fine detail uses the original ALU path, with no tiling or approximation.
+const TERR_NOISE_N = 2048
+terrain_noise_tex = Texture(0, 1, 1)
+struct TerrNoiseU:
+    size: vec2
+struct TerrNoiseO:
+    pos: vec4
+    uv: vec2
+__terr_noise_vs = (v: FsVert, u: TerrNoiseU) -> TerrNoiseO:
+    TerrNoiseO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+__terr_noise_fs = (i: TerrNoiseO, u: TerrNoiseU) -> vec4:
+    p = floor(i.uv * u.size) - vec2(1024, 0)
+    # Explicit nearest rounding avoids driver-dependent half-float store truncation.
+    h = vec4(hash12(p), hash12(p + vec2(1, 0)), hash12(p + vec2(0, 1)), hash12(p + vec2(1, 1)))
+    vec4(floor(h.xy * 2048.0 + vec2(0.5, 0.5)), floor(h.zw * 2048.0 + vec2(0.5, 0.5))) / 2048.0
+
+terrain_noise_bake = ():
+    tex = color_texture(TERR_NOISE_N, 4096, GL_RGBA16F_, GL_RGBA, GL_FLOAT, GL_NEAREST)
+    fb = gl_create_framebuffer()
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(fb))
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(tex.id), 0)
+    if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        gl_delete_framebuffer(fb)
+        gl_delete_texture(tex.id)
+        return
+    sh = make_sh(shader(__terr_noise_vs, __terr_noise_fs))
+    glViewport(0, 0, TERR_NOISE_N, 4096)
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    glDisable(GL_BLEND)
+    draw_fast(sh, fullscreen_mesh(), TerrNoiseU(vec2(f32(TERR_NOISE_N), 4096)))
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    gl_delete_framebuffer(fb)
+    terrain_noise_tex = tex
+    gl_restore_2d()
+
+# Shader-local substitution: the rest of the game continues using shade.jo's vnoise.
+# Find the generated parameter name rather than relying on translator numeric suffixes.
+terrain_noise_shader = (src: ShaderSource) -> ShaderSource:
+    if terrain_noise_tex.id == 0: return src
+    s = src
+    at = find(s.fs, "float f_vnoise_")
+    if at < 0: return s
+    lp = find(s.fs, "(", at)
+    rp = find(s.fs, ")", lp)
+    ws = words(s.fs[lp + 1..rp))
+    p = ws[ws.len() - 1]
+    op = find(s.fs, "{{", rp)
+    # Keep the original body as the fallback, including its operation order.
+    body = "\n    vec2 ci = floor({p});\n    if (all(greaterThanEqual(ci, vec2(-1024.0, 0.0))) && all(lessThan(ci, vec2(1024.0, 4096.0)))) {{\n        ivec2 ix = ivec2(ci) + ivec2(1024, 0);\n        vec2 f = {p} - ci;\n        vec2 k = f * f * (vec2(3.0) - f * 2.0);\n        vec4 h = texelFetch(u.noise_, ix, 0);\n        return mix(mix(h.x, h.y, k.x), mix(h.z, h.w, k.x), k.y);\n    }\n"
+    s.fs = s.fs[..op + 1) + body + s.fs[op + 1..]
+    s
+
+__terrain_loading: LoadingShader[]
+terrain_upload_finish = ():
+    if __terrain_loading.len() == 0: return
+    started = time()
+    terrain_sh = shader_load_finish(__terrain_loading[0])
+    terrain_wet_sh = shader_load_finish(__terrain_loading[1])
+    terrain_depth_sh = shader_load_finish(__terrain_loading[2])
+    terrain_shadow_sh = shader_load_finish(__terrain_loading[3])
+    __terrain_loading = []
+    if env("BOTW_LOADTIME") != none: eprint("  terrain_shader_wait {time() - started:.3}s")
+
+# upload the heightfield (after it is generated)
+terrain_upload = ():
+    started = time()
+    terrain_noise_bake()
+    if env("BOTW_LOADTIME") != none: eprint("    terrain noise {time() - started:.3}s")
+    started = time()
+    __terrain_loading.push(shader_load_submit(terrain_noise_shader(shader(terrain_vs, terrain_fs))))
+    __terrain_loading.push(shader_load_submit(terrain_noise_shader(shader(terrain_vs, terrain_wet_fs))))
+    __terrain_loading.push(shader_load_submit(shader(terrain_vs, terrain_depth_fs)))
+    __terrain_loading.push(shader_load_submit(shader(terrain_vs, terrain_shadow_fs)))
+    if env("BOTW_LOADTIME") != none: eprint("    terrain shader_submit {time() - started:.3}s")
+    started = time()
+    grid_mesh = __grid()
+    height_tex = float_texture(hf.n, hf.n, hf.h)
+    if terrain_normal_pixels.len() != hf.n * hf.n * 4: terrain_prepare_cpu()
+    n = hf.n
+    if env("BOTW_LOADTIME") != none: eprint("    terrain normals_cpu {time() - started:.3}s")
+    started = time()
+    normal_tex = bytes_texture(n, n, terrain_normal_pixels, true, false)
+    terrain_normal_pixels = [] # GL has consumed the CPU normal buffer
+    mat_tex = bytes_texture(n, n, terrain_material_pixels, true, false)
+    terrain_material_pixels = []
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    burn_tex = bytes_texture(BURN_N, BURN_N, burn_px, false, false)
+    if env("BOTW_LOADTIME") != none: eprint("    terrain textures {time() - started:.3}s")
+    started = time()
+    tnode_buf = inst_buffer(tnodes)
+    if env("BOTW_LOADTIME") != none: eprint("    terrain bounds {time() - started:.3}s")
+    # Finish/release terrain compiler stages before other programs and the large
+    # audio bank allocate. CPU normal/texture preparation still overlaps this batch.
+    terrain_upload_finish()
+
+# scorch the ground (fire) or cut grass, in the burn map
+burn_mark = (x: f64, z: f64, radius: f64, channel: int, amount: f64):
+    # (nothing to mark before the map exists: tools build structures without it)
+    if burn_px.len() == 0: return
+    size = hf.cell * f64(hf.n)
+    cx = (x - hf.x0) / size * f64(BURN_N)
+    cz = (z - hf.z0) / size * f64(BURN_N)
+    r = radius / size * f64(BURN_N)
+    loop iz in [int(cz - r - 1.0)..int(cz + r + 2.0)):
+        loop ix in [int(cx - r - 1.0)..int(cx + r + 2.0)):
+            if ix < 0 or iz < 0 or ix >= BURN_N or iz >= BURN_N: continue
+            d = hypot(f64(ix) - cx, f64(iz) - cz) / max(r, 0.5)
+            if d > 1.0: continue
+            k = (iz * BURN_N + ix) * 4 + channel
+            v = f64(burn_px[k]) + (1.0 - d) * amount * 255.0
+            next = u8(clamp(v, 0.0, 255.0))
+            if next == burn_px[k]: continue
+            burn_px[k] = next
+            burn_dirty = true
+            __burn_xlo = min(__burn_xlo, ix)
+            __burn_xhi = max(__burn_xhi, ix)
+            __burn_lo = min(__burn_lo, iz)
+            __burn_hi = max(__burn_hi, iz)
+
+burn_value = (x: f64, z: f64, channel: int) -> f64:
+    size = hf.cell * f64(hf.n)
+    ix = clamp(int((x - hf.x0) / size * f64(BURN_N)), 0, BURN_N - 1)
+    iz = clamp(int((z - hf.z0) / size * f64(BURN_N)), 0, BURN_N - 1)
+    f64(burn_px[(iz * BURN_N + ix) * 4 + channel]) / 255.0
+
+# ---- quadtree selection ----
+__block_range = (x0: f64, z0: f64, size: f64) -> (f64, f64):
+    b = hf.n / 64
+    bx0 = clamp(int((x0 - hf.x0) / hf.cell) / 64, 0, b - 1)
+    bz0 = clamp(int((z0 - hf.z0) / hf.cell) / 64, 0, b - 1)
+    bx1 = clamp(int((x0 + size - hf.x0) / hf.cell) / 64, 0, b - 1)
+    bz1 = clamp(int((z0 + size - hf.z0) / hf.cell) / 64, 0, b - 1)
+    lo = 1e9
+    hi = -1e9
+    loop z in [bz0..bz1]:
+        loop x in [bx0..bx1]:
+            lo = min(lo, f64(hf.hmin[z * b + x]))
+            hi = max(hi, f64(hf.hmax[z * b + x]))
+    (lo, hi)
+
+struct Frustum:
+    planes: vec4[]
+
+frustum_from = (vp: mat4) -> Frustum:
+    m = transpose(vp)          # rows of vp as columns
+    r0 = m[0]
+    r1 = m[1]
+    r2 = m[2]
+    r3 = m[3]
+    ps = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2]
+    Frustum(ps)
+
+box_visible = (f: Frustum, lo: vec3, hi: vec3) -> bool:
+    loop p in f.planes:
+        x = if p.x > 0.0: hi.x else: lo.x
+        y = if p.y > 0.0: hi.y else: lo.y
+        z = if p.z > 0.0: hi.z else: lo.z
+        if p.x * x + p.y * y + p.z * z + p.w < 0.0: return false
+    true
+
+# the whole box inside the frustum (every corner on the inner side of every plane)
+box_inside = (f: Frustum, lo: vec3, hi: vec3) -> bool:
+    loop p in f.planes:
+        x = if p.x > 0.0: lo.x else: hi.x
+        y = if p.y > 0.0: lo.y else: hi.y
+        z = if p.z > 0.0: lo.z else: hi.z
+        if p.x * x + p.y * y + p.z * z + p.w < 0.0: return false
+    true
+
+const LOD_LEVELS = 7
+__ranges = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+__select = (x0: f64, z0: f64, size: f64, level: int, cam: vec3, f: Frustum, shadow: bool):
+    lo, hi = __block_range(x0, z0, size)
+    if not box_visible(f, v3(x0, lo, z0), v3(x0 + size, hi, z0 + size)): return
+    # distance from the camera to the node's box
+    dx = max(max(x0 - f64(cam.x), f64(cam.x) - (x0 + size)), 0.0)
+    dz = max(max(z0 - f64(cam.z), f64(cam.z) - (z0 + size)), 0.0)
+    dy = max(max(lo - f64(cam.y), f64(cam.y) - hi), 0.0)
+    d = sqrt(dx * dx + dy * dy + dz * dz)
+    if level > 0 and d < __ranges[level - 1]:
+        half = size / 2.0
+        __select(x0, z0, half, level - 1, cam, f, shadow)
+        __select(x0 + half, z0, half, level - 1, cam, f, shadow)
+        __select(x0, z0 + half, half, level - 1, cam, f, shadow)
+        __select(x0 + half, z0 + half, half, level - 1, cam, f, shadow)
+        return
+    r = __ranges[level]
+    tnodes.push(TNode(vec4(f32(x0), f32(z0), f32(size), 0), vec2(f32(r * 0.7), f32(r * 0.95))))
+
+terrain_select = (cam: vec3, vp: mat4, detail: f64 = 1.0):
+    tnodes.clear()
+    base = 64.0 * 1.6 * detail
+    loop k in [0..LOD_LEVELS): __ranges[k] = base * pow(2.0, f64(k))
+    root = hf.cell * f64(hf.n)
+    __select(hf.x0, hf.z0, root, LOD_LEVELS - 1, cam, frustum_from(vp), false)
+    inst_update(tnode_buf, tnodes)
+
+# One tightly packed rectangle per frame, shared by every terrain pass. Saturated pixels
+# do not dirty the map; CPU burn_value still sees each mark immediately.
+terrain_draw = (u: TerrU, depth: bool = false):
+    if burn_dirty and __burn_hi >= __burn_lo:
+        burn_dirty = false
+        rows = __burn_hi - __burn_lo + 1
+        cols = __burn_xhi - __burn_xlo + 1
+        __burn_upload.resize(rows * cols * 4)
+        loop row in [0..rows):
+            mem_copy(data(__burn_upload) + row * cols * 4, data(burn_px) + ((__burn_lo + row) * BURN_N + __burn_xlo) * 4, cols * 4)
+        glBindTexture(GL_TEXTURE_2D, u32(burn_tex.id))
+        gl_tex_sub_image(__burn_xlo, __burn_lo, cols, rows, GL_RGBA, GL_UNSIGNED_BYTE, data(__burn_upload), rows * cols * 4)
+        __burn_lo = 1 << 30
+        __burn_hi = -1
+        __burn_xlo = 1 << 30
+        __burn_xhi = -1
+    terrain_upload_finish()
+    sh = if u.shadow_pass > 0.5: terrain_shadow_sh else: (if depth: terrain_depth_sh else: (if u.wet > 0.0: terrain_wet_sh else: terrain_sh))
+    draw_static(sh, grid_mesh, tnode_buf, u)
+
+# Restoring a prepared dressing map dirties exactly the same texture state as
+# generated burn marks; the next normal update consumes these bounds.
+burn_reset_bounds = ():
+    __burn_xlo = 0
+    __burn_xhi = BURN_N - 1
+    __burn_lo = 0
+    __burn_hi = BURN_N - 1
+
+# Deterministic upload payload: prepared once, before any graphics context exists.
+# Visual-only dressing uses the existing material texture. Keep hf.mat intact:
+# changing scatter eligibility would advance its RNG and move unrelated rocks.
+terrain_material_pixels: u8[]
+terrain_meadow_paint = ():
+    terrain_material_pixels = hf.mat
+    # A narrow worn fork from the camp/Temple approach around the western lawn,
+    # ending at the southern ruins. Existing stone/flower islands flank the route.
+    trail = [vec2(-946,1880),vec2(-938,1914),vec2(-930,1944),vec2(-928,1978),
+        vec2(-910,2006),vec2(-886,2030),vec2(-862,2054),vec2(-834,2072),
+        vec2(-822,2080),vec2(-818,2080)]
+    loop i in [0..trail.len()-1):
+        a = trail[i]
+        b = trail[i+1]
+        steps = int(length(b-a)) + 1
+        loop j in [0..steps]:
+            q = mix(a,b,f32(f64(j)/f64(steps)))
+            cx = int(round((f64(q.x)-hf.x0)/hf.cell))
+            cz = int(round((f64(q.y)-hf.z0)/hf.cell))
+            loop dz in [-2..2]:
+                loop dx in [-2..2]:
+                    x = cx+dx
+                    z = cz+dz
+                    if x<0 or z<0 or x>=hf.n or z>=hf.n: continue
+                    k = (z*hf.n+x)*4
+                    wx = hf.x0+f64(x)*hf.cell
+                    wz = hf.z0+f64(z)*hf.cell
+                    if hf.mat[k+1]>90 or hf.mat[k+2]>70 or normal_at(wx,wz).y<0.87: continue
+                    edge = noise(wx*0.27,wz*0.27)
+                    d = hypot(wx-f64(q.x),wz-f64(q.y))
+                    wear = (1.0-smoothstep(0.65,2.8+edge*0.8,d))*(0.48+edge*0.20)
+                    terrain_material_pixels[k+3] = u8(max(f64(terrain_material_pixels[k+3]),wear*255.0))
+    # Bare soil nests around a few existing meadow outcrops. Elongated, ragged
+    # margins share the same grass suppression as the paths, with no new props.
+    loop bed in [vec2(-1022,1818),vec2(-983,1836),vec2(-968,1884),vec2(-924,1918),
+        vec2(-898,1950),vec2(-899,2023),vec2(-845,2091),vec2(-752,1964),vec2(-731,2022)]:
+        cx = int(round((f64(bed.x)-hf.x0)/hf.cell))
+        cz = int(round((f64(bed.y)-hf.z0)/hf.cell))
+        loop dz in [-5..5]:
+            loop dx in [-5..5]:
+                x = cx+dx
+                z = cz+dz
+                if x<0 or z<0 or x>=hf.n or z>=hf.n: continue
+                k = (z*hf.n+x)*4
+                wx = hf.x0+f64(x)*hf.cell
+                wz = hf.z0+f64(z)*hf.cell
+                if normal_at(wx,wz).y<0.84 or hf.mat[k+2]>70: continue
+                edge = noise(wx*0.32+4.0,wz*0.32)
+                d = hypot((wx-f64(bed.x))*0.20,(wz-f64(bed.y))*0.12)
+                wear = (1.0-smoothstep(0.20,0.95,d+(edge-0.5)*0.5))*(0.32+edge*0.25)
+                terrain_material_pixels[k+3] = u8(max(f64(terrain_material_pixels[k+3]),wear*255.0))
+
+terrain_normal_pixels: u8[]
+terrain_prepare_cpu = ():
+    terrain_meadow_paint()
+    # normals (RGBA8, mipmapped)
+    n = hf.n
+    px = fill(u8(0), n * n * 4)
+    dst = data(px)
+    jobs = parallel_range(n, (z: int):
+        loop x in [0..n):
+            dx = hf_sample(x - 1, z) - hf_sample(x + 1, z)
+            dz = hf_sample(x, z - 1) - hf_sample(x, z + 1)
+            nv = normalize(v3(dx, 4.0, dz))
+            dst[(z * n + x) * 4] = u8(clamp((f64(nv.x) * 0.5 + 0.5) * 255.0, 0.0, 255.0))
+            dst[(z * n + x) * 4 + 1] = u8(clamp((f64(nv.y) * 0.5 + 0.5) * 255.0, 0.0, 255.0))
+            dst[(z * n + x) * 4 + 2] = u8(clamp((f64(nv.z) * 0.5 + 0.5) * 255.0, 0.0, 255.0))
+            dst[(z * n + x) * 4 + 3] = u8(meadow_habitat(hf.x0 + f64(x) * hf.cell, hf.z0 + f64(z) * hf.cell) * 255.0)
+        true
+    )
+    terrain_normal_pixels = px
+    # min/max per block for culling
+    b = n / 64
+    hf.hmin = fill(f32(1e9), b * b)
+    hf.hmax = fill(f32(-1e9), b * b)
+    loop z in [0..n):
+        loop x in [0..n):
+            k = (z / 64) * b + x / 64
+            hv = hf.h[z * n + x]
+            if hv < hf.hmin[k]: hf.hmin[k] = hv
+            if hv > hf.hmax[k]: hf.hmax[k] = hv

@@ -1,0 +1,697 @@
+use 'gfx.jo'
+use 'physics.jo'
+use 'terrain.jo'
+use 'player.jo'
+use 'camera.jo'
+use 'input.jo'
+use 'items.jo'
+use 'weapon_tracks.jo'
+use 'enemies.jo'
+use 'wildlife.jo'
+use 'elements.jo'
+
+# The player's fighting: swings (one-handed combos of four, two-handed sweeps, charged
+# spins, spear jabs), jump attacks, sneakstrikes, the shield (guard, perfect guard), lock-on
+# with side hops and backflips, perfect dodges into a flurry rush, throwing, and the bow.
+# Timings follow the original's action timelines (docs/MOVEMENT_REFERENCE.md).
+
+enum Act: idle, swing, charge, spin, jump_attack, guard, parry, hop, backflip, flurry, aim, throw_, eat, pickup, hit
+
+struct Swing:
+    dur: f64            # whole swing
+    hit0: f64           # wind-up / dodge timing
+    hit1: f64           # end of the forward step
+    next: f64           # from when the next press chains
+    lunge: f64          # m/s forward during the swing
+    mult: f64           # damage multiplier
+
+struct Fight:
+    gear_tracked = false
+    gear_weapon = ""
+    gear_bow = ""
+    gear_shield = ""
+    weapon_revision = 0
+    bow_revision = 0
+    shield_revision = 0
+    blade_pos = vec3(0, 0, 0)
+    blade_face = 0.0
+    blade_ready = false
+    jump_buf = 0.0
+    attack_buf = 0.0
+    act = Act.idle
+    t = 0.0
+    combo = 0           # which swing of the combo
+    queued = false
+    hit_done: int[]     # enemies hit by this swing
+    target = -1         # lock-on target (enemy index)
+    hop_dir = 0.0
+    dodge_y = 0.0       # the height of what a hop or backflip goes over (where it started)
+    charge = 0.0
+    spin_t = 0.0
+    flurry_hits = 0
+    slowmo = 0.0        # time left in slow motion
+    time_scale = 1.0
+    aim_yaw = 0.0
+    aim_pitch = 0.0
+    draw = 0.0          # bow draw 0..1
+    weapon_out = false
+    sheathe_t = 0.0
+    guard_t = 0.0       # time since the guard went up
+    parry_t = 9.0       # time since the action button was pressed behind the shield (perfect guard)
+    eat_id = ""
+    hit_turn = false
+    hit_rear = false
+    hit_side = 0.0
+    swing_id = 0        # increments every new active swing
+
+fight = Fight()
+
+# swing data per weapon type and combo step
+swing_for = (d: ItemDef, step: int) -> Swing:
+    if d.spear:
+        return Swing(0.32, 0.08, 0.2, 0.14, 2.5, 1.0)
+    if d.two_handed:
+        match step:
+            0: return Swing(0.85, 0.32, 0.5, 0.45, 1.5, 1.0)
+            1: return Swing(0.85, 0.3, 0.5, 0.45, 1.5, 1.0)
+            _: return Swing(1.05, 0.4, 0.62, 0.7, 2.2, 1.5)
+    match step:
+        0: Swing(0.5, 0.12, 0.26, 0.2, 2.4, 1.0)
+        1: Swing(0.5, 0.12, 0.26, 0.2, 2.0, 1.0)
+        2: Swing(0.52, 0.13, 0.28, 0.22, 2.2, 1.0)
+        _: Swing(0.75, 0.22, 0.4, 0.6, 3.0, 1.5)
+
+combo_len = (d: ItemDef) -> int:
+    if d.spear: return 5
+    if d.two_handed: return 3
+    4
+
+# Each hit is one sub-sample of the blade segment, never a reach/arc cone.
+struct PHit:
+    pos: vec3
+    from: vec3
+    dir: vec3
+    damage: f64
+    knock: f64
+    fire: bool
+    id: int
+    grip: vec3
+    tip: vec3
+    heavy = false
+    finisher = false
+    stop = 0.065
+    action = Act.idle
+    combo = 0
+
+player_hits: PHit[]
+
+blade_nearest = (h: PHit, p: vec3) -> vec3:
+    blade = h.tip - h.grip
+    h.grip + blade * clamp(dot(p - h.grip, blade) / max(dot(blade, blade), 0.0001), 0.0, 1.0)
+
+# Cover is tested from the hilt to the accepted blade contact. The body ray also
+# prevents contact tolerance from reaching through a wall just before the blade.
+blade_clear = (h: PHit, contact: vec3, target_col: int = -1) -> bool:
+    # Animation can put the hilt through a wall while the capsule stays outside.
+    hand = h.grip - h.from
+    hand_dist = f64(length(hand))
+    if hand_dist > 0.001:
+        # Include the hilt: shortening this ray left a gap when a moving grip
+        # entered cover and the outgoing blade ray started inside the wall.
+        cover = raycast(h.from, hand, hand_dist)
+        if cover.hit and (target_col < 0 or cover.collider != target_col): return false
+    d = contact - h.grip
+    dist = f64(length(d))
+    if dist < 0.001: return true
+    hit = raycast(h.grip, d, max(dist - 0.01, 0.001))
+    not hit.hit or (target_col >= 0 and hit.collider == target_col)
+
+blade_touches = (h: PHit, p: vec3, radius: f64, target_col: int = -1) -> bool:
+    col = target_col
+    near = blade_nearest(h, p)
+    if f64(length(p - near)) > radius + 0.10: return false
+    # Existing shrine mechanisms supply their center, not a collider ID. Recognize
+    # only a collider centered on that target, so its own surface accepts the hit.
+    if col < 0:
+        loop i in nearby(f64(p.x), f64(p.z), 0.15):
+            c = colliders[i]
+            if c.active and max(c.half.x, c.half.z) <= f32(radius + 0.1) and length(vec2(p.x - c.pos.x, p.z - c.pos.z)) < 0.05 and p.y >= c.pos.y and p.y <= c.pos.y + 2.0 * c.half.y:
+                col = i
+                break
+    blade_clear(h, near, col) and blade_clear(h, p, col)
+
+# Five points on the body, with 30 cm body + 4 cm blade + 6 cm tolerance.
+blade_contact = (h: PHit, feet: vec3, height: f64 = 1.48, radius: f64 = 0.30) -> vec3:
+    best = 10000.0
+    contact = vec3(0, -10000, 0)
+    loop k in [0..5):
+        p = feet + v3(0.0, height * (0.27 + 0.73 * f64(k) / 4.0), 0.0)
+        near = blade_nearest(h, p)
+        gap = f64(length(p - near))
+        if gap <= radius + 0.10 and gap < best and blade_clear(h, near) and blade_clear(h, p):
+            best = gap
+            contact = near
+    contact
+
+attack_clip = (d: ItemDef) -> int:
+    match fight.act:
+        swing:
+            if d.spear: return 5
+            if d.two_handed: return [0, 1, 4][min(fight.combo, 2)]
+            min(fight.combo, 3)
+        jump_attack: 6
+        flurry: (if d.spear: 5 else: 0)
+        _: 4
+
+attack_duration = (d: ItemDef) -> f64:
+    if fight.act == .swing: return swing_for(d, fight.combo).dur
+    if fight.act == .jump_attack: return 1.2
+    if fight.act == .spin: return 0.60
+    0.08
+
+attack_phase = (d: ItemDef, time: f64) -> f64:
+    if fight.act == .spin: return 0.58  # extended cutting pose, carried around by the body
+    if fight.act == .flurry: return fract(time / 0.08)
+    if fight.act == .swing:
+        sw = swing_for(d, fight.combo)
+        # Keep the source blade path, but give each class its full authored wind-up
+        # and recovery instead of compressing both into a uniform clip clock.
+        if time < sw.hit0: return 0.27 * time / sw.hit0
+        if time < sw.hit1: return lerp(0.27, 0.62, (time - sw.hit0) / (sw.hit1 - sw.hit0))
+        return lerp(0.62, 1.0, (time - sw.hit1) / (sw.dur - sw.hit1))
+    time / attack_duration(d)
+
+blade_hits = (d: ItemDef, dt: f64, damage: f64, knock: f64, finisher: bool = false):
+    if weapon_tracks.paths.len() == 0: return
+    heavy = d.two_handed or fight.act == .spin or fight.act == .jump_attack
+    stop = if d.spear: 0.045 else: (if d.two_handed: 0.095 else: 0.065)
+    if finisher: stop += 0.045
+    samples = max(4, int(ceil(dt * 120.0)) + 1)
+    loop sample in [0..samples):
+        back = dt * f64(sample) / f64(samples - 1)
+        phase = attack_phase(d, fight.t - back)
+        if phase < 0.27 or phase > 0.78: continue
+        p = blade_pose(attack_clip(d), phase)
+        weight = if dt > 0.0: back / dt else: 0.0
+        root = if fight.blade_ready: lerp(pl.pos, fight.blade_pos, f32(weight)) else: pl.pos - pl.vel * f32(back)
+        face = pl.face - (if fight.blade_ready: wrap_angle(pl.face - fight.blade_face) * weight else: (if fight.act == .spin: 14.0 * back else: 0.0))
+        world = translation(root) * rotation_y(PI - face)
+        # The bare hero uses this same width scale when drawn.
+        if not inv.keys.contains("old_shirt"): world = world * scaling(vec3(0.86, 1, 0.88))
+        grip = transform_point(world, p.grip)
+        tip = transform_point(world, p.grip + p.axis * f32(weapon_length(d)))
+        previous = blade_pose(attack_clip(d), attack_phase(d, fight.t - back - 1.0 / 120.0))
+        sweep = transform_dir(world, p.grip + p.axis * f32(weapon_length(d)) - previous.grip - previous.axis * f32(weapon_length(d)))
+        sweep.y = 0
+        blow = if length(sweep) > 0.001 and fight.act != .spin: normalize(sweep) else: forward_of(pl.face)
+        player_hits.push(PHit((grip + tip) * 0.5, pl.pos + vec3(0, 1, 0), blow, damage, knock, false, fight.swing_id, grip, tip, heavy = heavy, finisher = finisher, stop = stop, action = fight.act, combo = fight.combo))
+
+# the player can start an action now
+can_act = () -> bool: pl.state == .ground and (fight.act == .idle or fight.act == .guard) and pl.land_t <= 0.1
+
+# a hop or backflip arcs over what it started on (a platform, a wall top, a slope), not over the
+# terrain beneath it; off an edge it becomes a fall (it had dropped him to the terrain, inside the
+# platform, and the push out of it threw him ten meters)
+__dodge_arc = (lift: f64, v: vec3):
+    g = ground_at(f64(pl.pos.x), f64(pl.pos.z), fight.dodge_y + 0.3, 0.9, RADIUS).y
+    if g < fight.dodge_y - 0.6:
+        fight.act = .idle
+        set_state(.air)
+        pl.vel = vec3(v.x, 2.0, v.z)
+        return
+    fight.dodge_y = g
+    pl.pos.y = f32(g + lift)
+    push_out(pl.pos, RADIUS, HEIGHT)
+
+start_swing = ():
+    w = equipped_weapon()
+    if len(w) == 0: return
+    d = item(w)
+    fight.weapon_out = true
+    fight.act = .swing
+    fight.t = 0.0
+    fight.queued = false
+    # (the press that started this swing is used up: it must not queue the next one too)
+    fight.attack_buf = 0.0
+    fight.hit_done.clear()
+    player_hits.clear()
+    fight.swing_id += 1
+    pl.events.push("swing")
+
+# an enemy close by winding up a blow (set by the enemies), or -1
+lock_threat = -1
+
+# A paused inventory edit or an element reaction can remove the object mid-action.
+# Revisions distinguish a removed object from an identical spare auto-equipped afterward.
+combat_revalidate_equipment = ():
+    w = equipped_weapon()
+    bw = equipped_bow()
+    sh = equipped_shield()
+    if pl.surfing and sh == "":
+        pl.surfing = false
+        pl.can_surf = false
+        if pl.state == .surf: set_state(.ground)
+    missing = false
+    match fight.act:
+        swing, charge, spin, jump_attack, flurry, throw_:
+            missing = w == "" or (fight.gear_tracked and (w != fight.gear_weapon or inv.weapon_revision != fight.weapon_revision))
+        aim:
+            missing = bw == "" or (fight.gear_tracked and (bw != fight.gear_bow or inv.bow_revision != fight.bow_revision))
+        guard, parry:
+            missing = sh == "" or (fight.gear_tracked and (sh != fight.gear_shield or inv.shield_revision != fight.shield_revision))
+        _: pass
+    if missing:
+        fight.act = .idle
+        fight.t = 0.0
+        fight.draw = 0.0
+        fight.charge = 0.0
+        fight.combo = 0
+        fight.queued = false
+        fight.attack_buf = 0.0
+        fight.blade_ready = false
+        fight.hit_done.clear()
+        fight.slowmo = 0.0
+        fight.time_scale = 1.0
+        player_hits.clear()
+    fight.gear_tracked = true
+    fight.gear_weapon = w
+    fight.gear_bow = bw
+    fight.gear_shield = sh
+    fight.weapon_revision = inv.weapon_revision
+    fight.bow_revision = inv.bow_revision
+    fight.shield_revision = inv.shield_revision
+
+combat_update = (dt: f64, enemy_pos: (int) -> vec3, enemy_count: int):
+    input_pad_lost = false # This gameplay step consumes the pending disconnect.
+    player_hits.clear()
+    combat_revalidate_equipment()
+    fight.t += dt
+    fight.guard_t += dt
+    fight.parry_t += dt
+    fight.slowmo = max(0.0, fight.slowmo - dt / max(fight.time_scale, 0.05))
+    fight.time_scale = if fight.slowmo > 0.0: 0.25 else: 1.0
+    w = equipped_weapon()
+    d = if len(w) > 0: item(w) else: item("branch")
+    has_weapon = len(w) > 0
+    # lock-on: hold to target the nearest enemy in front; the shield goes up
+    lock_air = pl.state == .air and (fight.target >= 0 or fight.act == .hop or fight.act == .backflip)
+    if act.lock and (pl.state == .ground or lock_air):
+        if fight.target < 0 or fight.target >= enemy_count:
+            best = -1
+            bd = 18.0
+            loop i in [0..enemy_count):
+                p = enemy_pos(i)
+                if p.y < -9000.0: continue
+                dv = p - pl.pos
+                dist = f64(length(dv))
+                infront = f64(dot(normalize(vec3(dv.x, 0, dv.z) + vec3(0.0001, 0, 0)), forward_of(cam.yaw)))
+                score = dist - infront * 6.0
+                if dist < 18.0 and score < bd:
+                    bd = score
+                    best = i
+            fight.target = best
+        # (held, the lock stays on its target, as BotW's does, until it falls or is out of reach)
+        if fight.target >= 0:
+            tp = enemy_pos(fight.target)
+            if tp.y < -9000.0 or f64(length(tp - pl.pos)) > 22.0: fight.target = -1
+            else:
+                cam.locked = true
+                cam.lock_pos = tp
+                tv = tp - pl.pos
+                # A rear wound owns facing through its recoil, even while the
+                # shield/lock key remains held toward a different opponent.
+                if fight.act != .hit and pl.state != .hurt:
+                    pl.face = turn_toward(pl.face, yaw_of(vec3(tv.x, 0, tv.z)), (if fight.act == .swing: 18.0 else: 10.0) * dt)
+        # (no target, or it fell or got away: the camera lets go of where it was)
+        if fight.target < 0: cam.locked = false
+    else:
+        fight.target = -1
+        cam.locked = false
+    # (locked on to a target, jump is a side hop or backflip: the player's own jump stands aside)
+    lock_hops = act.lock and fight.target >= 0
+    # (a press of jump or attack is kept a moment: one made a little early still counts)
+    if act.jump: fight.jump_buf = (if fight.act == .swing: 0.45 else: 0.15)
+    else: fight.jump_buf = max(0.0, fight.jump_buf - dt)
+    if act.attack: fight.attack_buf = 0.15
+    else: fight.attack_buf = max(0.0, fight.attack_buf - dt)
+    combat_moving = fight.act == .hop or fight.act == .backflip or fight.act == .flurry
+    guarding = act.lock and len(equipped_shield()) > 0 and pl.state == .ground and (fight.act == .idle or fight.act == .guard)
+    if act.lock_pressed: fight.guard_t = 0.0
+    # (BotW's perfect guard: the action button pressed behind the raised shield just as the blow
+    # comes; raising the shield alone only blocks)
+    if act.interact and fight.act == .guard: fight.parry_t = 0.0
+    # actions
+    match fight.act:
+        idle, guard:
+            if pl.state != .ground and pl.state != .air: return
+            if act.attack and has_weapon:
+                if pl.state == .air:
+                    fight.act = .jump_attack
+                    fight.t = 0.0
+                    fight.hit_done.clear()
+                    fight.swing_id += 1
+                    pl.vel.y = max(pl.vel.y, 4.0)
+                    pl.events.push("swing")
+                else if can_act():
+                    # a sprint into an attack, or a hop: flurry when an attack was just dodged
+                    fight.combo = 0
+                    start_swing()
+            else if act.jump and act.lock and fight.target >= 0 and can_act():
+                # side hop (stick left/right) or backflip (otherwise)
+                if abs(f64(act.move.x)) > 0.5:
+                    fight.act = .hop
+                    fight.hop_dir = sign(f64(act.move.x))
+                else: fight.act = .backflip
+                fight.t = 0.0
+                fight.dodge_y = f64(pl.pos.y)
+                pl.invuln = max(pl.invuln, 0.5)
+                pl.events.push("hop")
+            else if act.throw_ and has_weapon and can_act():
+                fight.act = .throw_
+                fight.t = 0.0
+            else if act.bow_pressed and len(equipped_bow()) > 0 and (pl.state == .ground or pl.state == .air):
+                fight.act = .aim
+                fight.t = 0.0
+                fight.draw = 0.0
+                fight.aim_yaw = cam.yaw
+                fight.aim_pitch = 0.0
+        swing:
+            sw = swing_for(d, fight.combo)
+            # move forward a little during the swing
+            if fight.t < sw.hit1:
+                f = forward_of(pl.face)
+                # locked on and a few steps short of the target: the swing carries him in to it
+                extra = 0.0
+                if fight.target >= 0 and fight.t < sw.hit0:
+                    tp = enemy_pos(fight.target)
+                    gap = f64(length(vec3(tp.x - pl.pos.x, 0, tp.z - pl.pos.z))) - (weapon_length(d) + 0.25)
+                    # (a step or two in, no faster than a dash: from farther off he swings at the air,
+                    # as in BotW; it had closed 6.5 m in the wind-up, at 54 m/s)
+                    if gap > 0.0 and gap < 2.5: extra = min(gap / max(sw.hit0 - fight.t, 0.05), 8.0)
+                # (never into any monster in front: a blade's length off is close enough)
+                loop ei in [0..enemy_count):
+                    ep = enemy_pos(ei)
+                    if ep.y < -9000.0: continue
+                    ev = vec3(ep.x - pl.pos.x, 0, ep.z - pl.pos.z)
+                    if f64(length(ev)) < weapon_length(d) + 0.25 and f64(dot(ev, f)) > 0.0: extra = -sw.lunge
+                pl.pos += f * f32((sw.lunge + extra) * dt)
+                push_out(pl.pos, RADIUS, HEIGHT)
+            if fight.attack_buf > 0.0 and fight.t > sw.hit0 * 0.6:
+                fight.queued = true
+                fight.attack_buf = 0.0
+            # past the blow, a dodge cancels the rest of the swing (locked on: hop or backflip)
+            if fight.jump_buf > 0.0 and act.lock and fight.target >= 0 and fight.t > sw.hit0 + (sw.hit1 - sw.hit0) * 0.5 and pl.state == .ground:
+                fight.jump_buf = 0.0
+                if abs(f64(act.move.x)) > 0.5:
+                    fight.act = .hop
+                    fight.hop_dir = sign(f64(act.move.x))
+                else: fight.act = .backflip
+                fight.t = 0.0
+                fight.dodge_y = f64(pl.pos.y)
+                fight.combo = 0
+                pl.invuln = max(pl.invuln, 0.5)
+                pl.events.push("hop")
+                return
+            blade_hits(d, dt, f64(d.power) * sw.mult, 2.0 + sw.mult * 2.0, fight.combo == combo_len(d) - 1)
+            if fight.queued and fight.t >= max(sw.next, sw.dur * 0.78) and fight.combo + 1 < combo_len(d):
+                fight.combo += 1
+                start_swing()
+            else if fight.t >= sw.dur:
+                # holding attack after a sword swing: charge a spin
+                if act.attack_held and not d.spear:
+                    fight.act = .charge
+                    fight.t = 0.0
+                    use_stamina(if d.two_handed: 250.0 else: 150.0)
+                else:
+                    fight.act = .idle
+                    fight.combo = 0
+        charge:
+            fight.charge = min(1.0, fight.t / 1.0)
+            if act.pad_lost and not act.attack_held:
+                fight.act = .idle
+                fight.charge = 0.0
+            else if not act.attack_held:
+                fight.act = .spin
+                fight.t = 0.0
+                fight.swing_id += 1
+        spin:
+            use_stamina(300.0 * dt)
+            pl.face += 14.0 * dt
+            if fight.t > 0.0:
+                if d.two_handed and int(fight.t * 3.0) != int((fight.t - dt) * 3.0): fight.swing_id += 1
+                blade_hits(d, dt, f64(d.power) * (1.2 + fight.charge * 0.8), 4.0 + fight.charge, true)
+            if fight.t > (if d.two_handed: 1.6 else: 0.60) or pl.exhausted or (not act.attack_held and fight.t > 0.6):
+                fight.act = .idle
+                player_hits.clear()
+        jump_attack:
+            blade_hits(d, dt, f64(d.power) * 1.5, 5.0, true)
+            if pl.state == .ground or fight.t > 1.2:
+                fight.act = .idle
+                player_hits.clear()
+        hop:
+            r = v3(cos(pl.face), 0.0, sin(pl.face))
+            if fight.t < 0.35:
+                pl.pos += r * f32(fight.hop_dir * 5.4 * dt)
+                __dodge_arc(0.8 * sin(fight.t / 0.35 * PI), r * f32(fight.hop_dir * 5.4))
+            else:
+                pl.pos.y = f32(ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 1.0, RADIUS).y)
+                if fight.t > 0.5: fight.act = .idle
+        backflip:
+            f = forward_of(pl.face)
+            if fight.t < 0.45:
+                pl.pos -= f * f32(4.5 * dt)
+                __dodge_arc(1.11 * sin(fight.t / 0.45 * PI), f * -4.5)
+            else:
+                pl.pos.y = f32(ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 1.0, RADIUS).y)
+                if fight.t > 0.6: fight.act = .idle
+        flurry:
+            # the world slows; quick hits land every 0.08 s
+            if fight.target >= 0:
+                tp = enemy_pos(fight.target)
+                dv = tp - pl.pos
+                if f64(length(dv)) > 1.6: pl.pos += normalize(vec3(dv.x, 0, dv.z)) * f32(8.0 * dt)
+                pl.face = yaw_of(vec3(dv.x, 0, dv.z))
+                if fight.t > 0.08 * f64(fight.flurry_hits + 1) and fight.flurry_hits < 8:
+                    fight.flurry_hits += 1
+                    fight.swing_id += 1
+                    pl.events.push("swing")
+                blade_hits(d, dt, f64(d.power), 0.5)
+            if fight.t > 0.9:
+                fight.act = .idle
+                fight.slowmo = 0.0
+        throw_:
+            if fight.t > 0.25:
+                f = forward_of(pl.face)
+                v = f * 16.0 + vec3(0, 3.0, 0)
+                wi = drop_gear(.weapon, inv.weapon, pl.pos + vec3(0, 1.5, 0) + f * 0.5, v)
+                if wi >= 0:
+                    id = witems[wi].id
+                    witems[wi].rot = PI - pl.face
+                    witems[wi].tossed = true
+                    witems[wi].spin = 14.0
+                    witems[wi].thrown_by_player = true
+                    witems[wi].damage = item(id).power * 2
+                    pl.events.push("throw")
+                fight.act = .idle
+        aim:
+            fight.draw = min(1.0, fight.t / 0.5)
+            fight.aim_yaw = cam.yaw
+            fight.aim_pitch = -cam.pitch + 0.04
+            pl.face = turn_toward(pl.face, cam.yaw, 12.0 * dt)
+            # aiming in the air slows time (costs stamina)
+            if pl.state == .air and pl.vel.y < 1.0 and not pl.exhausted:
+                fight.slowmo = 0.1
+                use_stamina(80.0 * dt)
+            if act.pad_lost and not act.bow:
+                fight.act = .idle
+                fight.slowmo = 0.0
+            else if act.bow_released or not act.bow:
+                if fight.draw > 0.4 and inv.arrows > 0:
+                    inv.arrows -= 1
+                    pl.events.push("shoot")
+                    fire_arrow(pl.pos + vec3(0, 1.45, 0) + forward_of(pl.face) * 0.4, aim_dir(), f64(item(equipped_bow()).power), false)
+                fight.act = .idle
+        hit:
+            if fight.hit_turn: pl.face = turn_toward(pl.face, yaw_of(-pl.hurt_dir), 8.0 * dt)
+            if fight.t > 0.45: fight.act = .idle
+        eat:
+            if fight.t > 0.8:
+                fight.act = .idle
+        _:
+            if fight.t > 0.5: fight.act = .idle
+    # the guard: damage reduced from the front (handled by damage_player_guarded)
+    if guarding and fight.act == .idle: fight.act = .guard
+    if fight.act == .guard and not guarding: fight.act = .idle
+    if fight.act != .idle and fight.act != .guard: fight.sheathe_t = 0.0
+    else: fight.sheathe_t += dt
+    if fight.sheathe_t > 4.0 and pl.speed > 0.1: fight.weapon_out = false
+
+aim_dir = () -> vec3:
+    cp = cos(fight.aim_pitch)
+    normalize(v3(sin(fight.aim_yaw) * cp, sin(fight.aim_pitch), -cos(fight.aim_yaw) * cp))
+
+# a hit on the player through the guard: perfect guard (just raised) deflects, a raised shield
+# in front blocks most of it; a quick dodge just before an attack lands starts a flurry rush
+# what kind of blow (which dodge makes a flurry rush of it): a vertical one (overhead, a slam) is
+# side-hopped, a horizontal sweep backflipped; shots, beams and blasts can't be flurried
+enum Blow: other, vertical, horizontal
+
+# the shield up and the action button pressed just now: a perfect guard
+perfect_guard = () -> bool: fight.act == .guard and fight.parry_t < 0.3
+
+# Only an accepted wound interrupts the action; invulnerability and guards do
+# not start a new flinch. Rear hits turn the head/body back toward the attacker.
+combat_hit_reaction = (before: int, from: vec3, turn: bool = true):
+    if pl.hp >= before or pl.state == .dead: return
+    dv = vec3(from.x - pl.pos.x, 0, from.z - pl.pos.z)
+    dir = if length(dv) > 0.001: normalize(dv) else: -pl.hurt_dir
+    fight.hit_rear = dot(dir, forward_of(pl.face)) < -0.2
+    fight.hit_turn = turn and fight.hit_rear
+    fight.hit_side = clamp(f64(dot(dir, v3(cos(pl.face), 0.0, sin(pl.face)))), -1.0, 1.0)
+    fight.act = .hit
+    fight.t = 0.0
+    fight.queued = false
+    fight.attack_buf = 0.0
+    fight.blade_ready = false
+    if fight.hit_turn:
+        pl.face = turn_toward(pl.face, yaw_of(dir), 0.55)
+
+hit_player = (quarters: int, from: vec3, knock: f64, blow: Blow = .other) -> bool:
+    combat_revalidate_equipment()
+    dv = from - pl.pos
+    infront = f64(dot(normalize(vec3(dv.x, 0, dv.z) + vec3(0.0001, 0, 0)), forward_of(pl.face))) > 0.5
+    # a dodge at the last moment: the right one (side hop under a vertical blow, backflip clear
+    # of a sweep) opens a flurry rush; any dodge avoids the blow
+    if (fight.act == .hop or fight.act == .backflip) and fight.t < 0.25:
+        if (blow == .vertical and fight.act == .hop) or (blow == .horizontal and fight.act == .backflip):
+            fight.act = .flurry
+            fight.t = 0.0
+            fight.flurry_hits = 0
+            fight.slowmo = 2.0
+            pl.events.push("flurry")
+            return false
+        if blow != .other: return false
+    if fight.act == .guard and infront:
+        if perfect_guard():
+            pl.events.push("parry")
+            return false
+        # (blocked: the shield takes the blow, Link only the push; in BotW the shield wears)
+        pl.events.push("block")
+        d = vec3(pl.pos.x - from.x, 0, pl.pos.z - from.z)
+        if f64(length(d)) > 0.01: pl.pos += normalize(d) * f32(min(knock * 0.06, 0.4))
+        push_out(pl.pos, RADIUS, HEIGHT)
+        return true
+    before = pl.hp
+    damage_player(quarters, from, knock)
+    combat_hit_reaction(before, from, blow != .other)
+    # Contact effects must respect the damage immunity window too.
+    pl.hp < before
+
+# ---------------- arrows ----------------
+struct Arrow:
+    pos: vec3
+    vel: vec3
+    damage: f64
+    prev = vec3(0, 0, 0)
+    hit_col = -1
+    alive = true
+    stuck = 0.0
+    fire = false
+    hostile = false
+
+arrows: Arrow[]
+
+fire_arrow = (from: vec3, dir: vec3, power: f64, hostile: bool):
+    # Weapon_Bow_001.yml: ArrowFirstSpeed 4.5 m/frame * 30 Hz = 135 m/s.
+    # Enemy shots keep their slower, dodgeable tuning; player bows match the reference.
+    speed = if hostile: 60.0 else: 135.0
+    arrows.push(Arrow(from, normalize(dir) * f32(speed), power, prev = from, hostile = hostile))
+
+# Sweep the full flight segment; at 135 m/s an arrow travels 2.25 m per 60 Hz frame.
+arrow_nearest = (a: Arrow, p: vec3) -> vec3:
+    d = a.pos - a.prev
+    a.prev + d * clamp(dot(p - a.prev, d) / max(dot(d, d), 0.000001), 0.0, 1.0)
+
+arrow_touches = (a: Arrow, p: vec3, r: f64) -> bool:
+    q = arrow_nearest(a, p)
+    if f64(length(q - p)) >= r: return false
+    to = q - a.prev
+    dist = f64(length(to))
+    dist < 0.001 or not raycast(a.prev, to, max(dist - 0.01, 0.001)).hit
+
+# Distance to the FIRST sphere contact along a segment, not its closest point.
+# A center visibility ray also keeps a body's tolerance from reaching through a wall.
+swept_actor_distance = (from: vec3, to: vec3, p: vec3, r: f64) -> f64:
+    path = to - from
+    length_ = f64(length(path))
+    offset = from - p
+    c = f64(dot(offset, offset)) - r * r
+    hit = 0.0
+    if c > 0.0:
+        if length_ < 0.000001: return -1.0
+        dir = path / f32(length_)
+        b = f64(dot(offset, dir))
+        disc = b * b - c
+        if disc < 0.0: return -1.0
+        hit = -b - sqrt(disc)
+        if hit < 0.0 or hit > length_: return -1.0
+    sight = p - from
+    dist = f64(length(sight))
+    if dist > 0.001 and raycast(from, sight, max(dist - 0.05, 0.001)).hit: return -1.0
+    hit
+
+arrows_update = (dt: f64):
+    # Keep a consumed arrow until the next update so all consumers see alive=false.
+    i = 0
+    loop i < arrows.len():
+        if not arrows[i].alive: arrows.remove(i)
+        else: i += 1
+    loop mut a in arrows:
+        if a.stuck > 0.0:
+            a.stuck -= dt
+            if a.stuck <= 0.0: a.alive = false
+            continue
+        a.prev = a.pos
+        a.vel.y -= f32(9.8 * dt)
+        d = a.vel * f32(dt)
+        a.pos += d
+        h = raycast(a.prev, d, f64(length(d)))
+        best = if h.hit: h.dist else: f64(length(d)) + 0.001
+        actor = -1
+        animal = -1
+        player = false
+        if a.hostile:
+            hit = swept_actor_distance(a.prev, a.pos, pl.pos + vec3(0, 1, 0), 0.7)
+            if hit >= 0.0 and hit < best:
+                best = hit
+                player = true
+        else:
+            loop ei in [0..enemies.len()):
+                hit = enemy_arrow_distance(a, ei)
+                if hit >= 0.0 and hit < best:
+                    best = hit
+                    actor = ei
+            loop wi in [0..animals.len()):
+                hit = wildlife_arrow_distance(a, wi)
+                if hit >= 0.0 and hit < best:
+                    best = hit
+                    actor = -1
+                    animal = wi
+        if player or actor >= 0 or animal >= 0: a.pos = a.prev + normalize(d) * f32(best)
+        else if h.hit: a.pos = h.pos
+        # Fire encountered before impact belongs to this hit, even between frame endpoints.
+        if arrow_crosses_water(a): a.fire = false
+        else if not a.fire and arrow_crosses_heat(a): a.fire = true
+        if player or actor >= 0 or animal >= 0:
+            if player: hit_player(int(a.damage), a.prev, 2.0)
+            else if actor >= 0: enemy_arrow_hit(a, actor)
+            else: wildlife_arrow_hit(a, animal)
+            a.alive = false
+            continue
+        if h.hit:
+            a.pos = h.pos
+            a.hit_col = h.collider
+            a.stuck = 8.0
+            a.vel = normalize(a.vel) * 0.001
+            continue
+        if a.pos.y < -500.0: a.alive = false

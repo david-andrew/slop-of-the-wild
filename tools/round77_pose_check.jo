@@ -1,0 +1,53 @@
+# CPU-only contracts for the Old Man's concealed hands and beard geometry.
+build:
+    opt = release
+use '../game/chars.jo'
+use '../game/skel.jo'
+use '../game/gfx.jo'
+use '../game/items.jo'
+chars_init()
+old_man.visible=true
+loop clip in ["sit","Greeting","idle","glide"]:
+    old_man.clip=clip
+    old_man.anim=Animator()
+    worst=0.0
+    loop i in [0..120):
+        old_man_update(1.0/60.0)
+        loop side in ["l","r"]:
+            p=transform_point(bone_world(ranger_m,old_man.skin,"hand_"+side),vec3(0,0,0))
+            target=v3((if side=="l":0.11 else:-0.11),(if clip=="sit":0.62 else:0.94),0.12)
+            worst=max(worst,f64(length(p-target)))
+            assert(abs(p.x)<0.17 and p.z<0.18 and p.y>(if clip=="sit":0.58 else:0.88) and p.y<(if clip=="sit":0.72 else:1.0),"hand stays within the closed cloak")
+    print("PASS {clip}: 240 concealed hand samples, max target error {worst:.4}m")
+b=old_man_beard_mesh()
+# Four moustache/sideburn spheres precede the continuous 10 x 21 beard grid.
+base=b.vs.len()-210
+assert(base>0 and b.idx.len()%3==0)
+loop triangle in [0..360):
+    t=b.idx.len()-1080+triangle*3
+    ia=b.idx[t]
+    ib=b.idx[t+1]
+    ic=b.idx[t+2]
+    assert(int(ia)>=base and int(ib)>=base and int(ic)>=base,"beard triangles must not index the preceding moustache spheres")
+    a=b.vs[int(ia)]
+    bb=b.vs[int(ib)]
+    c=b.vs[int(ic)]
+    n=cross(bb.pos-a.pos,c.pos-a.pos)
+    assert(length(n)>0.000001 and dot(n,a.normal+bb.normal+c.normal)>0,"outward, nondegenerate beard surface")
+print("PASS beard: {b.vs.len()} vertices, {b.idx.len()/3} triangles; independent outward taper")
+
+use '../game/structures.jo'
+from '../game/build.jo' import __bchunks
+# An open socket cannot contain a forward cap across its centre.
+guardian_dead_eye(vec3(0,0,0),vec3(0,0,1),vec3(1,0,0))
+vertices=0
+triangles=0
+loop key,chunk in __bchunks:
+    vertices+=chunk.verts.len()
+    triangles+=chunk.idx.len()/3
+    loop v in chunk.verts:
+        assert(abs(f64(length(v.normal))-1.0)<0.0001,"unit eye normals")
+        if v.pos.z>0:
+            assert(hypot(f64(v.pos.x),f64(v.pos.y))>0.49,"no tube end cap in front of the recessed lens")
+assert(vertices==576 and triangles==240,"bounded open socket geometry")
+print("PASS Old Sentinel eye: {vertices} vertices, {triangles} triangles; open rim and recessed lens")

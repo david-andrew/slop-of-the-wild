@@ -1,0 +1,941 @@
+use 'gfx.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'water.jo'
+use 'scene.jo'
+use 'matter.jo'
+
+# Items: what exists (weapons, shields, bows, arrows, food, materials, key items), what the
+# player carries, and the items lying in the world (they fall, roll, float and burn).
+# Attack values follow the original (see docs/MOVEMENT_REFERENCE.md); weapons do not break.
+
+enum IKind: weapon, shield, bow, arrows, food, material, key
+
+enum IShape:
+    branch, club, sword, axe, torch, spear, broadsword, claymore, lid, boko_shield, shield, bow, arrows,
+    apple, baked_apple, mushroom, pepper, meat, steak, herb, ore, orb, glider, cloth, roasted, fish, drumstick, rock, frog, lizard, firefly, acorn, skewer, dish, trousers, roasted_pepper, firewood
+
+enum Ingredient: none, fruit, mushroom, meat, fish, greens, nut, stone, invalid
+
+struct ItemDef:
+    id: str
+    name: str
+    kind: IKind
+    shape: IShape
+    power = 0                  # attack (weapons, bows) or guard (shields)
+    heal = 0                   # quarter hearts restored by eating
+    two_handed = false
+    spear = false
+    wood = false               # burns
+    metal = false              # conducts, attracts lightning
+    color = vec4(1, 1, 1, 1)   # icon / tint
+    warm = 0.0                 # cold resistance from eating (seconds)
+    ingredient = Ingredient.none
+    cooks_to = ""              # what fire turns it into
+
+idefs: ItemDef[]
+__idx: {str: int} = {}
+
+__def = (d: ItemDef):
+    __idx[d.id] = idefs.len()
+    idefs.push(d)
+
+item = (id: str) -> ItemDef: idefs[__idx.get(id) ?? 0]
+
+# what an item is made of, for the element rules
+matter_of = (id: str) -> Matter:
+    d = item(id)
+    if id == "torch": return TORCH
+    if len(d.cooks_to) > 0: return FOOD
+    if d.wood: return WOOD
+    if d.metal: return METAL
+    STONE
+has_item_def = (id: str) -> bool: __idx.has(id)
+
+items_init = ():
+    __def(ItemDef("branch", "Tree Branch", .weapon, .branch, power = 2, wood = true, color = rgb(0.5, 0.36, 0.2)))
+    __def(ItemDef("torch", "Torch", .weapon, .torch, power = 2, wood = true, color = rgb(0.6, 0.4, 0.2)))
+    __def(ItemDef("axe", "Woodcutter's Axe", .weapon, .axe, power = 3, two_handed = true, metal = true, color = rgb(0.6, 0.55, 0.5)))
+    __def(ItemDef("boko_club", "Bonko Club", .weapon, .club, power = 4, wood = true, color = rgb(0.45, 0.32, 0.22)))
+    __def(ItemDef("spiked_club", "Spiked Bonko Club", .weapon, .club, power = 12, wood = true, color = rgb(0.4, 0.3, 0.25)))
+    __def(ItemDef("boko_spear", "Bonko Spear", .weapon, .spear, power = 2, spear = true, wood = true, color = rgb(0.5, 0.4, 0.3)))
+    __def(ItemDef("travelers_sword", "Wanderer's Sword", .weapon, .sword, power = 5, metal = true, color = rgb(0.75, 0.75, 0.78)))
+    __def(ItemDef("rusty_broadsword", "Rusty Broadsword", .weapon, .broadsword, power = 6, metal = true, color = rgb(0.6, 0.4, 0.3)))
+    __def(ItemDef("soldiers_broadsword", "Soldier's Broadsword", .weapon, .broadsword, power = 14, metal = true, color = rgb(0.8, 0.82, 0.88)))
+    __def(ItemDef("travelers_claymore", "Wanderer's Claymore", .weapon, .claymore, power = 10, two_handed = true, metal = true, color = rgb(0.72, 0.72, 0.76)))
+    __def(ItemDef("travelers_spear", "Wanderer's Spear", .weapon, .spear, power = 3, spear = true, metal = true, color = rgb(0.7, 0.7, 0.72)))
+    __def(ItemDef("pot_lid", "Pot Lid", .shield, .lid, power = 1, wood = true, color = rgb(0.55, 0.4, 0.25)))
+    __def(ItemDef("boko_shield", "Bonko Shield", .shield, .boko_shield, power = 3, wood = true, color = rgb(0.5, 0.35, 0.25)))
+    __def(ItemDef("travelers_shield", "Wanderer's Shield", .shield, .shield, power = 4, wood = true, color = rgb(0.45, 0.5, 0.6)))
+    __def(ItemDef("travelers_bow", "Wanderer's Bow", .bow, .bow, power = 5, wood = true, color = rgb(0.55, 0.42, 0.28)))
+    __def(ItemDef("boko_bow", "Bonko Bow", .bow, .bow, power = 4, wood = true, color = rgb(0.45, 0.33, 0.24)))
+    __def(ItemDef("arrow", "Arrow", .arrows, .arrows, power = 0, color = rgb(0.8, 0.75, 0.6)))
+    __def(ItemDef("apple", "Apple", .food, .apple, heal = 2, color = rgb(0.85, 0.12, 0.1), cooks_to = "baked_apple"))
+    __def(ItemDef("baked_apple", "Baked Apple", .food, .baked_apple, heal = 3, color = rgb(0.6, 0.25, 0.12)))
+    __def(ItemDef("shroom", "Jolian Shroom", .food, .mushroom, heal = 2, color = rgb(0.85, 0.75, 0.55), cooks_to = "roasted_shroom"))
+    __def(ItemDef("roasted_shroom", "Toasty Jolian Shroom", .food, .roasted, heal = 3, color = rgb(0.6, 0.45, 0.3)))
+    __def(ItemDef("pepper", "Spicy Pepper", .food, .pepper, heal = 1, warm = 150.0, color = rgb(0.9, 0.2, 0.1), cooks_to = "charred_pepper"))
+    __def(ItemDef("charred_pepper", "Charred Pepper", .food, .roasted_pepper, heal = 2, warm = 240.0, color = rgb(0.55, 0.15, 0.08)))
+    __def(ItemDef("herb", "Jorule Herb", .food, .herb, heal = 4, color = rgb(0.4, 0.75, 0.3)))
+    __def(ItemDef("raw_meat", "Raw Meat", .food, .meat, heal = 4, color = rgb(0.75, 0.35, 0.35), cooks_to = "seared_steak"))
+    __def(ItemDef("hyrule_bass", "Jorule Bass", .food, .fish, heal = 4, color = rgb(0.45, 0.65, 0.5), cooks_to = "roasted_bass"))
+    __def(ItemDef("roasted_bass", "Roasted Bass", .food, .fish, heal = 6, color = rgb(0.55, 0.35, 0.2)))
+    __def(ItemDef("raw_bird_drumstick", "Raw Bird Drumstick", .food, .drumstick, heal = 4, color = rgb(0.8, 0.4, 0.35), cooks_to = "roasted_bird_drumstick"))
+    __def(ItemDef("roasted_bird_drumstick", "Roasted Bird Drumstick", .food, .drumstick, heal = 6, color = rgb(0.55, 0.3, 0.15)))
+    __def(ItemDef("seared_steak", "Seared Steak", .food, .steak, heal = 6, color = rgb(0.5, 0.25, 0.15)))
+    __def(ItemDef("rock", "Rock", .material, .rock, power = 2, color = rgb(0.42, 0.4, 0.35)))
+    __def(ItemDef("hot_footed_frog", "Hot-Footed Frog", .material, .frog, color = rgb(0.32, 0.55, 0.22)))
+    __def(ItemDef("hightail_lizard", "Hightail Lizard", .material, .lizard, color = rgb(0.2, 0.42, 0.55)))
+    __def(ItemDef("sunset_firefly", "Sunset Firefly", .material, .firefly, color = rgb(0.85, 1.0, 0.45)))
+    __def(ItemDef("firewood", "Wood", .material, .firewood, wood=true, color=rgb(0.55,0.36,0.18)))
+    __def(ItemDef("flint", "Flint", .material, .ore, color = rgb(0.36, 0.38, 0.42)))
+    __def(ItemDef("amber", "Amber", .material, .ore, color = rgb(0.95, 0.6, 0.15)))
+    __def(ItemDef("opal", "Opal", .material, .ore, color = rgb(0.75, 0.85, 0.95)))
+    __def(ItemDef("acorn", "Acorn", .material, .acorn, color = rgb(0.55, 0.38, 0.2)))
+    __def(ItemDef("spirit_orb", "Sprite Orb", .key, .orb, color = rgb(1.0, 0.75, 0.35)))
+    __def(ItemDef("paraglider", "Paraglider", .key, .glider, color = rgb(0.6, 0.3, 0.2)))
+    __def(ItemDef("spicy_steak", "Spicy Pepper Steak", .food, .skewer, heal = 10, warm = 450.0, color = rgb(0.6, 0.22, 0.1)))
+    __def(ItemDef("meat_skewer", "Meat Skewer", .food, .skewer, heal = 8, color = rgb(0.5, 0.25, 0.14)))
+    __def(ItemDef("simmered_fruit", "Simmered Fruit", .food, .dish, heal = 6, color = rgb(0.8, 0.3, 0.2)))
+    __def(ItemDef("warm_doublet", "Warm Doublet", .key, .cloth, color = rgb(0.8, 0.45, 0.25)))
+    __def(ItemDef("old_shirt", "Old Shirt", .key, .cloth, color = rgb(0.6, 0.6, 0.65)))
+    __def(ItemDef("trousers", "Well-Worn Trousers", .key, .trousers, color = rgb(0.5, 0.45, 0.4)))
+
+    pot_items_init()
+
+# Pot rules are independent of roasting: cooked meals cannot be held again.
+struct PotRecipe:
+    id: str
+    name: str
+    shape: IShape
+    groups: Ingredient[]
+
+pot_recipes = [
+    PotRecipe("meat_mushroom_skewer", "Meat and Mushroom Skewer", .skewer, [.meat, .mushroom]),
+    PotRecipe("meat_skewer", "Meat Skewer", .skewer, [.meat]),
+    PotRecipe("fish_skewer", "Fish Skewer", .fish, [.fish]),
+    PotRecipe("mushroom_skewer", "Mushroom Skewer", .skewer, [.mushroom]),
+    PotRecipe("simmered_fruit", "Simmered Fruit", .dish, [.fruit]),
+    PotRecipe("fried_greens", "Fried Wild Greens", .dish, [.greens]),
+    PotRecipe("sauteed_nuts", "Sauteed Nuts", .dish, [.nut])]
+
+# Register all bounded results at startup so a saved meal restores its exact hearts
+# and cold-resistance duration, even before that combination has been cooked again.
+pot_items_init = ():
+    groups = [("apple", Ingredient.fruit), ("pepper", Ingredient.fruit), ("shroom", Ingredient.mushroom),
+        ("raw_meat", Ingredient.meat), ("raw_bird_drumstick", Ingredient.meat), ("hyrule_bass", Ingredient.fish),
+        ("herb", Ingredient.greens), ("acorn", Ingredient.nut), ("rock", Ingredient.stone),
+        ("flint", Ingredient.stone), ("amber", Ingredient.stone), ("opal", Ingredient.stone)]
+    loop g in groups: idefs[__idx[g.0]].ingredient = g.1
+    loop mut d in idefs:
+        if d.kind == .material and d.ingredient == .none: d.ingredient = .invalid
+    __def(ItemDef("dubious_food", "Dubious Food", .food, .dish, heal = 4, color = rgb(0.38, 0.22, 0.44)))
+    __def(ItemDef("rock_hard_food", "Rock-Hard Food", .food, .rock, heal = 1, color = rgb(0.4, 0.37, 0.32)))
+    loop r in pot_recipes:
+        loop units in [1..21):
+            hearts = units * 2
+            loop peppers in [0..6):
+                id = "{r.id}_{hearts}_{peppers}"
+                name = if peppers > 0: "Spicy {r.name}" else: r.name
+                # Keep the cabin gift's existing item ID and its original notice.
+                if r.id == "meat_skewer" and peppers > 0: name = "Spicy Pepper Steak"
+                __def(ItemDef(id, name, .food, r.shape, heal = hearts,
+                    warm = if peppers > 0: 300.0 + f64(peppers) * 150.0 else: 0.0, color = rgb(0.65, 0.32, 0.18)))
+
+pot_result = (ingredients: str[]) -> str:
+    if ingredients.len() < 1 or ingredients.len() > 5: return ""
+    groups: Ingredient[]
+    hearts = 0
+    peppers = 0
+    bad = false
+    stone = false
+    loop id in ingredients:
+        if not has_item_def(id):
+            bad = true
+            continue
+        d = item(id)
+        stone = stone or d.ingredient == .stone
+        bad = bad or d.ingredient == .none or d.ingredient == .invalid
+        groups.push(d.ingredient)
+        hearts += (if d.ingredient == .nut: 2 else: d.heal * 2)
+        if d.warm > 0.0: peppers += 1
+    if stone: return "rock_hard_food"
+    if bad: return "dubious_food"
+    loop r in pot_recipes:
+        matches = true
+        loop group in r.groups: matches = matches and groups.contains(group)
+        if matches:
+            if r.id == "meat_skewer" and hearts == 10 and peppers == 1: return "spicy_steak"
+            return "{r.id}_{clamp(hearts, 2, 40)}_{peppers}"
+    "dubious_food"
+
+# ---------------- the player's things ----------------
+struct Inventory:
+    weapons: str[]
+    shields: str[]
+    bows: str[]
+    arrows = 0
+    stacks: {str: int} = {}         # food and materials
+    keys: str[]
+    key_counts: {str: int} = {}    # total copies, separate from droppable stacks
+    weapon = -1                     # equipped (index into weapons)
+    shield = -1
+    bow = -1
+    held: str[]                    # reservations; saved stacks retain these copies
+    slots = ["", "", ""]            # item types for labels; gear bindings also name a copy
+    slot_instances = [0, 0, 0]       # 0 for stacks / unbound / legacy migration
+    weapon_instances: int[]
+    shield_instances: int[]
+    bow_instances: int[]
+    next_instance = 1
+    weapon_effects: Elem[]
+    shield_effects: Elem[]
+    bow_effects: Elem[]
+    weapon_revision = 0             # invalidate actions when their equipped object is removed
+    shield_revision = 0
+    bow_revision = 0
+    max_weapons = 8
+    max_shields = 4
+    max_bows = 4
+
+# Stable inventory identities travel with the corresponding item/effect on reorder.
+# Legacy saves and direct fixtures receive identities once; removed copies never alias new ones.
+inventory_identity_sync = (v: mut Inventory):
+    loop v.weapon_instances.len() > v.weapons.len(): v.weapon_instances.remove(v.weapon_instances.len() - 1)
+    loop v.shield_instances.len() > v.shields.len(): v.shield_instances.remove(v.shield_instances.len() - 1)
+    loop v.bow_instances.len() > v.bows.len(): v.bow_instances.remove(v.bow_instances.len() - 1)
+    loop ids in [v.weapon_instances, v.shield_instances, v.bow_instances]:
+        loop uid in ids: v.next_instance = max(v.next_instance, uid + 1)
+    loop v.weapon_instances.len() < v.weapons.len():
+        v.weapon_instances.push(v.next_instance)
+        v.next_instance += 1
+    loop v.shield_instances.len() < v.shields.len():
+        v.shield_instances.push(v.next_instance)
+        v.next_instance += 1
+    loop v.bow_instances.len() < v.bows.len():
+        v.bow_instances.push(v.next_instance)
+        v.next_instance += 1
+    loop k in [0..v.slots.len()):
+        id = v.slots[k]
+        if id == "":
+            v.slot_instances[k] = 0
+            continue
+        kind = item(id).kind
+        gear = if kind == .weapon: v.weapons else: (if kind == .shield: v.shields else: (if kind == .bow: v.bows else: []))
+        ids = if kind == .weapon: v.weapon_instances else: (if kind == .shield: v.shield_instances else: v.bow_instances)
+        if kind != .weapon and kind != .shield and kind != .bow: continue
+        i = if v.slot_instances[k] == 0: gear.index_of(id) else: ids.index_of(v.slot_instances[k])
+        if i >= 0 and i < gear.len() and gear[i] == id: v.slot_instances[k] = ids[i]
+        else:
+            v.slots[k] = ""
+            v.slot_instances[k] = 0
+
+gear_instance = (kind: IKind, index: int) -> int:
+    inventory_identity_sync(inv)
+    ids = if kind == .weapon: inv.weapon_instances else: (if kind == .shield: inv.shield_instances else: inv.bow_instances)
+    if index >= 0 and index < ids.len(): ids[index] else: 0
+
+slot_gear_index = (k: int) -> int:
+    inventory_identity_sync(inv)
+    if k < 0 or k >= inv.slots.len() or inv.slots[k] == "": return -1
+    kind = item(inv.slots[k]).kind
+    gear = if kind == .weapon: inv.weapons else: (if kind == .shield: inv.shields else: (if kind == .bow: inv.bows else: []))
+    ids = if kind == .weapon: inv.weapon_instances else: (if kind == .shield: inv.shield_instances else: inv.bow_instances)
+    i = ids.index_of(inv.slot_instances[k])
+    if i >= 0 and i < gear.len() and gear[i] == inv.slots[k]: i else: -1
+
+inv = Inventory()
+
+held_el = Elem()
+held_id = ""
+held_revision = -1
+held_index = -1
+struct CarriedElem:
+    id = ""
+    revision = -1
+    index = -1
+    el = Elem()
+shield_el = CarriedElem()
+bow_el = CarriedElem()
+
+# A pending lightning warning follows one gear entry, then its transferred world item.
+# Keep the transfer here so inventory drops, combat throws and shock drops agree.
+struct GearTrace:
+    id = ""
+    kind = IKind.weapon
+    index = -1
+    world = -1
+    removed = false
+
+lightning_gear = GearTrace()
+
+inv_owns = (id: str) -> bool:
+    if not has_item_def(id): return false
+    inv.weapons.contains(id) or inv.shields.contains(id) or inv.bows.contains(id) or inv.keys.contains(id) or count_of(id) > 0 or (id == "arrow" and inv.arrows > 0)
+
+has_key = (id: str) -> bool: inv.keys.contains(id)
+count_of = (id: str) -> int:
+    if item(id).kind == .key: return inv.key_counts.get(id) ?? (if has_key(id): 1 else: 0)
+    inv.stacks.get(id) ?? 0
+
+# Consumed by the HUD, so field pickups and chest callbacks share one brief response.
+inv_full_name = ""
+inv_no_room = (id: str) -> bool:
+    inv_full_name = item(id).name
+    false
+
+# add an item; false if there is no room (weapons)
+inv_add = (id: str, n: int = 1) -> bool:
+    d = item(id)
+    match d.kind:
+        weapon:
+            if inv.weapons.len() >= inv.max_weapons: return inv_no_room(id)
+            inv.weapons.push(id)
+            if inv.weapon < 0: inv.weapon = inv.weapons.len() - 1
+        shield:
+            if inv.shields.len() >= inv.max_shields: return inv_no_room(id)
+            inv.shields.push(id)
+            if inv.shield < 0: inv.shield = inv.shields.len() - 1
+        bow:
+            if inv.bows.len() >= inv.max_bows: return inv_no_room(id)
+            inv.bows.push(id)
+            if inv.bow < 0: inv.bow = inv.bows.len() - 1
+        arrows: inv.arrows += n
+        food, material: inv.stacks[id] = count_of(id) + n
+        key:
+            total = count_of(id) + n
+            if not inv.keys.contains(id): inv.keys.push(id)
+            inv.key_counts[id] = total
+    # the first weapon, bow and food found take an empty item button
+    if d.kind == .weapon or d.kind == .bow or d.kind == .food:
+        taken = false
+        loop b in inv.slots:
+            if len(b) > 0 and item(b).kind == d.kind: taken = true
+        if not taken:
+            loop i in [0..inv.slots.len()):
+                if len(inv.slots[i]) == 0:
+                    inv.slots[i] = id
+                    inv.slot_instances[i] = if d.kind == .weapon or d.kind == .bow: gear_instance(d.kind, (if d.kind == .weapon: inv.weapons.len() else: inv.bows.len()) - 1) else: 0
+                    break
+    inventory_identity_sync(inv)
+    true
+
+inv_take = (id: str, n: int = 1) -> bool:
+    if item(id).kind == .key or n < 1: return false
+    c = count_of(id)
+    if available_of(id) < n: return false
+    if c == n: inv.stacks.remove(id)
+    else: inv.stacks[id] = c - n
+    inv_clean_binding(id)
+    true
+
+# Held copies remain owned (including bindings), but cannot also be eaten/dropped.
+held_count = (id: str) -> int:
+    n = 0
+    loop h in inv.held:
+        if h == id: n += 1
+    n
+available_of = (id: str) -> int: count_of(id) - held_count(id)
+can_hold = (d: ItemDef) -> bool: d.ingredient != .none
+inv_hold = (id: str) -> bool:
+    if not has_item_def(id) or not can_hold(item(id)) or inv.held.len() >= 5 or available_of(id) <= 0: return false
+    inv.held.push(id)
+    true
+inv_cancel_hold = (): inv.held.clear()
+inv_release_held = () -> str[]:
+    held = inv.held
+    inv.held = []
+    loop id in held: inv_take(id)
+    held
+inv_cook_held = () -> str:
+    result = pot_result(inv.held)
+    if result == "": return ""
+    inv_release_held()
+    inv_add(result)
+    result
+
+equipped_weapon = () -> str:
+    if inv.weapon >= 0 and inv.weapon < inv.weapons.len(): return inv.weapons[inv.weapon]
+    ""
+equipped_shield = () -> str:
+    if inv.shield >= 0 and inv.shield < inv.shields.len(): return inv.shields[inv.shield]
+    ""
+equipped_bow = () -> str:
+    if inv.bow >= 0 and inv.bow < inv.bows.len(): return inv.bows[inv.bow]
+    ""
+
+# All removal paths (drop, throw, burn, shock, and any future break) go through here.
+# A disappeared bound copy clears its shortcut, even when a sibling survives.
+inv_clean_binding = (id: str):
+    if inv_owns(id): return
+    loop i in [0..inv.slots.len()):
+        if inv.slots[i] == id:
+            inv.slots[i] = ""
+            inv.slot_instances[i] = 0
+
+inv_remove_gear = (kind: IKind, index: int) -> str:
+    gear_elements_sync()
+    uid = gear_instance(kind, index)
+    id = ""
+    match kind:
+        weapon:
+            if index < 0 or index >= inv.weapons.len(): return ""
+            was_equipped = inv.weapon >= 0
+            id = inv.weapons[index]
+            if index == inv.weapon: inv.weapon_revision += 1
+            inv.weapons.remove(index)
+            inv.weapon_effects.remove(index)
+            inv.weapon_instances.remove(index)
+            if inv.weapon > index or inv.weapon >= inv.weapons.len(): inv.weapon -= 1
+            if was_equipped and inv.weapon < 0 and inv.weapons.len() > 0: inv.weapon = 0
+        shield:
+            if index < 0 or index >= inv.shields.len(): return ""
+            was_equipped = inv.shield >= 0
+            id = inv.shields[index]
+            if index == inv.shield: inv.shield_revision += 1
+            inv.shields.remove(index)
+            inv.shield_effects.remove(index)
+            inv.shield_instances.remove(index)
+            if inv.shield > index or inv.shield >= inv.shields.len(): inv.shield -= 1
+            if was_equipped and inv.shield < 0 and inv.shields.len() > 0: inv.shield = 0
+        bow:
+            if index < 0 or index >= inv.bows.len(): return ""
+            was_equipped = inv.bow >= 0
+            id = inv.bows[index]
+            if index == inv.bow: inv.bow_revision += 1
+            inv.bows.remove(index)
+            inv.bow_effects.remove(index)
+            inv.bow_instances.remove(index)
+            if inv.bow > index or inv.bow >= inv.bows.len(): inv.bow -= 1
+            if was_equipped and inv.bow < 0 and inv.bows.len() > 0: inv.bow = 0
+        _: return ""
+    loop k in [0..inv.slots.len()):
+        if uid != 0 and inv.slot_instances[k] == uid:
+            inv.slots[k] = ""
+            inv.slot_instances[k] = 0
+    if kind == .weapon:
+        if held_index == index:
+            held_id = ""
+            held_index = -1
+            held_revision = -1
+            held_el = Elem()
+        else if held_index > index: held_index -= 1
+    else if kind == .shield:
+        if shield_el.index == index: shield_el = CarriedElem()
+        else if shield_el.index > index: shield_el.index -= 1
+    else if kind == .bow:
+        if bow_el.index == index: bow_el = CarriedElem()
+        else if bow_el.index > index: bow_el.index -= 1
+    if lightning_gear.kind == kind and lightning_gear.index >= 0:
+        if lightning_gear.index == index:
+            lightning_gear.index = -1
+            lightning_gear.removed = true
+        else if lightning_gear.index > index: lightning_gear.index -= 1
+    inv_clean_binding(id)
+    id
+
+# Drop the equipped weapon (thrown or let go): returns its id.
+inv_remove_weapon = () -> str: inv_remove_gear(.weapon, inv.weapon)
+
+# ---------------- items in the world ----------------
+struct WItem:
+    id: str
+    pos: vec3
+    vel = vec3(0, 0, 0)
+    rot = 0.0
+    spin = 0.0
+    tumble = 0.0
+    tossed = false             # end-over-end weapon flight, retained through the bounce
+    resting = false
+    char = 0.0
+    burning = 0.0               # seconds left burning
+    lit = false                 # torches burn on their own
+    alive = true
+    respawn = 0.0
+    thrown_by_player = false
+    thrown_by_enemy = false
+    throw_previous = vec3(0, 0, 0)
+    wall_stop = false           # accepted flight ended at cover; actor queries consume next
+    wall_velocity = vec3(0, 0, 0)
+    damage = 0
+    hang = false                # apples on trees: fall when shaken or burnt
+    dropped = false             # relinquished inventory / earned encounter loot; save it
+    el = Elem()
+    placement = ""             # stable source identity, independent of runtime array order
+    placement_id = ""
+    placement_pos = vec3(0, 0, 0)
+    placement_hang = false
+
+witems: WItem[]
+
+spawn_item = (id: str, pos: vec3, vel: vec3 = vec3(0, 0, 0), resting: bool = false, dropped: bool = false, el: Elem = Elem()) -> int:
+    witems.push(WItem(id, pos, vel = vel, rot = random(0.0, TAU), resting = resting, dropped = dropped, el = el, burning = (if burning(el): max(el.burning, 1.0) else: 0.0), lit = id == "torch" and burning(el)))
+    if lightning_gear.removed and lightning_gear.world < 0 and lightning_gear.id == id:
+        lightning_gear.world = witems.len() - 1
+    witems.len() - 1
+
+items_physics = (dt: f64):
+    placements_update(dt)
+    loop mut w in witems:
+        w.wall_stop = false
+        if not w.alive or w.hang: continue
+        if w.resting and w.burning <= 0.0: continue
+        w.vel.y -= f32(18.0 * dt)
+        # float on water, drift with the river
+        wl = water_level(f64(w.pos.x), f64(w.pos.z))
+        if wl != none and f64(w.pos.y) < wl! and item(w.id).wood:
+            w.vel.y = f32(approach(f64(w.vel.y), (wl! - f64(w.pos.y)) * 4.0, 6.0, dt))
+            fl = water_flow(f64(w.pos.x), f64(w.pos.z))
+            w.vel.x = f32(approach(f64(w.vel.x), f64(fl.x), 1.0, dt))
+            w.vel.z = f32(approach(f64(w.vel.z), f64(fl.y), 1.0, dt))
+            if w.burning > 0.0: w.burning = 0.0
+        path = w.vel * f32(dt)
+        distance = f64(length(path))
+        wall = if distance > 0.00001: raycast(w.pos, path, distance + 0.1, true, false) else: Hit()
+        if wall.hit:
+            w.wall_stop = true
+            w.wall_velocity = w.vel
+            w.pos += normalize(path) * f32(max(0.0, wall.dist - 0.1))
+            into = dot(w.vel, wall.normal)
+            if into < 0.0: w.vel -= wall.normal * into * 1.3
+            w.spin *= 0.5
+        else: w.pos += path
+        if w.tossed: w.tumble += w.spin * dt
+        else: w.rot += w.spin * dt
+        g = ground_at(f64(w.pos.x), f64(w.pos.z), f64(w.pos.y) + 0.3, 0.5, 0.1)
+        if f64(w.pos.y) <= g.y + 0.05:
+            w.pos.y = f32(g.y + 0.05)
+            if abs(w.vel.y) > 2.5:
+                w.vel.y = -w.vel.y * 0.3
+                w.vel.x *= 0.5
+                w.vel.z *= 0.5
+                w.spin *= 0.5
+            else:
+                # roll down slopes a little, then rest
+                n = g.normal
+                w.vel = vec3(n.x, 0, n.z) * 3.0 + vec3(w.vel.x, 0, w.vel.z) * 0.85
+                w.vel.y = 0
+                w.spin *= 0.8
+                if length(w.vel) < 0.3 or n.y > 0.97:
+                    w.resting = true
+                    w.vel = vec3(0, 0, 0)
+                    w.thrown_by_player = false
+
+# the item nearest to a point within reach
+nearest_item = (p: vec3, reach: f64) -> int:
+    best = -1
+    bd = reach
+    loop i in 0.. and w in witems:
+        if not w.alive or w.hang: continue
+        d = f64(length(w.pos - p))
+        if d < bd:
+            sight = w.pos - p
+            if d > 0.001 and raycast(p, sight, max(d - 0.01, 0.001)).hit: continue
+            bd = d
+            best = i
+    best
+
+# ---------------- meshes for items (in the hand and on the ground) ----------------
+struct MeshB:
+    vs: Vertex3D[]
+    idx: u32[]
+
+mb_cyl = (b: mut MeshB, a: vec3, c: vec3, r0: f64, r1: f64, col: vec4, sides: int = 8):
+    d = c - a
+    l = f64(length(d))
+    ax = normalize(d)
+    up = if abs(f64(ax.y)) < 0.9: vec3(0, 1, 0) else: vec3(1, 0, 0)
+    u = normalize(cross(ax, up))
+    v = cross(ax, u)
+    base = u32(b.vs.len())
+    loop i in [0..sides + 1):
+        t = TAU * f64(i) / f64(sides)
+        dir = u * f32(cos(t)) + v * f32(sin(t))
+        b.vs.push(Vertex3D(a + dir * f32(r0), dir, vec2(0, 0), col))
+        b.vs.push(Vertex3D(c + dir * f32(r1), dir, vec2(0, 1), col))
+    loop i in [0..sides):
+        k = base + u32(i * 2)
+        loop q in [k, k + 2, k + 1, k + 2, k + 3, k + 1]: b.idx.push(q)
+
+mb_box = (b: mut MeshB, c: vec3, h: vec3, col: vec4, m: mat4 = mat4()):
+    corners = [v3(-1.0, -1.0, -1.0), v3(1.0, -1.0, -1.0), v3(1.0, 1.0, -1.0), v3(-1.0, 1.0, -1.0),
+               v3(-1.0, -1.0, 1.0), v3(1.0, -1.0, 1.0), v3(1.0, 1.0, 1.0), v3(-1.0, 1.0, 1.0)]
+    faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 4, 7, 3), (1, 2, 6, 5), (3, 7, 6, 2), (0, 1, 5, 4)]
+    loop f in faces:
+        ps = [loop k in [f.0, f.1, f.2, f.3]: transform_point(m, c + corners[k] * h)]
+        n = normalize(cross(ps[1] - ps[0], ps[3] - ps[0]))
+        base = u32(b.vs.len())
+        loop p in ps: b.vs.push(Vertex3D(p, n, vec2(0, 0), col))
+        loop q in [base, base + 1, base + 2, base, base + 2, base + 3]: b.idx.push(q)
+
+mb_sphere = (b: mut MeshB, c: vec3, r: vec3, col: vec4, seg: int = 10):
+    base = u32(b.vs.len())
+    loop i in [0..seg / 2 + 1):
+        th = PI * f64(i) / f64(seg / 2)
+        loop j in [0..seg + 1):
+            ph = TAU * f64(j) / f64(seg)
+            n = v3(sin(th) * cos(ph), cos(th), sin(th) * sin(ph))
+            b.vs.push(Vertex3D(c + n * r, n, vec2(0, 0), col))
+    loop i in [0..seg / 2):
+        loop j in [0..seg):
+            a = base + u32(i * (seg + 1) + j)
+            d = a + u32(seg + 1)
+            loop q in [a, a + 1, d, a + 1, d + 1, d]: b.idx.push(q)
+
+# a flat plate: a closed outline (in the xy plane) given thickness along z, centered at z = z0
+__mb_plate = (b: mut MeshB, pts: vec3[], th: f64, col: vec4, z0: f64 = 0.0):
+    n = pts.len()
+    c = vec3(0, 0, 0)
+    loop q in pts: c = c + q
+    c = c / f32(n)
+    loop side in [-1.0, 1.0]:
+        z = f32(z0 + side * th)
+        nrm = vec3(0, 0, f32(side))
+        base = u32(b.vs.len())
+        b.vs.push(Vertex3D(vec3(c.x, c.y, z), nrm, vec2(0, 0), col))
+        loop q in pts: b.vs.push(Vertex3D(vec3(q.x, q.y, z), nrm, vec2(0, 0), col))
+        loop k in [0..n):
+            a = base + 1 + u32(k)
+            bb = base + 1 + u32((k + 1) % n)
+            if side > 0.0:
+                loop q in [base, bb, a]: b.idx.push(q)
+            else:
+                loop q in [base, a, bb]: b.idx.push(q)
+    # the edge
+    loop k in [0..n):
+        p0 = pts[k]
+        p1 = pts[(k + 1) % n]
+        e = normalize(p1 - p0)
+        nrm = normalize(vec3(e.y, -e.x, 0))
+        base = u32(b.vs.len())
+        loop q in [vec3(p0.x, p0.y, f32(z0 - th)), vec3(p1.x, p1.y, f32(z0 - th)), vec3(p1.x, p1.y, f32(z0 + th)), vec3(p0.x, p0.y, f32(z0 + th))]: b.vs.push(Vertex3D(q, nrm, vec2(0, 0), col))
+        loop q in [base, base + 1, base + 2, base, base + 2, base + 3]: b.idx.push(q)
+
+# The collision segment and trail end at the rendered mesh's tip, measured from the grip.
+weapon_length = (d: ItemDef) -> f64:
+    match d.shape:
+        sword: 0.7656
+        broadsword: 0.99
+        claymore: 1.33
+        spear: 1.25
+        axe: 0.75
+        torch: 0.82
+        club: 0.86
+        _: 0.86
+
+# local frame: the grip at the origin, the weapon along +y
+__shape_mesh = (s: IShape) -> Mesh:
+    b = MeshB()
+    wood = rgb(0.45, 0.32, 0.2)
+    steel = rgb(0.78, 0.79, 0.82)
+    leather = rgb(0.35, 0.22, 0.14)
+    match s:
+        branch:
+            # a crooked stick: a knot halfway, two twigs, a few leaves still on it
+            mb_cyl(b, v3(0.0, -0.15, 0.0), v3(0.01, 0.4, 0.01), 0.035, 0.028, wood, 7)
+            mb_cyl(b, v3(0.01, 0.4, 0.01), v3(-0.02, 0.86, 0.03), 0.028, 0.018, wood, 7)
+            mb_sphere(b, v3(0.012, 0.4, 0.012), v3(0.036, 0.04, 0.036), darken(wood, 0.2), 6)
+            mb_cyl(b, v3(0.0, 0.45, 0.0), v3(0.13, 0.68, 0.0), 0.016, 0.008, wood, 5)
+            mb_cyl(b, v3(-0.01, 0.62, 0.01), v3(-0.1, 0.78, -0.02), 0.012, 0.006, wood, 5)
+            loop q in [v3(0.14, 0.7, 0.0), v3(0.1, 0.66, 0.03), v3(-0.11, 0.8, -0.02)]: mb_sphere(b, q, v3(0.04, 0.025, 0.03), rgb(0.3, 0.5, 0.18), 6)
+        torch:
+            mb_cyl(b, v3(0.0, -0.15, 0.0), v3(0.0, 0.7, 0.0), 0.03, 0.028, wood)
+            mb_cyl(b, v3(0.0, 0.62, 0.0), v3(0.0, 0.82, 0.0), 0.05, 0.045, rgb(0.55, 0.45, 0.35))
+        club:
+            # One crooked wooden limb, swollen at the striking end. The grip and
+            # 0.86 m endpoint stay on the production contact segment.
+            base = b.vs.len()
+            rings = [vec4(0.0,-0.15,0.0,0.03),vec4(0.0,0.10,0.0,0.039),
+                vec4(0.012,0.44,-0.006,0.069),vec4(0.006,0.70,0.0,0.104),vec4(0.0,0.81,0.0,0.077)]
+            loop j in [0..rings.len()):
+                r = rings[j]
+                loop k in [0..8):
+                    a = TAU*f64(k)/7.0
+                    n = v3(cos(a),0.0,sin(a))
+                    col = darken(wood,0.06+0.27*(0.5+0.5*sin(a*3.0+f64(j)*0.8)))
+                    b.vs.push(Vertex3D(r.xyz+n*r.w,n,vec2(0,0),col))
+            loop j in [0..rings.len()-1):
+                loop k in [0..7):
+                    a = u32(base+j*8+k)
+                    loop v in [a,a+8,a+1,a+1,a+8,a+9]: b.idx.push(v)
+            mb_sphere(b, v3(0.0, 0.81, 0.0), v3(0.077, 0.05, 0.077), wood, 7)
+            mb_cyl(b, v3(0.0, -0.12, 0.0), v3(0.0, 0.08, 0.0), 0.037, 0.037, leather)
+            # Bindings sit on the limb; the old uniform rings floated off the taper.
+            mb_cyl(b,v3(0.011,0.42,-0.006),v3(0.013,0.46,-0.005),0.070,0.076,rgb(0.19,0.12,0.075),8)
+            mb_cyl(b,v3(0.008,0.62,-0.002),v3(0.007,0.66,-0.001),0.098,0.103,rgb(0.19,0.12,0.075),8)
+            mb_cyl(b,v3(0.011,0.42,-0.006),v3(0.0115,0.429,-0.006),0.071,0.073,rgb(0.52,0.36,0.22),8)
+            mb_cyl(b,v3(0.008,0.62,-0.002),v3(0.0078,0.629,-0.002),0.099,0.101,rgb(0.52,0.36,0.22),8)
+            loop k in [0..4):
+                a = f64(k) * TAU / 4.0 + 0.4
+                bp = v3(cos(a) * 0.095, 0.7, sin(a) * 0.095)
+                mb_cyl(b, bp, v3(cos(a)*0.15,0.74,sin(a)*0.15), 0.022, 0.0, rgb(0.88, 0.85, 0.75), 4)
+        sword, broadsword, claymore:
+            # The Traveler's Sword has a thin steel section and a restrained
+            # cutting edge; the larger blades retain their heavier construction.
+            hw = if s == .sword: 0.065 else: (if s == .broadsword: 0.085 else: 0.105)
+            ln = if s == .sword: 0.76 else: (if s == .broadsword: 0.88 else: 1.22)
+            gl = if s == .claymore: 0.36 else: 0.2
+            blade: vec3[]
+            loop q in [v3(-hw, 0.11, 0.0), v3(hw, 0.11, 0.0), v3(hw*0.84, 0.11 + ln * 0.82, 0.0), v3(0.0, 0.11 + ln, 0.0), v3(-hw*0.84, 0.11 + ln * 0.82, 0.0)]: blade.push(q)
+            thin = s == .sword
+            thickness = if thin: 0.004 else: 0.012
+            face_z = if thin: 0.0045 else: 0.013
+            __mb_plate(b, blade, thickness, if thin: rgb(0.38, 0.46, 0.53) else: rgb(0.39, 0.47, 0.56))
+            loop face in [-1.0, 1.0]:
+                mb_box(b, v3(0.0, 0.11 + ln * 0.4, face*face_z), v3(hw * (if thin: 0.07 else: 0.18), ln * 0.36, if thin: 0.0005 else: 0.002), if thin: rgb(0.36, 0.43, 0.48) else: rgb(0.17, 0.23, 0.29))
+                loop side in [-1.0, 1.0]:
+                    inner_base = if thin: 0.78 else: 0.70
+                    inner_tip = if thin: 0.65 else: 0.57
+                    inner_y = if thin: 0.81 else: 0.79
+                    pts = [v3(side*hw*inner_base,0.11,0.0),v3(side*hw,0.11,0.0),v3(side*hw*0.84,0.11+ln*0.82,0.0),v3(0.0,0.11+ln,0.0),v3(side*hw*inner_tip,0.11+ln*inner_y,0.0)]
+                    __mb_plate(b, pts, if thin: 0.0005 else: 0.002, if thin: rgb(0.72, 0.78, 0.84) else: rgb(0.96, 0.98, 1.0), face*face_z)
+            gw = if s == .sword: 0.13 else: (if s == .broadsword: 0.17 else: 0.23)
+            mb_box(b, v3(0.0, 0.1, 0.0), v3(gw, 0.018, 0.028), rgb(0.5, 0.45, 0.36))
+            loop sx in [-1.0, 1.0]: mb_box(b, v3(sx * gw * 0.98, 0.085, 0.0), v3(0.016, 0.03, 0.026), rgb(0.5, 0.45, 0.36))
+            mb_cyl(b, v3(0.0, 0.09 - gl, 0.0), v3(0.0, 0.09, 0.0), 0.021, 0.021, leather, 7)
+            loop k in [0..4): mb_cyl(b, v3(0.0, 0.09 - gl * (f64(k) + 0.5) / 4.0 - 0.005, 0.0), v3(0.0, 0.09 - gl * (f64(k) + 0.5) / 4.0 + 0.005, 0.0), 0.024, 0.024, darken(leather, 0.3), 7)
+            mb_sphere(b, v3(0.0, 0.07 - gl, 0.0), v3(0.03, 0.03, 0.03), rgb(0.55, 0.5, 0.4), 7)
+        firewood:
+            loop k in [0..5):
+                x=f64(k%3-1)*0.095
+                y=0.055+f64(k/3)*0.08
+                mb_cyl(b,v3(x,y,-0.28),v3(x,y,0.28),0.05,0.047,wood,7)
+                mb_sphere(b,v3(x,y,0.282),v3(0.038,0.038,0.003),rgb(0.70,0.5,0.28),8)
+            loop z in [-0.13,0.13]: mb_box(b,v3(0.0,0.075,z),v3(0.15,0.008,0.012),rgb(0.37,0.31,0.21))
+        axe:
+            mb_cyl(b, v3(0.0, -0.3, 0.0), v3(0.0, 0.75, 0.0), 0.026, 0.026, wood)
+            mb_box(b, v3(0.1, 0.62, 0.0), v3(0.11, 0.09, 0.012), rgb(0.6, 0.6, 0.62))
+        spear:
+            mb_cyl(b, v3(0.0, -0.8, 0.0), v3(0.0, 1.0, 0.0), 0.022, 0.022, wood)
+            mb_cyl(b, v3(0.0, 1.0, 0.0), v3(0.0, 1.25, 0.0), 0.035, 0.0, steel, 4)
+        lid:
+            # a pot lid: a shallow dome of planks with an iron band and a knob
+            mb_cyl(b, v3(0.0, 0.0, -0.02), v3(0.0, 0.0, 0.02), 0.28, 0.27, rgb(0.55, 0.4, 0.25), 16)
+            mb_cyl(b, v3(0.0, 0.0, 0.02), v3(0.0, 0.0, 0.045), 0.24, 0.12, rgb(0.5, 0.36, 0.22), 16)
+            mb_cyl(b, v3(0.0, 0.0, -0.025), v3(0.0, 0.0, 0.025), 0.285, 0.285, rgb(0.3, 0.3, 0.32), 16)
+            mb_sphere(b, v3(0.0, 0.0, 0.06), v3(0.035, 0.035, 0.03), rgb(0.35, 0.25, 0.15), 8)
+        boko_shield:
+            # planks of different lengths lashed to two cross bars
+            loop k in [0..4):
+                x = -0.2 + f64(k) * 0.133
+                h = 0.3 + f64((k * 7) % 3) * 0.04
+                mb_box(b, v3(x, f64(k % 2) * 0.02, 0.0), v3(0.06, h, 0.025), rgb(0.5 - f64(k) * 0.03, 0.36, 0.23))
+            loop y in [-0.15, 0.15]: mb_box(b, v3(0.0, y, 0.035), v3(0.29, 0.03, 0.015), rgb(0.35, 0.25, 0.16))
+        shield:
+            # Traveler's Shield: warm wooden boards inside a weathered iron rim.
+            outline: vec3[]
+            loop k in [0..17):
+                t = f64(k) / 16.0
+                # down one side from the top corner to the point
+                outline.push(v3(0.22 * cos(t * 1.25), 0.24 - 0.5 * t * t - 0.04 * t, 0.0))
+            pts: vec3[]
+            loop q in outline: pts.push(q)
+            loop k in [0..17): pts.push(v3(-f64(outline[16 - k].x), f64(outline[16 - k].y), 0.0))
+            __mb_plate(b, pts, 0.02, rgb(0.36, 0.33, 0.3))
+            inner: vec3[]
+            loop q in pts: inner.push(v3(f64(q.x) * 0.88, f64(q.y) * 0.9 + 0.006, 0.0))
+            __mb_plate(b, inner, 0.008, rgb(0.52, 0.34, 0.18), 0.024)
+            # Long grain follows each board; two slender iron straps hold them.
+            loop k in [0..9):
+                x = -0.16 + f64(k) * 0.04
+                t = min(1.0, acos((abs(x) + 0.012) / (0.22 * 0.88)) / 1.25)
+                bot = (0.24 - 0.5 * t * t - 0.04 * t) * 0.9 + 0.016
+                top = 0.21
+                mb_box(b, v3(x, (top + bot) * 0.5, 0.033), v3(0.012, (top - bot) * 0.5, 0.001), rgb(0.46 + f64(k % 3) * 0.035, 0.29 + f64(k % 3) * 0.027, 0.145))
+            loop x in [-0.12, -0.04, 0.04, 0.12]:
+                t = min(1.0, acos(abs(x) / (0.22 * 0.88)) / 1.25)
+                bot = (0.24 - 0.5 * t * t - 0.04 * t) * 0.9 + 0.014
+                mb_box(b, v3(x, (0.21 + bot) * 0.5, 0.035), v3(0.002, (0.21 - bot) * 0.5, 0.001), rgb(0.24, 0.15, 0.085))
+            loop y in [-0.11, 0.135]:
+                width = if y < 0.0: 0.098 else: 0.17
+                mb_box(b, v3(0.0, y, 0.038), v3(width, 0.012, 0.005), rgb(0.30, 0.30, 0.27))
+            loop k in [0..14):
+                q = pts[k * pts.len() / 14]
+                mb_sphere(b, v3(f64(q.x) * 0.94, f64(q.y) * 0.95 + 0.003, 0.026), v3(0.011, 0.011, 0.008), rgb(0.55, 0.55, 0.55), 5)
+        bow:
+            loop i in [0..8):
+                a0 = -1.0 + f64(i) / 8.0 * 2.0
+                a1 = -1.0 + f64(i + 1) / 8.0 * 2.0
+                mb_cyl(b, v3((1.0 - cos(a0 * 1.1)) * 0.32, a0 * 0.55, 0.0), v3((1.0 - cos(a1 * 1.1)) * 0.32, a1 * 0.55, 0.0), 0.022, 0.022, wood, 5)
+            mb_cyl(b, v3(0.177, -0.55, 0.0), v3(0.177, 0.55, 0.0), 0.004, 0.004, rgb(0.9, 0.9, 0.85), 3)
+        arrows:
+            mb_cyl(b, v3(0.0, -0.4, 0.0), v3(0.0, 0.4, 0.0), 0.008, 0.008, wood, 4)
+            mb_cyl(b, v3(0.0, 0.4, 0.0), v3(0.0, 0.48, 0.0), 0.015, 0.0, steel, 4)
+        apple: mb_sphere(b, v3(0.0, 0.05, 0.0), v3(0.06, 0.055, 0.06), rgb(0.85, 0.12, 0.1))
+        baked_apple: mb_sphere(b, v3(0.0, 0.04, 0.0), v3(0.06, 0.045, 0.06), rgb(0.5, 0.2, 0.08))
+        mushroom:
+            mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.0, 0.07, 0.0), 0.015, 0.012, rgb(0.9, 0.88, 0.8))
+            mb_sphere(b, v3(0.0, 0.08, 0.0), v3(0.05, 0.025, 0.05), rgb(0.85, 0.75, 0.5))
+        roasted: mb_sphere(b, v3(0.0, 0.04, 0.0), v3(0.05, 0.035, 0.05), rgb(0.45, 0.3, 0.2))
+        roasted_pepper: mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.06, 0.1, 0.0), 0.025, 0.004, rgb(0.55, 0.15, 0.08))
+        pepper: mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.06, 0.1, 0.0), 0.025, 0.004, rgb(0.9, 0.15, 0.1))
+        meat, steak: mb_sphere(b, v3(0.0, 0.05, 0.0), v3(0.09, 0.05, 0.07), if s == .meat: rgb(0.75, 0.3, 0.3) else: rgb(0.45, 0.22, 0.12))
+        fish:
+            mb_sphere(b, v3(0.0, 0.05, 0.0), v3(0.12, 0.05, 0.04), rgb(0.45, 0.65, 0.5), 8)
+            mb_cyl(b, v3(-0.09, 0.05, 0.0), v3(-0.17, 0.05, 0.0), 0.015, 0.055, rgb(0.35, 0.5, 0.4), 4)
+        drumstick:
+            mb_cyl(b, v3(-0.08, 0.04, 0.0), v3(0.03, 0.04, 0.0), 0.015, 0.015, rgb(0.9, 0.85, 0.7), 6)
+            mb_sphere(b, v3(0.05, 0.05, 0.0), v3(0.065, 0.045, 0.045), rgb(0.8, 0.4, 0.35), 8)
+        herb:
+            loop i in [0..4): mb_cyl(b, v3(0.0, 0.0, 0.0), v3(cos(f64(i) * 1.6) * 0.05, 0.12, sin(f64(i) * 1.6) * 0.05), 0.012, 0.004, rgb(0.35, 0.7, 0.25), 4)
+        rock: mb_sphere(b, v3(0.0, 0.0, 0.0), v3(0.15, 0.12, 0.13), rgb(0.42, 0.4, 0.35), 6)
+        frog:
+            mb_sphere(b, v3(0.0, 0.05, 0.0), v3(0.06, 0.045, 0.075), rgb(0.32, 0.55, 0.22), 8)
+            loop sx in [-1.0, 1.0]: mb_box(b, v3(sx * 0.06, 0.02, -0.04), v3(0.03, 0.012, 0.045), rgb(0.32, 0.55, 0.22))
+        lizard:
+            mb_sphere(b, v3(0.0, 0.03, 0.02), v3(0.035, 0.022, 0.08), rgb(0.2, 0.42, 0.55), 6)
+            mb_cyl(b, v3(0.0, 0.025, -0.05), v3(0.0, 0.015, -0.22), 0.02, 0.002, rgb(0.85, 0.45, 0.15), 5)
+        firefly: mb_sphere(b, v3(0.0, 0.03, 0.0), v3(0.018, 0.018, 0.035), rgb(0.85, 1.0, 0.45), 6)
+        ore: mb_sphere(b, v3(0.0, 0.05, 0.0), v3(0.05, 0.06, 0.05), rgb(0.95, 0.6, 0.15), 6)
+        acorn:
+            mb_sphere(b, v3(0.0, 0.04, 0.0), v3(0.035, 0.05, 0.035), rgb(0.55, 0.38, 0.2), 8)
+            mb_cyl(b, v3(0.0, 0.06, 0.0), v3(0.0, 0.08, 0.0), 0.04, 0.035, rgb(0.3, 0.2, 0.12), 8)
+        skewer:
+            mb_cyl(b, v3(-0.15, 0.05, 0.0), v3(0.15, 0.05, 0.0), 0.005, 0.005, wood, 4)
+            loop x in [-0.08, 0.0, 0.08]: mb_box(b, v3(x, 0.05, 0.0), v3(0.03, 0.025, 0.03), rgb(0.5, 0.25, 0.14))
+        dish:
+            mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.0, 0.05, 0.0), 0.06, 0.1, rgb(0.8, 0.72, 0.55), 12)
+            loop x in [-0.04, 0.04]: mb_sphere(b, v3(x, 0.06, 0.0), v3(0.035, 0.025, 0.035), rgb(0.8, 0.3, 0.2), 8)
+        orb: mb_sphere(b, v3(0.0, 0.0, 0.0), v3(0.12, 0.12, 0.12), rgb(1.0, 0.8, 0.4), 12)
+        _: mb_box(b, v3(0.0, 0.05, 0.0), v3(0.12, 0.05, 0.12), rgb(0.6, 0.5, 0.4))
+    if s == .sword:
+        loop mut v in b.vs: v.pos = v.pos * vec3(0.88, 0.88, 0.88)
+    mesh(b.vs, b.idx)
+
+shape_meshes: {int: Mesh} = {}
+shape_mesh = (s: IShape) -> Mesh:
+    if let m = shape_meshes.get(int(s)): return m
+    m = __shape_mesh(s)
+    shape_meshes[int(s)] = m
+    m
+
+# Rotate a thrown weapon about its center in its flight plane. Grounded props
+# retain their ordinary flat pose; the same transform is exposed to visual checks.
+world_item_transform = (w: WItem) -> mat4:
+    d = item(w.id)
+    m = translation(w.pos) * rotation_y(w.rot)
+    if w.tossed and not w.resting and d.kind == .weapon:
+        return m * rotation_x(w.tumble) * translation(v3(0.0, -weapon_length(d) * 0.35, 0.0))
+    if d.kind == .weapon or d.kind == .bow or d.kind == .arrows: m = m * rotation_z(PI / 2.0) * translation(v3(0.0, -0.35, 0.03))
+    if d.kind == .shield: m = m * rotation_x(PI / 2.0) * translation(v3(0.0, 0.0, -0.03))
+    m
+
+# items lying around: on the ground they lie flat, weapons on their side
+draw_world_items = (cam: vec3):
+    loop w in witems:
+        if not w.alive: continue
+        if f64(length(w.pos - cam)) > 90.0: continue
+        d = item(w.id)
+        m = world_item_transform(w)
+        tint = lerp(1.0, 0.12, w.char)
+        shrink = 1.0 - smoothstep(0.8, 1.0, w.char) * 0.95
+        m = m * scaling(v3(shrink, shrink, shrink))
+        glow = if w.burning > 0.0: 0.6 else: 0.0
+        draw_prop(shape_mesh(d.shape), m, rgba(tint, tint, tint, 1.0), glow, 0.35)
+
+# Inventory entries own their elemental state even when another copy is equipped.
+# Arrays are padded for legacy saves and direct fixture inventories.
+gear_elements_sync = ():
+    loop inv.weapon_effects.len() < inv.weapons.len(): inv.weapon_effects.push(Elem())
+    loop inv.shield_effects.len() < inv.shields.len(): inv.shield_effects.push(Elem())
+    loop inv.bow_effects.len() < inv.bows.len(): inv.bow_effects.push(Elem())
+    if held_index < 0 and held_id == equipped_weapon(): held_index = inv.weapon
+    if held_index >= 0 and held_index < inv.weapons.len() and inv.weapons[held_index] == held_id and held_revision == inv.weapon_revision:
+        inv.weapon_effects[held_index] = held_el
+    if shield_el.index < 0 and shield_el.id == equipped_shield(): shield_el.index = inv.shield
+    if shield_el.index >= 0 and shield_el.index < inv.shields.len() and inv.shields[shield_el.index] == shield_el.id and shield_el.revision == inv.shield_revision:
+        inv.shield_effects[shield_el.index] = shield_el.el
+    if bow_el.index < 0 and bow_el.id == equipped_bow(): bow_el.index = inv.bow
+    if bow_el.index >= 0 and bow_el.index < inv.bows.len() and inv.bows[bow_el.index] == bow_el.id and bow_el.revision == inv.bow_revision:
+        inv.bow_effects[bow_el.index] = bow_el.el
+
+gear_element = (kind: IKind, index: int) -> Elem:
+    gear_elements_sync()
+    effects = if kind == .weapon: inv.weapon_effects else: (if kind == .shield: inv.shield_effects else: inv.bow_effects)
+    if index >= 0 and index < effects.len(): return effects[index]
+    Elem()
+
+drop_gear = (kind: IKind, index: int, pos: vec3, vel: vec3) -> int:
+    el = gear_element(kind, index)
+    id = inv_remove_gear(kind, index)
+    if id == "": return -1
+    spawn_item(id, pos, vel, dropped = true, el = el)
+
+pickup_item = (wi: int) -> bool:
+    if wi < 0 or wi >= witems.len() or not witems[wi].alive: return false
+    gear_elements_sync()
+    w = witems[wi]
+    if not inv_add(w.id): return false
+    kind = item(w.id).kind
+    index = -1
+    if kind == .weapon:
+        index = inv.weapons.len() - 1
+        inv.weapon_effects.push(w.el)
+        if index == inv.weapon:
+            held_id = w.id
+            held_index = index
+            held_revision = inv.weapon_revision
+            held_el = w.el
+    else if kind == .shield:
+        index = inv.shields.len() - 1
+        inv.shield_effects.push(w.el)
+        if index == inv.shield: shield_el = CarriedElem(w.id, inv.shield_revision, index, w.el)
+    else if kind == .bow:
+        index = inv.bows.len() - 1
+        inv.bow_effects.push(w.el)
+        if index == inv.bow: bow_el = CarriedElem(w.id, inv.bow_revision, index, w.el)
+    witems[wi].alive = false
+    placement_collect(witems[wi])
+    true
+
+# Placed gear, arrow bundles and prepared foods never respawn. Foraged natural
+# materials regrow after two hours of unpaused simulation and outside 80 m.
+# Save/reload preserves the remaining timer; wall time offline does not count.
+const MATERIAL_REGROW = 7200.0
+struct CollectedPlacement:
+    key: str
+    remaining = -1.0             # -1 is permanent
+collected_placements: CollectedPlacement[]
+placement_revision = 0
+placement_regrows = (id: str) -> bool: ["apple", "shroom", "pepper", "herb", "acorn"].contains(id)
+spawn_placement = (id: str, source_pos: vec3, pos: vec3, hang: bool = false) -> int:
+    i = spawn_item(id, pos, resting = true)
+    witems[i].placement = "{id}:{source_pos.x:.4}:{source_pos.y:.4}:{source_pos.z:.4}"
+    witems[i].hang = hang
+    witems[i].placement_id = id
+    witems[i].placement_pos = pos
+    witems[i].placement_hang = hang
+    i
+placement_collect = (w: WItem):
+    if w.placement == "": return
+    loop r in collected_placements:
+        if r.key == w.placement: return
+    collected_placements.push(CollectedPlacement(w.placement, (if placement_regrows(w.placement_id): MATERIAL_REGROW else: -1.0)))
+    placement_revision += 1
+placements_update = (dt: f64):
+    # Burning/consuming a placement is also removal, not a source of fresh gear.
+    loop w in witems:
+        if not w.alive: placement_collect(w)
+    regrown = false
+    loop mut r in collected_placements:
+        if r.remaining < 0.0: continue
+        r.remaining = max(0.0, r.remaining - dt)
+        if r.remaining > 0.0: continue
+        loop mut w in witems:
+            if w.placement != r.key or length(w.placement_pos - pl_placement_pos()) < 80.0: continue
+            w.alive = true
+            w.id = w.placement_id
+            w.pos = w.placement_pos
+            w.hang = w.placement_hang
+            w.resting = true
+            w.vel = vec3(0, 0, 0)
+            w.el = Elem()
+            w.burning = 0.0
+            w.char = 0.0
+            r.key = ""
+            regrown = true
+            placement_revision += 1
+            break
+    if regrown: collected_placements = [loop r in collected_placements: if r.key != "": r]
+# Installed by main/save; avoids coupling the item module to player simulation.
+pl_placement_pos: () -> vec3 = (): vec3(0, 0, 0)

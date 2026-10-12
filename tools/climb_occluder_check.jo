@@ -1,0 +1,38 @@
+# Production architecture fragment shader: a support at Link's depth must
+# disappear completely, while the held shaft and its shadow remain solid.
+# Caller owns one render lock.
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/post.jo'
+
+climb_fixture_vs = (v: FsVert, u: BuildU) -> BuildO:
+    BuildO(vec4(v.pos,0,1),vec3(v.pos.x*0.2,0.9+v.pos.y*0.1,0),vec3(0,0,1),vec4(0.45,0.25,0.12,1),vec4(0,0,0,1))
+
+window("Climbing support regression",128,128)
+sh = make_sh(shader(climb_fixture_vs,build_fs))
+rt = make_target(128,128,false,false)
+gl_delete_texture(rt.color.id)
+rt.color = color_texture(128,128,GL_RGBA32F,GL_RGBA,GL_FLOAT,GL_NEAREST)
+glBindFramebuffer(GL_FRAMEBUFFER,u32(rt.fbo))
+glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,u32(rt.color.id),0)
+assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+u = BuildU(cam = vec3(0,2,5),player = vec3(0,0,0),fade_width = 2.4,keep_center = vec2(-3,0),keep_radius = 1.0)
+values = fill(f32(0),128*128*4)
+loop mode in [0..3):
+    bind_target(rt)
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_BLEND)
+    glDisable(GL_CULL_FACE)
+    glClearColor(0,0,0,0)
+    glClear(GL_COLOR_BUFFER_BIT)
+    u.keep_center = if mode == 1: vec2(0,0) else: vec2(-3,0)
+    u.shadow_pass = if mode == 2: 1.0 else: 0.0
+    draw_fast(sh,fullscreen_mesh(),u)
+    gl_read_pixels_f32(0,0,128,128,data(values) as *u8)
+    loop pixel in [0..128*128):
+        alpha = values[pixel*4+3]
+        if mode == 0: assert(alpha == 0.0,"climbing support leaves no ghost pigment or depth fragments")
+        else: assert(alpha >= 0.85,"held shaft and support shadow retain full coverage")
+print("PASS climb occluder: 16384 cleared support pixels; held shaft and shadow fully opaque")
+glBindFramebuffer(GL_FRAMEBUFFER,0)
+free_target(rt)

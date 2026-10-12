@@ -1,0 +1,371 @@
+# Generated CPU-only imports use production modules; only GPU uploads are disabled.
+use 'game/gfx.jo'
+use 'game/terrain.jo'
+use 'game/water.jo'
+use 'game/worldgen.jo'
+use 'game/structures.jo'
+use 'game/interiors.jo'
+use 'game/build.jo'
+use 'game/vegetation.jo'
+use 'game/player.jo'
+use 'game/physics.jo'
+use 'game/input.jo'
+use 'game/items.jo'
+use 'game/interact.jo'
+use 'game/story.jo'
+use 'game/shrines.jo'
+use 'game/camera.jo'
+from 'game/camera.jo' import __camera_turn
+use 'game/env.jo'
+use 'game/fx.jo'
+use 'game/chars.jo'
+use 'game/render.jo'
+use 'game/enemies.jo'
+use 'game/talus.jo'
+
+const DT = 1.0 / 60.0
+keyboard = env("JOURNEY_KEYBOARD") != none
+keyboard_turns = 0
+keyboard_pitches = 0
+keyboard_moves = 0
+keyboard_prev = fill(false, 128)
+frames = 0
+distance = 0.0
+max_slope = 0.0
+outs = 0
+falls = 0
+hard_falls = 0
+stucks = 0
+climb_seconds = 0.0
+trace: str[]
+fail = (message: str):
+    write_file("build/journey-check/trace.csv", join(trace, "\n"))
+    eprint("FAIL journey: {message}; frame {frames}, position {pl.pos}, state {pl.state}, HP {pl.hp}, stamina {pl.stamina:.1}")
+    exit(1)
+
+__audio_state = 2
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+# Assign the imported production buffer from a function; a top-level binding
+# would shadow terrain.jo's burn_px and leave vegetation's query buffer empty.
+journey_burn_setup = ():
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+journey_burn_setup()
+sor_interior()
+structures_build()
+vegetation_place()
+items_init()
+story_setup()
+shrines_setup()
+# Include the real forest encounter in both the route survey and live controller
+# run. Other field fights remain covered by the dedicated combat journey tests.
+loop a in actors:
+    if a.name != "Enemy_Golem_Junior": continue
+    x = f64(a.pos.x)
+    z = f64(a.pos.z)
+    if in_bounds(x,z) and edge_at(x,z) < -4.0: spawn_enemy(.talus,v3(x,height_at(x,z),z))
+assert(enemies.len()==1,"journey contains the Plateau forest Talus")
+talus_closest = 1e9
+
+# The first position is the specified test start, not a route leg placement.
+start = SOR_MOUTH
+start.y = f32(height_at(f64(start.x), f64(start.z)))
+goals = [start, TOWER_PEDESTAL + vec3(0, 0, 1.8)]
+loop name in ["Ohman Ow", "Jaba Badge", "Owa Dime", "Kay Nomut"]:
+    loop s in shrines:
+        if s.name == name: goals.push(s.pos)
+goals.push(lp(TEMPLE, TEMPLE_ROT, 8.5, 0.0, 36.0))
+if args().len() > 1 and args()[1] == "survey":
+    rows: str[]
+    edges: str[]
+    loop z in [1450..2370):
+        if z % 2 != 0: continue
+        loop x in [-1540..-390):
+            if x % 2 != 0: continue
+            h = height_at(f64(x), f64(z))
+            n = normal_at(f64(x), f64(z))
+            slope = acos(clamp(f64(n.y), -1.0, 1.0))
+            p = v3(f64(x), h, f64(z))
+            delta = push_out(p, 1.2, HEIGHT)
+            clear = edge_at(f64(x), f64(z)) < -6.0 and slope < 1.55 and water_depth(f64(x), f64(z)) < 0.6 and length(delta) < 0.01
+            rows.push("{x},{z},{h:.4},{slope:.4},{(if clear: 1 else: 0)}")
+            if clear:
+                # Two-metre endpoint samples miss short cliff lips. Survey the
+                # entire directed edge; steep ascents can climb, descents route
+                # around the ledge instead of letting go over an unseen drop.
+                loop d in [vec2(2,0),vec2(-2,0),vec2(0,2),vec2(0,-2),vec2(2,2),vec2(2,-2),vec2(-2,2),vec2(-2,-2)]:
+                    previous = h
+                    safe = true
+                    step = f64(length(d)) / 8.0
+                    loop k in [1..9):
+                        t = f64(k) / 8.0
+                        y = height_at(f64(x) + f64(d.x)*t, f64(z) + f64(d.y)*t)
+                        if previous - y > step * 2.0: safe = false
+                        previous = y
+                    if not safe: edges.push("{x},{z},{int(d.x)},{int(d.y)}")
+    write_file("build/journey-check/survey.csv", join(rows, "\n"))
+    write_file("build/journey-check/unsafe-edges.csv", join(edges, "\n"))
+    write_file("build/journey-check/goals.csv", join([loop p in goals: "{p.x},{p.y},{p.z}"], "\n"))
+    print("PASS journey survey: {rows.len()} cells, {colliders.len()} production colliders, {places.len()} vegetation placements")
+    exit(0)
+
+start_player = ():
+    story = Story(slate = true, door1_open = true, door2_open = true, title_done = true, beat = .explore)
+    pl = Player(pos = start, last_safe = start)
+    pl.ground = ground_at(f64(start.x), f64(start.z), f64(start.y), 0.5, RADIUS)
+    cam_yaw_global = 0.0
+start_player()
+seed_random(52)
+
+# Steering requests remain route-planner output. Keyboard mode turns them into
+# actual discrete, held/released keys before production input_update; no analog
+# Actions, pointer events or direct camera assignments drive its journey.
+keyboard_input = (request: Actions):
+    down = fill(false, 128)
+    moving = length(request.move) > 0.01
+    turn = 0.0
+    if moving and pl.state != .climb:
+        desired = yaw_of(vec3(request.move.x, 0, -request.move.y))
+        turn = wrap_angle(desired - cam.yaw)
+        if turn < -0.02: down[int(input_key(17))] = true
+        if turn > 0.02: down[int(input_key(18))] = true
+        if pl.state == .air or request.jump:
+            # Airborne wall catches and a backwards rim hop must respond before
+            # the camera finishes turning. Choose the nearest of eight key directions.
+            side = sin(turn)
+            forward = cos(turn)
+            if side < -0.38: down[int(input_key(13))] = true
+            if side > 0.38: down[int(input_key(14))] = true
+            if forward > 0.38: down[int(input_key(15))] = true
+            if forward < -0.38: down[int(input_key(16))] = true
+        else if abs(turn) < 0.2: down[int(input_key(15))] = true
+    else if moving:
+        # Wall climbing uses surface-local controls, independent of camera yaw.
+        if request.move.x < -0.38: down[int(input_key(13))] = true
+        if request.move.x > 0.38: down[int(input_key(14))] = true
+        if request.move.y > 0.38: down[int(input_key(15))] = true
+        if request.move.y < -0.38: down[int(input_key(16))] = true
+    if f64(length(request.move)) < 0.55 and moving: down[int(input_key(21))] = true
+    # Look up during ascent and back to the travel view on foot, using keys only.
+    pitch = if pl.state == .climb: -0.2 else: 0.22
+    if cam.pitch < pitch - 0.014: down[int(input_key(20))] = true
+    if cam.pitch > pitch + 0.014: down[int(input_key(19))] = true
+    down[int(input_key(0))] = request.jump or (keyboard_prev[int(input_key(0))] and request.jump_held and pl.state == .air and pl.vel.y > 0)
+    down[int(input_key(1))] = request.sprint and abs(turn) < 0.2
+    down[int(input_key(3))] = request.interact
+    __key_down = down
+    __key_pressed = [loop i in [0..128): down[i] and not keyboard_prev[i]]
+    __key_released = [loop i in [0..128): keyboard_prev[i] and not down[i]]
+    __key_typed = [loop pressed in __key_pressed: pressed]
+    keyboard_prev = down
+    input_update(DT, false)
+    assert(not act.using_pad and not act.mouse_look and not gamepad_connected() and length(mouse_delta()) == 0.0)
+    if act.look.x != 0.0: keyboard_turns += 1
+    if act.look.y != 0.0: keyboard_pitches += 1
+    if length(act.move) > 0.0: keyboard_moves += 1
+    # The production orientation solve shared by movement and the full camera.
+    # GPU/lens positioning is immaterial to this CPU navigation fixture.
+    __camera_turn(DT)
+    cam_yaw_global = cam.yaw
+
+tick = (a: Actions = Actions()):
+    old = pl.pos
+    state = pl.state
+    if keyboard: keyboard_input(a)
+    else:
+        act = a
+        cam_yaw_global = 0.0
+    use_terrain = zone_at(pl.pos + vec3(0, 1, 0)) == ""
+    story_update(DT)
+    if pl.state == .ground and act.interact:
+        u = usable_near(pl.pos, forward_of(pl.face))
+        if u >= 0: use_it(u)
+    player_update(DT)
+    enemies_update(DT,false)
+    talus_closest = min(talus_closest,f64(length(pl.pos.xz-enemies[0].home.xz)))
+    fx_update(DT)
+    frames += 1
+    delta = f64(length(pl.pos - old))
+    if delta > 3.0: fail("unexpected player displacement {delta:.3} m")
+    if frames % 30 == 0:
+        trace.push("{frames},{pl.pos.x:.4},{pl.pos.y:.4},{pl.pos.z:.4},{pl.stamina:.2},{pl.hp},{pl.state}")
+    distance += delta
+    if pl.state == .climb or pl.pos.y > old.y + 0.0001:
+        slope = if pl.state == .climb: acos(clamp(f64(pl.climb_n.y), -1.0, 1.0)) else: acos(clamp(f64(pl.ground.normal.y), -1.0, 1.0))
+        max_slope = max(max_slope, slope * 180.0 / PI)
+    if pl.state == .climb: climb_seconds += DT
+    if pl.events.contains("exhausted"): outs += 1
+    if pl.landed and pl.air_peak - f64(pl.pos.y) > 1.0: falls += 1
+    if pl.landed and pl.land_hard:
+        hard_falls += 1
+        print("journey: hard landing frame {frames} at {pl.pos}; drop {pl.air_peak-f64(pl.pos.y):.3}m")
+    if pl.state == .dead or pl.hp <= 0: fail("player died")
+    if pl.pos.y < -100.0: fail("fell off plateau")
+wait = (seconds: f64):
+    loop k in [0..int(seconds * 60.0)): tick()
+
+move = (target: vec3, radius: f64 = 0.55, budget: f64 = 90.0):
+    if pl.state == .ground and pl.stamina < 850.0: wait(4.0)
+    best_progress = f64(length(pl.pos - target))
+    descending = f64(target.y) < f64(pl.pos.y) - 0.3
+    quiet = 0
+    flat_target = normal_at(f64(target.x), f64(target.z)).y > f32(cos(0.78))
+    loop k in [0..int(budget * 60.0)):
+        d = vec2(target.x - pl.pos.x, pl.pos.z - target.z)
+        dist = f64(length(d))
+        if dist < radius and abs(f64(pl.pos.y - target.y)) < 2.5 and (pl.state == .ground or not flat_target): return
+        stick = if dist < 0.65: 0.5 else: 1.0
+        a = Actions(move = if dist > 0.01: normalize(d) * f32(stick) else: vec2(0, 0), jump_held = true)
+        # Sprint in short bursts, then run while the real wheel refills.
+        a.sprint = dist > 10.0 and pl.stamina > 650.0
+        if pl.state == .climb:
+            nh = normalize(vec3(pl.climb_n.x, 0, pl.climb_n.z))
+            right = normalize(cross(vec3(0, 1, 0), nh))
+            side = clamp(f64(dot(v3(f64(d.x), 0.0, -f64(d.y)), right)), -1.0, 1.0)
+            vertical = clamp(f64(target.y - pl.pos.y) / 3.0, -1.0, 1.0)
+            cm = vec2(f32(side), f32(vertical))
+            a.move = if length(cm) > 0.1: normalize(cm) else: vec2(0, 1)
+            a.sprint = false
+            # At the foot of a descent, let go into the last few metres of walkable bank.
+            if descending and f64(pl.pos.y - target.y) < 18.0: a.interact = true
+        if pl.state == .slide and not descending:
+            n = pl.ground.normal
+            if length(n.xz) > 0.1: a.move = normalize(vec2(-n.x, n.z))
+        if descending and pl.state == .air and pl.vel.y < -2.0 and f64(pl.pos.y - target.y) > 18.0:
+            n = normal_at(f64(pl.pos.x), f64(pl.pos.z))
+            if n.y < 0.7 and length(n.xz) > 0.1:
+                back = normalize(vec2(-n.x, n.z))
+                a.move = back
+        # A brief jump over a low obstruction; failure retains its exact world point.
+        if quiet > 90 and (pl.state == .ground or pl.state == .slide): a.jump = k % 60 == 0
+        tick(a)
+        if k % 120 == 119:
+            progress = f64(length(pl.pos - target))
+            if progress > best_progress - 0.3:
+                if quiet == 0:
+                    stucks += 1
+                    print("journey: stuck frame {frames} at {pl.pos} target {target}, state {pl.state}")
+                quiet += 120
+            else:
+                quiet = 0
+                best_progress = progress
+    fail("waypoint budget exceeded: {target}")
+
+leg_start = 0
+leg_distance = 0.0
+begin_leg = ():
+    leg_start = frames
+    leg_distance = distance
+    max_slope = 0.0
+    outs = 0
+    falls = 0
+    hard_falls = 0
+    stucks = 0
+    climb_seconds = 0.0
+end_leg = (name: str):
+    if frames - leg_start > 72000: fail("leg {name} exceeded 1200 simulated seconds")
+    write_file("build/journey-check/trace.csv", join(trace, "\n"))
+    print("journey: {name}: {(f64(frames - leg_start) / 60.0):.2} s, {distance - leg_distance:.2} m, max slope {max_slope:.1} deg, climb {climb_seconds:.2} s, stamina outs {outs}, falls {falls}, hard falls {hard_falls}, stuck points {stucks}; at {pl.pos}")
+field_leg = (i: int, name: str):
+    begin_leg()
+    if i == 0:
+        loop j in [1..6):
+            x = f64(start.x) + f64(j) * 4.0
+            z = f64(start.z) - f64(j) * 4.2
+            move(v3(x, height_at(x, z), z), 0.8)
+    rows = read_file("build/journey-check/leg-{i}.csv") ?? ""
+    loop line in lines(rows):
+        f = split(line, ",")
+        if f.len() != 3: fail("bad waypoint")
+        move(v3(to_float(f[0]) ?? 0.0, to_float(f[1]) ?? 0.0, to_float(f[2]) ?? 0.0), 1.5)
+    end_leg(name)
+
+field_leg(0, "cave-to-tower")
+# Emerged collision fixture: the production rise cinematic relocates its actor, which
+# would invalidate a movement-only field test. Only tower geometry is raised here.
+begin_leg()
+tower_set_lift(0.0)
+move(TOWER + vec3(0, 0, 8), 0.6)
+wait(4.0)
+loop level in [8.0, 19.0, 30.0, 41.0, 52.0, 63.0, 74.4]:
+    reached = false
+    loop k in [0..5400):
+        if pl.state == .ground and f64(pl.pos.y) >= f64(TOWER.y) + level - 0.1:
+            reached = true
+            break
+        tick(Actions(move = vec2(0, 1), jump_held = true))
+    if not reached: fail("tower shelf {level} unreachable")
+    print("journey: tower rest {level} at {pl.pos} state {pl.state} stamina {pl.stamina:.1}")
+    wait(4.0)
+end_leg("tower-climb")
+begin_leg()
+move(TOWER + vec3(0, 74.4, 8.35), 0.25)
+wait(1.0)
+# Hop off the rim, then hold back into its climbable crown before falling below it.
+tick(Actions(move = vec2(0, -0.35), jump = true, jump_held = true))
+last_rest_y = f64(pl.pos.y)
+loop k in [0..12000):
+    if pl.state == .ground and f64(pl.pos.y) < f64(TOWER.y) + 1.0: break
+    if pl.state == .ground and f64(pl.pos.y) < last_rest_y - 3.0:
+        wait(4.0)
+        last_rest_y = f64(pl.pos.y)
+    a = Actions(move = if pl.state == .climb: vec2(0, -1) else if pl.state == .ground: vec2(0, -1) else: vec2(0, 1), jump_held = true)
+    tick(a)
+if f64(pl.pos.y) > f64(TOWER.y) + 2.0: fail("tower descent budget")
+move(TOWER_PEDESTAL + vec3(0, 0, 1.8), 0.8)
+end_leg("tower-descent")
+# Trigger the actual guidance-stone callback. Its cinematic is covered by late_story_check;
+# settle only its story flags here, preserving the physically reached field position.
+# Face the pedestal using stick input rather than changing player heading.
+loop k in [0..25):
+    d = vec2(TOWER_PEDESTAL.x - pl.pos.x, pl.pos.z - TOWER_PEDESTAL.z)
+    tick(Actions(move = normalize(d) * 0.35))
+tick(Actions(interact = true))
+if story.beat != .tower_rise: fail("tower activation callback did not fire")
+raise_tower_now()
+story.beat = .explore
+pl.state = .ground
+print("journey: tower-activated through production interaction; cinematic actor relocation excluded")
+
+
+loop i in [1..5): field_leg(i, ["Oman-Au", "Ja-Baij", "Owa-Daim", "Keh-Namut"][i - 1])
+field_leg(5, "Temple-approach")
+# Entrance-only mode supplies the four-orb meeting prerequisite; interiors and their
+# earned awards remain independently covered by shrine_route_check and late_story_check.
+story.orbs = 4
+begin_leg()
+wall = lp(TEMPLE, TEMPLE_ROT, 5.5, 0.0, 36.0)
+loop level in [11.6, 24.6, 31.6, 43.0]:
+    if level == 43.0:
+        # The belfry is open in the middle; take its solid corner pier.
+        move(lp(TEMPLE, TEMPLE_ROT, 6.65, 31.6, 40.5), 0.6)
+        wall = lp(TEMPLE, TEMPLE_ROT, 5.5, 0.0, 40.5)
+    reached = false
+    loop k in [0..5400):
+        if pl.state == .ground and f64(pl.pos.y) >= f64(TEMPLE.y) + level - 0.1:
+            reached = true
+            break
+        d = vec2(wall.x - pl.pos.x, pl.pos.z - wall.z)
+        a = Actions(move = if pl.state == .climb: vec2(0, 1) else: normalize(d))
+        # Stand on an existing shelf by climbing a fraction back down onto its top.
+        if pl.state == .climb and f64(pl.pos.y) >= f64(TEMPLE.y) + level: a.move = vec2(0, -1)
+        tick(a)
+    if not reached: fail("Temple shelf {level} unreachable")
+    print("journey: Temple rest {level} at {pl.pos} stamina {pl.stamina:.1}")
+    wait(4.0)
+move(roof_spot() + vec3(0, 0, 1.5), 1.0, 60.0)
+if length(pl.pos - roof_spot()) > 3.5: fail("Temple meeting distance")
+if pl.has_glider or story.glider_given: fail("premature glider")
+tick(Actions(interact = true))
+if not story.glider_given or not pl.has_glider or story.beat != .ending: fail("Temple meeting did not fire")
+end_leg("Temple-roof-meeting")
+
+assert(enemies[0].state==.sleep and talus_closest>8.0,"journey steers clear of the Talus reveal radius")
+print("PASS journey Talus: closest approach {talus_closest:.2} m, state {enemies[0].state}; moving encounter colliders included")
+print("PASS journey: uninterrupted field traversal, {frames} frames, {f64(frames) / 60.0:.2} simulated seconds, {distance:.2} m")
+
+if keyboard:
+    assert(keyboard_turns > 100 and keyboard_pitches > 100 and keyboard_moves > 1000, "keyboard journey exercised movement and both camera axes")
+    print("PASS keyboard input: {keyboard_moves} movement frames, {keyboard_turns} yaw key frames, {keyboard_pitches} pitch key frames; production input and camera orientation, zero mouse/gamepad input")

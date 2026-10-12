@@ -1,0 +1,665 @@
+use 'interiors.jo'
+use 'gfx.jo'
+use 'player.jo'
+use 'env.jo'
+use 'physics.jo'
+use 'water.jo'
+use 'worldgen.jo'
+use 'terrain.jo'
+use 'structures.jo'
+use 'interact.jo'
+use 'story.jo'
+use 'shrines.jo'
+use 'items.jo'
+use 'enemies.jo'
+use 'talus.jo'
+use 'element_puzzles.jo'
+use 'slate_map.jo'
+use 'trees.jo'
+use 'matter.jo'
+use 'elements.jo'
+
+# Stable encounter identity survives ordering changes in the placement list.
+# Night-only skeletons retain their existing nightly lifecycle; Talus has its own record.
+struct DefeatedEncounter:
+    kind: int
+    home: vec3
+    remaining = 600.0
+
+# Versioned records, written to a sibling file before replacing the last save.
+struct PlateauSave:
+    inventory = Inventory()
+    progress = Story()
+    pos = vec3(0, 0, 0)
+    face = 0.0
+    awake = false
+    hp = 12
+    hp_max = 12
+    stamina_max = 1000.0
+    warm_t = 0.0
+    frozen = 0.0
+    invuln = 0.0
+    cold_t = 0.0
+    held = Elem()
+    shield = Elem()
+    bow = Elem()
+    collected: CollectedPlacement[]
+    warning = 0.0
+    warning_kind = -1
+    warning_index = -1
+    hour = 6.4
+    day = 1
+    weather = 0
+    weather_t = 40.0
+    clouds = 0.42
+    rain = 0.0
+    wet = 0.0
+    storm_k = 0.0
+    gust = 1.0
+    wind = vec2(1.0, 0.35)
+    lightning = 0.0
+    weather_rng: Rng?
+    defeated: DefeatedEncounter[]
+    activated: bool[]
+    completed: bool[]
+    used: int[]
+    opened: int[]
+    pins: vec2[]
+    talus: TalusRecord[]
+    trees: TreeRecord[]
+    dropped: WItem[]
+
+save_enabled = false
+__save_age = 0.0
+__save_poll = 0.0
+__save_mark = ""
+__save_anchor = vec3(0, 0, 0)
+__save_face = 0.0
+__save_file = ""
+save_path = () -> str: "{env("HOME") ?? "."}/.botw-clone-save"
+
+save_allowed = () -> bool:
+    loop name in ["BOTW_ASSET_CHECK", "BOTW_BAKE_ASSETS", "BOTW_SKIP", "BOTW_TITLE", "BOTW_AT", "BOTW_HOUR", "BOTW_WEATHER", "BOTW_TOWER", "BOTW_CAM", "BOTW_PAINT", "BOTW_FIRE", "BOTW_TENTFIRE", "BOTW_RISE", "BOTW_PASSAGE", "BOTW_ENTER", "BOTW_GIVE", "BOTW_ORBS", "BOTW_DOORS", "BOTW_SHRINE", "BOTW_SHRINE_ACTIVE", "BOTW_SHRINE_AT", "BOTW_SHRINE_CARRY", "BOTW_SHRINE_GIVE", "BOTW_SHRINE_STAGE", "BOTW_SHRINE_LOG", "BOTW_DEBUG", "BOTW_DEBUGEV", "BOTW_CAMDBG", "BOTW_CPU", "BOTW_GPU", "BOTW_LOADTIME", "BOTW_NOVSYNC", "BOTW_BOLT", "BOTW_BOLT_AT", "BOTW_WEATHER_SEQ", "BOTW_TIMESCALE", "BOTW_WEATHER_LOG", "BOTW_CAPTURE_DIR", "BOTW_CONTACTS", "BOTW_DUMP_GLSL", "SLOPPY_SCREENSHOT", "SLOPPY_INPUT", "SLOPPY_FRAMES"]:
+        if env(name) != none: return false
+    true
+
+__bit = (b: bool) -> int: if b: 1 else: 0
+
+save_capture = () -> PlateauSave:
+    gear_elements_sync()
+    inventory_identity_sync(inv)
+    placements_update(0.0)
+    s = PlateauSave(inventory = inv, progress = story, pins = map_pins, pos = __save_anchor, face = __save_face,
+        awake = story.beat != .black and story.beat != .wake, hp = max(1, pl.hp), hp_max = pl.hp_max,
+        stamina_max = pl.stamina_max, warm_t = warm_t, frozen = max(0.0, pl.frozen), invuln = pl.invuln,
+        cold_t = cold_dmg_t, hour = env.hour, day = env.day, weather = int(env.weather),
+        weather_t = env.weather_t, clouds = env.clouds, rain = env.rain, wet = env.wet,
+        storm_k = env.storm_k, gust = env.gust, wind = env.wind, lightning = env.lightning, weather_rng = weather_rng_capture())
+    s.collected = collected_placements
+    loop r in srec:
+        active = r.entry >= 0 and shrines[r.entry].activated
+        done = r.entry >= 0 and shrines[r.entry].done
+        s.activated.push(active)
+        s.completed.push(done)
+        # Puzzle mechanisms reset on launch; resume at the exterior lift, never behind a reset gate.
+        if zone_at(s.pos + vec3(0, 1, 0)) == r.key and r.entry >= 0:
+            s.pos = shrines[r.entry].pos + vec3(0, 0.2, 0)
+            s.face = 0.0
+    if story.beat == .tower_rise:
+        s.progress.tower_risen = true
+        s.pos = TOWER + vec3(-10, 0, 10)
+        s.pos.y = f32(height_at(f64(s.pos.x), f64(s.pos.z)))
+    loop i in 0.. and u in usables:
+        if u.once and u.used: s.used.push(i)
+    loop i in 0.. and c in chests:
+        if c.opened: s.opened.push(i)
+    # Persist timed status, not interrupted movement/attack animation. Resume at a safe anchor.
+    s.held = gear_element(.weapon, inv.weapon)
+    s.shield = gear_element(.shield, inv.shield)
+    s.bow = gear_element(.bow, inv.bow)
+    if lightning_warn > 0.0 and lightning_gear.world < 0 and lightning_metal_pos() != none:
+        s.warning = lightning_warn
+        s.warning_kind = int(lightning_gear.kind)
+        s.warning_index = lightning_gear.index
+    loop e in enemies:
+        if e.kind != .talus and e.kind != .stalkoblin and not e.night_only and (e.hp <= 0.0 or e.state == .dead or e.state == .gone):
+            s.defeated.push(DefeatedEncounter(int(e.kind), e.home, (if e.state == .gone: max(0.0, e.respawn_t) else: 600.0)))
+    s.talus = talus_records()
+    s.trees = tree_states
+    loop w in witems:
+        if w.dropped and w.alive: s.dropped.push(w)
+    loop e in enemies:
+        if e.kind != .talus: continue
+        if pl.state == .ground and talus_owns(e,pl.ground.collider): s.pos = pl.pos
+        if (pl.state == .climb or pl.state == .mantle) and talus_owns(e,pl.climb_col):
+            s.pos = talus_local(e,vec3(0,0,6))
+            s.pos.y = f32(height_at(f64(s.pos.x),f64(s.pos.z)))
+    s
+
+save_encode = (s: PlateauSave) -> str:
+    p = s.progress
+    v = s.inventory
+    inventory_identity_sync(v)
+    loop v.weapon_effects.len() < v.weapons.len(): v.weapon_effects.push(Elem())
+    loop v.shield_effects.len() < v.shields.len(): v.shield_effects.push(Elem())
+    loop v.bow_effects.len() < v.bows.len(): v.bow_effects.push(Elem())
+    out = "BOTW_SAVE 1\n"
+    out += "player={s.pos.x:.6},{s.pos.y:.6},{s.pos.z:.6},{s.face:.6},{s.hp},{s.hp_max},{s.stamina_max:.6}\n"
+    out += "effects={s.warm_t:.6},{s.frozen:.6},{s.invuln:.6},{s.cold_t:.6}\n"
+    out += "held_effect={s.held.heat:.6},{s.held.burning:.6},{s.held.wet:.6}\n"
+    out += "shield_effect={s.shield.heat:.6},{s.shield.burning:.6},{s.shield.wet:.6}\n"
+    out += "bow_effect={s.bow.heat:.6},{s.bow.burning:.6},{s.bow.wet:.6}\n"
+    loop r in s.collected: out += "collected={r.key},{r.remaining:.6}\n"
+    loop i in [0..v.weapon_effects.len()):
+        el = v.weapon_effects[i]
+        out += "gear_effect={int(IKind.weapon)},{i},{el.heat:.6},{el.burning:.6},{el.wet:.6}\n"
+    loop i in [0..v.shield_effects.len()):
+        el = v.shield_effects[i]
+        out += "gear_effect={int(IKind.shield)},{i},{el.heat:.6},{el.burning:.6},{el.wet:.6}\n"
+    loop i in [0..v.bow_effects.len()):
+        el = v.bow_effects[i]
+        out += "gear_effect={int(IKind.bow)},{i},{el.heat:.6},{el.burning:.6},{el.wet:.6}\n"
+    out += "warning={s.warning:.6},{s.warning_kind},{s.warning_index}\n"
+    out += "story={__bit(s.awake)},{__bit(p.slate)},{__bit(p.door1_open)},{__bit(p.door2_open)},{__bit(p.title_done)},{__bit(p.tower_risen)},{p.orbs},{__bit(p.met_old_man)},{__bit(p.glider_given)}\n"
+    out += "sky={s.hour:.9},{s.day},{s.weather},{s.weather_t:.9},{s.clouds:.9},{s.rain:.9},{s.wet:.9}\n"
+    out += "weather_transition={s.storm_k:.9},{s.gust:.9},{s.wind.x:.9},{s.wind.y:.9},{s.lightning:.9}\n"
+    if let r = s.weather_rng:
+        out += "weather_rng={int(r.s0)},{int(r.s1)},{int(r.s2)},{int(r.s3)}\n"
+    loop r in s.defeated:
+        out += "defeated={r.kind},{r.home.x:.6},{r.home.y:.6},{r.home.z:.6},{r.remaining:.6}\n"
+    out += "inventory={v.arrows},{v.weapon},{v.shield},{v.bow},{v.max_weapons},{v.max_shields},{v.max_bows}\n"
+    loop id in v.weapons: out += "weapon={id}\n"
+    loop id in v.shields: out += "shield={id}\n"
+    loop id in v.bows: out += "bow={id}\n"
+    loop id in v.keys:
+        out += "key={id}\n"
+        out += "key_count={id},{v.key_counts.get(id) ?? 1}\n"
+    loop id, n in v.stacks: out += "stack={id},{n}\n"
+    loop i in [0..3):
+        out += "slot={i},{v.slots[i]}\n"
+        out += "slot_instance={i},{v.slot_instances[i]}\n"
+    loop kind in [IKind.weapon, IKind.shield, IKind.bow]:
+        ids = if kind == .weapon: v.weapon_instances else: (if kind == .shield: v.shield_instances else: v.bow_instances)
+        loop i in [0..ids.len()): out += "gear_instance={int(kind)},{i},{ids[i]}\n"
+    loop i in [0..s.activated.len()): out += "shrine={i},{__bit(s.activated[i])},{__bit(s.completed[i])}\n"
+    loop i in s.used: out += "used={i}\n"
+    loop i in s.opened: out += "chest={i}\n"
+    loop pin in s.pins: out += "pin={pin.x:.6},{pin.y:.6}\n"
+    loop r in s.talus:
+        out += "talus={r.home.x:.6},{r.home.y:.6},{r.home.z:.6},{r.pos.x:.6},{r.pos.y:.6},{r.pos.z:.6},{r.face:.6},{r.hp:.6},{r.phase},{r.time_:.6},{r.shake:.6},{r.attacks},{r.move},{__bit(r.contact)},{r.loot}\n"
+    loop r in s.trees:
+        out += "tree={r.root.x:.6},{r.root.y:.6},{r.root.z:.6},{r.pos.x:.6},{r.pos.y:.6},{r.pos.z:.6},{r.vel.x:.6},{r.vel.y:.6},{r.vel.z:.6},{r.yaw:.6},{r.radius:.6},{r.length_:.6},{r.phase},{r.age:.6},{r.hits},{r.cuts},{r.roll:.6},{r.pitch:.6},{r.char:.6},{r.el.heat:.6},{r.el.burning:.6},{r.el.wet:.6}\n"
+    loop w in s.dropped:
+        out += "dropped={w.id},{w.pos.x:.6},{w.pos.y:.6},{w.pos.z:.6},{w.vel.x:.6},{w.vel.y:.6},{w.vel.z:.6},{w.rot:.6},{w.spin:.6},{w.tumble:.6},{w.char:.6},{w.burning:.6},{__bit(w.lit)},{__bit(w.resting)},{__bit(w.tossed)},{w.el.heat:.6},{w.el.burning:.6},{w.el.wet:.6}\n"
+    out + "END\n"
+
+__numbers = (s: str, n: int) -> f64[]?:
+    fields = split(s, ",")
+    if fields.len() != n: return none
+    out: f64[]
+    loop field in fields:
+        if let v = to_float(field):
+            if not (v >= -1e7 and v <= 1e7): return none
+            out.push(v)
+        else: return none
+    out
+
+save_decode = (text_: str) -> PlateauSave?:
+    if len(text_) > 4194304 or not starts_with(text_, "BOTW_SAVE 1\n") or not ends_with(text_, "\nEND\n"): return none
+    s = PlateauSave(activated = fill(false, 4), completed = fill(false, 4))
+    key_counts_seen: str[]
+    seen: str[]
+    slots: int[]
+    instance_slots: int[]
+    instance_ids: int[]
+    halls: int[]
+    loop line in split(text_, "\n"):
+        if line == "BOTW_SAVE 1" or line == "END" or line == "": continue
+        kv = split(line, "=")
+        if kv.len() != 2: return none
+        key = kv[0]
+        value = kv[1]
+        if key == "player" or key == "story" or key == "sky" or key == "inventory":
+            if seen.contains(key): return none
+            seen.push(key)
+            n = if key == "story": 9 else: 7
+            if let a = __numbers(value, n):
+                match key:
+                    "player":
+                        s.pos = v3(a[0], a[1], a[2])
+                        s.face = a[3]
+                        s.hp = int(a[4])
+                        s.hp_max = int(a[5])
+                        s.stamina_max = a[6]
+                        if s.hp < 1 or s.hp > s.hp_max or s.hp_max < 12 or s.hp_max > 120 or s.stamina_max < 1000.0 or s.stamina_max > 3000.0: return none
+                        if abs(a[0]) > 10000.0 or abs(a[1]) > 10000.0 or abs(a[2]) > 10000.0: return none
+                    "story":
+                        loop i in [0..9):
+                            if i != 6 and a[i] != 0.0 and a[i] != 1.0: return none
+                        s.awake = a[0] == 1.0
+                        s.progress.slate = a[1] == 1.0
+                        s.progress.door1_open = a[2] == 1.0
+                        s.progress.door2_open = a[3] == 1.0
+                        s.progress.title_done = a[4] == 1.0
+                        s.progress.tower_risen = a[5] == 1.0
+                        s.progress.orbs = int(a[6])
+                        s.progress.met_old_man = a[7] == 1.0
+                        s.progress.glider_given = a[8] == 1.0
+                        if a[6] < 0.0 or a[6] > 4.0: return none
+                    "sky":
+                        s.hour = a[0]
+                        s.day = int(a[1])
+                        s.weather = int(a[2])
+                        s.weather_t = a[3]
+                        s.clouds = a[4]
+                        s.rain = a[5]
+                        s.wet = a[6]
+                        if a[0] < 0.0 or a[0] >= 24.0 or a[1] < 1.0 or a[2] < 0.0 or a[2] > 3.0 or a[3] < 0.0: return none
+                        loop i in [4..7):
+                            if a[i] < 0.0 or a[i] > 1.0: return none
+                    _:
+                        s.inventory.arrows = int(a[0])
+                        s.inventory.weapon = int(a[1])
+                        s.inventory.shield = int(a[2])
+                        s.inventory.bow = int(a[3])
+                        s.inventory.max_weapons = int(a[4])
+                        s.inventory.max_shields = int(a[5])
+                        s.inventory.max_bows = int(a[6])
+                        if a[0] < 0.0 or a[0] > 9999.0: return none
+                        loop i in [4..7):
+                            if a[i] < 1.0 or a[i] > 100.0: return none
+            else: return none
+        else if key == "effects" or key == "held_effect" or key == "shield_effect" or key == "bow_effect" or key == "warning":
+            if seen.contains(key): return none
+            seen.push(key)
+            if let a = __numbers(value, (if key == "effects": 4 else: 3)):
+                match key:
+                    "effects":
+                        loop t in a:
+                            if t < 0.0 or t > 86400.0: return none
+                        if a[3] > 5.0: return none
+                        s.warm_t = a[0]
+                        s.frozen = a[1]
+                        s.invuln = a[2]
+                        s.cold_t = a[3]
+                    "held_effect", "shield_effect", "bow_effect":
+                        if a[0] < 0.0 or a[1] < -1.0 or (a[1] < 0.0 and a[1] != -1.0) or a[2] < 0.0 or a[2] > 1.0: return none
+                        el = Elem(heat = a[0], burning = a[1], wet = a[2])
+                        if key == "held_effect": s.held = el
+                        else if key == "shield_effect": s.shield = el
+                        else: s.bow = el
+                    _:
+                        if a[0] < 0.0 or a[0] > 2.2 or a[1] != floor(a[1]) or a[2] != floor(a[2]): return none
+                        s.warning = a[0]
+                        s.warning_kind = int(a[1])
+                        s.warning_index = int(a[2])
+            else: return none
+        else if key == "collected":
+            fields = split(value, ",")
+            if fields.len() != 2 or s.collected.len() >= 16384: return none
+            identity = split(fields[0], ":")
+            if identity.len() != 4 or not has_item_def(identity[0]): return none
+            if __numbers(join(identity[1..], ","), 3) == none: return none
+            remaining = to_float(fields[1]) ?? -2.0
+            if __numbers(fields[1], 1) == none or remaining < -1.0 or remaining > MATERIAL_REGROW or (remaining < 0.0 and remaining != -1.0): return none
+            if remaining >= 0.0 and not placement_regrows(identity[0]): return none
+            loop r in s.collected:
+                if r.key == fields[0]: return none
+            s.collected.push(CollectedPlacement(fields[0], remaining))
+        else if key == "gear_effect":
+            if let a = __numbers(value, 5):
+                if a[0] != floor(a[0]) or a[1] != floor(a[1]) or a[2] < 0.0 or a[3] < -1.0 or (a[3] < 0.0 and a[3] != -1.0) or a[3] > 86400.0 or a[4] < 0.0 or a[4] > 1.0: return none
+                el = Elem(heat = a[2], burning = a[3], wet = a[4])
+                if a[0] == f64(int(IKind.weapon)):
+                    if int(a[1]) != s.inventory.weapon_effects.len() or a[1] >= 100.0: return none
+                    s.inventory.weapon_effects.push(el)
+                else if a[0] == f64(int(IKind.shield)):
+                    if int(a[1]) != s.inventory.shield_effects.len() or a[1] >= 100.0: return none
+                    s.inventory.shield_effects.push(el)
+                else if a[0] == f64(int(IKind.bow)):
+                    if int(a[1]) != s.inventory.bow_effects.len() or a[1] >= 100.0: return none
+                    s.inventory.bow_effects.push(el)
+                else: return none
+            else: return none
+        else if key == "weapon" or key == "shield" or key == "bow" or key == "key":
+            if not has_item_def(value): return none
+            kind = item(value).kind
+            match key:
+                "weapon":
+                    if kind != .weapon: return none
+                    s.inventory.weapons.push(value)
+                "shield":
+                    if kind != .shield: return none
+                    s.inventory.shields.push(value)
+                "bow":
+                    if kind != .bow: return none
+                    s.inventory.bows.push(value)
+                _:
+                    if kind != .key or s.inventory.keys.contains(value): return none
+                    s.inventory.keys.push(value)
+                    s.inventory.key_counts[value] = 1
+        else if key == "stack" or key == "slot" or key == "key_count":
+            a = split(value, ",")
+            if a.len() != 2: return none
+            if key == "key_count":
+                if not s.inventory.keys.contains(a[0]): return none
+                if key_counts_seen.contains(a[0]): return none
+                n = to_int(a[1]) ?? -1
+                if n < 1 or n > 9999: return none
+                key_counts_seen.push(a[0])
+                s.inventory.key_counts[a[0]] = n
+            else if key == "stack":
+                # Legacy saves stored extra key copies in stacks; migrate to total counts.
+                if not has_item_def(a[0]): return none
+                k = item(a[0]).kind
+                if k != .food and k != .material and not (k == .key and s.inventory.keys.contains(a[0])): return none
+                n = to_int(a[1]) ?? -1
+                if n < 1 or n > 9999 or s.inventory.stacks.get(a[0]) != none: return none
+                s.inventory.stacks[a[0]] = n
+            else:
+                i = to_int(a[0]) ?? -1
+                if i < 0 or i > 2 or slots.contains(i) or (a[1] != "" and not has_item_def(a[1])): return none
+                slots.push(i)
+                s.inventory.slots[i] = a[1]
+        else if key == "slot_instance":
+            a = split(value, ",")
+            if a.len() != 2: return none
+            k = to_int(a[0]) ?? -1
+            uid = to_int(a[1]) ?? -1
+            if k < 0 or k > 2 or uid < 0 or instance_slots.contains(k): return none
+            instance_slots.push(k)
+            s.inventory.slot_instances[k] = uid
+        else if key == "gear_instance":
+            a = split(value, ",")
+            if a.len() != 3: return none
+            kind = to_int(a[0]) ?? -1
+            i = to_int(a[1]) ?? -1
+            uid = to_int(a[2]) ?? -1
+            if uid <= 0 or uid >= 1000000000 or instance_ids.contains(uid): return none
+            if kind == int(IKind.weapon):
+                if i != s.inventory.weapon_instances.len(): return none
+                s.inventory.weapon_instances.push(uid)
+            else if kind == int(IKind.shield):
+                if i != s.inventory.shield_instances.len(): return none
+                s.inventory.shield_instances.push(uid)
+            else if kind == int(IKind.bow):
+                if i != s.inventory.bow_instances.len(): return none
+                s.inventory.bow_instances.push(uid)
+            else: return none
+            instance_ids.push(uid)
+        else if key == "shrine":
+            if let a = __numbers(value, 3):
+                i = int(a[0])
+                if i < 0 or i >= 4 or halls.contains(i): return none
+                if (a[1] != 0.0 and a[1] != 1.0) or (a[2] != 0.0 and a[2] != 1.0) or a[2] > a[1]: return none
+                halls.push(i)
+                s.activated[i] = a[1] == 1.0
+                s.completed[i] = a[2] == 1.0
+            else: return none
+        else if key == "weather_transition":
+            if seen.contains(key): return none
+            seen.push(key)
+            if let a = __numbers(value, 5):
+                if a[0] < 0.0 or a[0] > 1.0 or a[1] < 0.0 or a[1] > 4.0 or a[4] < 0.0 or a[4] > 1.0: return none
+                if abs(a[2]) > 10.0 or abs(a[3]) > 10.0: return none
+                s.storm_k = a[0]
+                s.gust = a[1]
+                s.wind = vec2(f32(a[2]), f32(a[3]))
+                s.lightning = a[4]
+            else: return none
+        else if key == "weather_rng":
+            if seen.contains(key): return none
+            seen.push(key)
+            a = split(value, ",")
+            if a.len() != 4: return none
+            words: u64[]
+            loop word in a:
+                if let n = to_int(word): words.push(u64(n))
+                else: return none
+            if words[0] == 0 and words[1] == 0 and words[2] == 0 and words[3] == 0: return none
+            s.weather_rng = Rng(words[0], words[1], words[2], words[3])
+        else if key == "defeated":
+            if s.defeated.len() >= 2048: return none
+            if let a = __numbers(value, 5):
+                if a[0] != floor(a[0]) or a[0] < 0.0 or a[0] >= f64(int(EKind.talus)) or a[0] == f64(int(EKind.stalkoblin)): return none
+                if abs(a[1]) > 10000.0 or abs(a[2]) > 10000.0 or abs(a[3]) > 10000.0 or a[4] < 0.0 or a[4] > 600.0: return none
+                r = DefeatedEncounter(int(a[0]), v3(a[1], a[2], a[3]), a[4])
+                loop old in s.defeated:
+                    if old.kind == r.kind and length(old.home - r.home) < 0.08: return none
+                s.defeated.push(r)
+            else: return none
+        else if key == "talus":
+            if s.talus.len() >= 1: return none
+            if let a = __numbers(value,15):
+                loop i in [8,11,12,13,14]:
+                    if a[i] != floor(a[i]): return none
+                if a[13] != 0.0 and a[13] != 1.0: return none
+                r = TalusRecord(v3(a[0],a[1],a[2]),v3(a[3],a[4],a[5]),a[6],a[7],int(a[8]),a[9],a[10],int(a[11]),int(a[12]),a[13]==1.0,int(a[14]))
+                if not talus_record_valid(r): return none
+                s.talus.push(r)
+            else: return none
+        else if key == "tree":
+            if let a=__numbers(value,22):
+                loop i in [12,14,15]:
+                    if a[i]!=floor(a[i]): return none
+                r=TreeRecord(v3(a[0],a[1],a[2]),v3(a[3],a[4],a[5]),vel=v3(a[6],a[7],a[8]),yaw=a[9],radius=a[10],length_=a[11],phase=int(a[12]),age=a[13],hits=int(a[14]),cuts=int(a[15]),roll=a[16],pitch=a[17],char=a[18],el=Elem(heat=a[19],burning=a[20],wet=a[21]))
+                if not tree_record_valid(r): return none
+                loop old in s.trees:
+                    if length(old.root-r.root)<0.08: return none
+                s.trees.push(r)
+            else: return none
+        else if key == "dropped":
+            fields = split(value, ",")
+            if fields.len() != 18 or s.dropped.len() >= 8192 or not has_item_def(fields[0]): return none
+            if item(fields[0]).kind == .key: return none
+            if let a = __numbers(join(fields[1..], ","), 17):
+                loop i in [0..3):
+                    if abs(a[i]) > 10000.0 or abs(a[i + 3]) > 1000.0: return none
+                if a[9] < 0.0 or a[9] > 1.0 or a[10] < 0.0 or a[10] > 86400.0: return none
+                loop i in [11..14):
+                    if a[i] != 0.0 and a[i] != 1.0: return none
+                if a[14] < 0.0 or a[15] < -1.0 or (a[15] < 0.0 and a[15] != -1.0) or a[15] > 86400.0 or a[16] < 0.0 or a[16] > 1.0: return none
+                s.dropped.push(WItem(fields[0], v3(a[0], a[1], a[2]), vel = v3(a[3], a[4], a[5]), rot = a[6], spin = a[7], tumble = a[8], char = a[9], burning = a[10], lit = a[11] == 1.0, resting = a[12] == 1.0, tossed = a[13] == 1.0, el = Elem(heat = a[14], burning = a[15], wet = a[16]), dropped = true))
+            else: return none
+        else if key == "pin":
+            if s.pins.len() >= MAP_PIN_LIMIT: return none
+            if let a = __numbers(value, 2):
+                if a[0] < 0.0 or a[0] > 1.0 or a[1] < 0.0 or a[1] > 1.0: return none
+                s.pins.push(vec2(f32(a[0]), f32(a[1])))
+            else: return none
+        else if key == "used" or key == "chest":
+            i = to_int(value) ?? -1
+            if i < 0 or i >= (if key == "used": usables.len() else: chests.len()): return none
+            if key == "used": s.used.push(i)
+            else: s.opened.push(i)
+        else: return none
+    loop id in s.inventory.keys:
+        if let extra = s.inventory.stacks.get(id):
+            if key_counts_seen.contains(id): return none
+            s.inventory.key_counts[id] = 1 + extra
+            s.inventory.stacks.remove(id)
+    # Old saves did not retain transition integrators. Reconstruct their settled
+    # target once for migration; new saves always use the exact saved values.
+    if not seen.contains("weather_transition"):
+        s.storm_k = if s.weather == int(Weather.storm): 1.0 else: 0.0
+        s.gust = if s.weather == int(Weather.storm): 2.8 else: (if s.weather == int(Weather.rain): 1.7 else: 1.0)
+    if s.inventory.weapon_effects.len() > s.inventory.weapons.len() or s.inventory.shield_effects.len() > s.inventory.shields.len() or s.inventory.bow_effects.len() > s.inventory.bows.len(): return none
+    loop s.inventory.weapon_effects.len() < s.inventory.weapons.len(): s.inventory.weapon_effects.push(Elem())
+    loop s.inventory.shield_effects.len() < s.inventory.shields.len(): s.inventory.shield_effects.push(Elem())
+    loop s.inventory.bow_effects.len() < s.inventory.bows.len(): s.inventory.bow_effects.push(Elem())
+    if instance_slots.len() > 0:
+        if instance_slots.len() != 3 or s.inventory.weapon_instances.len() != s.inventory.weapons.len() or s.inventory.shield_instances.len() != s.inventory.shields.len() or s.inventory.bow_instances.len() != s.inventory.bows.len(): return none
+        loop k in [0..3):
+            id = s.inventory.slots[k]
+            uid = s.inventory.slot_instances[k]
+            if id == "":
+                if uid != 0: return none
+                continue
+            kind = item(id).kind
+            gear = if kind == .weapon: s.inventory.weapons else: (if kind == .shield: s.inventory.shields else: (if kind == .bow: s.inventory.bows else: []))
+            ids = if kind == .weapon: s.inventory.weapon_instances else: (if kind == .shield: s.inventory.shield_instances else: s.inventory.bow_instances)
+            if kind == .weapon or kind == .shield or kind == .bow:
+                i = ids.index_of(uid)
+                if i < 0 or i >= gear.len() or gear[i] != id: return none
+            else if uid != 0: return none
+    else if instance_ids.len() > 0: return none
+    inventory_identity_sync(s.inventory)
+    v = s.inventory
+    loop key in ["player", "story", "sky", "inventory"]:
+        if not seen.contains(key): return none
+    if slots.len() != 3 or halls.len() != 4: return none
+    if s.warning > 0.0:
+        gear = if s.warning_kind == int(IKind.weapon): v.weapons else: (if s.warning_kind == int(IKind.shield): v.shields else: (if s.warning_kind == int(IKind.bow): v.bows else: []))
+        equipped = if s.warning_kind == int(IKind.weapon): v.weapon else: (if s.warning_kind == int(IKind.shield): v.shield else: v.bow)
+        if s.warning_index < 0 or s.warning_index >= gear.len() or s.warning_index != equipped: return none
+        if not item(gear[s.warning_index]).metal: return none
+    else if s.warning_kind != -1 or s.warning_index != -1: return none
+    if v.weapons.len() > v.max_weapons or v.shields.len() > v.max_shields or v.bows.len() > v.max_bows: return none
+    if v.weapon < -1 or v.weapon >= v.weapons.len() or v.shield < -1 or v.shield >= v.shields.len() or v.bow < -1 or v.bow >= v.bows.len(): return none
+    orbs = 0
+    loop done in s.completed:
+        if done: orbs += 1
+    if orbs != s.progress.orbs: return none
+    s
+
+save_write = (path: str, s: PlateauSave) -> bool:
+    text_ = save_encode(s)
+    if not write_file(path + ".tmp", text_): return false
+    when TARGET == "linux":
+        return syscall(82, data(path + ".tmp"), data(path)) == 0
+    else:
+        return write_file(path, text_)
+
+save_apply = (s: PlateauSave):
+    map_pins = s.pins
+    inv = s.inventory
+    story = s.progress
+    pl = Player(pos = s.pos, face = s.face, last_safe = s.pos, hp = s.hp, hp_max = s.hp_max,
+        stamina_max = s.stamina_max, stamina = s.stamina_max, has_glider = s.progress.glider_given or s.inventory.keys.contains("paraglider"))
+    warm_t = s.warm_t
+    pl.frozen = s.frozen
+    pl.invuln = s.invuln
+    cold_dmg_t = s.cold_t
+    held_id = equipped_weapon()
+    held_revision = inv.weapon_revision
+    held_index = inv.weapon
+    shield_el = CarriedElem(equipped_shield(), inv.shield_revision, inv.shield, s.shield)
+    bow_el = CarriedElem(equipped_bow(), inv.bow_revision, inv.bow, s.bow)
+    held_el = s.held
+    lightning_warn = s.warning
+    lightning_gear = GearTrace()
+    if s.warning > 0.0:
+        kind = if s.warning_kind == int(IKind.weapon): IKind.weapon else: (if s.warning_kind == int(IKind.shield): IKind.shield else: IKind.bow)
+        id = if kind == .weapon: equipped_weapon() else: (if kind == .shield: equipped_shield() else: equipped_bow())
+        lightning_gear = GearTrace(id = id, kind = kind, index = s.warning_index)
+    env.hour = s.hour
+    env.day = s.day
+    env.weather = [Weather.clear, Weather.cloudy, Weather.rain, Weather.storm][s.weather]
+    env.weather_t = s.weather_t
+    env.clouds = s.clouds
+    env.rain = s.rain
+    env.wet = s.wet
+    env.storm_k = s.storm_k
+    env.gust = s.gust
+    env.wind = s.wind
+    env.lightning = s.lightning
+    env.bolt = false
+    if let r = s.weather_rng: weather_rng_restore(r)
+    # Resume outdoors (shrine saves use the exterior lift). Rebuild derived light
+    # without advancing time, weather, precipitation or the saved lightning pulse.
+    env.indoor = if zone_at(pl.pos + vec3(0, 1, 0)) == "sor": smoothstep(6.0, 75.0, f64(length(pl.pos - SOR_MOUTH_IN))) else: 0.0
+    env_update(0.0, false)
+    loop r in s.defeated:
+        loop mut e in enemies:
+            if int(e.kind) == r.kind and length(e.home - r.home) < 0.08:
+                e.hp = 0.0
+                e.state = .gone
+                e.respawn_t = r.remaining
+                e.t = 0.0
+                e.vel = vec3(0, 0, 0)
+    loop i in [0..srec.len()):
+        r = srec[i]
+        if r.entry >= 0:
+            shrines[r.entry].activated = s.activated[i]
+            shrines[r.entry].done = s.completed[i]
+        srec[i].gone = s.completed[i]
+        srec[i].orb_t = if s.completed[i]: -2.0 else: -1.0
+    loop i in s.used: usables[i].used = true
+    loop i in s.opened:
+        chests[i].opened = true
+        chests[i].lid = 1.0
+        if chests[i].usable >= 0: usables[chests[i].usable].used = true
+    # Replace persistent drops; generated world placements keep their own identities.
+    # Projectile damage is interrupted on resume, while item physics/materials continue.
+    witems = [loop w in witems: if not w.dropped: w]
+    talus_restore(s.talus)
+    trees_restore(s.trees)
+    collected_placements = s.collected
+    loop mut w in witems:
+        loop r in collected_placements:
+            if w.placement != "" and w.placement == r.key: w.alive = false
+    loop w in s.dropped: witems.push(w)
+    element_puzzles_sync()
+    pl.ground = ground_at(f64(pl.pos.x),f64(pl.pos.z),f64(pl.pos.y),0.4,RADIUS)
+    push_out(pl.pos,RADIUS,HEIGHT)
+    story_resume(s.awake)
+    __save_anchor = pl.pos
+    __save_face = pl.face
+
+__milestones = () -> str:
+    out = "{int(story.beat)}:{story.slate}:{story.door1_open}:{story.door2_open}:{story.title_done}:{story.tower_risen}:{story.orbs}:{story.met_old_man}:{story.glider_given}:{has_key("warm_doublet")}"
+    loop sh in shrines: out += ":{sh.activated}:{sh.done}"
+    loop u in usables:
+        if u.once: out += ":{u.used}"
+    loop e in enemies:
+        if e.kind != .talus and e.kind != .stalkoblin and not e.night_only: out += ":{e.hp <= 0.0 or e.state == .dead or e.state == .gone}"
+    out += ":trees={trees_revision}:placements={placement_revision}"
+    loop pin in map_pins: out += ":{pin.x:.6},{pin.y:.6}"
+    out
+
+save_init = (path: str = ""):
+    save_enabled = save_allowed()
+    if not save_enabled: return
+    __save_file = if path == "": save_path() else: path
+    if (env("BOTW_NEWGAME") ?? "") != "1":
+        if let text_ = read_file(__save_file):
+            if let s = save_decode(text_):
+                save_apply(s)
+                eprint("Resumed plateau progress")
+            else: eprint("Save unreadable; starting a new journey")
+    __save_anchor = pl.last_safe
+    __save_face = pl.face
+    __save_mark = __milestones()
+
+save_now = ():
+    if not save_enabled: return
+    if save_write(__save_file, save_capture()):
+        __save_age = 0.0
+        __save_mark = __milestones()
+    else: eprint("Could not write plateau save")
+
+save_update = (dt: f64):
+    if not save_enabled: return
+    if pl.state == .ground and pl.hp > 0 and (not use_terrain or water_depth(f64(pl.pos.x), f64(pl.pos.z)) < 0.3):
+        __save_anchor = pl.pos
+        __save_face = pl.face
+    # The native window loop delivers one final update after its close event.
+    if __win_close:
+        save_now()
+        return
+    __save_age += dt
+    __save_poll += dt
+    if __save_poll < 1.0: return
+    __save_poll = 0.0
+    if __milestones() != __save_mark or (__save_age >= 180.0 and pl.state == .ground and not in_combat()): save_now()
+
+save_start_over = ():
+    if not save_enabled: return
+    if file_exists(__save_file) and not delete_file(__save_file):
+        caption("Could not start a new journey.")
+        return
+    save_enabled = false
+    if not exec(exe_path(), args()): quit()
+
+__install_placement_player = (): pl_placement_pos = (): pl.pos
+__install_placement_player()

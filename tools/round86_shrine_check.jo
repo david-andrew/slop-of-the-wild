@@ -1,0 +1,69 @@
+# Fresh, hands-off entry: actual chase lens must frame the first interaction and
+# its consequence together, without the discovery check's three-second camera scan.
+use '../game/shrines.jo'
+use '../game/gfx.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/camera.jo'
+use '../game/input.jo'
+use '../game/audio_cache.jo'
+use '../game/build.jo'
+use '../game/render.jo'
+from '../game/shrines.jo' import __enter_now, __stage_seen, __stage_pulse, __preset
+from '../game/build.jo' import __named_b
+
+__audio_state = 2
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+find_shrines()
+shrines_build()
+shrines_setup()
+points = [
+    [v3(3.9, 0.1, 0.1), v3(6.1, 2.1, 0.1), v3(-6.1, 0.15, -3.9), v3(0, 0.4, -7.8), v3(0, 4.3, -23.12)],
+    [v3(6, 0.8, -4), v3(8.5, 1.1, -3.5), v3(-6, 1.3, -8), v3(0, 2, -19.1), v3(0, 4.1, -19.08)],
+    [v3(0.6, 0.4, -13.5), v3(0.6, 0.4, -28.5), v3(0, 4.2, -41.08)],
+    [v3(6, 1.45, -1), v3(-4, -2, -14), v3(11.3, 2.7, -21), v3(9, -1.85, -21), v3(0, 4.1, -29.08)],
+]
+loop id in [0..4):
+    cam = Cam()
+    __enter_now(id)
+    act = Actions()
+    loop frame in [0..180):
+        shrines_update(1.0 / 60.0)
+        camera_update(1.0 / 60.0)
+    vp = perspective(view_fov() * PI / 180.0, 16.0 / 9.0, 0.1, 120.0) * look_at(view_pos(), view_target(), vec3(0, 1, 0))
+    loop q in points[id]:
+        clip = vp * vec4(srec[id].o + q, 1)
+        ndc = clip.xyz / clip.w
+        if clip.w <= 0.0 or abs(ndc.x) >= 0.96 or abs(ndc.y) >= 0.96: print("FAIL {srec[id].name}: {q} ndc={ndc} fov={view_fov()}")
+        assert(clip.w > 0.0 and abs(ndc.x) < 0.96 and abs(ndc.y) < 0.96, "fresh hands-off lens includes first controls, mechanism and doorway")
+    key = srec[id].key
+    assert(__named_b[key + "_goal"].idx.len() > 200, "lit destination is real doorway and monk geometry")
+    assert(not (hooks.named_hidden.get(key + "_goal") ?? true), "destination remains lit before solving")
+    # The existing solve pulse is still the brightest event. Once it expires,
+    # the next signal must dominate the completed one.
+    __stage_seen[id * 2] = true
+    __stage_pulse[id * 2] = 0.0
+    shrines_update(0.0)
+    solved = length(hooks.named_glow[key + "_signal_0"])
+    next = length(hooks.named_glow[key + "_signal_1"])
+    assert(next > solved * 2.0, "next stage must be brighter than the solved stage")
+    print("PASS {srec[id].name}: all entry mechanisms and destination in idle lens; next-stage light hierarchy")
+
+# The scout's completion signal must not retire the still-unused ledge crate.
+__enter_now(OMAN)
+pl.pos = srec[OMAN].o + vec3(4, 0.1, -33.5)
+__stage_seen[1] = true
+shrines_update(0.0)
+next_crate = hooks.named_glow[srec[OMAN].key + "_rune_1"]
+assert(next_crate.x > next_crate.z * 3.0, "ledge crate remains orange after scout defeat")
+assert(cam.fov == 50.0, "normal lens returns beyond the entry landing")
+__preset(OMAN, 2)
+shrines_update(0.0)
+delivered = hooks.named_glow[srec[OMAN].key + "_rune_1"]
+assert(delivered.z > delivered.x and length(delivered) < length(next_crate) * 0.5, "only delivery retires the ledge crate cue")
+print("PASS Oman handoff: scout solve leaves next crate bright; delivered crate dims; normal lens restored")

@@ -1,0 +1,61 @@
+# CPU-only geometry contract for all five authored fir variants.
+use '../game/fir_boughs.jo'
+use '../game/vegetation.jo'
+from '../game/vegetation.jo' import __rd32
+
+loop variant in [1..6):
+    bytes = read_bytes("assets/nature/Pine_{variant}.vm")!
+    offset = 8
+    loop part in [0..__rd32(bytes, 4)):
+        kind = __rd32(bytes, offset)
+        text_len = __rd32(bytes, offset + 4)
+        offset += 8 + text_len
+        nv = __rd32(bytes, offset)
+        ni = __rd32(bytes, offset + 4)
+        offset += 8
+        vertices = fill(Vertex3D(), nv)
+        mem_copy(data(vertices) as *u8, data(bytes) + offset, nv * 48)
+        offset += nv * 48
+        indices = fill(u32(0), ni)
+        mem_copy(data(indices) as *u8, data(bytes) + offset, ni * 4)
+        offset += ni * 4
+        if kind != 1: continue
+        before_rng = __global_rng
+        crown = fir_crown(vertices, indices)
+        assert(__global_rng.s0 == before_rng.s0 and __global_rng.s1 == before_rng.s1 and __global_rng.s2 == before_rng.s2 and __global_rng.s3 == before_rng.s3, "fir geometry never consumes placement/gameplay RNG")
+        repeat = fir_crown(vertices, indices)
+        assert(crown.vertices.len() == repeat.vertices.len() and crown.indices == repeat.indices and crown.shadow == repeat.shadow, "deterministic load geometry")
+        lo = vec3(1e9, 1e9, 1e9)
+        hi = vec3(-1e9, -1e9, -1e9)
+        loop v in vertices:
+            lo = min(lo, v.pos)
+            hi = max(hi, v.pos)
+        bounds_lo = vec3(1e9, 1e9, 1e9)
+        bounds_hi = vec3(-1e9, -1e9, -1e9)
+        loop i in [0..crown.vertices.len()):
+            v = crown.vertices[i]
+            assert(v.pos == repeat.vertices[i].pos and v.normal == repeat.vertices[i].normal, "repeat vertices/normals")
+            assert(abs(length(v.normal) - 1.0) < 0.0001, "finite unit normals")
+            bounds_lo = min(bounds_lo, v.pos)
+            bounds_hi = max(bounds_hi, v.pos)
+        assert(bounds_lo.y >= lo.y - 0.15 and bounds_hi.y <= hi.y + 0.15, "crown stays in authored vertical envelope")
+        assert(max(abs(bounds_lo.x), abs(bounds_hi.x)) <= max(abs(lo.x), abs(hi.x)) + 0.15 and max(abs(bounds_lo.z), abs(bounds_hi.z)) <= max(abs(lo.z), abs(hi.z)) + 0.15, "crown stays in authored radial envelope")
+        assert(crown.indices.len() / 3 <= 11000 and crown.shadow.len() < crown.indices.len(), "bounded full/detail shadow geometry")
+        # Every bough is a closed solid, with outward faces and nonzero volume.
+        loop ids in [crown.indices, crown.shadow]:
+            volume = 0.0
+            loop k in [0..ids.len() / 3):
+                a = crown.vertices[int(ids[k * 3])]
+                b = crown.vertices[int(ids[k * 3 + 1])]
+                c = crown.vertices[int(ids[k * 3 + 2])]
+                n = cross(b.pos - a.pos, c.pos - a.pos)
+                assert(length(n) > 0.0000001, "no zero-area triangles")
+                assert(dot(n, a.normal + b.normal + c.normal) > 0.0, "outward winding matches surface normals")
+                volume += f64(dot(a.pos, cross(b.pos, c.pos))) / 6.0
+            assert(volume > 0.0, "closed bough volume")
+        # Each 48-vertex spray has upper and lower surfaces around its spine;
+        # the eight edge segments close all rings and cap both poles.
+        assert(crown.vertices.len() % 48 == 0)
+        assert(crown.indices.len() == crown.vertices.len() / 48 * 64 * 3)
+        assert(crown.shadow.len() == crown.vertices.len() / 48 * 32 * 3)
+        print("PASS Pine_{variant}: {crown.vertices.len() / 48} rounded tufts; {crown.indices.len() / 3} view / {crown.shadow.len() / 3} shadow triangles; stable RNG, bounds, normals and volume")

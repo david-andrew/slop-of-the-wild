@@ -1,0 +1,48 @@
+# GPU regression: shallow water/mist must meet the welded skin without a cuff.
+# Stone retains the original pool coverage. Caller owns the render flock.
+use '../game/interiors.jo'
+use '../game/gfx.jo'
+struct SurfaceU:
+    unused: f32
+struct SurfaceO:
+    pos: vec4
+    uv: vec2
+surface_vs = (v: FsVert, u: SurfaceU) -> SurfaceO:
+    SurfaceO(vec4(v.pos,0,1),v.pos*0.5+vec2(0.5,0.5))
+surface_fs = (i: SurfaceO, u: SurfaceU) -> vec4:
+    gap=i.uv.x*0.10-0.025
+    # Old constant-alpha geometry had a one-pixel jump at depth intersection.
+    legacy=if gap>0.0:f32(1) else:f32(0)
+    vec4(pool_figure_contact(gap,0.15),pool_figure_contact(gap,0.33),pool_figure_contact(gap,0.85),legacy)
+window("Hero surface regression",128,128)
+sh=make_sh(shader(surface_vs,surface_fs))
+target=make_target(128,128,false,false)
+gl_delete_texture(target.color.id)
+target.color=color_texture(128,128,GL_RGBA32F,GL_RGBA,GL_FLOAT,GL_NEAREST)
+glBindFramebuffer(GL_FRAMEBUFFER,u32(target.fbo))
+glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,u32(target.color.id),0)
+assert(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE)
+bind_target(target)
+glDisable(GL_DEPTH_TEST)
+glDisable(GL_CULL_FACE)
+glDisable(GL_BLEND)
+draw_fast(sh,fullscreen_mesh(),SurfaceU(0))
+values=fill(f32(0),128*128*4)
+gl_read_pixels_f32(0,0,128,128,data(values) as *u8)
+largest=0.0
+legacy_jump=0.0
+loop x in [0..128):
+    offset=(64*128+x)*4
+    assert(abs(values[offset]-values[offset+1])<0.00001,"skin and cloth contacts agree")
+    assert(abs(values[offset+2]-1.0)<0.00001,"stone pool coverage unchanged")
+    if x<32: assert(values[offset]==0.0,"water meets the skin transparently")
+    if x>103: assert(values[offset]>0.999,"full coverage beyond the contact")
+    if x>0:
+        step=values[offset]-values[offset-4]
+        assert(step>=0.0,"monotonic contact transition")
+        largest=max(largest,f64(step))
+        legacy_jump=max(legacy_jump,abs(f64(values[offset+3]-values[offset-1])))
+assert(largest<0.023 and legacy_jump>0.99,"continuous contact and old-rule negative control")
+print("PASS hero surface: skin/cloth contact alpha step {largest:.6}, legacy cuff {legacy_jump:.1}; stone coverage exact")
+glBindFramebuffer(GL_FRAMEBUFFER,0)
+free_target(target)

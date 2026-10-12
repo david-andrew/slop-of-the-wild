@@ -1,0 +1,68 @@
+# The rendered profile is also the source of the climbing sections. Check the
+# actual shader helper on CPU, including dormant/reveal/awake and animated fists.
+use '../game/talus.jo'
+use '../game/enemies.jo'
+use '../game/gfx.jo'
+
+samples = 0
+worst = 0.0
+loop state in [EState.sleep,EState.notice,EState.chase,EState.attack,EState.celebrate]:
+    e = Enemy(kind=.talus,state=state,t=0.48,face=0.7,anim_t=5.2)
+    loop g in [0..TALUS_BOULDERS):
+        b = talus_boulder(e,g)
+        wide = max(f64(b.half.x),f64(b.half.z))
+        core = talus_part(e,g)
+        shape = v3(f64(g),f64(b.half.z)/wide,f64(core.half.x)/wide)
+        frame = translation(b.pos)*rotation_y(b.yaw)*scaling(v3(wide,f64(b.half.y),wide))
+        loop slice in [0..TALUS_SLICES):
+            c = talus_part(e,TALUS_BOULDERS+g*TALUS_SLICES+slice)
+            y = (f64(slice)+0.5)*2.0/f64(TALUS_SLICES)
+            loop k in [0..32):
+                a = TAU*f64(k)/32.0
+                p = transform_point(frame,talus_skin_point(v3(sin(a),y,cos(a)),shape))
+                gap = abs(hypot(f64(p.x-c.pos.x),f64(p.z-c.pos.z))-f64(c.half.x))
+                worst = max(worst,gap)
+                assert(gap<0.16,"climbing sections follow the drawn displaced boulder")
+                samples += 1
+    # Back support remains at the visible rear seam, through the entire reveal.
+    b = talus_boulder(e,2)
+    c = talus_part(e,2)
+    rear = transform_dir(rotation_y(b.yaw),vec3(0,0,1))
+    assert(abs(f64(dot(c.pos-b.pos,rear))+f64(c.half.x-b.half.z))<0.00001)
+print("Talus skin PASS: {samples} surface/solid samples, maximum angular fracture clearance {worst:.4} m")
+
+# Silhouette constraints also use the physical masses: a top-heavy torso over
+# short feet, and connected heavy arms ending in grounded knuckles.
+awake = Enemy(kind=.talus,state=.chase)
+body = talus_boulder(awake,2)
+waist = talus_boulder(awake,1)
+assert(body.half.x > waist.half.x*1.25,"broad upper boulder dominates the torso")
+assert(body.half.y > body.half.x*0.5,"deep upper boulder avoids a shallow plate silhouette")
+assert(body.pos.y < waist.pos.y+waist.half.y*2,"torso boulders overlap rather than stack")
+loop side in [0..2):
+    fist = talus_boulder(awake,5+side)
+    upper = talus_boulder(awake,7+side*2)
+    forearm = talus_boulder(awake,8+side*2)
+    assert(fist.pos.y>=0.0 and fist.pos.y<0.10,"resting knuckles reach the ground")
+    assert(fist.half.x>body.half.x*0.4,"massive rounded fists")
+    assert(upper.half.x>body.half.x*0.4 and forearm.half.x>body.half.x*0.4,"arms stay massive from shoulder to wrist")
+    assert(upper.pos.y<body.pos.y+body.half.y*2 and upper.pos.y+upper.half.y*2>body.pos.y,"shoulder rock joins the upper body")
+    assert(forearm.pos.y<upper.pos.y+upper.half.y*2 and forearm.pos.y+forearm.half.y*2>upper.pos.y,"arm rocks overlap vertically")
+    assert(forearm.pos.y<fist.pos.y+fist.half.y*2,"forearm joins grounded fist")
+print("Talus silhouette PASS: shoulder {body.pos.y+body.half.y*2:.3} m; body width {body.half.x*2:.3} m; knuckle clearance {talus_boulder(awake,5).pos.y:.3} m")
+
+# Broad lower seams and shoulder-carried arms prevent the old cap-on-a-stem
+# silhouette. Use the same authored skin and physical masses as rendering.
+loop part in [0,1,2]:
+    b=talus_boulder(awake,part)
+    wide=max(f64(b.half.x),f64(b.half.z))
+    core=talus_part(awake,part)
+    shape=v3(f64(part),f64(b.half.z)/wide,f64(core.half.x)/wide)
+    bottom=talus_skin_point(vec3(1,0,0),shape)
+    top=talus_skin_point(vec3(1,2,0),shape)
+    assert(bottom.x>0.62 and top.x>0.62,"broad lower-body junctions avoid a stacked waist")
+loop side in [0..2):
+    shoulder=talus_boulder(awake,7+side*2)
+    fist=talus_boulder(awake,5+side)
+    assert(abs(shoulder.pos.x)+shoulder.half.x>abs(fist.pos.x)+fist.half.x,"shoulder masses carry the widest arm span")
+print("Talus mass PASS: broad torso junctions and shoulders wider than resting fists")

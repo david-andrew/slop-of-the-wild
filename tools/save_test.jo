@@ -1,0 +1,274 @@
+use '../game/save.jo'
+use '../game/enemies.jo'
+use '../game/slate_map.jo'
+use '../game/items.jo'
+use '../game/story.jo'
+use '../game/shrines.jo'
+use '../game/structures.jo'
+use '../game/interact.jo'
+use '../game/interiors.jo'
+use '../game/player.jo'
+use '../game/terrain.jo'
+use '../game/env.jo'
+use '../game/elements.jo'
+use '../game/matter.jo'
+use '../game/worldgen.jo'
+use '../game/water.jo'
+use '../game/render.jo'
+use '../game/chars.jo'
+use '../game/physics.jo'
+
+closing = (b: bool): __win_close = b
+reset_inventory = (): inv = Inventory()
+
+mkdir("build")
+
+# No graphics or real HOME writes; the argument checks the production isolation gate.
+if args().len() > 1:
+    allowed = args()[1] == "interactive" or args()[1] == "newgame"
+    assert(save_allowed() == allowed)
+    if args()[1] == "newgame":
+        items_init()
+        path = "build/save-new-{time_ns()}"
+        fixture = PlateauSave(awake = true, hp_max = 20, activated = fill(false, 4), completed = fill(false, 4))
+        assert(save_write(path, fixture))
+        save_init(path)
+        assert(pl.hp_max == 12 and story.beat == .black)
+        save_now()
+        if let fresh = save_decode(read_file(path) ?? ""):
+            assert(fresh.hp_max == 12 and not fresh.awake)
+        else: assert(false)
+        delete_file(path)
+    if not allowed:
+        path = "build/save-gate-{time_ns()}"
+        assert(write_file(path, "sentinel"))
+        save_init(path)
+        closing(true)
+        save_update(181.0)
+        save_now()
+        assert((read_file(path) ?? "") == "sentinel")
+        assert(not file_exists(path + ".tmp"))
+        delete_file(path)
+    print("save gate: PASS")
+    exit(0)
+
+items_init()
+hf.n = 4
+hf.cell = 1000.0
+hf.x0 = -2000.0
+hf.z0 = 0.0
+hf.h = fill(f32(200), 16)
+hf.mat = fill(u8(0), 64)
+loop i in [0..4):
+    r = srec[i]
+    shrines.push(Shrine(r.name, vec3(f32(-700 + i * 20), 200, 1600), 0.0, vec3(0, 0, 0)))
+    srec[i].entry = i
+    zones.push(Zone(r.key, r.o + r.lo, r.o + r.hi))
+loop i in [0..3): usables.push(Usable(vec3(0, 0, 0), 1.0, "Test", (): pass))
+chests.push(Chest(vec3(0, 0, 0), 0.0, "old_shirt", usable = 2))
+story_door_cols.push(add_box(vec3(0, 0, 0), vec3(1, 1, 1), 0.0, false, .stone))
+story_door_cols.push(add_box(vec3(3, 0, 0), vec3(1, 1, 1), 0.0, false, .stone))
+s = PlateauSave(awake = true, pos = vec3(-900, 200, 1800), face = 1.2, hp = 17, hp_max = 20, stamina_max = 1400.0,
+    warm_t = 592.75, frozen = 1.25, invuln = 0.45, cold_t = 4.75,
+    hour = 21.4, day = 3, weather = 3, weather_t = 172.5, clouds = 0.94, rain = 0.8, wet = 1.0,
+    pins = [vec2(0.25, 0.75), vec2(0, 1)], activated = [true, true, true, false], completed = [true, false, true, false], used = [0, 2], opened = [0])
+s.progress = Story(slate = true, door1_open = true, door2_open = true, title_done = true, tower_risen = true, orbs = 2, met_old_man = true)
+s.inventory = Inventory(weapons = ["travelers_sword", "boko_spear", "travelers_sword"], shields = ["travelers_shield"], bows = ["boko_bow"],
+    weapon = 2, shield = 0, bow = 0, arrows = 37, stacks = {"apple": 8, "pepper": 3, "hot_footed_frog": 2, "hightail_lizard": 3, "sunset_firefly": 4}, keys = ["old_shirt", "warm_doublet", "spirit_orb"], key_counts = {"old_shirt": 1, "warm_doublet": 1, "spirit_orb": 2}, slots = ["boko_spear", "apple", "boko_bow"])
+p = "build/save-roundtrip-{time_ns()}"
+assert(save_write(p, s))
+raw = read_file(p) ?? ""
+loaded = save_decode(raw)
+assert(loaded != none)
+if let t = loaded:
+    assert(save_encode(t) == raw)
+    save_apply(t)
+    assert(warm_t == s.warm_t and pl.frozen == s.frozen and pl.invuln == s.invuln and cold_dmg_t == s.cold_t)
+    assert(map_pins == s.pins and save_capture().pins == s.pins, "map pins survive save/restore")
+    assert(inv.weapons.len() == 3 and inv.weapon == 2 and inv.arrows == 37 and inv.slots[1] == "apple")
+    assert(count_of("spirit_orb") == 2 and inv.keys.contains("spirit_orb") and not inv.stacks.has("spirit_orb"))
+    assert(count_of("hot_footed_frog") == 2 and count_of("hightail_lizard") == 3 and count_of("sunset_firefly") == 4, "caught materials survive save/restore")
+    assert(count_of("pepper") == 3 and pl.warm and pl.hp == 17 and pl.hp_max == 20 and pl.stamina_max == 1400.0)
+    assert(length(pl.pos - s.pos) < 0.001 and abs(pl.face - s.face) < 0.001)
+    assert(story.title_done and story.met_old_man and story.tower_risen and story.orbs == 2 and story.beat == .explore)
+    assert(hooks.tower_lift == 0.0 and not colliders[story_door_cols[0]].active)
+    assert(shrines[2].done and srec[2].gone and not srec[1].gone and usables[2].used and chests[0].opened)
+    assert(env.weather == .storm and abs(env.hour - 21.4) < 0.001 and abs(env.weather_t - 172.5) < 0.001)
+    assert(save_decode(save_encode(save_capture())) != none)
+# Copy identity records are optional only as a complete legacy migration.
+assert(save_decode(replace(raw, "slot_instance=0,2\n", "")) == none)
+assert(save_decode(replace(raw, "gear_instance=0,0,1\n", "")) == none)
+assert(save_decode(replace(raw, "END", "slot_instance=0,2\nEND")) == none)
+legacy_instances = raw
+loop line in split(raw, "\n"):
+    if starts_with(line, "slot_instance=") or starts_with(line, "gear_instance="): legacy_instances = replace(legacy_instances, line + "\n", "")
+assert(save_decode(legacy_instances) != none, "old saves migrate copy identities")
+print("save copy identities: exact round trip, incomplete/duplicate rejection, legacy migration PASS")
+# Optional status records preserve old saves and reject malformed/duplicate timers.
+legacy_effects = raw
+loop line in split(raw, "\n"):
+    if starts_with(line, "effects=") or starts_with(line, "held_effect=") or starts_with(line, "warning="):
+        legacy_effects = replace(legacy_effects, line + "\n", "")
+if let old = save_decode(legacy_effects):
+    save_apply(old)
+    assert(warm_t == 0.0 and pl.frozen == 0.0 and pl.invuln == 0.0 and cold_dmg_t == 0.0)
+else: assert(false, "old saves default status to inactive")
+loop bad in ["-1,1.25,0.45,4.75", "nan,1.25,0.45,4.75", "86401,1.25,0.45,4.75", "1,1,1,5.1", "1,1,1"]:
+    assert(save_decode(replace(raw, "effects=592.750000,1.250000,0.450000,4.750000", "effects=" + bad)) == none)
+assert(save_decode(replace(raw, "END", "effects=1,1,1,1\nEND")) == none)
+assert(save_decode(replace(raw, "warning=0.000000,-1,-1", "warning=1,999,0")) == none)
+save_apply(s)
+# Equipment-linked durations retain their identity and continue ticking after restore.
+check_equipment_effects = ():
+    areas = fill(u8(0), 16)
+    edge_sd = fill(f32(-100), 16)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    water_grid_set(fill(f32(-10000), 16), 4, -2000.0, 0.0, 1000.0)
+    save_apply(s)
+    inv.weapons = ["travelers_sword"]
+    inv.weapon = 0
+    lightning_gear = GearTrace(id = "travelers_sword", kind = .weapon, index = 0)
+    lightning_warn = 1.75
+    snap = save_capture()
+    save_apply(save_decode(save_encode(snap))!)
+    assert(lightning_warn == 1.75 and lightning_gear.id == "travelers_sword" and lightning_metal_pos() != none)
+    elements_update(0.25, pl.pos)
+    assert(lightning_warn == 1.5, "restored equipped lightning warning keeps its remaining time")
+    inv.weapons = ["branch"]
+    inv.weapon = 0
+    lightning_warn = 0.0
+    held_id = "branch"
+    held_revision = inv.weapon_revision
+    held_el = Elem(heat = 1.0, burning = 4.5, wet = 0.2)
+    snap = save_capture()
+    save_apply(save_decode(save_encode(snap))!)
+    assert(held_id == "branch" and held_el.burning == 4.5 and held_el.wet == 0.2)
+    lit = false
+    player_torch_update(0.25, lit)
+    assert(lit and held_el.burning == 4.25, "restored burning weapon continues its consumption countdown")
+    save_apply(s)
+check_equipment_effects()
+# Legacy key records count the first copy; an old stack contains only the extras.
+old_keys = replace(replace(replace(raw, "key_count=old_shirt,1\n", ""), "key_count=warm_doublet,1\n", ""), "key_count=spirit_orb,2\n", "stack=spirit_orb,1\n")
+if let old = save_decode(old_keys):
+    assert(old.inventory.key_counts.get("spirit_orb") == 2 and not old.inventory.stacks.has("spirit_orb"))
+    assert(save_decode(save_encode(old)) != none)
+else: assert(false, "legacy key quantities migrate")
+assert(save_decode(replace(raw, "key_count=spirit_orb,2", "key_count=spirit_orb,0")) == none)
+assert(save_decode(replace(raw, "key_count=spirit_orb,2", "key_count=spirit_orb,10000")) == none)
+assert(save_decode(replace(raw, "key_count=spirit_orb,2", "key_count=spirit_orb,2\nkey_count=spirit_orb,2")) == none)
+assert(save_decode(replace(raw, "key_count=spirit_orb,2", "key_count=spirit_orb,2\nstack=spirit_orb,1")) == none)
+# All 45 obtainable types together, with exact material and key quantities.
+check_all_inventory = ():
+    inv = Inventory(max_weapons = 32, max_shields = 32, max_bows = 32)
+    loop d in idefs: assert(inv_add(d.id, 4))
+    all_items = s
+    all_items.inventory = inv
+    if let all_saved = save_decode(save_encode(all_items)):
+        save_apply(all_saved)
+        loop d in idefs:
+            match d.kind:
+                weapon: assert(inv.weapons.contains(d.id))
+                shield: assert(inv.shields.contains(d.id))
+                bow: assert(inv.bows.contains(d.id))
+                arrows: assert(inv.arrows == 4)
+                key: assert(count_of(d.id) == 4 and has_key(d.id) and not inv.stacks.has(d.id))
+                _: assert(count_of(d.id) == 4)
+    else: assert(false, "full obtainable inventory round-trips")
+    print("full inventory save: {idefs.len()} item types, exact key/material quantities PASS")
+    save_apply(s)
+check_all_inventory()
+assert(save_decode(raw[..len(raw) - 5)) == none)
+assert(save_decode(replace(raw, "pin=0.250000,0.750000", "pin=1.1,0.75")) == none)
+assert(save_decode(replace(raw, "pin=0.250000,0.750000", "pin=nan,0.75")) == none)
+assert(save_decode(replace(raw, "pin=0.250000,0.750000", "pin=0.25")) == none)
+legacy = replace(replace(raw, "pin=0.250000,0.750000\n", ""), "pin=0.000000,1.000000\n", "")
+assert(save_decode(legacy) != none, "old saves without pins remain readable")
+assert(save_decode(replace(legacy, "END", join(fill("pin=0.5,0.5\n", MAP_PIN_LIMIT + 1), "") + "END")) == none)
+assert(save_decode(replace(raw, "key=spirit_orb\n", "")) == none)
+assert(save_decode(replace(raw, "BOTW_SAVE 1", "BOTW_SAVE 99")) == none)
+assert(save_decode(replace(raw, "travelers_sword", "unknown_item")) == none)
+assert(save_decode(replace(raw, "slot=1,apple", "slot=7,apple")) == none)
+assert(save_decode(replace(raw, "story=1,", "story=nan,")) == none)
+assert(save_decode(replace(raw, "END", "player=0,0,0,0,12,12,1000\nEND")) == none)
+# All four orbs put the old man on the roof; after the gift, he stays gone.
+s.completed = [true, true, true, true]
+s.activated = [true, true, true, true]
+s.progress.orbs = 4
+reset_inventory()
+loop i in [0..4): assert(inv_add("spirit_orb"))
+assert(count_of("spirit_orb") == 4 and inv.keys.len() == 1 and inv.stacks.len() == 0)
+assert(not inv_take("spirit_orb") and count_of("spirit_orb") == 4)
+s.inventory.key_counts["spirit_orb"] = count_of("spirit_orb")
+if let four = save_decode(save_encode(s)):
+    save_apply(four)
+    assert(count_of("spirit_orb") == 4 and not inv.stacks.has("spirit_orb"))
+else: assert(false, "four orb quantities survive save/load")
+save_apply(s)
+assert(story.beat == .roof and length(old_man.pos - roof_spot()) < 0.01)
+s.progress.glider_given = true
+s.inventory.keys.push("paraglider")
+save_apply(s)
+assert(pl.has_glider and not old_man.visible and story.beat == .explore)
+# Saving in a shrine starts outside its entrance with its earned orb retained.
+s.pos = srec[0].o
+save_apply(s)
+u = save_capture()
+assert(length(u.pos - shrines[0].pos) < 0.3 and u.completed[0])
+# Waking and the slate are independent: the wake cinematic need not replay.
+s.progress = Story()
+s.awake = true
+s.pos = vec3(-900, 200, 1800)
+zones.push(Zone("sor", s.pos - vec3(3, 3, 3), s.pos + vec3(3, 3, 3)))
+s.activated = fill(false, 4)
+s.completed = fill(false, 4)
+save_apply(s)
+assert(story.beat == .inside and not story.slate and pl.state == .ground)
+# Production startup, milestone, periodic and native-close hooks use only this fixture path.
+assert(save_write(p, s))
+reset_inventory()
+story_start()
+save_init(p)
+assert(inv.arrows == 37 and pl.hp_max == 20 and story.beat == .inside)
+story.slate = true
+save_update(1.1)
+if let disk = save_decode(read_file(p) ?? ""):
+    assert(disk.progress.slate)
+else: assert(false)
+map_pins.push(vec2(0.8, 0.3))
+save_update(1.1)
+if let disk = save_decode(read_file(p) ?? ""):
+    assert(disk.pins.len() == 3, "pin changes trigger milestone save")
+else: assert(false)
+pl.pos.x += 1
+inv.arrows = 19
+save_update(181.0)
+if let disk = save_decode(read_file(p) ?? ""):
+    assert(disk.inventory.arrows == 19 and abs(f64(disk.pos.x - pl.pos.x)) < 0.001)
+else: assert(false)
+inv.arrows = 11
+closing(true)
+save_update(0.0)
+closing(false)
+if let disk = save_decode(read_file(p) ?? ""):
+    assert(disk.inventory.arrows == 11)
+else: assert(false)
+# Ordinary defeat is a milestone, so a cleared camp autosaves without waiting
+# for the periodic out-of-combat interval or closing the window.
+assert(enemies.len() == 0)
+ordinary = spawn_enemy(.bokoblin, pl.pos + vec3(3, 0, 0), "boko_club")
+save_update(1.1)
+enemy_damage(enemies[ordinary], 13.0, enemies[ordinary].pos)
+save_update(1.1)
+if let disk = save_decode(read_file(p) ?? ""):
+    assert(disk.defeated.len() == 1 and disk.defeated[0].kind == int(EKind.bokoblin), "camp defeat triggers milestone autosave")
+else: assert(false)
+enemies.clear()
+# Closing during the tower's rise settles it, including the already-used terminal.
+story.beat = .tower_rise
+story.tower_risen = false
+u = save_capture()
+assert(u.progress.tower_risen and u.pos.y == 200)
+assert(delete_file(p))
+assert(not file_exists(p + ".tmp"))
+print("save round-trip, restore, validation, shrine exit and story checks: PASS")

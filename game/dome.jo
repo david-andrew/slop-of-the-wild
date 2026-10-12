@@ -1,0 +1,63 @@
+use 'gfx.jo'
+
+# A sphere of light round a seated monk: clear in the middle, bright at its rim, faint bands of
+# light rising through it, drawn additively after the opaque scene.
+
+struct DomeV:
+    pos: vec3
+
+struct DomeU:
+    vp: mat4
+    center: vec3
+    radius: f32
+    cam: vec3
+    color: vec3
+    time: f32
+    fade: f32
+
+struct DomeO:
+    pos: vec4
+    world: vec3
+    n: vec3
+
+dome_vs = (v: DomeV, u: DomeU) -> DomeO:
+    w = u.center + v.pos * u.radius
+    DomeO(u.vp * vec4(w, 1), w, v.pos)
+
+dome_fs = (i: DomeO, u: DomeU) -> vec4:
+    n = normalize(i.n)
+    v = normalize(u.cam - i.world)
+    rim = pow(1.0 - abs(dot(n, v)), 2.5)
+    h = n.y
+    # rings of light climbing the shell, and fine meridians
+    band = smoothstep(0.82, 1.0, sin(h * 26.0 - u.time * 1.6) * 0.5 + 0.5)
+    lon = atan2(n.z, n.x)
+    mer = smoothstep(0.9, 1.0, sin(lon * 12.0) * 0.5 + 0.5) * 0.4
+    a = (pow(rim, 1.4) * 0.9 + (band + mer) * 0.08 * rim + 0.012) * u.fade
+    vec4(u.color * (1.0 + rim), a)
+
+__dome_sh = Shader()
+__dome_mesh = Mesh()
+__dome_ready = false
+
+dome_draw = (vp: mat4, center: vec3, radius: f64, cam: vec3, color: vec3, fade: f64):
+    if fade <= 0.0: return
+    if not __dome_ready:
+        __dome_ready = true
+        __dome_sh = make_sh(shader(dome_vs, dome_fs))
+        vs: DomeV[]
+        const SEG = 32
+        const RING = 20
+        p = (i: int, j: int) -> DomeV:
+            th = (f64(j) / f64(RING) - 0.5) * PI
+            ph = f64(i) / f64(SEG) * TAU
+            DomeV(v3(cos(ph) * cos(th), sin(th), sin(ph) * cos(th)))
+        loop j in [0..RING):
+            loop i in [0..SEG):
+                loop q in [p(i, j), p(i + 1, j), p(i + 1, j + 1), p(i, j), p(i + 1, j + 1), p(i, j + 1)]: vs.push(q)
+        __dome_mesh = mesh(vs)
+    gl_blend_state(true)
+    glDisable(GL_CULL_FACE)
+    draw_fast(__dome_sh, __dome_mesh, DomeU(vp, center, f32(radius), cam, color, f32(elapsed()), f32(fade)))
+    glDepthMask(1)
+    glDisable(GL_BLEND)

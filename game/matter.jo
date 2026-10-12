@@ -1,0 +1,114 @@
+use 'gfx.jo'
+
+# The element rules. Everything that can catch fire, cook, explode, melt, freeze, get wet or
+# conduct is described by what it is made of (Matter) and carries a small state (Elem). Each
+# frame the world measures what it is exposed to (heat from fires near it, water, cold,
+# electricity) and react() applies the same rules to all of it. What follows — a dropped club
+# catching from a campfire, an apple baking in a grass fire, a barrel set off by a burning
+# arrow, an Ice Chuchu melting — comes from the rules, not from special cases.
+
+struct Matter:
+    flammable = false     # catches fire from heat
+    burn_time = 0.0       # how long it burns before it is gone (0: until put out)
+    explosive = false     # goes off when hot enough
+    cooks = false         # food: turns into its cooked form when hot enough
+    metal = false         # conducts, draws lightning
+    alive = false         # hurt by burning, freezing, shocks
+    icy = false           # melts in heat
+    ignite_at = 1.0       # how much heat it takes (seconds next to a fire)
+
+struct Elem:
+    heat = 0.0            # warming up: reacts at ignite_at
+    burning = 0.0         # seconds left burning (-1: burning until put out)
+    wet = 0.0             # 1 just out of water; dries over a minute
+    chill = 0.0           # cold soaked up
+    frozen = 0.0          # seconds left frozen
+    shock = 0.0           # stunned by electricity
+    last_shock = -1       # strike already accepted (even after leaving its radius)
+    shock_live = false    # rising edge for unnumbered electrical exposures
+
+struct Exposure:
+    heat = 0.0            # heat per second from fires around it
+    water = false         # in water (or under heavy rain)
+    rain = 0.0
+    cold = 0.0            # per second
+    shock = 0.0           # electricity right now
+    shock_id = 0          # numbered strikes; 0 means a continuous exposure
+
+enum Reaction: nothing, ignited, cooked, exploded, put_out, burnt_up, melted, froze, thawed, shocked
+
+burning = (s: Elem) -> bool: s.burning != 0.0
+
+react = (m: Matter, s: mut Elem, ex: Exposure, dt: f64) -> Reaction:
+    # water puts fire out and soaks; things dry slowly (faster while warm)
+    if ex.water:
+        s.wet = 1.0
+        s.heat = 0.0
+        if burning(s):
+            s.burning = 0.0
+            return .put_out
+    # (soaked is soaked: long rain is no wetter than a dip, and heat still warms it a little)
+    else: s.wet = clamp(s.wet - dt * (0.015 + ex.heat * 0.2) + ex.rain * dt * 0.1, 0.0, 1.0)
+    rain_doused = ex.rain > 0.5 and m.flammable and m.burn_time == 0.0
+    if rain_doused:
+        # Quench the stored ignition heat too. Otherwise a hot torch alternates
+        # put_out/ignited every tick, even after leaving its original fire.
+        s.heat = 0.0
+        if burning(s):
+            s.burning = 0.0
+            return .put_out
+    # electricity: metal and living things (and anything wet) take it
+    conducts = ex.shock > 0.0 and (m.metal or m.alive or s.wet > 0.3)
+    new_shock = conducts and (if ex.shock_id > 0: s.last_shock != ex.shock_id else: not s.shock_live)
+    s.shock_live = conducts
+    s.shock = max(0.0, s.shock - dt)
+    if new_shock:
+        s.last_shock = ex.shock_id
+        s.shock = 1.5
+        return .shocked
+    # heat builds up near fire (slower when wet) and fades away from it
+    if ex.heat > 0.0 and not rain_doused: s.heat += ex.heat * dt * (1.0 - 0.85 * s.wet)
+    else: s.heat = max(0.0, s.heat - dt * 0.4)
+    if s.frozen > 0.0:
+        s.frozen -= dt
+        if s.heat > 0.3:
+            s.frozen = 0.0
+            return .thawed
+    # cold: a frozen spell for the living, slowly
+    if ex.cold > 0.0 and m.alive: s.chill += ex.cold * dt
+    else: s.chill = max(0.0, s.chill - dt * 0.5)
+    if m.alive and s.chill >= 1.0 and s.frozen <= 0.0:
+        s.chill = 0.0
+        s.frozen = 2.5
+        return .froze
+    # what heat does, by what it is made of
+    if s.heat >= m.ignite_at:
+        if m.icy:
+            s.heat = 0.0
+            return .melted
+        if m.explosive:
+            s.heat = 0.0
+            return .exploded
+        if m.cooks:
+            s.heat = 0.0
+            return .cooked
+        if m.flammable and not burning(s):
+            s.burning = if m.burn_time > 0.0: m.burn_time else: -1.0
+            return .ignited
+    if s.burning > 0.0:
+        s.burning -= dt
+        if s.burning <= 0.0:
+            s.burning = 0.0
+            return .burnt_up
+    .nothing
+
+# matter of the usual kinds
+WOOD = Matter(flammable = true, burn_time = 12.0, ignite_at = 1.2)
+TORCH = Matter(flammable = true, burn_time = 0.0, ignite_at = 0.2)
+FOOD = Matter(cooks = true, ignite_at = 1.5)
+METAL = Matter(metal = true)
+STONE = Matter()
+FLESH = Matter(alive = true, flammable = true, burn_time = 4.0, ignite_at = 0.8)
+ICE_FLESH = Matter(alive = true, icy = true, ignite_at = 0.3)
+GRASS_TREE = Matter(flammable = true, burn_time = 10.0, ignite_at = 2.5)
+POWDER = Matter(explosive = true, flammable = true, ignite_at = 0.6)

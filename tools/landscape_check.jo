@@ -1,0 +1,116 @@
+# Run: sloppy/bin/sloppy tools/landscape_check.jo (headless; no render lock needed).
+use '../game/terrain.jo'
+use '../game/gfx.jo'
+use '../game/farland.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+hf.n = 64
+hf.cell = 2.0
+hf.x0 = -64.0
+hf.z0 = -64.0
+hf.h = fill(f32(0), hf.n * hf.n)
+loop z in [0..hf.n):
+    loop x in [0..hf.n):
+        xx = hf.x0 + f64(x) * hf.cell
+        zz = hf.z0 + f64(z) * hf.cell
+        hf.h[z * hf.n + x] = f32((xx * xx + zz * zz) * 0.008)
+bowl = meadow_habitat(0.0, 0.0)
+loop k in [0..hf.h.len()): hf.h[k] = -hf.h[k]
+crest = meadow_habitat(0.0, 0.0)
+assert(bowl > crest + 0.5)
+assert(bowl >= 0.0 and bowl <= 1.0 and crest >= 0.0 and crest <= 1.0)
+assert(meadow_habitat(0.0, 0.0) == crest)
+# Restore production terrain and pads after the synthetic habitat fixture. Pads
+# participate in prepared-pack fingerprints; omitting them forces a cache miss.
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+# Check the rendered polar mesh as well as the analytic shape: a narrow gorge can
+# disappear between ring vertices, and oversized peaks overwhelm the overlook skyline.
+north_top = 0.0
+south_top = 0.0
+# The title-landmark relocation moved the peaks north to the river around z=-100.
+# Sample both banks relative to that river, preserving the original height limits.
+loop x in [0..40):
+    loop z in [0..41):
+        xx = 1300.0 + f64(x) * 25.0
+        zz = far_river_z(xx) - 400.0 + f64(z) * 20.0
+        y = far_surface_height(xx, zz)
+        if zz < far_river_z(xx): north_top = max(north_top, y)
+        else: south_top = max(south_top, y)
+assert(north_top > 340.0 and north_top < 420.0)
+assert(south_top > 330.0 and south_top < 420.0)
+assert(abs(north_top - south_top) < 45.0)
+loop x in [1700.0, 1740.0, 1780.0]:
+    river_z = far_river_z(x)
+    gorge = far_surface_height(x, river_z)
+    north_wall = far_surface_height(x, river_z - 150.0)
+    south_wall = far_surface_height(x, river_z + 170.0)
+    assert(gorge < 135.0)
+    assert(north_wall > gorge + 160.0 and south_wall > gorge + 160.0)
+    assert(dueling_height(x, river_z) == 0.0)
+# Forested feet descend into the surrounding field instead of adding a tall shared base.
+assert(dueling_height(1350.0, far_river_z(1350.0) - 300.0) < 60.0)
+assert(dueling_height(2250.0, far_river_z(2250.0) + 300.0) < 60.0)
+# Prepared startup must retain the same peak heights as the production generator.
+# The queried triangle helper itself needs no loaded pack or GPU context.
+if farland_asset_load():
+    packed_north = 0.0
+    packed_south = 0.0
+    loop v in far_vertices:
+        x = f64(v.pos.x)
+        z = f64(v.pos.z)
+        if x < 1350.0 or x > 2300.0 or abs(z - far_river_z(x)) > 400.0: continue
+        assert(abs(f64(v.pos.y) - far_height(x, z)) < 0.02, "prepared peaks match the production shape")
+        if z < far_river_z(x): packed_north = max(packed_north, f64(v.pos.y))
+        else: packed_south = max(packed_south, f64(v.pos.y))
+    assert(packed_north > 340.0 and packed_north < 420.0)
+    assert(packed_south > 330.0 and packed_south < 420.0)
+    print("prepared Dueling Peaks: {packed_north:.1}/{packed_south:.1} PASS")
+else:
+    print("prepared farland unavailable/stale; production generated-shape checks active (refresh with tools/prepare_assets.sh)")
+crater = far_height(f64(DEATH_MTN.x), f64(DEATH_MTN.z))
+rim = crater
+# The tightened cone's crater rim is inside the old 340 m sample radius.
+loop radius in [160.0, 200.0, 240.0, 280.0]:
+    loop k in [0..12):
+        a = TAU * f64(k) / 12.0
+        rim = max(rim, far_height(f64(DEATH_MTN.x) + cos(a) * radius, f64(DEATH_MTN.z) + sin(a) * radius))
+assert(rim > crater + 10.0)
+# Sample the exposed northern spurs of the tightened cone, away from Lanayru's
+# adjoining snowy massif on its southern side, rather than the old 1500 m apron.
+spur_low = 10000.0
+spur_high = 0.0
+loop k in [0..24):
+    a = PI + PI * f64(k) / 23.0
+    y = far_surface_height(f64(DEATH_MTN.x) + cos(a) * 1200.0, f64(DEATH_MTN.z) + sin(a) * 1200.0)
+    spur_low = min(spur_low, y)
+    spur_high = max(spur_high, y)
+assert(spur_high - spur_low > 120.0)
+assert(spur_high < 650.0 and rim > spur_high + 450.0)
+
+summit = far_height(f64(LANAYRU.x), f64(LANAYRU.z))
+shoulder = far_height(f64(LANAYRU.x) + 900.0, f64(LANAYRU.z))
+assert(summit > 850.0 and summit < 1000.0)
+assert(shoulder > 500.0 and summit > shoulder + 200.0)
+# The eastern snow massif occupies a broad base without the former towering summit.
+assert(lanayru_height(3600.0, -600.0) > 200.0)
+assert(lanayru_height(6000.0, -600.0) > 200.0)
+print("landscape: hollow habitat {bowl:.3} > crest {crest:.3}; deterministic bounds, rendered twin peaks {north_top:.1}/{south_top:.1}, deep gorge, volcano crater and broad Lanayru {summit:.1}/{shoulder:.1} PASS")
+
+# Inspect the production material grid at the Temple-facing snow apron. A
+# narrow feather can pass colour checks while still drawing a single white
+# border in the overview. Count mixed ground over several independent cuts.
+loop z in [2060.0, 2100.0, 2160.0, 2230.0]:
+    mixed = 0.0
+    loop k in [0..350):
+        x = -1400.0 + f64(k) * 2.0
+        snow = material_at(x, z).z
+        assert(snow >= 0.0 and snow <= 1.0, "bounded snow material")
+        if snow > 0.04 and snow < 0.96: mixed += 2.0
+    assert(mixed >= 64.0, "broad mixed snow/earth apron toward the Temple")
+    assert(material_at(-700.0, z).z == 0.0, "Temple meadow stays outside snow")
+    print("landscape snow apron z={z:.0}: {mixed:.0} m mixed ground PASS")
+assert(material_at(-1300.0, 2230.0).z == 1.0, "deep Hylia snow retained")

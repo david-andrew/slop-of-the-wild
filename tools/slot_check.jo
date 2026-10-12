@@ -1,0 +1,307 @@
+# Uses main's real HUD slot_views(), so initialization creates a graphics context.
+# Run: flock /tmp/botw-render.lock env BOTW_SKIP=1 sloppy/bin/sloppy tools/slot_check.jo
+use '../game/main.jo'
+use '../game/items.jo'
+use '../game/matter.jo'
+use '../game/save.jo'
+use '../game/player.jo'
+use '../game/combat.jo'
+use '../game/enemies.jo'
+use '../game/input.jo'
+use '../game/inventory.jo'
+use '../game/gfx.jo'
+use '../game/ui.jo'
+use '../game/env.jo'
+use '../game/elements.jo'
+use '../game/chars.jo'
+use '../game/skel.jo'
+use '../game/interact.jo'
+from '../game/inventory.jo' import __tab_items, __bind
+
+# Exercise the real field callback and HUD after a paused inventory mutation.
+transaction_slot_checks = ():
+    __pad_on = false
+    __key_pressed = fill(false, 128)
+    __mouse_pressed = fill(false, 8)
+    __mouse_dx = 0.0
+    __mouse_dy = 0.0
+    loop action in ["eat", "bind", "drop"]:
+        inv = Inventory()
+        inv_add("apple")
+        inv.slots = ["apple", "", ""]
+        invui = InvUI(open = true, tab = 3, t = 1.0)
+        pl = Player(hp = 4)
+        fight = Fight()
+        witems.clear()
+        act = Actions(interact = action == "eat", slot = if action == "drop": -1 else: 2, drop = true)
+        paused = inventory_update(1.0 / 60.0)
+        if not paused and act.slot >= 0: use_slot(act.slot)
+        assert(paused, "inventory item buttons never leak into the field callback")
+        views = slot_views()
+        if action == "bind":
+            assert(pl.hp == 4 and count_of("apple") == 1 and witems.len() == 0 and views[2].label == "Apple" and views[2].count == 1)
+            invui.open = false
+            use_slot(2)
+            assert(pl.hp == 6 and inv.slots[2] == "" and slot_views()[2].count == 0, "bound food works once after closing the inventory")
+        else:
+            assert(pl.hp == (if action == "eat": 6 else: 4) and count_of("apple") == 0 and views[0].label == "" and views[0].count == 0 and views[2].label == "")
+            assert(witems.len() == (if action == "drop": 1 else: 0))
+        hp = pl.hp
+        fight = Fight()
+        loop k in [0..3): use_slot(k)
+        assert(pl.hp == hp, "field item buttons cannot consume an already eaten or dropped item")
+        __bind(2, "apple")
+        assert(inv.slots[2] == "", "binding an unowned item is rejected at the mutation boundary")
+        print("transaction real field/HUD {action}: PASS hp={pl.hp} slots={inv.slots} world={witems.len()}")
+    loop id in ["travelers_sword", "travelers_shield", "travelers_bow"]:
+        inv = Inventory()
+        inv_add(id)
+        inv.slots = [id, "", ""]
+        invui = InvUI(open = true, tab = if item(id).kind == .weapon: 0 else: (if item(id).kind == .shield: 1 else: 2), t = 1.0)
+        act = Actions(drop = true)
+        witems.clear()
+        inventory_update(1.0 / 60.0)
+        use_slot(0)
+        assert(not inv_owns(id) and slot_views()[0].label == "" and slot_views()[0].count == 0 and witems.len() == 1, "field gear slot cannot re-equip removed gear")
+    inv = Inventory()
+    inv_add("travelers_sword")
+    pl = Player()
+    fight = Fight()
+    act = Actions(throw_ = true)
+    combat_update(1.0 / 60.0, enemy_pos, 0)
+    assert(fight.act == .throw_)
+    fight.t = 0.26
+    invui = InvUI(open = true, tab = 0, t = 1.0)
+    act = Actions(drop = true, throw_ = true)
+    witems.clear()
+    inventory_update(1.0 / 60.0)
+    invui.open = false
+    use_slot(0)
+    act = Actions()
+    combat_update(1.0 / 60.0, enemy_pos, 0)
+    assert(fight.act == .idle and witems.len() == 1 and not witems[0].thrown_by_player and slot_views()[0].label == "", "dropping a queued throw cancels its release; no duplicate world item")
+    print("transaction real field/HUD gear and queued throw: PASS")
+    # Both carry poses use the rendered gear center, at a turned/moving root.
+    inv = Inventory()
+    inv_add("travelers_sword")
+    pl = Player(pos = vec3(-960, 180, 1760), face = 1.2, vel = vec3(2, 0, 0))
+    lightning_gear = GearTrace(id = "travelers_sword", kind = .weapon, index = 0)
+    loop hand in [false, true]:
+        fight = Fight(weapon_out = hand)
+        hero_animate(1.0 / 60.0, 0.0)
+        m = socket_world(hero_m, hero_world, hero_skin, if hand: SOCKET_HAND_R else: SOCKET_BACK)
+        if not hand: m = m * translation(v3(0.14, 0.2, -0.06)) * rotation_z(2.45)
+        expected = transform_point(m, v3(0.0, weapon_length(item("travelers_sword")) * 0.55, 0.0))
+        assert(length(lightning_metal_pos()! - expected) < 0.00001, "warning sparks stay on the actual carried metal mesh")
+        print("lightning posed socket hand={hand}: PASS spark={expected}")
+    lightning_gear = GearTrace()
+    lightning_warn = 0.0
+    invui.open = false
+
+# Regression for critic 60: a dry second copy must never resolve to its burning sibling.
+instance_slot_checks = ():
+    loop id in ["branch", "pot_lid", "travelers_bow"]:
+        inv = Inventory()
+        held_id = ""
+        held_index = -1
+        shield_el = CarriedElem()
+        bow_el = CarriedElem()
+        loop i in [0..3): assert(inv_add(id))
+        kind = item(id).kind
+        tab = if kind == .weapon: 0 else: (if kind == .shield: 1 else: 2)
+        gear_elements_sync()
+        match kind:
+            weapon:
+                inv.weapon_effects[0] = Elem(burning = 9.8)
+                inv.weapon_effects[2] = Elem(wet = 1.0)
+            shield:
+                inv.shield_effects[0] = Elem(burning = 9.8)
+                inv.shield_effects[2] = Elem(wet = 1.0)
+            bow:
+                inv.bow_effects[0] = Elem(burning = 9.8)
+                inv.bow_effects[2] = Elem(wet = 1.0)
+            _: pass
+        invui = InvUI(open = true, tab = tab, sel = 1, t = 1.0)
+        act = Actions(slot = 2)
+        inventory_update(1.0 / 60.0)
+        dry_uid = inv.slot_instances[2]
+        assert(dry_uid > 0 and slot_gear_index(2) == 1)
+        loop i in [0..3):
+            assert(inventory_cell_bound(2, tab, i, id) == (i == 1), "shortcut badge belongs only to the selected copy")
+        assert(inventory_cell_element(tab, 0).burning > 0 and inventory_cell_element(tab, 1).burning == 0 and inventory_cell_element(tab, 2).wet == 1.0, "state cues read the exact grid copy")
+        invui.open = false
+        use_slot(2)
+        equipped = if kind == .weapon: inv.weapon else: (if kind == .shield: inv.shield else: inv.bow)
+        assert(equipped == 1 and gear_element(kind, equipped).burning == 0, "dry second copy is equipped")
+        __bind(1, id, 0)
+        assert(inv.slot_instances[1] != dry_uid and inv.slot_instances[2] == dry_uid, "two copies can own distinct shortcuts")
+        # Removing a preceding entry reorders the parallel item/effect/identity arrays.
+        assert(inv_remove_gear(kind, 0) == id)
+        assert(inv.slots[1] == "" and inv.slot_instances[1] == 0 and slot_gear_index(2) == 0)
+        # Also reverse the two remaining entries, as a future inventory sort would.
+        # Reorder all three parallel arrays together; shortcut identities do not change.
+        match kind:
+            weapon:
+                inv.weapons = [inv.weapons[1], inv.weapons[0]]
+                inv.weapon_effects = [inv.weapon_effects[1], inv.weapon_effects[0]]
+                inv.weapon_instances = [inv.weapon_instances[1], inv.weapon_instances[0]]
+                inv.weapon = -1
+            shield:
+                inv.shields = [inv.shields[1], inv.shields[0]]
+                inv.shield_effects = [inv.shield_effects[1], inv.shield_effects[0]]
+                inv.shield_instances = [inv.shield_instances[1], inv.shield_instances[0]]
+                inv.shield = -1
+            bow:
+                inv.bows = [inv.bows[1], inv.bows[0]]
+                inv.bow_effects = [inv.bow_effects[1], inv.bow_effects[0]]
+                inv.bow_instances = [inv.bow_instances[1], inv.bow_instances[0]]
+                inv.bow = -1
+            _: pass
+        snap = PlateauSave(inventory = inv, activated = fill(false, 4), completed = fill(false, 4))
+        raw = save_encode(snap)
+        loaded = save_decode(raw)
+        assert(loaded != none, "instance save is valid")
+        inv = loaded!.inventory
+        assert(inv.slot_instances[2] == dry_uid and slot_gear_index(2) == 1)
+        use_slot(2)
+        assert(gear_element(kind, 1).burning == 0 and gear_element(kind, 1).wet == 0 and gear_element(kind, 0).wet == 1.0, "reorder/save preserves bound dry copy and wet sibling")
+        # Legacy records migrate deterministically to the first owned matching copy.
+        legacy = raw
+        loop line in split(raw, "\n"):
+            if starts_with(line, "slot_instance=") or starts_with(line, "gear_instance="): legacy = replace(legacy, line + "\n", "")
+        old = save_decode(legacy)
+        assert(old != none)
+        legacy_inv = old!.inventory
+        assert(legacy_inv.slot_instances[2] == (if kind == .weapon: legacy_inv.weapon_instances[0] else: (if kind == .shield: legacy_inv.shield_instances[0] else: legacy_inv.bow_instances[0])))
+        assert(save_decode(replace(raw, "slot_instance=2,{dry_uid}", "slot_instance=2,999999")) == none, "dangling saved binding rejected")
+        wi = drop_gear(kind, 1, pl.pos, vec3(0, 0, 0))
+        assert(wi >= 0 and inv_owns(id) and inv.slots[2] == "" and inv.slot_instances[2] == 0, "dropping bound copy clears shortcut despite surviving sibling")
+        use_slot(2)
+        assert(pickup_item(wi))
+        assert(gear_instance(kind, 1) != dry_uid and inv.slots[2] == "", "picked-up copy cannot revive a disappeared binding")
+        if kind == .weapon or kind == .bow:
+            assert(slot_gear_index(0) == 1, "automatic pickup shortcut names the new copy, not the wet sibling")
+        print("PASS instance shortcut {id}: dry equip, one badge, distinct copies, preceding removal, reorder, save/reload, legacy migration, dangling rejection, drop and pickup")
+    invui.open = false
+
+main = ():
+    inv = Inventory()
+    inv_add("travelers_sword")
+    pl = Player()
+    fight = Fight(act = .throw_, t = 0.26)
+    act = Actions()
+    combat_update(1.0 / 60.0, enemy_pos, 0)
+    views = slot_views()
+    print("throw_last_weapon_slot_view: label='{views[0].label}' count={views[0].count}")
+    assert(views[0].label == "" and views[0].count == 0, "thrown final weapon leaves an empty HUD slot")
+    inv = Inventory()
+    inv_add("travelers_sword")
+    inv_add("branch")
+    invui = InvUI(open = true, tab = 0, sel = 0, t = 1.0)
+    invui_open_hint = true
+    __pad_on = true
+    __pad_axes = fill(0.0, 6)
+    __pad_down = fill(false, 15)
+    __pad_prev = fill(false, 15)
+    __pad_down[int(PadButton.right)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    views = slot_views()
+    print("inventory_dpad_right_slot_view: label='{views[2].label}' selected={invui.sel}")
+    assert(invui.sel == 0 and views[2].label == "Wanderer's Sword" and views[2].count == 1, "d-pad binds the original selection in the real HUD slot")
+    assert(slots_active == 2, "inventory binding highlights the d-pad's active slot")
+    invui.open = false
+    inv.slots = ["travelers_sword", "branch", "travelers_sword"]
+    fight = Fight()
+    pl = Player()
+    ui = UIState()
+    act = Actions()
+    env = Env()
+    clock_signature = ""
+    slots_signature = ""
+    clock_a = 1.0
+    loop k in [0..480): ui_update(1.0 / 60.0)
+    assert(clock_a < 0.02 and slots_a < 0.02, "idle clock and bindings fade without requiring movement")
+    loop slot in [0..3):
+        act = Actions(slot = slot, using_pad = true)
+        ui_update(1.0 / 60.0)
+        assert(slots_active == slot and slots_t > 2.0 and clock_t > 2.0, "d-pad use highlights the active binding and wakes the clock")
+    act = Actions()
+    loop k in [0..480): ui_update(1.0 / 60.0)
+    env.hour += 0.01
+    ui_update(1.0 / 60.0)
+    assert(clock_a < 0.02, "advancing minutes do not continuously reveal the dial")
+    loop event in [0..8):
+        loop k in [0..480): ui_update(1.0 / 60.0)
+        assert(clock_a < 0.02, "sensor returns to quiet after each event")
+        match event:
+            0: env.night = 1.0
+            1: env.weather = .cloudy; env.clouds = 0.8
+            2: env.rain = 1.0
+            3: ui.temp = 0.2
+            4: pl.hp -= 1
+            5: ui_pickup("Wanderer's Sword")
+            6: ui_location("Grate Plateau")
+            _: pl.stamina -= 10.0
+        ui_update(1.0 / 60.0)
+        assert(clock_t > 2.0 and clock_a > 0.02, "day icon/weather/temperature/health/pickup/location/stamina wakes the dial")
+    # Dawn/day/dusk/night changes wake the sensor, ordinary minute progression does not.
+    env.hour = 4.5
+    ui_update(1.0 / 60.0)
+    loop hour in [5.0, 7.0, 17.0, 19.0, 0.0]:
+        loop k in [0..480): ui_update(1.0 / 60.0)
+        env.hour = hour
+        ui_update(1.0 / 60.0)
+        # Midnight stays in the same night band, so the dial must stay quiet.
+        assert((clock_t > 2.0) == (hour != 0.0), "sensor wakes at day phases, stays quiet at midnight")
+    # Use the production wheel fade: a partial wheel remains while otherwise idle.
+    pl = Player(state = .cutscene, stamina = 800.0)
+    act = Actions()
+    loop k in [0..480):
+        player_update(1.0 / 60.0)
+        ui_update(1.0 / 60.0)
+    assert(pl.stamina_shown > 0.98 and clock_a < 0.02 and slots_a < 0.02, "partial stamina stays visible while idle sensor/bindings fade")
+    # A second use cannot rely on a hidden->visible wheel transition.
+    use_stamina(10.0)
+    player_update(1.0 / 60.0)
+    ui_update(1.0 / 60.0)
+    assert(clock_t > 2.0 and clock_a > 0.02, "renewed stamina use wakes an already visible wheel's sensor")
+    pl.stamina = pl.stamina_max
+    loop k in [0..480):
+        player_update(1.0 / 60.0)
+        ui_update(1.0 / 60.0)
+    assert(pl.stamina_shown < 0.02 and clock_a < 0.02 and slots_a < 0.02, "full idle stamina fades to a hearts-only field HUD")
+    print("HUD quiet: clock={clock_a:.6} bindings={slots_a:.6} full_stamina={pl.stamina_shown:.6}; partial wheel and repeated use PASS")
+    pl = Player()
+    # Full field pickup rejects the add, preserving the source and showing a brief notice.
+    loop id in ["travelers_sword", "travelers_shield", "travelers_bow"]:
+        inv = Inventory(max_weapons = 0, max_shields = 0, max_bows = 0)
+        ui = UIState()
+        wi = spawn_item(id, pl.pos)
+        if inv_add(id): witems[wi].alive = false
+        ui_update(1.0 / 60.0)
+        assert(witems[wi].alive and ui.pickup_t > 2.0 and contains(ui.pickup_name, item(id).name) and ui.pickup_count == 1, "full pickup keeps the item and names it in the notice")
+        assert(inv_full_name == "", "notice event consumed once")
+        inv_add(id)
+        ui_update(1.0 / 60.0)
+        assert(ui.pickup_count == 1, "repeated failed pickups never add a quantity suffix")
+        print("full pickup notice: {ui.pickup_name}")
+    ci = add_chest(pl.pos + vec3(10, 0, 0), 0.0, "travelers_sword")
+    use_it(chests[ci].usable)
+    ui_update(1.0 / 60.0)
+    assert(not chests[ci].opened and not usables[chests[ci].usable].used and contains(ui.pickup_name, "Wanderer's Sword"), "full chest remains closed and gives a notice")
+    inv.max_weapons = 1
+    use_it(chests[ci].usable)
+    assert(chests[ci].opened and usables[chests[ci].usable].used and inv.weapons.len() == 1, "chest succeeds after space becomes available")
+    # Keys expose neither equipment/binding/drop actions nor a droppable stack.
+    inv = Inventory()
+    loop i in [0..4): inv_add("spirit_orb")
+    views = slot_views()
+    assert(__tab_items(4) == ["spirit_orb"] and __tab_items(3).len() == 0 and count_of("spirit_orb") == 4)
+    assert(not inventory_can_use(item("spirit_orb")) and not inventory_can_bind(item("spirit_orb")) and not inventory_can_drop(item("spirit_orb")))
+    assert(not inventory_can_use(item("hot_footed_frog")) and not inventory_can_bind(item("hot_footed_frog")) and inventory_can_drop(item("hot_footed_frog")))
+    assert(not inventory_can_use(item("arrow")) and not inventory_can_drop(item("arrow")))
+    print("full pickup/chest notices and key action hints: PASS")
+    transaction_slot_checks()
+    instance_slot_checks()
+    print("slot and sensor visibility PASS: three active bindings; idle fade; eight wake events; day phases; partial/full stamina; repeated stamina use")

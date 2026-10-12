@@ -1,0 +1,557 @@
+use 'enemy_spacing_checks.jo'
+use 'wildlife_voice_checks.jo'
+use 'stalkoblin_checks.jo'
+# Headless checks for footing on the real rig and wildlife perception.
+use 'talus_checks.jo'
+use '../game/talus.jo'
+use '../game/items.jo'
+use '../game/gfx.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/enemies.jo'
+use '../game/enemy_contacts.jo'
+use '../game/enemy_weapon_pose.jo'
+use '../game/worldgen.jo'
+use '../game/enemy_footing.jo'
+use '../game/wildlife.jo'
+use '../game/wildlife_motion.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+use '../game/elements.jo'
+use '../game/input.jo'
+use '../game/interact.jo'
+use '../game/combat.jo'
+
+failures = 0
+check = (ok: bool, name: str):
+    if not ok:
+        print("FAIL {name}")
+        failures += 1
+
+# Only the rig header is needed; no textures or graphics context.
+rig = (path: str = "assets/models/bokoblin.mdl") -> Model:
+    r = BinR(read_bytes(path) ?? [])
+    r_u32(r)
+    r_u32(r)
+    m = Model(name = r_str(r), skeleton = r_str(r))
+    n = r_u32(r)
+    loop i in [0..n):
+        m.bones.push(r_str(r))
+        m.parent.push(r_i32(r))
+        m.canon.push(r_i32(r))
+        m.use_t.push(r_u8(r) != 0)
+        m.rest_t.push(r_v3(r))
+        m.rest_r.push(r_v4(r))
+        m.rest_s.push(r_v3(r))
+        m.ibm.push(r_m4(r))
+    m.tscale = f64(r_f32(r))
+    m
+
+check(abs(wild_hearing(0.0, 0.0, false) - 8.0) < 0.001, "stationary hearing")
+check(abs(wild_hearing(6.0, 1.0, false) - 10.64) < 0.001, "running in rain")
+check(wild_hearing(2.0, 0.0, true) < wild_hearing(2.0, 0.0, false), "sneaking")
+check(wild_retreat(.boar, 22.0, 0.0) and not wild_retreat(.fox, 22.0, 0.0), "nocturnal fox")
+check(wild_retreat(.fox, 12.0, 0.0) and wild_retreat(.fox, 22.0, 0.8), "fox shelter")
+check(not wild_retreat(.fish, 22.0, 0.8), "fish stay active")
+check(abs(f64(boko_step(0.22, false).x) - 0.36) < 0.001, "rear step distance")
+check(abs(f64(boko_step(0.30, true).x) - 0.22) < 0.001, "front step distance")
+check(boko_step(0.13, true).x == 0.0 and boko_step(0.12, false).y > 0.129, "step delay and lift")
+check(abs(f64(boko_lunge(0.20).x) - 0.22) < 0.001 and length(boko_lunge(0.70)) < 0.001, "lunge and recovery")
+
+# The same matrices drive rendering: snout roots near the ground, head rises to
+# scan, four soles stay at their anchors while shoulders shift and knees counterbend.
+head_low = 10.0
+head_high = -10.0
+foot_drift = 0.0
+shoulder_low = 10.0
+shoulder_high = -10.0
+loop seed in [0.0, 3.7, 19.2, 54.8]:
+    a = Animal(.boar, vec3(0, 0, 0), vec3(0, 0, 0), seed = seed)
+    loop f in [0..720):
+        a.idle = f64(f) / 60.0
+        p = boar_pose(a)
+        snout = transform_point(p.head, vec3(0, -0.16, 0.705))
+        head_low = min(head_low, f64(snout.y))
+        head_high = max(head_high, f64(snout.y))
+        shoulder = transform_point(p.torso, vec3(0.16, 0.35, 0.3))
+        shoulder_low = min(shoulder_low, f64(shoulder.y))
+        shoulder_high = max(shoulder_high, f64(shoulder.y))
+        loop i in [0..4):
+            a.speed = 0.6 # a stopped animal may still be decelerating numerically
+            leg = boar_leg(a, p, i)
+            sole = transform_point(leg.lower, vec3(0, -0.145, 0))
+            want = vec3((if i % 2 == 0: 0.16 else: -0.16), 0.035, (if i < 2: 0.3 else: -0.45))
+            foot_drift = max(foot_drift, f64(length(sole - want)))
+    a.startle = 0.12
+    a.state = .flee
+    check(transform_point(boar_pose(a).head, vec3(0, -0.16, 0.705)).y > 0.45, "boar alert lifts snout before fleeing")
+check(head_high - head_low > 0.32 and head_low > -0.01, "boar roots and looks without ground penetration")
+check(shoulder_high - shoulder_low > 0.01, "boar shoulder weight shift")
+check(foot_drift < 0.001, "boar grazing hooves stay planted")
+print("boar: snout {head_low:.3}..{head_high:.3} m; planted hoof drift {foot_drift:.6} m; shoulder range {(shoulder_high - shoulder_low):.3} m")
+fox = load_anims("assets/models/fox.anim")
+check(clip_index(fox, "sit") >= 0 and clip_index(fox, "curl") >= 0, "fox seated and curled rest clips")
+sit_start = sample_clip(fox, clip_index(fox, "sit"), 0.0, true)
+sit_mid = sample_clip(fox, clip_index(fox, "sit"), 3.0, true)
+sit_end = sample_clip(fox, clip_index(fox, "sit"), 7.0, false)
+check(length(sit_start.t[2] - sit_mid.t[2]) > 0.005, "fox lowers onto haunches")
+check(length(sit_start.t[2] - sit_end.t[2]) < 0.0001, "fox rises before walking")
+loop i in [0..fox.bones.len()): check(length(sit_start.r[i] - sit_end.r[i]) < 0.001, "fox sit returns to standing pose")
+fox_model = rig("assets/models/fox.mdl")
+fox_gap = 0.0
+fox_tail_low = 10.0
+loop name in ["sit", "curl"]:
+    loop f in [0..71):
+        pose = sample_clip(fox, clip_index(fox, name), f64(f) * 0.1, false)
+        loop bone in [33..41): fox_tail_low = min(fox_tail_low, f64(bone_world(fox_model, pose, bone)[3].y))
+        loop lower, foot in [(21, 47), (24, 51), (28, 45), (32, 49)]:
+            endpoint = transform_point(inverse(bone_world(fox_model, sit_start, lower)), bone_world(fox_model, sit_start, foot)[3].xyz)
+            actual = transform_point(bone_world(fox_model, pose, lower), endpoint)
+            target = bone_world(fox_model, pose, foot)[3].xyz
+            fox_gap = max(fox_gap, f64(length(actual - target)))
+check(fox_gap < 0.002, "fox resting legs meet planted paws through sit and curl")
+check(fox_tail_low > 0.045, "fox tail clears the ground while sitting and curling")
+print("fox: maximum resting leg-to-paw gap {fox_gap:.6} m; tail clearance {fox_tail_low:.3} m")
+# Playback must follow the real planted-paw track, including a collision stop.
+loop name in ["walk", "run"]:
+    c = clip_index(fox, name)
+    dt = clip_duration(fox, c) / 480.0
+    speeds: f64[]
+    loop foot in [45, 47, 49, 51]:
+        lo = 1000.0
+        loop f in [0..480): lo = min(lo, f64(bone_world(fox_model, sample_clip(fox, c, f64(f) * dt, true), foot)[3].y))
+        loop f in [0..480):
+            a = bone_world(fox_model, sample_clip(fox, c, f64(f) * dt, true), foot)[3].xyz
+            b = bone_world(fox_model, sample_clip(fox, c, f64(f + 1) * dt, true), foot)[3].xyz
+            speed = f64(a.z - b.z) / dt
+            if f64(a.y) < lo + 0.015 and speed > 0.01: speeds.push(speed)
+    speeds.sort()
+    body = if name == "walk": 1.6 else: 9.5
+    a = Animal(.fox, vec3(0, 0, 0), vec3(0, 0, 0), state = (if name == "walk": WState.walk else: WState.flee), speed = body)
+    planted = speeds[speeds.len() / 2] * wild_fox_rate(a)
+    check(abs(planted - body) < 0.002, "fox playback matches median planted stride")
+    a.speed = 0.0
+    check(wild_fox_rate(a) == 0.0, "blocked fox stops stepping")
+    print("fox {name}: planted median {planted:.5} / body {body:.3} m/s")
+fox_motion_gap = 0.0
+loop name in ["walk", "run", "graze"]:
+    c = clip_index(fox, name)
+    check(c >= 0 and c < fox.clips.len(), "fox motion alias resolves to a baked clip")
+    source_name = if name == "walk": "Walk" else: (if name == "run": "Gallop" else: "Idle_2_HeadLow")
+    loop f in [0..1201):
+        t = f64(f) * fox.clips[c].duration / 1200.0
+        pose = sample_clip(fox, c, t, false)
+        source_pose = sample_clip(fox, clip_index(fox, source_name), t, false)
+        loop foot in [45, 47, 49, 51]:
+            check(length(bone_world(fox_model, pose, foot)[3].xyz - bone_world(fox_model, source_pose, foot)[3].xyz) < 0.0002, "fox contact correction retains authored paw tracks")
+        loop lower, foot in [(21, 47), (24, 51), (28, 45), (32, 49)]:
+            endpoint = transform_point(inverse(bone_world(fox_model, sit_start, lower)), bone_world(fox_model, sit_start, foot)[3].xyz)
+            actual = transform_point(bone_world(fox_model, pose, lower), endpoint)
+            target = bone_world(fox_model, pose, foot)[3].xyz
+            fox_motion_gap = max(fox_motion_gap, f64(length(actual - target)))
+check(fox_motion_gap < 0.002, "fox walk/run/graze lower legs remain attached to paws between baked keys")
+print("fox: maximum moving leg-to-paw gap {fox_motion_gap:.6} m")
+bird = Animal(.sparrow, vec3(0, 0, 0), vec3(0, 0, 0))
+bird.idle = 0.3
+peck = bird_pose(bird)
+bird.idle = 1.8
+look = bird_pose(bird)
+check(length(transform_point(peck.head, vec3(0, 0.1, 0.088)) - transform_point(look.head, vec3(0, 0.1, 0.088))) > 0.04, "bird head pecks independently")
+bird.state = .fly
+bird.t = 0.02
+bird.idle = 0.02
+check(bird_pose(bird).wing == 1, "bird raises wings before takeoff")
+bird.t = 0.12
+bird.idle = 0.12
+check(bird_pose(bird).wing == 2, "bird first takeoff downstroke")
+
+hf.n = 64
+hf.cell = 1.0
+hf.x0 = -32.0
+hf.z0 = -32.0
+hf.h = fill(f32(0), hf.n * hf.n)
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+# Round-55 critic: a fleeing lizard at x=-0.5 must never teleport through
+# a thin wall to x=4.5 in a one-second update. Test all ground critters and rates.
+loop kind in [CKind.frog, CKind.lizard, CKind.squirrel]:
+    loop hz in [1, 30, 60, 120]:
+        loop course in ["open", "wall", "drop", "platform", "edge", "slope", "step"]:
+            loop mut col in colliders: col.active = false
+            hf.h = fill(f32(0), hf.n * hf.n)
+            use_terrain = true
+            pl = Player(pos = vec3(-15, 0, 0), sneaking = true)
+            fight = Fight()
+            act = Actions()
+            bugs.clear()
+            critters.clear()
+            y = 0.0
+            if course == "step": add_box(vec3(2, 0, 0), vec3(2, 0.06, 3), 0.0, false, .stone)
+            if course == "wall": add_box(vec3(0, 0, 0), vec3(0.025, 2, 4), 0.0, false, .stone)
+            if course == "platform" or course == "edge":
+                y = 2.0
+                add_box(vec3(0, 1.8, 0), v3((if course == "edge": 1.0 else: 12.0), 0.1, 3.0), 0.0, false, .stone)
+            if course == "drop":
+                loop x in [33..64):
+                    loop z in [0..64): hf.h[z * 64 + x] = -5.0
+            if course == "slope":
+                loop x in [33..64):
+                    loop z in [0..64): hf.h[z * 64 + x] = f32(f64(x - 32) * 3.0)
+            p = v3(-0.5, y, 0.0)
+            critters.push(Critter(kind, p, p, tree = v3(12.0, y, 0.0), trunk = 0.2, fleeing = 2.5, face = yaw_of(vec3(1, 0, 0)), seed = 0.5))
+            loop f in [0..hz): critters_update(1.0 / f64(hz))
+            c = critters[0]
+            safe = if course == "open" or course == "platform" or course == "step": c.pos.x > 2.0 else: (if course == "wall": c.pos.x < -0.12 else: c.pos.x < 0.9)
+            check(safe, "critter collision/support {kind} {hz}Hz {course}")
+            if course == "platform": check(c.pos.y >= 1.99 and c.pos.y < 2.4, "critter keeps supported platform {kind} {hz}Hz")
+            print("critter {kind} {hz}Hz {course}: x={c.pos.x:.3} y={c.pos.y:.3}")
+# Squirrels can still reach their actual solid trunk and climb it, while an
+# intervening wall cannot be bypassed to reach that refuge.
+loop blocked in [false, true]:
+    loop mut col in colliders: col.active = false
+    hf.h = fill(f32(0), hf.n * hf.n)
+    add_cyl(vec3(2, -1, 0), 0.25, 5.0, true, .wood)
+    if blocked: add_box(vec3(0, 0, 0), vec3(0.04, 2, 3), 0.0, false, .stone)
+    pl = Player(pos = vec3(-3, 0, 0))
+    critters = [Critter(.squirrel, vec3(-1, 0, 0), vec3(-1, 0, 0), tree = vec3(2, 0, 0), trunk = 0.25, fleeing = 2.5)]
+    loop f in [0..60): critters_update(1.0 / 60.0)
+    check((critters[0].up > 0.5) == (not blocked), "squirrel reaches solid trunk with cover control")
+    print("squirrel trunk blocked={blocked}: x={critters[0].pos.x:.3} up={critters[0].up:.3}")
+critters.clear()
+usables.clear()
+loop mut col in colliders: col.active = false
+hf.h = fill(f32(0), hf.n * hf.n)
+# Shape variation affects proportions as well as size; attached hooves share it.
+shape_low = vec3(10, 10, 10)
+shape_high = vec3(0, 0, 0)
+ratio_low = 10.0
+ratio_high = 0.0
+loop i in [0..100):
+    shape = boar_shape(f64(i) * 0.37)
+    shape_low = min(shape_low, shape)
+    shape_high = max(shape_high, shape)
+    ratio = f64(shape.x / shape.z)
+    ratio_low = min(ratio_low, ratio)
+    ratio_high = max(ratio_high, ratio)
+check(ratio_high - ratio_low > 0.30 and shape_high.y - shape_low.y > 0.40, "boar lean/heavy silhouette and weight variation")
+print("boar shapes: width/length {ratio_low:.3}..{ratio_high:.3}; height scale {shape_low.y:.3}..{shape_high.y:.3}")
+
+m = rig()
+lib = load_humanoid_anims()
+check(abs(clip_ground_speed(m, lib, "walk") * 1.14 - BOKO_WALK) < 0.01, "walk stride speed")
+check(abs(clip_ground_speed(m, lib, "run") * 1.14 - BOKO_RUN) < 0.01, "run stride speed")
+legs = [[bone_index(m, "thigh_l"), bone_index(m, "calf_l"), bone_index(m, "foot_l")],
+    [bone_index(m, "thigh_r"), bone_index(m, "calf_r"), bone_index(m, "foot_r")]]
+worst = 0.0
+reaction_error = 0.0
+loop slope in [-0.35, 0.0, 0.35]:
+    loop z in [0..hf.n):
+        loop x in [0..hf.n): hf.h[z * hf.n + x] = f32((f64(x) + hf.x0) * slope)
+    loop yaw in [0.0, 0.9, 2.1]:
+        e = Enemy(.bokoblin, vec3(0, 0, 0), vec3(0, 0, 0), face = yaw)
+        f = BokoFooting()
+        world = translation(e.pos) * rotation_y(PI - e.face) * scaling(vec3(1.14, 1.14, 1.14))
+        p = sample_clip(lib, clip_index(lib, "fight_idle"), 0.0, true)
+        boko_footing(m, p, e, f, world)
+        loop side in [0..2):
+            leg = legs[side]
+            foot = bone_world(m, p, leg[2])
+            rest = bone_world(m, Pose(), leg[2])
+            point = transform_point(world, foot[3].xyz)
+            clearance = clamp(f64(rest[3].y), 0.035, 0.16) * 1.14
+            error = abs(f64(point.y) - height_at(f64(point.x), f64(point.z)) - clearance)
+            worst = max(worst, error)
+            check(error < 0.06, "standing sole height")
+            normal = normalize(transform_dir(world * foot * inverse(rest), vec3(0, 1, 0)))
+            check(dot(normal, normal_at(f64(point.x), f64(point.z))) > 0.985, "sole slope")
+        e.state = .stagger
+        e.reaction = 1
+        e.recoil = -forward_of(e.face)
+        loop frame in [0..34):
+            e.t = f64(frame) / 60.0
+            e.pos = e.recoil * f32(0.24 * smoothstep(0.0, 0.32, e.t))
+            e.pos.y = f32(height_at(f64(e.pos.x), f64(e.pos.z)))
+            world = translation(e.pos) * rotation_y(PI - e.face) * scaling(vec3(1.14, 1.14, 1.14))
+            p = sample_clip(lib, clip_index(lib, "hit"), e.t, false)
+            boko_footing(m, p, e, f, world)
+            loop leg in legs:
+                hip = bone_world(m, p, leg[0])[3].xyz
+                knee = bone_world(m, p, leg[1])[3].xyz
+                ankle = bone_world(m, p, leg[2])[3].xyz
+                check(abs(f64(length(knee - hip)) - f64(length(m.rest_t[leg[1]]))) < 0.001, "thigh length")
+                check(abs(f64(length(ankle - knee)) - f64(length(m.rest_t[leg[2]]))) < 0.001, "shin length")
+                point = transform_point(world, ankle)
+                check(f64(point.y) >= height_at(f64(point.x), f64(point.z)) - 0.03, "stagger above ground")
+            loop side in [0..2):
+                want = f.anchors[side] + e.recoil * boko_step(e.t, side == f.front).x
+                delta = f.feet[side] - want
+                err = f64(length(vec2(delta.x, delta.z)))
+                reaction_error = max(reaction_error, err)
+        e.state = .attack
+        e.move = 0
+        e.pos = vec3(0, 0, 0)
+        f = BokoFooting()
+        loop frame in [0..43):
+            e.t = f64(frame) / 60.0
+            e.pos = forward_of(e.face) * f32(min(e.t, 0.15) * 2.5)
+            e.pos.y = f32(height_at(f64(e.pos.x), f64(e.pos.z)))
+            world = translation(e.pos) * rotation_y(PI - e.face) * scaling(vec3(1.14, 1.14, 1.14))
+            p = sample_clip(lib, clip_index(lib, "slash1"), e.t, false)
+            boko_footing(m, p, e, f, world)
+            loop side in [0..2):
+                point = f.feet[side]
+                check(f64(point.y) >= height_at(f64(point.x), f64(point.z)) - 0.03, "lunge above ground")
+print("footing: worst standing height error {worst:.4} m; reaction horizontal error {reaction_error:.4} m")
+check(reaction_error < 0.06, "reaction tracks step targets")
+
+# Actual perception/state transitions at the existing distance boundary; no new
+# idle animation can delay danger detection or move the body during its startle.
+env.hour = 8.0
+env.rain = 0.0
+pl.vel = vec3(0, 0, 0)
+loop kind in [WKind.boar, WKind.fox, WKind.sparrow, WKind.pigeon, WKind.crow]:
+    loop sneaking in [false, true]:
+        pl.sneaking = sneaking
+        hearing = wild_hearing(0.0, 0.0, sneaking) * (if kind == .fox: 1.2 else: (if kind == .sparrow or kind == .pigeon: 0.65 else: 1.0))
+        boundary = max(2.5, hearing)
+        loop inside in [false, true]:
+            animals.clear()
+            animals.push(Animal(kind, vec3(0, 0, 0), vec3(0, 0, 0), t = -1.0))
+            pl.pos = v3(boundary + (if inside: -0.02 else: 0.02), 0.0, 0.0)
+            wildlife_update(1.0 / 60.0)
+            check(animals[0].danger == inside, "wildlife perception boundary")
+            if inside:
+                check(animals[0].state == .flee or animals[0].state == .fly, "idle responds immediately to danger")
+                check(animals[0].startle > 0.0 and length(animals[0].pos) < 0.001, "alert holds feet before flight")
+                loop f in [0..45): wildlife_update(1.0 / 60.0)
+                check(length(animals[0].pos) > 1.0, "wildlife flees after alert")
+pl.sneaking = false
+# A landed bird pauses between hops instead of skating while it pecks.
+animals.clear()
+animals.push(Animal(.sparrow, vec3(0, 0, 0), vec3(0, 0, 0), t = 0.4))
+pl.pos = vec3(60, 0, 0)
+loop f in [0..30): wildlife_update(1.0 / 60.0)
+check(length(animals[0].pos) < 0.001, "feeding bird feet planted between hops")
+animals[0].t = 1.8
+loop f in [0..8): wildlife_update(1.0 / 60.0)
+check(animals[0].pos.y > 0.05 and abs(animals[0].pos.z) > 0.04, "feeding bird hops between planted pauses")
+
+# The existing eight-metre flock signal still scatters neighbours outside their
+# individual hearing radius, with different startle delays rather than one rigid burst.
+animals.clear()
+loop i in [0..3):
+    p = v3(f64(i) * 2.0, 0.0, 0.0)
+    animals.push(Animal(.sparrow, p, p, flock = 0, seed = f64(i) * 0.31, t = -1.0))
+pl.pos = vec3(-7.98, 0, 0)
+wildlife_update(1.0 / 60.0)
+loop a in animals: check(a.state == .fly and a.startle > 0.0, "nearby feeding flock scatters together")
+check(animals[0].startle != animals[1].startle, "flock takeoffs are staggered")
+
+# Family alarm reaches members outside Link's hearing, with independent delays.
+loop kind in [WKind.boar, WKind.crow]:
+    animals.clear()
+    loop i in [0..3):
+        p = v3(f64(i) * 3.0, 0.0, 0.0)
+        animals.push(Animal(kind, p, p, flock = 0, seed = f64(i) * 1.73, t = -1.0))
+    pl.pos = vec3(-7.9, 0, 0)
+    wildlife_update(1.0 / 60.0)
+    loop a in animals:
+        check(a.state == (if kind == .boar: WState.flee else: WState.fly) and a.startle > 0.0, "boar/crow group alarm scatters neighbours")
+    check(animals[1].startle != animals[2].startle, "boar/crow group alarm has individual reaction delays")
+# Ordinary wandering alternates with grazing instead of randomly repeating rest.
+animals.clear()
+animals.push(Animal(.boar, vec3(0, 0, 0), vec3(0, 0, 0), t = 13.0, seed = 2.0))
+pl.pos = vec3(60, 0, 0)
+wildlife_update(1.0 / 60.0)
+check(animals[0].state == .walk, "boar starts a guaranteed forage walk after grazing")
+loop f in [0..240): wildlife_update(1.0 / 60.0)
+check(length(animals[0].pos.xz) > 0.5 and animals[0].state == .graze, "boar wanders then resumes rooting")
+# Crows have real ground hops and return from a bounded orbit to their feeding spot.
+animals.clear()
+animals.push(Animal(.crow, vec3(0, 0, 0), vec3(0, 0, 0), t = 2.0, seed = 1.73))
+loop f in [0..8): wildlife_update(1.0 / 60.0)
+check(animals[0].pos.y > 0.05 and length(animals[0].pos.xz) > 0.04, "crow hops between pecks")
+animals[0].state = .fly
+animals[0].pos = vec3(0, 1, 0)
+animals[0].t = 0.0
+animals[0].vy = 4.0
+orbit_radius = 0.0
+landed = false
+loop f in [0..1800):
+    wildlife_update(1.0 / 60.0)
+    orbit_radius = max(orbit_radius, f64(length(animals[0].pos.xz)))
+    if animals[0].state == .graze: landed = true
+check(orbit_radius < 20.0 and landed, "crow circles then returns to its feeding patch")
+print("crow: orbit radius {orbit_radius:.3} m; landed={landed}")
+
+# A fire to the west must send an animal east, even with the player farther east.
+hf.h = fill(f32(0), hf.n * hf.n)
+pl.pos = vec3(35, 0, 0)
+pl.vel = vec3(0, 0, 0)
+animals.clear()
+animals.push(Animal(.boar, vec3(0, 0, 0), vec3(0, 0, 0), anim = Animator(), skin = Skin(), hp = 8.0))
+bonfires.push(Bonfire(vec3(-4, 0, 0), lit = true))
+env.hour = 8.0
+loop frame in [0..90): wildlife_update(1.0 / 60.0)
+print("fire: {animals[0].state} {animals[0].pos} {animals[0].scare} danger {animals[0].danger}")
+check(animals[0].state == .flee and animals[0].pos.x > 1.0, "flee away from fire")
+bonfires.clear()
+animals.clear()
+wildlife_update(0.3)
+animals.clear()
+animals.push(Animal(.boar, vec3(0, 0, 0), vec3(0, 0, 0), anim = Animator(), skin = Skin(), refuge = vec3(3, 0, 0)))
+pl.pos = vec3(60, 0, 0)
+env.rain = 0.9
+loop frame in [0..360): wildlife_update(1.0 / 60.0)
+print("shelter: {animals[0].state} {animals[0].pos} resting {animals[0].resting}")
+check(animals[0].resting and length(animals[0].pos - vec3(3, 0, 0)) < 0.9, "reach rain shelter")
+enemies.clear()
+pl.pos = vec3(0, 0, -1.4)
+pl.face = PI
+pl.state = .ground
+items_init()
+inv_add("pot_lid")
+fight.act = .guard
+fight.parry_t = 0.1
+enemies.push(Enemy(.bokoblin, vec3(0, 0, 0), vec3(0, 0, 0), state = .attack, t = 0.18, alert = 1.0, weapon = "boko_club"))
+enemies_update(1.0 / 60.0, false)
+check(enemies[0].brace > 0.0 and enemies[0].stun > 0.0, "perfect guard braces attacker")
+fight.act = .swing
+# The guard update separates this fighter onto its current attack ring.
+# Reaction fixtures must cross that current body, not its old spawn position.
+contact = enemies[0].pos + vec3(0, 1, 0)
+player_hits.push(PHit(contact, pl.pos + vec3(0, 1, 0), vec3(0, 0, 1), 1.0, 4.0, false, 1, contact + vec3(-0.6, 0, 0), contact + vec3(0.6, 0, 0)))
+enemies_take_hits()
+check(enemies[0].state == .stagger and enemies[0].reaction == 1, "light sword hit staggers")
+player_hits.clear()
+player_hits.push(PHit(contact, pl.pos + vec3(0, 1, 0), vec3(0, 0, 1), 1.0, 5.0, false, 2, contact + vec3(-0.6, 0, 0), contact + vec3(0.6, 0, 0), finisher = true))
+enemies_take_hits()
+check(enemies[0].state == .knocked, "finisher still knocks down")
+player_hits.clear()
+# Three bodies starting coincident, including a knocked monster, must settle apart.
+enemies.clear()
+pl.pos = vec3(0, 0, 0)
+pl.hp = 120
+pl.hp_max = 120
+loop i in [0..3):
+    k = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+    enemies[k].state = if i == 2: EState.knocked else: EState.chase
+    enemies[k].alert = 1.0
+    enemies[k].hp = 1000.0
+enemies_separate()
+loop i in [0..3):
+    loop j in [i + 1..3): check(length(enemies[i].pos - enemies[j].pos) >= 0.9, "coincident bodies separate")
+minimum = 100.0
+ring_frames = 0
+windups = 0
+double_blows = 0
+loop frame in [0..720):
+    pl.invuln = 1.0
+    # A moving target, sword reactions, and a finisher crossing the waiting monster.
+    pl.pos = v3(sin(f64(frame) * 0.008) * 2.0, 0.0, 0.0)
+    if frame < 360 and frame % 120 == 40:
+        enemies[0].state = .stagger
+        enemies[0].t = 0.0
+        enemies[1].state = .knocked
+        enemies[1].t = 0.0
+        enemies[1].vel = vec3(4, 2, 0)
+    enemies_update(1.0 / 60.0, false)
+    engaged = 0
+    swinging = 0
+    loop i in [0..3):
+        e = enemies[i]
+        if e.may_engage: engaged += 1
+        if e.state == .windup or e.state == .attack: swinging += 1
+        if e.state == .windup and e.t < 1.0 / 60.0 + 0.0001: windups += 1
+        if not e.may_engage and e.state == .chase and length(e.pos - pl.pos) > 4.5: ring_frames += 1
+        loop j in [i + 1..3):
+            minimum = min(minimum, f64(length(e.pos - enemies[j].pos)))
+    if swinging > 1: double_blows += 1
+    check(engaged <= 2, "at most two engage")
+print("fight: minimum live body spacing {minimum:.3} m; waiting ring frames {ring_frames}")
+check(minimum >= 0.9, "scripted fight body spacing")
+check(ring_frames > 200, "waiting monsters reach the ring")
+print("fight: {windups} wind-ups, {double_blows} frames with two blows coming at once")
+check(windups > 0 and double_blows == 0, "one blow at a time")
+check(enemies[0].rhythm != enemies[1].rhythm, "individual reaction timing")
+# Re-arm from a safe dropped weapon; thrown weapons remain projectiles.
+enemies.clear()
+witems.clear()
+pl.pos = vec3(0, 0, 0)
+i = spawn_enemy(.bokoblin, vec3(4, 0, 0))
+enemies[i].state = .chase
+spawn_item("boko_club", vec3(4.3, 0, 0), resting = true)
+enemies_update(1.0 / 60.0, false)
+check(enemies[i].weapon == "boko_club" and not witems[0].alive, "pick up dropped weapon")
+# A solid wall must not squash three separated bodies back into one.
+enemies.clear()
+pl.pos = vec3(0, 0, 0)
+add_box(vec3(3, 0, 0), vec3(0.5, 2, 8), 0.0, false, .stone)
+loop i in [0..3):
+    k = spawn_enemy(.bokoblin, vec3(1.8, 0, 0))
+    enemies[k].state = .knocked
+    enemies[k].alert = 1.0
+enemies_separate()
+loop i in [0..3):
+    loop j in [i + 1..3): check(length(enemies[i].pos - enemies[j].pos) >= 0.9, "separation beside a wall")
+# Running raises the head and holds the feet; creeping at the same distance does neither.
+loop kind in [WKind.boar, WKind.fox]:
+    loop sneaking in [false, true]:
+        animals.clear()
+        animals.push(Animal(kind, vec3(0, 0, 0), vec3(0, 0, 0), t = -1.0))
+        pl = Player(pos = vec3(7, 0, 0), state = .ground, sneaking = sneaking, vel = (if sneaking: vec3(1, 0, 0) else: vec3(6, 0, 0)))
+        env.hour = 8.0
+        env.rain = 0.0
+        wildlife_update(1.0 / 60.0)
+        check(animals[0].danger != sneaking and (animals[0].startle > 0.0) != sneaking, "running alert versus sneaking")
+        check(length(animals[0].pos) < 0.001, "alert feet stay planted")
+# CPU overlay and socket bake agree for the raised throwing hand and kick toe.
+pose_error = 0.0
+loop move in [3, 4]:
+    loop f in [0..121):
+        t = f64(f) / 240.0
+        p = sample_clip(lib, clip_index(lib, enemy_attack_clip(move)), t * 1.3, false)
+        enemy_weapon_pose(m, lib, p, move, t, false)
+        bone = bone_index(m, (if move == 3: "foot_r" else: "hand_r"))
+        actual = bone_world(m, p, bone) * (if move == 3: mat4() else: SOCKET_HAND_R.offset)
+        cached = enemy_contact_socket(move, t, true)
+        pose_error = max(pose_error, f64(length(actual[3].xyz - cached[3].xyz)))
+check(pose_error < 0.003, "kick and throw contact track matches drawn limb")
+print("improvisation: maximum drawn limb/socket error {pose_error:.6} m")
+# Validate the sparse routes on the real plateau, including every walked step.
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+enemies.clear()
+witems.clear()
+loop mut c in colliders: c.active = false
+enemies_place()
+patrols = 0
+unsafe = 0
+patrol_distance = 0.0
+loop mut e in enemies:
+    if not e.patrol: continue
+    patrols += 1
+    start = e.pos
+    loop f in [0..1800):
+        before = e.pos
+        enemy_patrol_step(e, 1.0 / 60.0)
+        e.pos.y = f32(height_at(f64(e.pos.x), f64(e.pos.z)))
+        if length(e.pos - before) > 0.0001 and not enemy_walkable(before, e.pos):
+            unsafe += 1
+            print("unsafe patrol {f}: {before} -> {e.pos}")
+    patrol_distance += f64(length(e.pos - start))
+check(patrols > 0 and patrols <= 3 and unsafe == 0 and patrol_distance > 5.0, "sparse plateau patrols stay walkable")
+print("patrols: {patrols}; unsafe steps {unsafe}; total displacement {patrol_distance:.3} m")
+talus_count = 0
+loop e in enemies:
+    if e.kind == .talus:
+        talus_count += 1
+        check(abs(f64(e.home.x) + 1087.75) < 0.01 and abs(f64(e.home.z) - 1663.18) < 0.01 and e.state == .sleep, "forest actor spawns dormant Talus")
+check(talus_count == 1, "only Plateau forest Talus spawned")
+enemy_spacing_test_suite()
+stalkoblin_test_suite()
+wildlife_voice_test_suite()
+talus_test_suite()
+print("fauna checks: {failures} failures")
+assert(failures == 0)

@@ -1,0 +1,112 @@
+use 'mesh_assets.jo'
+use 'asset_stream.jo'
+
+# Lossless RGBA startup textures. Derive the nature inputs from baked model
+# material records, including the existing summer-leaf alias, rather than decoding
+# every PNG in the source directory. No GPU work or appearance changes here.
+nature_texture_name = (name: str) -> str:
+    if name == "Leaves_TwistedTree_C.png": "Leaves_NormalTree_C.png" else: name
+
+__texture_paths: str[]
+__texture_dependencies: str[]
+__texture_manifest_ready = false
+__texture_rd32 = (b: u8[], at: int) -> int:
+    assert(at >= 0 and at + 4 <= b.len(), "truncated nature model")
+    int(b[at]) | (int(b[at + 1]) << 8) | (int(b[at + 2]) << 16) | (int(b[at + 3]) << 24)
+texture_manifest = ():
+    if __texture_manifest_ready: return
+    __texture_manifest_ready = true
+    paths: {str: bool} = {"assets/title.png": true, "assets/names.png": true}
+    __texture_dependencies = ["game/texture_assets.jo", "game/mesh_assets.jo", "game/asset_stream.jo", "sloppy/lib/game/image.jo"]
+    loop file in sorted(list_dir("assets/nature")):
+        if not ends_with(file, ".vm"): continue
+        path = "assets/nature/" + file
+        __texture_dependencies.push(path)
+        b = read_bytes(path) ?? []
+        parts = __texture_rd32(b, 4)
+        at = 8
+        loop part in [0..parts):
+            size = __texture_rd32(b, at + 4)
+            assert(size >= 0 and at + 8 + size + 8 <= b.len(), "invalid nature material")
+            name = nature_texture_name(str_from_bytes(b[at + 8..at + 8 + size)))
+            paths["assets/src/nature/Textures/" + name] = true
+            at += 8 + size
+            vertices = __texture_rd32(b, at)
+            indices = __texture_rd32(b, at + 4)
+            at += 8 + vertices * 48 + indices * 4
+            assert(at <= b.len(), "invalid nature geometry")
+    loop path, value in paths: __texture_paths.push(path)
+    __texture_paths = sorted(__texture_paths)
+    loop path in __texture_paths: __texture_dependencies.push(path)
+
+texture_asset_key = () -> int:
+    texture_manifest()
+    asset_key(__texture_dependencies)
+
+texture_record = (s: mut AssetStream, img: mut Image, writing: bool):
+    pack_count(s, img.width, writing)
+    pack_count(s, img.height, writing)
+    if not s.ok or img.width <= 0 or img.height <= 0 or img.width > 16384 or img.height > 16384:
+        s.ok = false
+        return
+    pack_array(s, img.pixels, writing)
+    if img.pixels.len() != img.width * img.height * 4: s.ok = false
+
+texture_asset_write = (images: {str: Image}, path: str = "assets/prepared/textures.bin") -> bool:
+    s = pack_create(path, texture_asset_key())
+    names = __texture_paths
+    pack_array(s, names, true)
+    loop name in names:
+        img = images[name]
+        texture_record(s, img, true)
+    pack_publish(s, path)
+
+texture_asset_read = (path: str = "assets/prepared/textures.bin", key: int = texture_asset_key()) -> {str: Image}?:
+    s = pack_open(path, key)
+    defer asset_close(s)
+    if not s.ok: return none
+    names: str[]
+    pack_array(s, names, false)
+    if not s.ok or names != __texture_paths: return none
+    images: {str: Image} = {}
+    loop name in names:
+        img = Image(0, 0, [])
+        texture_record(s, img, false)
+        if not s.ok: return none
+        images[name] = img
+    if s.left != 0: return none
+    images
+
+texture_assets_generate = () -> {str: Image}:
+    texture_manifest()
+    images = parallel_map(__texture_paths, (path: str) -> Image:
+        if let b = read_bytes(path):
+            if let img = load_png(b): return img
+        Image(0, 0, [])
+    )
+    result: {str: Image} = {}
+    loop i in 0.. and path in __texture_paths:
+        if images[i].width > 0: result[path] = images[i]
+    if env("BOTW_LOADTIME") != none: eprint("startup textures: PNG decodes {result.len()}")
+    result
+
+__startup_images: {str: Image} = {}
+__startup_images_ready = false
+texture_assets_init = ():
+    if __startup_images_ready: return
+    __startup_images_ready = true
+    texture_manifest()
+    if env("BOTW_BAKE_ASSETS") == none and env("BOTW_NO_PREPARED_ASSETS") == none:
+        if let images = texture_asset_read():
+            __startup_images = images
+            if env("BOTW_LOADTIME") != none: eprint("prepared textures: hit ({images.len()} images, PNG decodes 0)")
+            return
+    __startup_images = texture_assets_generate()
+
+startup_image = (path: str) -> Image?:
+    texture_assets_init()
+    img = __startup_images.get(path)
+    # GPU callers upload each image only once. Release the decoded CPU pixels
+    # after upload ownership leaves this function; UI images survive until used.
+    __startup_images.remove(path)
+    img

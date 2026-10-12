@@ -1,0 +1,2247 @@
+{
+  "date": "2026-10-11",
+  "revision": "0dc725dc28b4c224ecf2355969f74f7d39a1a1d2",
+  "gpu": "NVIDIA GeForce GTX 1070, driver 580.178.04",
+  "host": [
+    "Linux",
+    "redfox",
+    "6.18.52-ogc1.1.fc44.x86_64",
+    "#1 SMP PREEMPT_DYNAMIC Mon Sep 21 19:38:23 UTC 2026",
+    "x86_64"
+  ],
+  "protocol": "Wayland dma-buf; 2133x1200 physical pixels; default dynamic scene scale; nearest-rank percentiles; present-call return timestamps, NOT compositor delivery; 240 warmup frames excluded only from pacing aggregate; per-minute soak includes all transitions",
+  "simulation_protocol": "Steady probes advance 1/60 s per frame; return timestamps are real CLOCK_MONOTONIC. Soak uses real production dt.",
+  "presentation_limit": "Monotonic timestamps immediately after __platform_present returns; neither compositor presented/discarded feedback nor scanout. Mailbox may discard commits. No runtime edits.",
+  "heap_limit": "All-thread live allocation count and all-thread large-block reuse cache bytes, not total live heap bytes. RSS and virtual bytes from procfs. GPU process memory from nvidia-smi XML; global GPU memory kept separately.",
+  "executable_sha256": "ac2b4bd420358625000bba966e6e7fa4f2052ab14500ad5c127d995d0b6283ff",
+  "game_manifest_sha256": "e350b925d9eba966b7a02bf7129efd6a63e0efba30bd44f10e93b05255effde2",
+  "runtime_inspection": {
+    "upstream_revision": "04d4b296729b19e238d014eb1337f94fe3ba2bd3",
+    "upstream_hashes": {
+      "/var/home/david/dev/slop-lang/lib/game/wayland.jo": "abd8b893206e8f496aa6eff9e908231f2c2bc7fef11126042e453f2cda5e6f62",
+      "/var/home/david/dev/slop-lang/lib/game/window.jo": "cdf7f8ae08a2f3c0d46e98ef48b6fd83b2718d7eadb983028b80eb0ca07293b8",
+      "/var/home/david/dev/slop-lang/lib/game/vk.jo": "4f2319a428ff968705f81d92db8fb7404695f6795cb31238deb0e91c94ae9562"
+    }
+  },
+  "runtime_hashes": {
+    "sloppy/lib/core/os.jo": "7dd1a33d4c76b986acff5df9d141e4821e38ee4181d03d0d4a7dde70688b43dd",
+    "sloppy/lib/core/rt.jo": "34d9dfaf23ee58a6df64fa52a6481c9733a72a41272f91bb5cb142115a9b2cc3",
+    "sloppy/lib/game/wayland.jo": "35a59f25f6fe2db1c651271f15603081216e3299aa3405a1567bd7265e153086",
+    "sloppy/lib/game/window.jo": "57596be79908fd8b08b499637ef559eff346c0e1b1a162b8ae243677f6feb5f7"
+  },
+  "measurement_tool_hashes": {
+    "pacing": {
+      "tools/render_session.jo": "badcf1b23b9f61558607194615042c177ebec8a65afad95297517ff2f1b54ca9",
+      "/var/home/david/dev/botw-clone-sol/tools/render_evidence.py": "fd1322019afd0a31f3f6bbb8b6be6f1d45489a0ecf3dfd4bd16954d4bc6f597e"
+    },
+    "soak": {
+      "tools/render_session.jo": "badcf1b23b9f61558607194615042c177ebec8a65afad95297517ff2f1b54ca9",
+      "/var/home/david/dev/botw-clone-sol/tools/render_evidence.py": "99614244a9ccdc49d3fe9eaf04048ca8853e49bfbe7d3bedce9e640dc8c84943"
+    }
+  },
+  "validated_tool_hashes": {
+    "tools/render_session.jo": "badcf1b23b9f61558607194615042c177ebec8a65afad95297517ff2f1b54ca9",
+    "tools/render_evidence.py": "d420f6c1c419118d4c1b4a1c234ee041abfdd8989b78d32593ba175a516a43df"
+  },
+  "capture_build_including_git_metadata_s": [
+    1.188731705013197,
+    1.1863668540026993
+  ],
+  "independent_compile_wall_s": [
+    1.1819545840262435,
+    1.291270250978414,
+    1.1891084859962575
+  ],
+  "runs": {
+    "forest-default-1": {
+      "frames": 2401,
+      "elapsed_s": 40.462734,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 3.99,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.674928,
+          "p99": 19.733691,
+          "worst": 53.17775
+        },
+        "present_call": {
+          "p50": 10.988138,
+          "p99": 15.523688,
+          "worst": 47.776691
+        },
+        "callback_wall": {
+          "p50": 5.574308,
+          "p99": 13.176535,
+          "worst": 18.715704
+        },
+        "callback_thread": {
+          "p50": 5.396779,
+          "p99": 12.44184,
+          "worst": 18.263903
+        }
+      },
+      "log_sha256": "280ce85c95e5563e1ea6ce31fe39c88dd8ea60b4f91f493758c921d3d24c0798",
+      "scene_positions": [
+        "-1000.0,188.0,1620.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1000,1620,3.14"
+      },
+      "load_before": "2.84 3.03 3.04 4/2051 2183610",
+      "load_after": "1.72 2.31 2.75 4/2043 2187607"
+    },
+    "forest-mailbox-1": {
+      "frames": 2401,
+      "elapsed_s": 25.407955,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 4.05,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 10.385661,
+          "p99": 15.587869,
+          "worst": 30.942391
+        },
+        "present_call": {
+          "p50": 0.158172,
+          "p99": 0.289878,
+          "worst": 19.445932
+        },
+        "callback_wall": {
+          "p50": 10.12865,
+          "p99": 14.521869,
+          "worst": 25.188223
+        },
+        "callback_thread": {
+          "p50": 4.492479,
+          "p99": 6.697609,
+          "worst": 11.379951
+        }
+      },
+      "log_sha256": "7f4e67b0bf9b141768e42603e2aa4eb1bb05e5c9e857e9fa188ee018a8fecd0e",
+      "scene_positions": [
+        "-1000.0,188.0,1620.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1000,1620,3.14",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "1.72 2.31 2.75 13/2053 2187620",
+      "load_after": "1.93 1.90 2.29 3/2051 2196301"
+    },
+    "fire-default-1": {
+      "frames": 2401,
+      "elapsed_s": 40.650799,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 4.06,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.671003,
+          "p99": 20.894664,
+          "worst": 73.992945
+        },
+        "present_call": {
+          "p50": 10.640341,
+          "p99": 15.477055,
+          "worst": 71.698773
+        },
+        "callback_wall": {
+          "p50": 5.924774,
+          "p99": 13.303441,
+          "worst": 20.099477
+        },
+        "callback_thread": {
+          "p50": 5.802776,
+          "p99": 13.063823,
+          "worst": 19.424788
+        }
+      },
+      "log_sha256": "39d48b0a56982ded37e974bd7cc8a4326dff82fed361a42ff067f8c89f618bf0",
+      "scene_positions": [
+        "-1027.0,250.7,1803.1",
+        "-1028.6,250.9,1804.1",
+        "-1030.0,250.9,1805.0",
+        "-1031.1,250.9,1805.7"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FIRE": "1"
+      },
+      "load_before": "1.93 1.90 2.29 2/2051 2196302",
+      "load_after": "1.16 2.09 2.33 3/2122 2201294"
+    },
+    "fire-mailbox-1": {
+      "frames": 2401,
+      "elapsed_s": 16.69563,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 4.0,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 6.735234,
+          "p99": 8.152843,
+          "worst": 26.019722
+        },
+        "present_call": {
+          "p50": 0.128454,
+          "p99": 0.201491,
+          "worst": 19.076105
+        },
+        "callback_wall": {
+          "p50": 6.538378,
+          "p99": 7.771753,
+          "worst": 8.833735
+        },
+        "callback_thread": {
+          "p50": 3.455524,
+          "p99": 4.858544,
+          "worst": 7.23273
+        }
+      },
+      "log_sha256": "c4ab7b212e4af790bc6452e36af12efce1bd019437da5957630115b5f0ac6d3c",
+      "scene_positions": [
+        "-1027.0,250.7,1803.1",
+        "-1028.6,250.9,1804.1",
+        "-1030.0,250.9,1805.0",
+        "-1031.1,250.9,1805.7"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FIRE": "1",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "1.16 2.09 2.33 4/2123 2201295",
+      "load_after": "2.25 2.66 2.55 5/2137 2206368"
+    },
+    "overlook-default-1": {
+      "frames": 2401,
+      "elapsed_s": 40.424124,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 4.06,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.674309,
+          "p99": 20.105894,
+          "worst": 32.986056
+        },
+        "present_call": {
+          "p50": 11.444268,
+          "p99": 15.488984,
+          "worst": 26.147666
+        },
+        "callback_wall": {
+          "p50": 5.127919,
+          "p99": 12.655997,
+          "worst": 21.957704
+        },
+        "callback_thread": {
+          "p50": 4.965425,
+          "p99": 12.307878,
+          "worst": 21.110487
+        }
+      },
+      "log_sha256": "85c626de5ea78b53959ad2deaa9e08f88290856c7cce03af3b16a0018a19cd66",
+      "scene_positions": [
+        "-1050.0,251.0,1828.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1050,1828,-2.36"
+      },
+      "load_before": "2.25 2.66 2.55 6/2138 2206369",
+      "load_after": "2.73 3.03 2.72 4/2158 2217882"
+    },
+    "overlook-mailbox-1": {
+      "frames": 2401,
+      "elapsed_s": 19.914553,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 4.15,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 8.067303,
+          "p99": 9.822683,
+          "worst": 29.896979
+        },
+        "present_call": {
+          "p50": 0.150385,
+          "p99": 0.233444,
+          "worst": 21.347225
+        },
+        "callback_wall": {
+          "p50": 7.837182,
+          "p99": 9.511147,
+          "worst": 11.530565
+        },
+        "callback_thread": {
+          "p50": 3.420393,
+          "p99": 5.247049,
+          "worst": 7.23702
+        }
+      },
+      "log_sha256": "cd978e33019d1fdd571c889cf3e22e693490fc1be61d7ae3f1bd17366a69392f",
+      "scene_positions": [
+        "-1050.0,251.0,1828.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1050,1828,-2.36",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "2.73 3.03 2.72 7/2158 2217882",
+      "load_after": "2.43 2.45 2.52 3/2101 2222643"
+    },
+    "forest-mailbox-2": {
+      "frames": 2401,
+      "elapsed_s": 23.503466,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 3.76,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 9.619542,
+          "p99": 11.949184,
+          "worst": 82.068508
+        },
+        "present_call": {
+          "p50": 0.151539,
+          "p99": 0.231536,
+          "worst": 72.034827
+        },
+        "callback_wall": {
+          "p50": 9.358559,
+          "p99": 11.556191,
+          "worst": 13.61479
+        },
+        "callback_thread": {
+          "p50": 4.115638,
+          "p99": 6.267669,
+          "worst": 8.208683
+        }
+      },
+      "log_sha256": "f255eb49a26d70f8b674b0760d6665b0de0fdf6e607dcf9b1ceab2981e2ed25c",
+      "scene_positions": [
+        "-1000.0,188.0,1620.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1000,1620,3.14",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "2.43 2.45 2.52 5/2101 2222643",
+      "load_after": "1.38 2.05 2.35 5/2108 2225454"
+    },
+    "forest-default-2": {
+      "frames": 2401,
+      "elapsed_s": 40.36546,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 3.8,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.67183,
+          "p99": 18.432523,
+          "worst": 50.762418
+        },
+        "present_call": {
+          "p50": 10.715817,
+          "p99": 13.711488,
+          "worst": 42.277125
+        },
+        "callback_wall": {
+          "p50": 5.861117,
+          "p99": 13.282146,
+          "worst": 16.958555
+        },
+        "callback_thread": {
+          "p50": 5.771959,
+          "p99": 13.03664,
+          "worst": 16.269928
+        }
+      },
+      "log_sha256": "c0460c1b4462ad4ae5528b6e6395edcdaaa5d9bd5579a3a8e87d2ce7ca582cda",
+      "scene_positions": [
+        "-1000.0,188.0,1620.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1000,1620,3.14"
+      },
+      "load_before": "1.38 2.05 2.35 4/2105 2225454",
+      "load_after": "1.95 2.00 2.28 4/2094 2228094"
+    },
+    "fire-mailbox-2": {
+      "frames": 2401,
+      "elapsed_s": 17.225037,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 3.84,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 6.954174,
+          "p99": 8.964292,
+          "worst": 25.18063
+        },
+        "present_call": {
+          "p50": 0.148973,
+          "p99": 0.322678,
+          "worst": 18.373011
+        },
+        "callback_wall": {
+          "p50": 6.72301,
+          "p99": 8.529891,
+          "worst": 10.680938
+        },
+        "callback_thread": {
+          "p50": 4.034406,
+          "p99": 6.566691,
+          "worst": 8.31029
+        }
+      },
+      "log_sha256": "4b55762e70f3e0d798cf842af51008a94ded6c5d700f81e23b30c63a633a9872",
+      "scene_positions": [
+        "-1027.0,250.7,1803.1",
+        "-1028.6,250.9,1804.1",
+        "-1030.0,250.9,1805.0",
+        "-1031.1,250.9,1805.7"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FIRE": "1",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "1.95 2.00 2.28 4/2094 2228094",
+      "load_after": "2.82 2.64 2.49 6/2217 2241783"
+    },
+    "fire-default-2": {
+      "frames": 2401,
+      "elapsed_s": 40.914317,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 3.89,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.676438,
+          "p99": 30.184893,
+          "worst": 51.889412
+        },
+        "present_call": {
+          "p50": 12.138933,
+          "p99": 25.550979,
+          "worst": 46.094973
+        },
+        "callback_wall": {
+          "p50": 4.40931,
+          "p99": 13.343625,
+          "worst": 19.864597
+        },
+        "callback_thread": {
+          "p50": 4.272192,
+          "p99": 13.002687,
+          "worst": 19.152497
+        }
+      },
+      "log_sha256": "ea318db105db429fe214a7036e461dd318e601917ba0d5d2dbfb54010b88a47d",
+      "scene_positions": [
+        "-1027.0,250.7,1803.1",
+        "-1028.6,250.9,1804.1",
+        "-1030.0,250.9,1805.0",
+        "-1031.1,250.9,1805.7"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FIRE": "1"
+      },
+      "load_before": "2.82 2.64 2.49 11/2222 2241788",
+      "load_after": "1.89 2.49 2.48 3/2192 2256929"
+    },
+    "overlook-mailbox-2": {
+      "frames": 2401,
+      "elapsed_s": 20.200421,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 3.84,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 8.300416,
+          "p99": 10.259387,
+          "worst": 27.240696
+        },
+        "present_call": {
+          "p50": 0.157202,
+          "p99": 0.29718,
+          "worst": 18.34229
+        },
+        "callback_wall": {
+          "p50": 8.074574,
+          "p99": 9.814074,
+          "worst": 17.2551
+        },
+        "callback_thread": {
+          "p50": 3.493217,
+          "p99": 6.422658,
+          "worst": 9.143373
+        }
+      },
+      "log_sha256": "ca53497c055cea4b96e7fb25475fdba733438f237f7745222aea0869ca086f82",
+      "scene_positions": [
+        "-1050.0,251.0,1828.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1050,1828,-2.36",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "1.89 2.49 2.48 2/2192 2256929",
+      "load_after": "2.37 2.67 2.56 3/2162 2268656"
+    },
+    "overlook-default-2": {
+      "frames": 2401,
+      "elapsed_s": 40.35332,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 3.95,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.673572,
+          "p99": 18.351118,
+          "worst": 58.720136
+        },
+        "present_call": {
+          "p50": 10.998906,
+          "p99": 14.125411,
+          "worst": 47.47593
+        },
+        "callback_wall": {
+          "p50": 5.528948,
+          "p99": 11.899447,
+          "worst": 19.236407
+        },
+        "callback_thread": {
+          "p50": 5.444317,
+          "p99": 11.583049,
+          "worst": 18.848869
+        }
+      },
+      "log_sha256": "2c13ece8f838792dcf4f539853a3ac1a5865edfe86b07f2e7b6d096484185318",
+      "scene_positions": [
+        "-1050.0,251.0,1828.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1050,1828,-2.36"
+      },
+      "load_before": "2.37 2.67 2.56 4/2162 2268656",
+      "load_after": "2.44 2.75 2.61 3/2173 2271249"
+    },
+    "forest-default-3": {
+      "frames": 2401,
+      "elapsed_s": 40.837278,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 4.11,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.685879,
+          "p99": 26.90339,
+          "worst": 68.288064
+        },
+        "present_call": {
+          "p50": 10.387382,
+          "p99": 20.743459,
+          "worst": 48.691378
+        },
+        "callback_wall": {
+          "p50": 6.309768,
+          "p99": 16.430597,
+          "worst": 26.150156
+        },
+        "callback_thread": {
+          "p50": 5.908157,
+          "p99": 9.398197,
+          "worst": 21.961398
+        }
+      },
+      "log_sha256": "ff36231e11b3bc104b0b14a13f5842c5b5c385d5378ac5a7c5ea96d019cc3680",
+      "scene_positions": [
+        "-1000.0,188.0,1620.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1000,1620,3.14"
+      },
+      "load_before": "2.44 2.75 2.61 4/2173 2271249",
+      "load_after": "5.23 3.72 3.04 3/2170 2295742"
+    },
+    "forest-mailbox-3": {
+      "frames": 2401,
+      "elapsed_s": 24.149612,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 3.85,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 9.846211,
+          "p99": 13.071664,
+          "worst": 20.155379
+        },
+        "present_call": {
+          "p50": 0.150063,
+          "p99": 0.257568,
+          "worst": 11.431287
+        },
+        "callback_wall": {
+          "p50": 9.603104,
+          "p99": 12.813355,
+          "worst": 19.353103
+        },
+        "callback_thread": {
+          "p50": 4.204833,
+          "p99": 7.112499,
+          "worst": 8.080481
+        }
+      },
+      "log_sha256": "dd0ab621c6d41738bd18cb4e0d0f372771522c59c971012539106af99c0e6b45",
+      "scene_positions": [
+        "-1000.0,188.0,1620.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1000,1620,3.14",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "5.23 3.72 3.04 12/2170 2295742",
+      "load_after": "1.67 2.49 2.73 5/2127 2305996"
+    },
+    "fire-default-3": {
+      "frames": 2401,
+      "elapsed_s": 40.454028,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 3.97,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.669677,
+          "p99": 18.060284,
+          "worst": 77.614927
+        },
+        "present_call": {
+          "p50": 12.765467,
+          "p99": 13.730287,
+          "worst": 73.305865
+        },
+        "callback_wall": {
+          "p50": 3.829787,
+          "p99": 7.559626,
+          "worst": 19.036189
+        },
+        "callback_thread": {
+          "p50": 3.760135,
+          "p99": 7.443688,
+          "worst": 16.801148
+        }
+      },
+      "log_sha256": "14ffcbf5906a5fc8feedfd19e44e4991a27fa5386e2a896ae40083b1bdde62ee",
+      "scene_positions": [
+        "-1027.0,250.7,1803.1",
+        "-1028.6,250.9,1804.1",
+        "-1030.0,250.9,1805.0",
+        "-1031.1,250.9,1805.7"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FIRE": "1"
+      },
+      "load_before": "1.67 2.49 2.73 5/2124 2305996",
+      "load_after": "3.04 3.11 2.94 4/2106 2315784"
+    },
+    "fire-mailbox-3": {
+      "frames": 2401,
+      "elapsed_s": 16.623315,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 3.9,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 6.670581,
+          "p99": 8.254821,
+          "worst": 12.06913
+        },
+        "present_call": {
+          "p50": 0.128863,
+          "p99": 0.214387,
+          "worst": 1.602497
+        },
+        "callback_wall": {
+          "p50": 6.478538,
+          "p99": 8.057517,
+          "worst": 11.872647
+        },
+        "callback_thread": {
+          "p50": 3.509956,
+          "p99": 5.514924,
+          "worst": 6.798171
+        }
+      },
+      "log_sha256": "7b61d88db76a1c131b558e0a70372a93e5b31f79fe4c79d31cc2cc432b8ced14",
+      "scene_positions": [
+        "-1027.0,250.7,1803.1",
+        "-1028.6,250.9,1804.1",
+        "-1030.0,250.9,1805.0",
+        "-1031.1,250.9,1805.7"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FIRE": "1",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "3.04 3.11 2.94 8/2107 2315785",
+      "load_after": "2.38 3.08 2.97 3/2102 2319288"
+    },
+    "overlook-default-3": {
+      "frames": 2401,
+      "elapsed_s": 40.462928,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "load_s": 4.2,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.660026,
+          "p99": 19.61697,
+          "worst": 76.377961
+        },
+        "present_call": {
+          "p50": 12.952095,
+          "p99": 16.530056,
+          "worst": 73.369233
+        },
+        "callback_wall": {
+          "p50": 3.58546,
+          "p99": 14.309785,
+          "worst": 20.272532
+        },
+        "callback_thread": {
+          "p50": 3.525579,
+          "p99": 13.766931,
+          "worst": 19.774742
+        }
+      },
+      "log_sha256": "23e7015e1993c707371af72b1fd640dfb4e34a842f169e0e59370bed107aaad0",
+      "scene_positions": [
+        "-1050.0,251.0,1828.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1050,1828,-2.36"
+      },
+      "load_before": "2.38 3.08 2.97 4/2102 2319288",
+      "load_after": "3.69 3.33 3.08 3/2099 2328422"
+    },
+    "overlook-mailbox-3": {
+      "frames": 2401,
+      "elapsed_s": 20.042675,
+      "samples_after_240": 2160,
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "load_s": 4.17,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 8.167441,
+          "p99": 9.927252,
+          "worst": 27.470343
+        },
+        "present_call": {
+          "p50": 0.136836,
+          "p99": 0.242989,
+          "worst": 19.057945
+        },
+        "callback_wall": {
+          "p50": 7.943588,
+          "p99": 9.650768,
+          "worst": 10.951248
+        },
+        "callback_thread": {
+          "p50": 3.180281,
+          "p99": 5.094116,
+          "worst": 6.102202
+        }
+      },
+      "log_sha256": "b87ba6b7b6be4d2dc15547b14601dd76bc0b5397b8c09e44a1617914fddd874d",
+      "scene_positions": [
+        "-1050.0,251.0,1828.0"
+      ],
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_FRAMES": "2400",
+        "BOTW_AT": "-1050,1828,-2.36",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "load_before": "3.69 3.33 3.08 4/2099 2328422",
+      "load_after": "2.34 3.00 3.04 4/2096 2349540"
+    }
+  },
+  "pooled": {
+    "forest-default": {
+      "samples": 6480,
+      "present_return_interval": {
+        "p50": 16.675301,
+        "p99": 21.128469,
+        "worst": 68.288064
+      },
+      "present_call": {
+        "p50": 10.750533,
+        "p99": 16.034346,
+        "worst": 48.691378
+      },
+      "callback_wall": {
+        "p50": 5.858032,
+        "p99": 15.520223,
+        "worst": 26.150156
+      },
+      "callback_thread": {
+        "p50": 5.679832,
+        "p99": 12.120973,
+        "worst": 21.961398
+      }
+    },
+    "forest-mailbox": {
+      "samples": 6480,
+      "present_return_interval": {
+        "p50": 9.956264,
+        "p99": 13.625636,
+        "worst": 82.068508
+      },
+      "present_call": {
+        "p50": 0.152955,
+        "p99": 0.257665,
+        "worst": 72.034827
+      },
+      "callback_wall": {
+        "p50": 9.701696,
+        "p99": 13.047987,
+        "worst": 25.188223
+      },
+      "callback_thread": {
+        "p50": 4.245608,
+        "p99": 6.718041,
+        "worst": 11.379951
+      }
+    },
+    "fire-default": {
+      "samples": 6480,
+      "present_return_interval": {
+        "p50": 16.672041,
+        "p99": 23.498808,
+        "worst": 77.614927
+      },
+      "present_call": {
+        "p50": 12.207197,
+        "p99": 18.289649,
+        "worst": 73.305865
+      },
+      "callback_wall": {
+        "p50": 4.376995,
+        "p99": 12.042194,
+        "worst": 20.099477
+      },
+      "callback_thread": {
+        "p50": 4.256977,
+        "p99": 11.733976,
+        "worst": 19.424788
+      }
+    },
+    "fire-mailbox": {
+      "samples": 6480,
+      "present_return_interval": {
+        "p50": 6.771432,
+        "p99": 8.528494,
+        "worst": 26.019722
+      },
+      "present_call": {
+        "p50": 0.133103,
+        "p99": 0.251748,
+        "worst": 19.076105
+      },
+      "callback_wall": {
+        "p50": 6.565494,
+        "p99": 8.225513,
+        "worst": 11.872647
+      },
+      "callback_thread": {
+        "p50": 3.621365,
+        "p99": 6.055544,
+        "worst": 8.31029
+      }
+    },
+    "overlook-default": {
+      "samples": 6480,
+      "present_return_interval": {
+        "p50": 16.670939,
+        "p99": 19.327699,
+        "worst": 76.377961
+      },
+      "present_call": {
+        "p50": 11.574646,
+        "p99": 15.711478,
+        "worst": 73.369233
+      },
+      "callback_wall": {
+        "p50": 5.000214,
+        "p99": 12.855626,
+        "worst": 21.957704
+      },
+      "callback_thread": {
+        "p50": 4.886137,
+        "p99": 12.419365,
+        "worst": 21.110487
+      }
+    },
+    "overlook-mailbox": {
+      "samples": 6480,
+      "present_return_interval": {
+        "p50": 8.194969,
+        "p99": 9.982026,
+        "worst": 29.896979
+      },
+      "present_call": {
+        "p50": 0.146849,
+        "p99": 0.258813,
+        "worst": 21.347225
+      },
+      "callback_wall": {
+        "p50": 7.957405,
+        "p99": 9.668237,
+        "worst": 17.2551
+      },
+      "callback_thread": {
+        "p50": 3.320565,
+        "p99": 5.371815,
+        "worst": 9.143373
+      }
+    }
+  },
+  "soak": {
+    "frames": 59267,
+    "elapsed_s": 600.006565,
+    "samples_after_240": 59026,
+    "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+    "load_s": 3.83,
+    "timing_ms": {
+      "present_return_interval": {
+        "p50": 9.740009,
+        "p99": 15.740094,
+        "worst": 108.929058
+      },
+      "present_call": {
+        "p50": 0.140259,
+        "p99": 0.315341,
+        "worst": 72.055104
+      },
+      "callback_wall": {
+        "p50": 9.509372,
+        "p99": 15.009233,
+        "worst": 42.051581
+      },
+      "callback_thread": {
+        "p50": 5.205826,
+        "p99": 9.220262,
+        "worst": 25.063239
+      }
+    },
+    "log_sha256": "cdf60137e2b7ce99207fe65989e42ed76938fcfadd149dd0222af8a1c9c4e466",
+    "scene_positions": [
+      "-1000.0,188.0,1620.0",
+      "-1000.0,188.0,1620.2",
+      "-1000.0,188.1,1620.8",
+      "-1000.0,188.2,1643.9",
+      "-1000.0,188.7,1636.1",
+      "-1000.0,188.7,1636.4",
+      "-1000.1,188.1,1620.4",
+      "-1000.1,188.1,1620.8",
+      "-1000.1,188.4,1641.9",
+      "-1000.2,187.9,1617.7",
+      "-1000.2,188.1,1620.5",
+      "-1000.2,188.1,1620.6",
+      "-1000.2,188.4,1641.8",
+      "-1000.2,188.6,1639.0",
+      "-1000.2,188.6,1639.1",
+      "-1000.3,188.1,1620.6",
+      "-1000.3,188.1,1620.7",
+      "-1000.3,188.6,1638.0",
+      "-1000.4,188.3,1626.3",
+      "-1000.4,188.4,1641.2",
+      "-1000.5,187.9,1618.8",
+      "-1000.5,188.1,1621.0",
+      "-1000.5,188.2,1623.4",
+      "-1000.5,188.3,1642.7",
+      "-1000.6,187.7,1607.7",
+      "-1000.6,187.9,1618.1",
+      "-1000.6,188.1,1621.0",
+      "-1000.6,188.1,1621.1",
+      "-1000.6,188.1,1622.0",
+      "-1000.6,188.1,1622.1",
+      "-1000.7,187.7,1607.6",
+      "-1000.7,187.9,1617.6",
+      "-1000.7,187.9,1618.1",
+      "-1000.7,188.2,1622.9",
+      "-1000.7,188.2,1623.4",
+      "-1000.7,188.2,1623.7",
+      "-1000.8,187.9,1617.5",
+      "-1000.8,188.0,1620.7",
+      "-1000.8,188.2,1624.0",
+      "-1000.9,188.0,1620.7",
+      "-1000.9,188.1,1622.5",
+      "-1000.9,188.2,1623.3",
+      "-1001.0,187.8,1616.3",
+      "-1001.0,188.1,1622.1",
+      "-1001.0,188.1,1622.2",
+      "-1001.0,188.2,1623.3",
+      "-1001.1,187.8,1616.3",
+      "-1001.1,188.1,1621.4",
+      "-1001.1,188.2,1624.6",
+      "-1001.1,188.3,1642.8",
+      "-1001.1,188.4,1610.6",
+      "-1001.2,187.8,1614.7",
+      "-1001.2,188.1,1621.9",
+      "-1001.2,188.8,1641.0",
+      "-1001.3,188.0,1620.8",
+      "-1001.3,188.1,1621.5",
+      "-1001.3,188.6,1638.3",
+      "-1001.4,188.2,1625.1",
+      "-1001.5,187.8,1617.1",
+      "-1001.7,187.9,1619.2",
+      "-1001.7,190.2,1610.5",
+      "-1001.8,187.8,1617.1",
+      "-1001.8,187.9,1619.2",
+      "-1001.8,188.1,1621.7",
+      "-1001.9,187.8,1616.2",
+      "-1001.9,187.8,1617.3",
+      "-1001.9,187.9,1619.4",
+      "-1002.0,187.6,1605.4",
+      "-1002.0,187.8,1617.3",
+      "-1002.0,187.9,1619.5",
+      "-1002.0,188.1,1621.7",
+      "-1002.0,188.1,1621.9",
+      "-1002.0,188.1,1622.7",
+      "-1002.0,188.1,1622.8",
+      "-1002.0,188.3,1626.8",
+      "-1002.0,190.2,1610.6",
+      "-1002.1,187.8,1616.7",
+      "-1002.1,188.0,1619.5",
+      "-1002.1,188.0,1621.2",
+      "-1002.1,188.1,1621.6",
+      "-1002.1,188.2,1625.4",
+      "-1002.1,188.2,1625.7",
+      "-1002.1,188.3,1626.8",
+      "-1002.1,188.6,1625.4",
+      "-1002.2,187.8,1616.7",
+      "-1002.2,187.8,1617.1",
+      "-1002.2,188.0,1621.2",
+      "-1002.2,188.1,1621.7",
+      "-1002.2,188.2,1625.7",
+      "-1002.2,188.5,1638.3",
+      "-1002.3,187.8,1617.1",
+      "-1002.3,188.0,1619.8",
+      "-1002.3,188.0,1619.9",
+      "-1002.3,188.1,1622.4",
+      "-1002.3,188.5,1638.4",
+      "-1002.4,187.8,1617.1",
+      "-1002.4,188.1,1621.7",
+      "-1002.4,188.1,1622.2",
+      "-1002.4,188.2,1642.9",
+      "-1002.5,188.0,1620.3",
+      "-1002.5,188.1,1621.7",
+      "-1002.6,187.8,1617.1",
+      "-1002.6,187.9,1617.3",
+      "-1002.6,188.0,1620.3",
+      "-1002.6,188.0,1620.4",
+      "-1002.6,188.1,1618.2",
+      "-1002.6,188.1,1621.7",
+      "-1002.7,188.0,1621.2",
+      "-1002.7,188.0,1621.3",
+      "-1002.7,188.1,1610.6",
+      "-1002.7,188.5,1638.5",
+      "-1002.8,188.0,1619.9",
+      "-1002.8,188.1,1621.6",
+      "-1002.9,187.9,1617.7",
+      "-1002.9,187.9,1618.3",
+      "-1002.9,187.9,1618.4",
+      "-1002.9,188.0,1619.8",
+      "-1002.9,188.0,1620.6",
+      "-1002.9,188.0,1621.6",
+      "-1002.9,188.1,1622.4",
+      "-1002.9,188.2,1619.3",
+      "-1003.0,187.9,1618.8",
+      "-1003.0,188.1,1622.0",
+      "-1003.0,188.1,1622.4",
+      "-1003.0,188.2,1619.3",
+      "-1003.1,187.9,1617.3",
+      "-1003.1,187.9,1618.7",
+      "-1003.1,188.0,1621.5",
+      "-1003.1,188.1,1622.4",
+      "-1003.2,187.5,1608.6",
+      "-1003.2,187.8,1616.7",
+      "-1003.2,187.8,1616.8",
+      "-1003.2,188.0,1621.5",
+      "-1003.2,188.5,1632.0",
+      "-1003.3,187.6,1605.8",
+      "-1003.3,188.2,1625.7",
+      "-1003.3,188.2,1642.4",
+      "-1003.3,188.4,1639.7",
+      "-1003.4,188.2,1625.6",
+      "-1003.4,188.4,1638.9",
+      "-1003.5,187.6,1605.7",
+      "-1003.5,188.0,1621.1",
+      "-1003.5,188.4,1638.9",
+      "-1003.6,187.6,1605.3",
+      "-1003.6,187.9,1617.6",
+      "-1003.6,188.0,1620.0",
+      "-1003.6,188.0,1621.1",
+      "-1003.7,187.9,1617.6",
+      "-1003.7,188.0,1620.0",
+      "-1003.7,188.0,1621.5",
+      "-1003.7,188.2,1625.5",
+      "-1003.8,187.6,1604.8",
+      "-1003.8,187.6,1604.9",
+      "-1003.8,187.9,1617.7",
+      "-1003.8,188.0,1621.4",
+      "-1003.8,188.0,1621.6",
+      "-1003.9,187.9,1617.8",
+      "-1003.9,187.9,1618.5",
+      "-1003.9,188.3,1639.8",
+      "-1004.0,187.5,1607.3",
+      "-1004.0,187.9,1617.9",
+      "-1004.0,188.0,1619.0",
+      "-1004.1,188.1,1625.1",
+      "-1004.2,187.5,1606.9",
+      "-1004.2,187.8,1602.5",
+      "-1004.2,187.9,1618.2",
+      "-1004.2,187.9,1618.3",
+      "-1004.2,188.4,1638.5",
+      "-1004.2,188.4,1638.6",
+      "-1004.2,190.8,1613.1",
+      "-1004.3,187.9,1618.4",
+      "-1004.4,187.5,1606.4",
+      "-1004.4,188.0,1618.9",
+      "-1004.4,188.1,1625.2",
+      "-1004.5,187.5,1606.0",
+      "-1004.5,188.0,1618.9",
+      "-1004.5,188.1,1625.2",
+      "-1004.6,187.5,1611.2",
+      "-1004.6,187.5,1611.3",
+      "-1004.6,188.0,1619.1",
+      "-1004.6,188.0,1620.4",
+      "-1004.6,188.0,1621.6",
+      "-1004.7,187.6,1612.3",
+      "-1004.8,187.5,1610.5",
+      "-1004.9,187.4,1609.0",
+      "-1004.9,187.5,1605.4",
+      "-1004.9,188.1,1624.7",
+      "-1005.0,187.4,1609.2",
+      "-1005.0,187.4,1609.3",
+      "-1005.0,188.1,1623.6",
+      "-1005.0,188.1,1624.5",
+      "-1005.1,187.4,1606.9",
+      "-1005.1,187.6,1613.0",
+      "-1005.1,187.7,1614.4",
+      "-1005.1,188.1,1622.4",
+      "-1005.1,188.1,1623.5",
+      "-1005.1,188.1,1624.4",
+      "-1005.2,187.5,1606.5",
+      "-1005.2,187.7,1614.0",
+      "-1005.2,188.1,1623.6",
+      "-1005.2,188.1,1624.1",
+      "-1005.3,187.7,1614.0",
+      "-1005.3,188.1,1623.1",
+      "-1005.3,188.1,1623.2",
+      "-1005.3,188.1,1623.4",
+      "-1005.3,188.1,1623.6",
+      "-1005.3,188.1,1623.7",
+      "-1005.3,188.1,1623.8",
+      "-1005.4,187.4,1609.1",
+      "-1005.4,187.4,1609.2",
+      "-1005.4,187.5,1606.0",
+      "-1005.4,187.6,1613.4",
+      "-1005.4,188.3,1638.2",
+      "-1005.6,187.6,1613.4",
+      "-1005.6,188.0,1617.4",
+      "-1005.7,187.5,1605.3",
+      "-1005.8,187.8,1614.8",
+      "-1005.9,187.8,1614.8",
+      "-1006.0,188.0,1617.1",
+      "-1006.1,187.7,1613.7",
+      "-1006.2,187.6,1613.5",
+      "-1006.2,187.7,1613.5",
+      "-1006.2,187.7,1613.7",
+      "-1006.3,188.0,1618.2",
+      "-1006.3,188.0,1618.3",
+      "-1006.8,187.4,1610.9",
+      "-1007.1,187.9,1615.7",
+      "-1007.1,187.9,1615.8",
+      "-1007.4,187.3,1609.3",
+      "-1008.0,187.3,1606.8",
+      "-1008.0,187.3,1609.5",
+      "-1008.0,187.4,1606.7",
+      "-1008.1,187.4,1605.9",
+      "-1008.1,187.4,1606.0",
+      "-1008.1,187.4,1606.4",
+      "-1008.1,187.4,1611.1",
+      "-1008.3,187.6,1612.2",
+      "-1008.4,187.4,1606.7",
+      "-1008.4,187.6,1612.2",
+      "-1008.5,187.4,1610.9",
+      "-1008.6,187.3,1609.9",
+      "-1008.6,187.5,1612.6",
+      "-1008.6,187.6,1613.0",
+      "-1008.7,187.6,1611.1",
+      "-1009.0,187.4,1610.6",
+      "-1009.0,187.5,1612.4",
+      "-1009.0,187.5,1612.5",
+      "-1009.0,187.5,1612.6",
+      "-1009.0,187.8,1612.0",
+      "-1009.1,187.4,1611.5",
+      "-1009.1,187.8,1612.0",
+      "-1009.2,187.4,1610.7",
+      "-1009.2,187.4,1611.5",
+      "-1009.4,187.6,1612.9",
+      "-1009.5,187.5,1612.4",
+      "-1009.6,187.5,1605.6",
+      "-1009.6,187.5,1605.7",
+      "-1051.6,298.3,2235.5",
+      "-1052.5,298.6,2235.3",
+      "-1052.7,296.6,2228.3",
+      "-1052.8,297.0,2230.1",
+      "-1052.8,297.0,2230.2",
+      "-1052.9,297.0,2230.2",
+      "-1053.3,298.9,2235.1",
+      "-1053.6,299.0,2235.1",
+      "-1053.7,297.5,2230.6",
+      "-1054.0,297.6,2230.4",
+      "-1054.1,297.6,2230.1",
+      "-1054.2,297.9,2231.6",
+      "-1054.2,299.2,2235.0",
+      "-1054.7,298.2,2231.6",
+      "-1054.7,298.2,2231.7",
+      "-1054.8,298.1,2230.5",
+      "-1055.0,298.1,2230.8",
+      "-1055.0,298.2,2230.8",
+      "-1055.1,299.4,2234.4",
+      "-1055.2,298.0,2227.8",
+      "-1055.2,299.4,2234.4",
+      "-1055.2,300.8,2237.4",
+      "-1055.2,300.9,2237.4",
+      "-1055.5,298.7,2232.1",
+      "-1055.8,298.4,2228.2",
+      "-1056.0,298.5,2227.6",
+      "-1056.0,299.0,2232.3",
+      "-1056.1,298.5,2227.6",
+      "-1056.1,298.8,2231.6",
+      "-1056.1,298.9,2231.7",
+      "-1056.3,302.1,2238.5",
+      "-1056.4,298.8,2228.7",
+      "-1056.5,298.8,2228.6",
+      "-1056.5,300.5,2235.5",
+      "-1056.9,299.0,2229.5",
+      "-1056.9,299.0,2230.0",
+      "-1057.0,298.9,2228.3",
+      "-1057.0,299.1,2229.7",
+      "-1057.0,299.4,2232.2",
+      "-1057.0,299.5,2232.6",
+      "-1057.1,299.9,2233.5",
+      "-1057.1,299.9,2233.6",
+      "-1057.3,299.3,2231.1",
+      "-1057.3,299.6,2232.2",
+      "-1057.3,299.6,2232.4",
+      "-1057.4,299.3,2230.9",
+      "-1057.4,299.3,2231.1",
+      "-1057.4,299.5,2231.8",
+      "-1057.4,299.6,2232.1",
+      "-1057.5,299.4,2231.0",
+      "-1057.5,299.6,2232.0",
+      "-1057.6,299.2,2228.4",
+      "-1057.6,299.6,2231.6",
+      "-1057.6,300.0,2233.3",
+      "-1057.6,300.4,2234.2",
+      "-1057.6,300.4,2234.3",
+      "-1057.7,299.6,2231.4",
+      "-1057.8,299.4,2229.3",
+      "-1057.8,300.9,2235.1",
+      "-1057.9,299.9,2232.5",
+      "-1058.0,299.4,2228.6",
+      "-1058.0,299.9,2232.5",
+      "-1058.1,301.4,2236.0",
+      "-1058.1,301.5,2236.1",
+      "-1058.2,299.6,2228.7",
+      "-1058.2,301.0,2235.0",
+      "-1058.3,299.8,2231.4",
+      "-1058.3,301.0,2235.0",
+      "-1058.4,299.9,2231.4",
+      "-1058.4,301.4,2235.6",
+      "-1058.5,301.0,2234.7",
+      "-1058.5,301.4,2235.6",
+      "-1058.6,300.4,2233.0",
+      "-1058.6,301.1,2234.7",
+      "-1058.7,299.8,2229.9",
+      "-1058.7,300.4,2232.8",
+      "-1058.8,300.0,2230.8",
+      "-1058.8,300.1,2231.4",
+      "-1058.8,300.1,2231.5",
+      "-1058.8,301.9,2236.2",
+      "-1058.9,300.0,2230.4",
+      "-1058.9,300.0,2230.5",
+      "-1058.9,300.6,2233.2",
+      "-1058.9,300.9,2233.9",
+      "-1059.0,299.9,2228.9",
+      "-1059.2,300.5,2232.1",
+      "-1059.3,300.0,2228.7",
+      "-1059.3,301.6,2235.3",
+      "-1059.7,300.2,2229.1",
+      "-1059.8,300.6,2231.5",
+      "-1059.8,301.7,2235.1",
+      "-1059.9,300.6,2231.5",
+      "-1059.9,300.9,2232.4",
+      "-1059.9,301.1,2233.3",
+      "-1060.1,300.3,2228.7",
+      "-1060.3,303.0,2237.2",
+      "-1060.3,303.6,2238.3",
+      "-1060.4,303.0,2237.2",
+      "-1060.5,301.0,2231.7",
+      "-1060.6,302.1,2235.1",
+      "-1060.7,301.3,2232.8",
+      "-1060.7,302.1,2235.0",
+      "-1061.0,301.1,2231.1",
+      "-1061.0,301.6,2233.1",
+      "-1061.3,302.2,2234.6",
+      "-1061.4,301.2,2230.6",
+      "-1061.4,301.2,2230.7",
+      "-1061.5,301.0,2229.5",
+      "-1061.6,302.1,2234.0",
+      "-1061.6,302.2,2234.1",
+      "-1062.0,302.0,2233.0",
+      "-1062.1,302.0,2233.0",
+      "-1062.1,302.3,2233.8",
+      "-1062.6,302.1,2232.3",
+      "-1062.6,303.6,2236.5",
+      "-1063.1,303.2,2235.0",
+      "-1063.3,302.0,2231.0",
+      "-1063.3,302.3,2231.9",
+      "-1439.0,223.0,1609.5",
+      "-1439.0,223.1,1610.3",
+      "-1439.0,223.3,1611.1",
+      "-1439.0,223.5,1612.1",
+      "-1439.0,223.6,1612.8",
+      "-1439.0,223.9,1614.0",
+      "-1439.1,222.9,1608.4",
+      "-1439.2,222.9,1607.8",
+      "-1439.3,222.8,1606.2",
+      "-1439.3,223.9,1614.0",
+      "-1439.4,222.8,1605.7",
+      "-1439.4,223.9,1614.0",
+      "-1439.6,223.9,1613.9",
+      "-1439.8,223.9,1613.8",
+      "-1440.4,224.1,1614.3",
+      "-1440.4,224.4,1615.2",
+      "-1440.5,222.7,1604.6",
+      "-1440.5,224.2,1614.7",
+      "-1441.0,222.7,1604.2",
+      "-1441.0,224.9,1616.6",
+      "-1441.1,222.7,1604.2",
+      "-1441.1,224.6,1615.8",
+      "-1441.3,225.0,1616.9",
+      "-1441.8,225.3,1617.4",
+      "-1441.9,222.7,1605.2",
+      "-1441.9,225.4,1617.6",
+      "-1442.6,225.5,1617.8",
+      "-1442.7,222.7,1603.9",
+      "-1442.8,225.5,1617.9",
+      "-1442.9,222.6,1603.3",
+      "-1442.9,222.6,1603.4",
+      "-1443.0,225.9,1618.8",
+      "-1443.5,226.0,1619.0",
+      "-1443.6,222.6,1601.9",
+      "-1443.8,226.1,1619.1",
+      "-1443.9,226.5,1620.0",
+      "-1444.3,222.6,1600.4",
+      "-1444.5,226.7,1620.2",
+      "-1444.7,222.6,1599.7",
+      "-1444.8,226.7,1620.3",
+      "-1444.9,227.2,1621.2",
+      "-1445.3,222.5,1598.4",
+      "-1445.6,227.4,1621.5",
+      "-1445.7,227.4,1621.5",
+      "-1445.7,227.9,1622.4",
+      "-1446.4,222.5,1596.1",
+      "-1446.4,228.7,1623.8",
+      "-1446.5,228.1,1622.8",
+      "-1446.5,228.2,1622.9",
+      "-1446.5,229.1,1624.5",
+      "-1446.5,229.1,1624.6",
+      "-1446.8,230.1,1626.1",
+      "-1446.9,228.7,1623.7",
+      "-1447.0,222.5,1594.8",
+      "-1447.0,231.1,1627.6",
+      "-1447.1,229.6,1625.2",
+      "-1447.2,230.8,1627.2",
+      "-1447.4,230.6,1626.7",
+      "-1447.5,231.4,1628.0",
+      "-1447.9,231.7,1628.3",
+      "-1448.0,231.7,1628.4",
+      "-1448.2,222.5,1592.2",
+      "-1448.7,222.4,1591.2",
+      "-1448.9,232.0,1628.6",
+      "-1449.1,232.6,1629.5",
+      "-1449.6,222.4,1590.2",
+      "-1449.8,222.6,1589.7",
+      "-1449.8,222.6,1589.8",
+      "-1449.9,232.9,1629.7",
+      "-1450.0,222.4,1588.6",
+      "-1450.0,232.9,1629.7",
+      "-1450.2,222.4,1588.8",
+      "-1450.6,222.4,1587.3",
+      "-1450.8,233.0,1629.8",
+      "-1451.4,222.4,1586.2",
+      "-1451.8,222.4,1584.8",
+      "-1451.9,222.4,1585.1",
+      "-1452.3,222.4,1583.6",
+      "-1453.1,222.4,1582.6",
+      "-1453.5,222.4,1581.2",
+      "-1453.7,222.4,1581.2",
+      "-1454.0,222.4,1580.7",
+      "-1454.2,222.4,1579.8",
+      "-1455.1,222.5,1578.1",
+      "-1455.2,222.5,1577.7",
+      "-1455.8,222.5,1576.7",
+      "-1455.9,222.6,1576.2",
+      "-1456.6,222.6,1574.6",
+      "-1456.7,222.6,1574.6",
+      "-1456.8,222.6,1574.5",
+      "-1457.7,222.7,1572.3",
+      "-1457.7,222.7,1572.5",
+      "-1457.9,222.7,1572.2",
+      "-1458.2,222.7,1571.3",
+      "-1458.9,222.7,1569.9",
+      "-1459.4,222.6,1568.9",
+      "-1459.6,222.6,1568.4",
+      "-1460.1,222.6,1567.4",
+      "-1460.5,222.6,1566.5",
+      "-1460.6,222.6,1566.2",
+      "-1461.2,222.5,1565.1",
+      "-997.1,188.3,1621.6",
+      "-997.1,188.3,1621.7",
+      "-997.9,188.7,1638.3",
+      "-998.1,188.2,1620.9",
+      "-998.1,188.2,1621.2",
+      "-998.2,188.2,1620.1",
+      "-998.3,187.9,1615.9",
+      "-998.4,188.1,1619.9",
+      "-998.4,188.3,1622.4",
+      "-998.5,188.0,1618.3",
+      "-998.5,188.1,1619.7",
+      "-998.5,188.3,1622.4",
+      "-998.5,188.3,1622.5",
+      "-998.6,188.1,1619.6",
+      "-998.6,188.3,1622.6",
+      "-998.7,188.1,1619.7",
+      "-998.7,188.3,1622.8",
+      "-998.9,188.3,1622.9",
+      "-999.0,188.3,1622.9",
+      "-999.1,187.8,1607.4",
+      "-999.1,188.1,1620.2",
+      "-999.2,188.0,1618.1",
+      "-999.2,188.0,1619.1",
+      "-999.2,188.1,1620.2",
+      "-999.3,187.9,1616.9",
+      "-999.3,187.9,1617.0",
+      "-999.4,187.9,1616.9",
+      "-999.4,188.0,1618.7",
+      "-999.4,188.0,1619.5",
+      "-999.4,188.5,1641.4",
+      "-999.5,188.0,1619.5",
+      "-999.6,188.0,1619.2",
+      "-999.6,188.1,1620.7",
+      "-999.6,188.2,1623.3",
+      "-999.6,188.5,1640.2",
+      "-999.7,187.9,1616.5",
+      "-999.7,188.0,1619.2",
+      "-999.7,188.2,1623.3",
+      "-999.7,188.4,1641.5",
+      "-999.7,188.5,1640.5",
+      "-999.8,187.9,1616.5",
+      "-999.9,188.0,1619.9"
+    ],
+    "scene_scales": [
+      "0.72",
+      "0.80"
+    ],
+    "minutes": [
+      {
+        "minute": 1,
+        "elapsed": 60.006,
+        "rss_kib": 853116.0,
+        "virtual_kib": 3172188.0,
+        "heap_allocations": 48140.0,
+        "heap_cached_big_bytes": 54525952.0,
+        "distance": 265.343,
+        "engaged": 5352.0,
+        "swing": 0.0,
+        "fx": 5530.0,
+        "rain": 0.0,
+        "snow": 0.0,
+        "samples": 5528,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 10.703444,
+            "p99": 18.361823,
+            "worst": 77.911122
+          },
+          "present_call": {
+            "p50": 0.142286,
+            "p99": 0.352852,
+            "worst": 65.126229
+          },
+          "callback_wall": {
+            "p50": 10.467675,
+            "p99": 17.664219,
+            "worst": 29.703658
+          },
+          "callback_thread": {
+            "p50": 5.505743,
+            "p99": 10.267781,
+            "worst": 13.299593
+          }
+        }
+      },
+      {
+        "minute": 2,
+        "elapsed": 120.007,
+        "rss_kib": 853652.0,
+        "virtual_kib": 3172188.0,
+        "heap_allocations": 48175.0,
+        "heap_cached_big_bytes": 54525952.0,
+        "distance": 370.076,
+        "engaged": 11379.0,
+        "swing": 3739.0,
+        "fx": 11983.0,
+        "rain": 0.0,
+        "snow": 0.0,
+        "samples": 6453,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 9.124571,
+            "p99": 12.697332,
+            "worst": 28.834799
+          },
+          "present_call": {
+            "p50": 0.142554,
+            "p99": 0.263777,
+            "worst": 18.516405
+          },
+          "callback_wall": {
+            "p50": 8.897995,
+            "p99": 12.312496,
+            "worst": 15.556903
+          },
+          "callback_thread": {
+            "p50": 4.359733,
+            "p99": 6.647509,
+            "worst": 9.399472
+          }
+        }
+      },
+      {
+        "minute": 3,
+        "elapsed": 180.005,
+        "rss_kib": 854460.0,
+        "virtual_kib": 3172700.0,
+        "heap_allocations": 48196.0,
+        "heap_cached_big_bytes": 54001664.0,
+        "distance": 624.416,
+        "engaged": 13562.0,
+        "swing": 3739.0,
+        "fx": 17227.0,
+        "rain": 0.0,
+        "snow": 0.0,
+        "samples": 5244,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 11.30563,
+            "p99": 20.205653,
+            "worst": 77.62845
+          },
+          "present_call": {
+            "p50": 0.141097,
+            "p99": 0.506288,
+            "worst": 68.477387
+          },
+          "callback_wall": {
+            "p50": 11.032086,
+            "p99": 19.507209,
+            "worst": 39.261012
+          },
+          "callback_thread": {
+            "p50": 6.419343,
+            "p99": 10.33308,
+            "worst": 13.372537
+          }
+        }
+      },
+      {
+        "minute": 4,
+        "elapsed": 240.012,
+        "rss_kib": 856884.0,
+        "virtual_kib": 3172700.0,
+        "heap_allocations": 48208.0,
+        "heap_cached_big_bytes": 52953088.0,
+        "distance": 902.054,
+        "engaged": 13562.0,
+        "swing": 3739.0,
+        "fx": 22502.0,
+        "rain": 5024.0,
+        "snow": 0.0,
+        "samples": 5275,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 11.315437,
+            "p99": 15.860097,
+            "worst": 29.049153
+          },
+          "present_call": {
+            "p50": 0.140231,
+            "p99": 0.260844,
+            "worst": 9.770761
+          },
+          "callback_wall": {
+            "p50": 11.080581,
+            "p99": 15.445076,
+            "worst": 28.70896
+          },
+          "callback_thread": {
+            "p50": 5.514112,
+            "p99": 7.9598,
+            "worst": 10.432367
+          }
+        }
+      },
+      {
+        "minute": 5,
+        "elapsed": 300.002,
+        "rss_kib": 858472.0,
+        "virtual_kib": 3172700.0,
+        "heap_allocations": 48261.0,
+        "heap_cached_big_bytes": 52953088.0,
+        "distance": 1175.593,
+        "engaged": 18981.0,
+        "swing": 3739.0,
+        "fx": 28670.0,
+        "rain": 7105.0,
+        "snow": 6168.0,
+        "samples": 6168,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 9.556927,
+            "p99": 16.855531,
+            "worst": 50.624338
+          },
+          "present_call": {
+            "p50": 0.14117,
+            "p99": 0.34572,
+            "worst": 34.105922
+          },
+          "callback_wall": {
+            "p50": 9.331856,
+            "p99": 16.207966,
+            "worst": 22.547832
+          },
+          "callback_thread": {
+            "p50": 4.856886,
+            "p99": 8.237694,
+            "worst": 10.220731
+          }
+        }
+      },
+      {
+        "minute": 6,
+        "elapsed": 360.014,
+        "rss_kib": 858572.0,
+        "virtual_kib": 3172700.0,
+        "heap_allocations": 48241.0,
+        "heap_cached_big_bytes": 52953088.0,
+        "distance": 1488.444,
+        "engaged": 18982.0,
+        "swing": 3739.0,
+        "fx": 33675.0,
+        "rain": 7105.0,
+        "snow": 6168.0,
+        "samples": 5005,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 11.915442,
+            "p99": 17.29091,
+            "worst": 29.970411
+          },
+          "present_call": {
+            "p50": 0.152733,
+            "p99": 0.319173,
+            "worst": 10.223588
+          },
+          "callback_wall": {
+            "p50": 11.643063,
+            "p99": 16.37108,
+            "worst": 29.681798
+          },
+          "callback_thread": {
+            "p50": 5.258554,
+            "p99": 8.077683,
+            "worst": 10.867702
+          }
+        }
+      },
+      {
+        "minute": 7,
+        "elapsed": 420.006,
+        "rss_kib": 858572.0,
+        "virtual_kib": 3172700.0,
+        "heap_allocations": 48265.0,
+        "heap_cached_big_bytes": 52953088.0,
+        "distance": 1515.072,
+        "engaged": 25353.0,
+        "swing": 3739.0,
+        "fx": 40046.0,
+        "rain": 7105.0,
+        "snow": 6168.0,
+        "samples": 6371,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 9.364591,
+            "p99": 11.992647,
+            "worst": 23.772917
+          },
+          "present_call": {
+            "p50": 0.134646,
+            "p99": 0.25658,
+            "worst": 15.000985
+          },
+          "callback_wall": {
+            "p50": 9.152316,
+            "p99": 11.585212,
+            "worst": 19.766983
+          },
+          "callback_thread": {
+            "p50": 4.712746,
+            "p99": 6.574208,
+            "worst": 9.298668
+          }
+        }
+      },
+      {
+        "minute": 8,
+        "elapsed": 480.002,
+        "rss_kib": 860108.0,
+        "virtual_kib": 3176020.0,
+        "heap_allocations": 48251.0,
+        "heap_cached_big_bytes": 52953088.0,
+        "distance": 1707.145,
+        "engaged": 25353.0,
+        "swing": 3739.0,
+        "fx": 46237.0,
+        "rain": 7105.0,
+        "snow": 6168.0,
+        "samples": 6191,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 9.479293,
+            "p99": 14.37049,
+            "worst": 108.929058
+          },
+          "present_call": {
+            "p50": 0.139946,
+            "p99": 0.322328,
+            "worst": 27.043618
+          },
+          "callback_wall": {
+            "p50": 9.222105,
+            "p99": 13.705183,
+            "worst": 25.407378
+          },
+          "callback_thread": {
+            "p50": 6.941791,
+            "p99": 9.911386,
+            "worst": 25.063239
+          }
+        }
+      },
+      {
+        "minute": 9,
+        "elapsed": 540.005,
+        "rss_kib": 860316.0,
+        "virtual_kib": 3176020.0,
+        "heap_allocations": 48262.0,
+        "heap_cached_big_bytes": 52953088.0,
+        "distance": 1922.083,
+        "engaged": 25353.0,
+        "swing": 4242.0,
+        "fx": 52576.0,
+        "rain": 12075.0,
+        "snow": 6168.0,
+        "samples": 6339,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 9.160821,
+            "p99": 15.107156,
+            "worst": 89.146961
+          },
+          "present_call": {
+            "p50": 0.138245,
+            "p99": 0.325977,
+            "worst": 53.105596
+          },
+          "callback_wall": {
+            "p50": 8.908342,
+            "p99": 13.536016,
+            "worst": 21.23697
+          },
+          "callback_thread": {
+            "p50": 5.527178,
+            "p99": 9.310901,
+            "worst": 19.468362
+          }
+        }
+      },
+      {
+        "minute": 10,
+        "elapsed": 600.007,
+        "rss_kib": 860316.0,
+        "virtual_kib": 3176020.0,
+        "heap_allocations": 48266.0,
+        "heap_cached_big_bytes": 52953088.0,
+        "distance": 2195.216,
+        "engaged": 31665.0,
+        "swing": 4242.0,
+        "fx": 59267.0,
+        "rain": 14221.0,
+        "snow": 12859.0,
+        "samples": 6691,
+        "timing_ms": {
+          "present_return_interval": {
+            "p50": 8.780127,
+            "p99": 14.250767,
+            "worst": 85.785614
+          },
+          "present_call": {
+            "p50": 0.135984,
+            "p99": 0.299708,
+            "worst": 72.055104
+          },
+          "callback_wall": {
+            "p50": 8.555192,
+            "p99": 13.754591,
+            "worst": 42.051581
+          },
+          "callback_thread": {
+            "p50": 4.542074,
+            "p99": 8.606216,
+            "worst": 22.770742
+          }
+        }
+      }
+    ],
+    "phases": [
+      "session phase: 0 kind 0 elapsed 0.007",
+      "session phase: 1 kind 1 elapsed 60.006",
+      "session phase: 2 kind 2 elapsed 120.007",
+      "session phase: 3 kind 3 elapsed 180.005",
+      "session phase: 4 kind 4 elapsed 240.012",
+      "session phase: 5 kind 0 elapsed 300.002",
+      "session phase: 6 kind 1 elapsed 360.000",
+      "session phase: 7 kind 2 elapsed 420.006",
+      "session phase: 8 kind 3 elapsed 480.002",
+      "session phase: 9 kind 4 elapsed 540.005"
+    ],
+    "gpu_memory": [
+      {
+        "minute": 1,
+        "process": [
+          "962 MiB"
+        ],
+        "device_used": [
+          "2819 MiB"
+        ]
+      },
+      {
+        "minute": 2,
+        "process": [
+          "964 MiB"
+        ],
+        "device_used": [
+          "2821 MiB"
+        ]
+      },
+      {
+        "minute": 3,
+        "process": [
+          "954 MiB"
+        ],
+        "device_used": [
+          "2811 MiB"
+        ]
+      },
+      {
+        "minute": 4,
+        "process": [
+          "970 MiB"
+        ],
+        "device_used": [
+          "2827 MiB"
+        ]
+      },
+      {
+        "minute": 5,
+        "process": [
+          "970 MiB"
+        ],
+        "device_used": [
+          "2827 MiB"
+        ]
+      },
+      {
+        "minute": 6,
+        "process": [
+          "970 MiB"
+        ],
+        "device_used": [
+          "2827 MiB"
+        ]
+      },
+      {
+        "minute": 7,
+        "process": [
+          "970 MiB"
+        ],
+        "device_used": [
+          "2827 MiB"
+        ]
+      },
+      {
+        "minute": 8,
+        "process": [
+          "960 MiB"
+        ],
+        "device_used": [
+          "2817 MiB"
+        ]
+      },
+      {
+        "minute": 9,
+        "process": [
+          "962 MiB"
+        ],
+        "device_used": [
+          "2761 MiB"
+        ]
+      },
+      {
+        "minute": 10,
+        "process": [
+          "972 MiB"
+        ],
+        "device_used": [
+          "2845 MiB"
+        ]
+      }
+    ],
+    "flags": {
+      "BOTW_SKIP": "1",
+      "BOTW_HOUR": "11",
+      "BOTW_WEATHER": "clear",
+      "BOTW_LOADTIME": "1",
+      "BOTW_FRAME_LOG": "1",
+      "BOTW_SCENE_LOG": "1",
+      "SLOPPY_PLATFORM": "wayland",
+      "SLOPPY_WINDOW": "1280x720",
+      "PROBE_FRAMES": "2400",
+      "SLOPPY_PRESENT": "mailbox",
+      "BOTW_AT": "-1000,1620,3.14",
+      "BOTW_GIVE": "travelers_sword,travelers_shield,warm_doublet",
+      "PROBE_SECONDS": "600"
+    }
+  },
+  "all_minutes": {
+    "rss_kib": {
+      "min": 853116.0,
+      "max": 860316.0,
+      "first": 853116.0,
+      "last": 860316.0
+    },
+    "virtual_kib": {
+      "min": 3172188.0,
+      "max": 3176020.0,
+      "first": 3172188.0,
+      "last": 3176020.0
+    },
+    "heap_allocations": {
+      "min": 48140.0,
+      "max": 48266.0,
+      "first": 48140.0,
+      "last": 48266.0
+    },
+    "heap_cached_big_bytes": {
+      "min": 52953088.0,
+      "max": 54525952.0,
+      "first": 54525952.0,
+      "last": 52953088.0
+    },
+    "per_minute_interval_p99_range_ms": [
+      11.992647,
+      20.205653
+    ]
+  },
+  "second_cycle": {
+    "rss_kib": {
+      "min": 858572.0,
+      "max": 860316.0,
+      "first": 858572.0,
+      "last": 860316.0
+    },
+    "virtual_kib": {
+      "min": 3172700.0,
+      "max": 3176020.0,
+      "first": 3172700.0,
+      "last": 3176020.0
+    },
+    "heap_allocations": {
+      "min": 48241.0,
+      "max": 48266.0,
+      "first": 48241.0,
+      "last": 48266.0
+    },
+    "heap_cached_big_bytes": {
+      "min": 52953088.0,
+      "max": 52953088.0,
+      "first": 52953088.0,
+      "last": 52953088.0
+    },
+    "per_minute_interval_p99_range_ms": [
+      11.992647,
+      17.29091
+    ]
+  }
+}

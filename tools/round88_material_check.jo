@@ -1,0 +1,24 @@
+# CPU guardrails for wet fibre hue and night burn lighting.
+use '../game/gfx.jo'
+use '../game/shade.jo'
+use '../game/charshade.jo'
+use '../game/chars.jo'
+loop pigment in [vec3(0.62,0.45,0.16),vec3(0.55,0.54,0.50),vec3(0.43,0.17,0.06)]:
+    lit=pigment*vec3(1.8,1.0,0.6)
+    assert(ch_fibre_wet(lit,pigment,0.0,1.0)==lit,"dry fibre retains original lighting")
+    assert(ch_fibre_wet(lit,pigment,1.0,0.0)==lit,"non-fibre material unchanged")
+    previous=lit.y/lit.x
+    loop f in [0..101):
+        wet=f32(f)/100.0
+        c=ch_fibre_wet(lit,pigment,wet,1.0)
+        assert(abs(luma(c)-luma(lit))<0.00001,"wet pigment cannot inflate silhouette luminance")
+        ratio=c.y/c.x
+        assert(ratio>=previous-0.00001,"rain cannot shift fibres further toward red")
+        assert(ratio<=pigment.y/pigment.x+0.00001,"retain the underlying hair/fur pigment")
+        previous=ratio
+    print("PASS wet fibre {pigment}: neutral illumination, stable luminance and hue")
+f=boko_burn_flash()
+assert(f.w<=0.15 and f.x/f.y<1.6,"night burn preserves painted skin instead of saturated orange")
+assert(f.x*f.w<0.08,"burn veil has bounded self-lit red energy")
+assert(boko_hit_flash(0.18).w>f.w,"hit reaction remains distinct from sustained burning")
+print("PASS restrained night burn tint, independent of hit feedback")

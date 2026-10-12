@@ -1,0 +1,118 @@
+# Cold warnings must precede damage and agree with protection. Cosmetic cues must
+# not advance the chemistry RNG used for fire spreading and storm attraction.
+use '../game/elements.jo'
+use '../game/fx.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/water.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/items.jo'
+use '../game/combat.jo'
+use '../game/env.jo'
+use '../game/physics.jo'
+use '../game/enemies.jo'
+from '../game/enemies.jo' import __chuchu
+
+run = ():
+    hf.n = 32
+    hf.cell = 1.0
+    hf.x0 = -16.0
+    hf.z0 = -16.0
+    hf.h = fill(f32(0), 1024)
+    hf.mat = fill(u8(0), 4096)
+    areas = fill(u8(47), 1024)
+    edge_sd = fill(f32(-100), 1024)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    water_grid_set(fill(f32(-10000), 1024), 32, -16.0, -16.0, 1.0)
+    pl = Player(pos=vec3(0,0,0))
+    use_terrain = true
+    items_init()
+    const DT = 1.0/60.0
+    checks = 0
+    check = (ok: bool, name: str):
+        if not ok:
+            eprint("FAIL {name}")
+            exit(1)
+        checks += 1
+
+    elements_update(DT, pl.pos)
+    check(player_cold and player_cold_t > 0.0 and pl.hp == 12, "cold warning begins before damage")
+    breath = 0
+    loop p in particles:
+        if p.kind == .breath and p.pos.y > 1.4: breath += 1
+    check(breath == 4, "first cold breath is visible immediately")
+    loop k in [0..120): elements_update(DT, pl.pos)
+    check(pl.hp == 12 and player_cold_t > 2.0, "cold cue persists through the damage grace period")
+    inv_add("warm_doublet")
+    elements_update(DT, pl.pos)
+    check(not player_cold and player_cold_t == 0.0 and cold_dmg_t == 0.0, "warm clothes stop both warning and damage clock")
+    inv = Inventory()
+    warm_t = 10.0
+    elements_update(DT, pl.pos)
+    check(not player_cold and cold_dmg_t == 0.0, "spicy food stops warning")
+    warm_t = 0.0
+    bonfires = [Bonfire(vec3(2,0,0))]
+    elements_update(DT, pl.pos)
+    check(not player_cold, "nearby fire stops warning")
+    bonfires.clear()
+    use_terrain = false
+    elements_update(DT, pl.pos)
+    check(not player_cold, "indoors stop snowy-field warning")
+    seed_random(72)
+    expected = random()
+    seed_random(72)
+    fx_feedback(.glow, vec3(0,1,0), vec3(0,1,0), 1.0, 0.1, vec4(1,1,1,1))
+    check(random() == expected, "feedback particles preserve chemistry RNG")
+
+    # Reproduce the actual exhausted-water and hard-landing transactions: their
+    # movement cleanup formerly changed a lethal hit back to ground/swim.
+    use_terrain = true
+    pool = fill(f32(3), 1024)
+    loop iz in [0..32):
+        loop ix in [20..32): pool[iz*32+ix] = -10000.0
+    water_grid_set(pool, 32, -16.0, -16.0, 1.0)
+    pl = Player(pos=vec3(0,1.75,0), hp=3, state=.swim, water_y=3.0,
+        stamina=0.0, exhausted=true, drown_t=1.6, last_safe=vec3(5,0,0))
+    player_update(DT)
+    check(pl.hp == 0 and pl.state == .dead, "lethal drowning preserves death for respawn")
+    pl = Player(pos=vec3(0,1.75,0), state=.swim, water_y=3.0,
+        stamina=0.0, exhausted=true, drown_t=1.6, last_safe=vec3(5,0,0))
+    player_update(DT)
+    check(pl.hp == 8 and pl.state == .ground and pl.pos.x == 5.0, "nonlethal drowning still returns to shore")
+    water_grid_set(fill(f32(-10000), 1024), 32, -16.0, -16.0, 1.0)
+    pl = Player(pos=vec3(0,0.1,0), vel=vec3(0,-15,0), hp=3, state=.air, air_peak=40.0)
+    player_update(DT)
+    check(pl.hp == 0 and pl.state == .dead, "lethal fall preserves death for respawn")
+    # A new ground jump owns a new fall arc, even after descending from a high
+    # ridge or respawning from a lethal fall. The old peak killed harmless hops.
+    pl = Player(pos=vec3(0,0,0),air_peak=40.0)
+    act = Actions(jump=true,jump_held=true)
+    player_update(DT)
+    check(pl.state==.air and pl.air_peak<0.1, "normal jump discards a previous high fall peak")
+    loop k in [0..180):
+        act = Actions(jump_held=k<20)
+        player_update(DT)
+    check(pl.hp==12 and pl.state==.ground and pl.air_peak==0.0, "ordinary hop lands without stale fall damage")
+    pl = Player(pos=vec3(0,0,0),frozen=0.001)
+    act = Actions()
+    player_update(DT)
+    check(pl.hp==11 and pl.frozen<=0.0 and pl.invuln>1.0, "thaw preserves damage and grants escape protection")
+    check(not hit_player(2,vec3(0.5,0,0),2.0) and pl.hp==11, "immune contact cannot report a successful hit")
+    # Two overlapping frost contacts formerly reset freeze before the thaw
+    # flinch could finish, so ordinary escape input never moved the player.
+    pl = Player(pos=vec3(0,0,0),state=.hurt,hurt_t=0.45,frozen=2.5,invuln=0.7)
+    fight = Fight()
+    a = Enemy(kind=.ice_chuchu,pos=vec3(-0.5,0,0),hp=20,state=.chase,t=0.0)
+    b = Enemy(kind=.ice_chuchu,pos=vec3(0.5,0,0),hp=20,state=.chase,t=0.3)
+    loop k in [0..300):
+        act = Actions(move=vec2(0,1))
+        player_update(DT)
+        a.t += DT
+        b.t += DT
+        __chuchu(a,DT,f64(length(a.pos-pl.pos)))
+        __chuchu(b,DT,f64(length(b.pos-pl.pos)))
+    check(pl.state!=.dead and pl.frozen<=0.0 and length(pl.pos)>4.0, "normal movement escapes overlapping Ice Gloop freeze contacts")
+    print("{checks} round72 feedback checks passed")
+
+run()

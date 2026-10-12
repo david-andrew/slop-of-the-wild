@@ -1,0 +1,139 @@
+use 'gfx.jo'
+use 'player.jo'
+use 'skel.jo'
+use 'physics.jo'
+use 'enemies.jo'
+
+# Ground speeds of the scaled Bokoblin rig, checked by tools/fauna_test.jo.
+const BOKO_WALK = 0.710
+const BOKO_RUN = 2.537
+
+struct BokoFooting:
+    feet: vec3[]
+    anchors: vec3[]
+    state = EState.gone
+    reaction = -1
+    heading = 0.0
+    front = 0
+
+boko_step = (age: f64, front: bool) -> vec2:
+    t = clamp((age - (if front: 0.14 else: 0.02)) / (if front: 0.16 else: 0.20), 0.0, 1.0)
+    vec2(f32(smoothstep(0.0, 1.0, t) * (if front: 0.22 else: 0.36)), f32(sin(t * PI) * 0.13))
+
+boko_lunge = (age: f64) -> vec2:
+    step = clamp(age / 0.20, 0.0, 1.0)
+    recover = clamp((age - 0.46) / 0.24, 0.0, 1.0)
+    vec2(f32(0.22 * smoothstep(0.0, 1.0, step) * (1.0 - smoothstep(0.0, 1.0, recover))), f32((sin(step * PI) + sin(recover * PI)) * 0.08))
+
+__legs: int[][]
+__sole: vec3[]
+__clearance: f64[]
+__pelvis = -1
+
+__boko_rig = (m: Model):
+    if __legs.len() > 0: return
+    __pelvis = bone_index(m, "pelvis")
+    empty = Pose()
+    loop side in ["l", "r"]:
+        chain = [bone_index(m, "thigh_" + side), bone_index(m, "calf_" + side), bone_index(m, "foot_" + side)]
+        __legs.push(chain)
+        foot = bone_world(m, empty, chain[2])
+        __sole.push(normalize(transform_dir(inverse(foot), vec3(0, 1, 0))))
+        __clearance.push(clamp(f64(foot[3].y), 0.035, 0.16))
+
+__boko_turn = (m: Model, p: mut Pose, bone: int, from: vec3, to: vec3):
+    a = normalize(from)
+    b = normalize(to)
+    axis = cross(a, b)
+    if length(axis) < 0.0001: return
+    parent = bone_world(m, p, m.parent[bone])
+    local = normalize(transform_dir(inverse(parent), axis))
+    c = m.canon[bone]
+    if c >= 0: p.r[c] = normalize(quat_mul(quat_axis_angle(local, acos(clamp(f64(dot(a, b)), -1.0, 1.0))), p.r[c]))
+
+boko_plant = (m: Model, p: mut Pose, chain: int[], target: vec3):
+    hip = bone_world(m, p, chain[0])[3].xyz
+    knee = bone_world(m, p, chain[1])[3].xyz
+    ankle = bone_world(m, p, chain[2])[3].xyz
+    upper = f64(length(knee - hip))
+    lower = f64(length(ankle - knee))
+    delta = target - hip
+    reach = clamp(f64(length(delta)), abs(upper - lower) + 0.001, upper + lower - 0.001)
+    dir = normalize(delta + vec3(0, -0.00001, 0))
+    pole = knee - hip - dir * dot(knee - hip, dir)
+    if length(pole) < 0.001: pole = vec3(0, 0, 1) - dir * dir.z
+    pole = normalize(pole)
+    along = (upper * upper + reach * reach - lower * lower) / (2.0 * reach)
+    bend = sqrt(max(0.0, upper * upper - along * along))
+    want = hip + dir * f32(along) + pole * f32(bend)
+    __boko_turn(m, p, chain[0], knee - hip, want - hip)
+    knee = bone_world(m, p, chain[1])[3].xyz
+    ankle = bone_world(m, p, chain[2])[3].xyz
+    __boko_turn(m, p, chain[1], ankle - knee, target - knee)
+
+boko_footing = (m: Model, p: mut Pose, e: Enemy, f: mut BokoFooting, world: mat4):
+    __boko_rig(m)
+    inverse_root = inverse(world)
+    current = [loop leg in __legs: transform_point(world, bone_world(m, p, leg[2])[3].xyz)]
+    reaction = e.state == .stagger
+    attack = e.state == .attack and e.move == 0
+    if (reaction and (f.reaction != e.reaction or f.state == .gone)) or (attack and f.state != .attack):
+        f.anchors = if f.feet.len() == 2: f.feet else: current
+        f.heading = e.face
+        f.front = if dot(f.anchors[0] - f.anchors[1], forward_of(e.face)) > 0.0: 0 else: 1
+        f.reaction = e.reaction
+    f.state = e.state
+    grounded = e.state != .dead and e.state != .knocked and e.state != .sleep and e.lift <= 0.01
+    if not grounded:
+        f.feet = current
+        return
+    targets = current
+    floors: Ground[]
+    lifts: f64[]
+    settle = 0.0
+    support = if reaction: e.recoil * f32(0.10 * smoothstep(0.0, 0.20, e.t)) else: vec3(0, 0, 0)
+    loop side in [0..2):
+        lift = max(0.0, f64(current[side].y - e.pos.y) - __clearance[side] * 1.14 - 0.025)
+        if (reaction or attack) and f.anchors.len() == 2:
+            target = f.anchors[side]
+            arc = vec2(0, 0)
+            if reaction:
+                arc = boko_step(e.t, side == f.front)
+                target += e.recoil * arc.x
+            else if side == f.front:
+                arc = boko_lunge(e.t)
+                target += forward_of(f.heading) * arc.x
+            targets[side] = target
+            lift = f64(arc.y)
+        ground = ground_at(f64(targets[side].x), f64(targets[side].z), f64(e.pos.y), 0.65)
+        if e.lookout and abs(ground.y - f64(e.pos.y)) > 0.6: ground = Ground(y = f64(e.pos.y))
+        floors.push(ground)
+        lifts.push(lift)
+        settle = min(settle, ground.y - f64(e.pos.y))
+    # A recoil can put the planted foot beyond the short leg's reach; bend at the hips.
+    if reaction or attack:
+        loop side in [0..2):
+            leg = __legs[side]
+            hip = transform_point(world, bone_world(m, p, leg[0])[3].xyz) + support
+            reach = f64(length(m.rest_t[leg[1]]) + length(m.rest_t[leg[2]])) * 1.14 - 0.012
+            delta = targets[side] - hip
+            horizontal = f64(delta.x * delta.x + delta.z * delta.z)
+            height = floors[side].y + __clearance[side] * 1.14 + lifts[side]
+            settle = min(settle, height + sqrt(max(0.01, reach * reach - horizontal)) - f64(hip.y))
+    settle = clamp(settle, -0.30, 0.0)
+    if __pelvis >= 0:
+        parent = bone_world(m, p, m.parent[__pelvis])
+        dip = if e.brace > 0.0: sin((1.0 - e.brace / 0.18) * PI) else: 0.0
+        offset = transform_dir(inverse_root, v3(0.0, settle - dip * 0.035, 0.0) + support) + v3(0.0, 0.0, -0.025 * dip)
+        p.t[m.canon[__pelvis]] += transform_dir(inverse(parent), offset) / f32(m.tscale)
+        if dip > 0.0: __boko_turn(m, p, __pelvis, vec3(0, 1, 0), v3(0.0, cos(0.06 * dip), -sin(0.06 * dip)))
+    loop side in [0..2):
+        target = targets[side]
+        target.y = f32(floors[side].y + __clearance[side] * 1.14 + lifts[side])
+        boko_plant(m, p, __legs[side], transform_point(inverse_root, target))
+        foot = __legs[side][2]
+        up = transform_dir(bone_world(m, p, foot), __sole[side])
+        normal = normalize(transform_dir(inverse_root, floors[side].normal))
+        weight = 1.0 - smoothstep(0.035, 0.15, lifts[side])
+        __boko_turn(m, p, foot, up, normalize(lerp(normalize(up), normal, f32(weight))))
+    f.feet = [loop leg in __legs: transform_point(world, bone_world(m, p, leg[2])[3].xyz)]

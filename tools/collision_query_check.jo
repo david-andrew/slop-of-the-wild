@@ -1,0 +1,42 @@
+# Compare query membership AND ordering with the former implementation. The
+# Talus arena is deliberately crowded, overlapping, and larger than one cell.
+use '../game/physics.jo'
+from '../game/physics.jo' import __col_grid, __cell_key, __col_query
+
+reference = (x: f64, z: f64, r: f64) -> int[]:
+    out: int[]
+    loop cz in [int(floor((z-r)/COL_CELL))..int(floor((z+r)/COL_CELL))]:
+        loop cx in [int(floor((x-r)/COL_CELL))..int(floor((x+r)/COL_CELL))]:
+            if let ids=__col_grid.get(__cell_key(cx,cz)):
+                loop id in ids:
+                    if not out.contains(id): out.push(id)
+    out
+
+comparisons=0
+check = ():
+    loop x in [-40.0,-16.01,-16.0,-0.01,0.0,15.99,16.0,40.0]:
+        loop z in [-32.0,-0.01,0.0,16.0,39.0]:
+            loop r in [0.0,0.1,1.0,12.0,35.0]:
+                got=nearby(x,z,r)
+                expected=reference(x,z,r)
+                assert(got.len()==expected.len())
+                loop i in [0..got.len()): assert(got[i]==expected[i],"query order preserves collision ties")
+                comparisons+=1
+
+run = ():
+    loop k in [0..275): add_box(vec3(0,0,0),vec3(26,1,1))
+    add_cyl(vec3(16,0,16),1.0,2.0)
+    check()
+    collider_relocate(275,vec3(-40,0,-32),vec3(4,1,4),0.7)
+    colliders[3].active=false
+    check()
+    # Array reuse/reset and generation rollover cannot inherit earlier membership.
+    __col_query=999999999
+    check()
+    colliders.clear()
+    __col_grid={}
+    add_cyl(vec3(0,0,0),1.0,2.0)
+    check()
+    print("collision query: {comparisons} exact membership/order comparisons PASS")
+
+run()

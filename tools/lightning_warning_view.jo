@@ -1,0 +1,39 @@
+# Visual companion for the tracking checks; run under flock /tmp/botw-render.lock.
+# BOTW_SKIP=1 BOTW_AT=-930,1800,0 BOTW_WEATHER=storm; args: hand | back | drop | throw.
+use '../game/main.jo'
+from '../game/main.jo' import update as production_update, draw as production_draw
+use '../game/items.jo'
+use '../game/inventory.jo'
+use '../game/player.jo'
+use '../game/combat.jo'
+use '../game/enemies.jo'
+use '../game/chars.jo'
+use '../game/elements.jo'
+use '../game/input.jo'
+use '../game/gfx.jo'
+
+mode = if args().len() > 1: args()[1] else: "hand"
+inv = Inventory()
+inv_add("old_shirt")
+inv_add("trousers")
+inv_add("travelers_sword")
+fight = Fight(weapon_out = mode != "back")
+hero_animate(1.0 / 60.0, 0.0)
+assert(lightning_begin(), "fixture metal starts exposed to storm lightning")
+if mode == "drop":
+    invui = InvUI(open = true, tab = 0, t = 1.0)
+    act = Actions(drop = true)
+    inventory_update(1.0 / 60.0)
+    invui.open = false
+else if mode == "throw":
+    fight.act = .throw_
+    fight.t = 0.26
+    act = Actions()
+    combat_update(1.0 / 60.0, enemy_pos, 0)
+print("lightning visual {mode}: target={lightning_pos} gear={lightning_gear.id} world={lightning_gear.world}")
+
+# Graphics entry points belong to the root module; explicitly forward the real game loop.
+update = (dt: f64):
+    production_update(dt)
+    if frame_number() % 30 == 0: print("lightning visual {mode}: frame={frame_number()} warning={lightning_warn:.3} target={lightning_pos} player={pl.pos} hp={pl.hp}")
+draw = (): production_draw()

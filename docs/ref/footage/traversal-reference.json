@@ -1,0 +1,483 @@
+{
+  "annotated": "2026-10-09",
+  "frame_numbering": "zero-based decoded order; seconds from ffprobe presentation timestamps",
+  "software": {
+    "opencv": "5.0.0",
+    "numpy": "2.5.3"
+  },
+  "sources": {
+    "retail_climb": {
+      "url": "https://mp4.mega64.net/botw/u02/014.mp4",
+      "page": "https://www.lp.zone/t/1969/10",
+      "sha256": "e5680dabadb74722c8229ac06a74643ab55c650bc488b59f97c614863b727852",
+      "stream": {
+        "width": 896,
+        "height": 504,
+        "r_frame_rate": "30/1",
+        "nb_frames": "194"
+      },
+      "decoded_frames": 194
+    },
+    "retail_run": {
+      "url": "https://mp4.mega64.net/botw/u02/004.mp4",
+      "page": "https://www.lp.zone/t/1969/10",
+      "sha256": "da0aaf59ef58c7424ade4c478ca4e1385b53ed1337f16421ef8052b7efb094e8",
+      "stream": {
+        "width": 896,
+        "height": 504,
+        "r_frame_rate": "30/1",
+        "nb_frames": "361"
+      },
+      "decoded_frames": 361
+    },
+    "nintendo_run": {
+      "url": "https://www.nintendo.com/jp/zelda/botw/assets/movie/run.mp4",
+      "page": "https://www.nintendo.com/jp/zelda/botw/world.html",
+      "sha256": "e5052714dd8f006175ef008215505978ca4fb68571594724ad373e7ec58991a5",
+      "stream": {
+        "width": 1280,
+        "height": 720,
+        "r_frame_rate": "30000/1001",
+        "nb_frames": "3552"
+      },
+      "decoded_frames": 3552
+    }
+  },
+  "manual_annotations": {
+    "climb_frame_head_hip_xy": [
+      [
+        30,
+        [
+          448,
+          233
+        ],
+        [
+          448,
+          279
+        ]
+      ],
+      [
+        60,
+        [
+          448,
+          235
+        ],
+        [
+          449,
+          280
+        ]
+      ],
+      [
+        90,
+        [
+          447,
+          256
+        ],
+        [
+          447,
+          302
+        ]
+      ],
+      [
+        120,
+        [
+          446,
+          254
+        ],
+        [
+          447,
+          299
+        ]
+      ],
+      [
+        150,
+        [
+          448,
+          249
+        ],
+        [
+          448,
+          296
+        ]
+      ]
+    ],
+    "scale": {
+      "frame": 0,
+      "head": [
+        434,
+        192
+      ],
+      "hip": [
+        426,
+        270
+      ],
+      "foot_y": 350
+    },
+    "lunge_frame_head_hip_xy": [
+      [
+        1386,
+        [
+          634,
+          312
+        ],
+        [
+          635,
+          416
+        ]
+      ],
+      [
+        1400,
+        [
+          632,
+          325
+        ],
+        [
+          630,
+          422
+        ]
+      ]
+    ],
+    "point_allowance_px": 5
+  },
+  "scale_proxy": {
+    "capsule_height_m": 1.6,
+    "inferred_head_hip_m": 0.794017044411652,
+    "source": "../phys.yml CharacterController/Forms/Form_0 ShapeParam_0 translate_0.y",
+    "warning": "Capsule height is NOT mesh stature. Running calibration pose, torso flexion, slope, parallax and rock nonplanarity make metre results conditional."
+  },
+  "registration": {
+    "method": "SIFT scenery only, Lowe ratio .65, RANSAC 1.5 px; cumulative 5-frame homographies; local torso scale after registration",
+    "climb_quality": [
+      {
+        "frame": 5,
+        "matches": 261,
+        "inliers": 245
+      },
+      {
+        "frame": 10,
+        "matches": 326,
+        "inliers": 245
+      },
+      {
+        "frame": 15,
+        "matches": 375,
+        "inliers": 263
+      },
+      {
+        "frame": 20,
+        "matches": 337,
+        "inliers": 266
+      },
+      {
+        "frame": 25,
+        "matches": 438,
+        "inliers": 360
+      },
+      {
+        "frame": 30,
+        "matches": 514,
+        "inliers": 399
+      },
+      {
+        "frame": 35,
+        "matches": 624,
+        "inliers": 540
+      },
+      {
+        "frame": 40,
+        "matches": 681,
+        "inliers": 611
+      },
+      {
+        "frame": 45,
+        "matches": 682,
+        "inliers": 644
+      },
+      {
+        "frame": 50,
+        "matches": 767,
+        "inliers": 736
+      },
+      {
+        "frame": 55,
+        "matches": 732,
+        "inliers": 707
+      },
+      {
+        "frame": 60,
+        "matches": 582,
+        "inliers": 372
+      },
+      {
+        "frame": 65,
+        "matches": 587,
+        "inliers": 476
+      },
+      {
+        "frame": 70,
+        "matches": 862,
+        "inliers": 834
+      },
+      {
+        "frame": 75,
+        "matches": 831,
+        "inliers": 785
+      },
+      {
+        "frame": 80,
+        "matches": 881,
+        "inliers": 840
+      },
+      {
+        "frame": 85,
+        "matches": 881,
+        "inliers": 811
+      },
+      {
+        "frame": 90,
+        "matches": 849,
+        "inliers": 788
+      },
+      {
+        "frame": 95,
+        "matches": 823,
+        "inliers": 722
+      },
+      {
+        "frame": 100,
+        "matches": 912,
+        "inliers": 889
+      },
+      {
+        "frame": 105,
+        "matches": 792,
+        "inliers": 707
+      },
+      {
+        "frame": 110,
+        "matches": 923,
+        "inliers": 912
+      },
+      {
+        "frame": 115,
+        "matches": 856,
+        "inliers": 825
+      },
+      {
+        "frame": 120,
+        "matches": 908,
+        "inliers": 857
+      },
+      {
+        "frame": 125,
+        "matches": 948,
+        "inliers": 908
+      },
+      {
+        "frame": 130,
+        "matches": 764,
+        "inliers": 651
+      },
+      {
+        "frame": 135,
+        "matches": 863,
+        "inliers": 839
+      },
+      {
+        "frame": 140,
+        "matches": 835,
+        "inliers": 797
+      },
+      {
+        "frame": 145,
+        "matches": 768,
+        "inliers": 628
+      },
+      {
+        "frame": 150,
+        "matches": 728,
+        "inliers": 607
+      }
+    ]
+  },
+  "observations": {
+    "climb_speed": {
+      "value": 0.7314855195857526,
+      "unit": "m/s",
+      "uncertainty": 0.3,
+      "confidence": "L",
+      "status": "conditional_scale_inference",
+      "score_pool": "inferred",
+      "frames": [
+        30,
+        150
+      ],
+      "frames_counted": 120,
+      "seconds": 4.0,
+      "torso_lengths_per_second": 0.9212466215102048,
+      "intervals": [
+        {
+          "frames": [
+            30,
+            60
+          ],
+          "seconds": 1.0,
+          "registered_head_rise_px": 38.966830496388354,
+          "mean_projected_torso_px": 42.53570019613826,
+          "torso_lengths_per_second": 0.916097074144934
+        },
+        {
+          "frames": [
+            60,
+            90
+          ],
+          "seconds": 1.0,
+          "registered_head_rise_px": 40.65219113206871,
+          "mean_projected_torso_px": 46.7784298997279,
+          "torso_lengths_per_second": 0.8690371014847844
+        },
+        {
+          "frames": [
+            90,
+            120
+          ],
+          "seconds": 1.0,
+          "registered_head_rise_px": 35.79365260154185,
+          "mean_projected_torso_px": 46.77425675688741,
+          "torso_lengths_per_second": 0.7652425732295856
+        },
+        {
+          "frames": [
+            120,
+            150
+          ],
+          "seconds": 1.0,
+          "registered_head_rise_px": 54.06167632335939,
+          "mean_projected_torso_px": 47.647816294661865,
+          "torso_lengths_per_second": 1.1346097371815147
+        }
+      ]
+    },
+    "climb_lunge_rise": {
+      "value": 1.7937221197574105,
+      "unit": "m",
+      "uncertainty": 0.6,
+      "confidence": "L",
+      "status": "conditional_scale_inference",
+      "score_pool": "inferred",
+      "frames": [
+        1386,
+        1400
+      ],
+      "frames_counted": 14,
+      "torso_lengths": 2.2590473748413253,
+      "registered_head_rise_px": 236.12964940347047,
+      "mean_projected_torso_px": 104.52620517533686,
+      "registration": {
+        "matches": 318,
+        "inliers": 94
+      }
+    },
+    "climb_lunge_duration": {
+      "frame_windows": [
+        [
+          1384,
+          1388
+        ],
+        [
+          1398,
+          1402
+        ]
+      ],
+      "center_frames": [
+        1386,
+        1400
+      ],
+      "frames_counted": 14,
+      "center_seconds": 0.4671340000000015,
+      "bounds_seconds": [
+        0.3336660000000009,
+        0.6006
+      ],
+      "confidence": "L",
+      "score_pool": "footage",
+      "definition": "Visible rapid upward lunge initiation to hands reaching the upper edge; not button latency."
+    },
+    "mantle_duration": {
+      "frame_windows": [
+        [
+          1400,
+          1404
+        ],
+        [
+          1424,
+          1428
+        ]
+      ],
+      "center_frames": [
+        1402,
+        1426
+      ],
+      "frames_counted": 24,
+      "center_seconds": 0.8008000000000024,
+      "bounds_seconds": [
+        0.6673339999999968,
+        0.9342660000000009
+      ],
+      "confidence": "L",
+      "score_pool": "footage",
+      "definition": "Hands reaching upper edge to supported locomotion atop it; not an idle finish."
+    },
+    "camera_net_yaw_during_run": {
+      "value": 25.003206751087728,
+      "unit": "deg",
+      "uncertainty": 5.0,
+      "confidence": "L",
+      "status": "conditional_fov_camera_observation",
+      "score_pool": "diagnostic",
+      "frames": [
+        0,
+        10
+      ],
+      "frames_counted": 10,
+      "seconds": 0.333333,
+      "method": "Distant-horizon SIFT/RANSAC homographies, K-inverse H K, nearest rotation via SVD; assumed vertical FOV 50 degrees.",
+      "registration": [
+        {
+          "frames": [
+            0,
+            5
+          ],
+          "inliers": 51,
+          "singular_values_before_rotation_projection": [
+            1.0171299691963978,
+            1.0118708532857086,
+            0.9716245127165021
+          ]
+        },
+        {
+          "frames": [
+            5,
+            10
+          ],
+          "inliers": 33,
+          "singular_values_before_rotation_projection": [
+            1.0143065343938102,
+            1.0087659988043516,
+            0.9773279995413844
+          ]
+        }
+      ],
+      "limitation": "NET rotation includes unknown right-stick input. This cannot supply an auto-yaw rate or lag time constant; do not compare it to a no-camera-input simulation."
+    }
+  },
+  "limitations": [
+    "One retail climb and one prerelease promotional lunge/mantle, not controlled repeat trials.",
+    "No controller overlay: stick magnitude, jump charge and camera inputs unknown.",
+    "Nintendo HUD hidden, build/platform and real-time playback unverified; retail author describes climbing.",
+    "Metre tolerances are conservative annotation/scale allowances, not statistical confidence intervals.",
+    "Lunge ends at an edge: rise is edge-limited, not maximum unconstrained jump height.",
+    "A homography stabilizes scenery; it does not by itself provide metric rectification.",
+    "Only durations enter measured-reference agreement. Conditional metre estimates are printed separately."
+  ]
+}

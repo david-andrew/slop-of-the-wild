@@ -1,0 +1,93 @@
+build:
+    opt = release
+
+# The same course, production input/player/camera/animation and game character shading.
+use 'traversal_course.jo'
+use '../game/gfx.jo'
+use '../game/env.jo'
+use '../game/sky.jo'
+use '../game/post.jo'
+use '../game/shadows.jo'
+use '../game/charshade.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/physics.jo'
+use '../game/terrain.jo'
+use '../game/camera.jo'
+use '../game/chars.jo'
+use '../game/scene.jo'
+use '../game/items.jo'
+
+window("Traversal sequences", 960, 540)
+items_init()
+chars_init()
+name = env("TRAVERSAL_CASE") ?? "slope_run"
+out = env("TRAVERSAL_OUT") ?? "build/traversal-check/render"
+tr_reset(name, 60)
+if starts_with(name, "temporal") or name == "hitch_wall": tr_schedule = 3
+room = Model()
+floor_model = Model()
+# A sampled surface drawn with the same heights that collision/foot IK query.
+# Build a continuous mesh at the collision heightfield's 0.5 m grid points.
+# prop_boxes supplies the ordinary material/skeleton; replace its geometry only.
+floor_model = prop_boxes([PropBox(vec3(0, 99, 0), vec3(1, 1, 1), vec4(0.36, 0.44, 0.28, 1))], "course floor")
+vs: ChVert[]
+idx: u32[]
+loop z in [-60..61):
+    loop x in [-60..61):
+        px = f64(x) * 0.5
+        pz = f64(z) * 0.5
+        p = v3(px, height_at(px, pz), pz)
+        vs.push(ChVert(p, normal_at(px, pz), vec2(0, 0), vec4(0.36, 0.44, 0.28, 1), vec4(0, 0, 0, 0), vec4(1, 0, 0, 0)))
+loop z in [0..120):
+    loop x in [0..120):
+        i = u32(z * 121 + x)
+        idx.extend([i, i + 121, i + 1, i + 1, i + 121, i + 122])
+floor_model.parts[0].mesh = mesh(vs, idx)
+floor_model.parts[0].verts = vs.len()
+floor_model.parts[0].tris = idx.len() / 3
+room = prop_boxes(tr_boxes, "course masonry")
+env.hour = 10.0
+env.weather = if name == "rain": .rain else: .clear
+if name == "rain": env.clouds = 0.85
+env.weather_t = 1e9
+env.time_scale = 0.0
+capture_every = to_int(env("TRAVERSAL_CAPTURE_EVERY") ?? "15") ?? 15
+
+update = (dt: f64):
+    env_update(0.0, false)
+    if name == "rain": env.rain = 1.0
+    if tr_time < 12.0 - 1e-9: tr_tick()
+    hero_wet_update(1.0 / 60.0, env.rain, false)
+    if frame_number() > 0 and frame_number() % capture_every == 0:
+        save_png(screenshot(), "{out}/frame-{frame_number()}.png")
+    if frame_number() == 599: write_file("{out}/trajectory.csv", tr_rows)
+
+draw = ():
+    flush()
+    vp = perspective(radians(cam.fov), aspect_ratio(), 0.05, 100.0) * look_at(cam.pos, cam.target, vec3(0, 1, 0))
+    shadow_matrices(cam.pos, normalize(cam.target - cam.pos), env.light_dir)
+    scene = char_scene(vp, cam.pos, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, env.density, 0.004,
+        cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), elapsed())
+    room_world = if name == "lift": translation(vec3(0, tr_boxes[0].center.y - 103.3, 0)) else: mat4()
+    loop k in [0..3):
+        shadow_begin(k)
+        draw_character_shadow(hero_m, hero_world, hero_skin, cascades.vps[k], CharParams(variant = 2))
+        draw_prop_shadow(room, room_world, cascades.vps[k])
+        shadow_end()
+    bind_target(post_begin())
+    glClearColor(0.4, 0.6, 0.8, 1)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    gl_opaque_state()
+    draw_prop(floor_model, mat4(), scene)
+    draw_prop(room, room_world, scene)
+    sc.vp = vp
+    sc.cam = cam.pos
+    sc.shadow = false
+    hero_draw()
+    draw_sky(inverse(vp), cam.pos)
+    post_end(0.05, 100.0)
+    gl_restore_2d()
+    text("{name}  {tr_time:.2}s  {pl.state}  stamina {pl.stamina:.0}", vec2(16, 16), 20, rgba(1, 1, 1, 1))

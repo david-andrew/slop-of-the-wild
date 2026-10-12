@@ -1,0 +1,812 @@
+use 'audio_cache.jo'
+use 'gfx.jo'
+use 'texture_assets.jo'
+use 'env.jo'
+use 'post.jo'
+use 'physics.jo'
+use 'terrain.jo'
+use 'player.jo'
+use 'camera.jo'
+use 'input.jo'
+use 'ui.jo'
+use 'items.jo'
+use 'interact.jo'
+use 'interiors.jo'
+use 'structures.jo'
+use 'music.jo'
+use 'render.jo'
+use 'chars.jo'
+use 'fx.jo'
+use 'sfx.jo'
+use 'scene.jo'
+use 'shadows.jo'
+use 'build.jo'
+use 'wildlife.jo'
+use 'worldgen.jo'
+
+# The story of the plateau: waking in the Shrine of Resurrection, the first sight of the world
+# (the title card), the old man, the tower rising, the four shrines and the paraglider.
+
+enum Beat:
+    black, wake, inside, title, explore, tower_rise, after_tower, shrines_done, roof, ending
+
+struct Story:
+    beat = Beat.black
+    t = 0.0
+    focus_t = 0.0
+    focus_door = 0
+    slate = false
+    door1 = 0.0                 # 0 closed .. 1 open (slides into the floor)
+    door1_open = false
+    door2 = 0.0
+    door2_open = false
+    title_done = false
+    crest_pos = vec3(0, 0, 0)
+    crest_target = vec3(0, 0, 0)
+    crest_player = vec3(0, 0, 0)
+    crest_orbit_angle = 0.0
+    crest_fov = 50.0
+    exit_white = 0.0
+    tower_risen = false
+    tower_lift = -82.0
+    orbs = 0
+    met_old_man = false
+    glider_given = false
+    caption = ""
+    caption_t = 0.0
+    title_alpha = 0.0
+    letterbox = 0.0
+    shake = 0.0
+    skip_intro = false
+    ending_card = false
+    leaving_shown = false
+
+story = Story()
+
+caption = (s: str, dur: f64 = 4.0):
+    story.caption = s
+    story.caption_t = dur
+
+# ---------------- set up the world's story pieces ----------------
+story_setup = ():
+    # the pedestal: take the slate, the door opens
+    add_usable(SOR_PEDESTAL, 1.9, "Take", ():
+        story.slate = true
+        ui_pickup("Slop Slate")
+        item_jingle()
+        story.door1_open = true
+        if story.beat == .inside:
+            story.focus_t = 2.2
+            story.focus_door = 1
+            pl.state = .cutscene
+            pl.speed = 0.0
+    )
+    add_chest(SOR_CHEST1, PI / 2.0, "old_shirt", 1, true)
+    add_chest(SOR_CHEST2, -PI / 2.0, "trousers", 1, true)
+    add_usable(SOR_TERMINAL + v3(1.0, 0.0, 0.0), 1.8, "Examine", ():
+        story.door2_open = true
+        if story.beat == .inside:
+            story.focus_t = 2.2
+            story.focus_door = 2
+            pl.state = .cutscene
+            pl.speed = 0.0
+        play(cached_chime(), 0.5)
+    )
+    # the doors are solid until they open
+    door1_col = add_box(SOR_DOOR1, v3(2.0, 1.8, 0.3), 0.0, false, .stone)
+    door2_col = add_box(SOR_DOOR2, v3(2.0, 1.8, 0.3), 0.0, false, .stone)
+    story_door_cols = [door1_col, door2_col]
+    story_setup_world()
+
+story_door_cols: int[]
+
+# where the old man waits on the Temple of Time's bell tower deck
+roof_spot = () -> vec3: lp(TEMPLE, TEMPLE_ROT, 4.0, 43.0, 32.0)
+
+const TOWER_PEDESTAL = v3(-566.0, 172.0, 1708.0)
+
+# the tower, the old man, the shrines and the paraglider
+story_setup_world = ():
+    old_man.visible = true
+    old_man.pos = v3(-946.0, 0.0, 1883.5)
+    old_man.pos.y = f32(height_at(-946.0, 1883.5))
+    old_man.face = 0.7
+    old_man.clip = "sit"
+    # his seat by the fire, trampled down over the years
+    burn_mark(-946.0, 1883.5, 4.5, 1, 1.8)
+    burn_mark(-944.5, 1881.8, 4.5, 1, 1.8)
+    # the tower's pedestal at its foot (buried until it rises)
+    add_usable(TOWER_PEDESTAL, 2.2, "Examine", ():
+        story.beat = .tower_rise
+        story.t = 0.0
+        pl.state = .cutscene
+        play(sfx.rumble, 0.9)
+        music_mood(.silent)
+        tower_cue()
+    )
+    # before the tower rises the shrines are below the ground, their terminals asleep
+    loop sh in shrines:
+        hooks.named_hidden[sh.name] = true
+        hooks.named_hidden[sh.name + "_terminal"] = true
+    hooks.tower_lift = -82.0
+    tower_set_lift(-82.0)
+    hooks.named_hidden["far_towers"] = true
+
+__greet_t = 0.0
+__greet_camera = false
+
+# the old man by his campfire turns to watch the player go by
+__old_man_life = (dt: f64):
+    if not old_man.visible or story.beat == .roof: return
+    d = pl.pos - old_man.pos
+    # (he is solid: the player steps round him, not through him)
+    hd = vec3(d.x, 0, d.z)
+    if f64(length(hd)) < 0.8 and abs(f64(d.y)) < 1.6:
+        push = normalize(hd + vec3(0.001, 0, 0)) * 0.8
+        pl.pos = vec3(old_man.pos.x + push.x, pl.pos.y, old_man.pos.z + push.z)
+    # the first time the player comes near, he gets up and raises a hand; then sits again
+    if __greet_t > 0.0:
+        __greet_t -= dt
+        old_man.face = turn_toward(old_man.face, yaw_of(vec3(d.x, 0, d.z)), 2.5 * dt)
+        # A small, moving over-the-shoulder bias makes his turn and raised hand read.
+        # The chase camera keeps running beneath it; movement and camera input stay live.
+        if __greet_camera:
+            if story.beat == .explore and pl.state == .ground and not cam.locked and not cam.aiming:
+                cam.override = true
+                focus = old_man.pos + vec3(0, 1.35, 0)
+                front = normalize(vec3(d.x, 0, d.z) + vec3(0.001, 0, 0))
+                portrait = old_man.pos + front * 4.8 + vec3(0, 1.05, 0)
+                offset = portrait - cam.pos
+                cam.o_pos = cam.pos + normalize(offset + vec3(0, 0.0001, 0)) * min(length(offset), 0.7)
+                cam.o_target = camera_aim_blend(cam.pos, cam.target, cam.o_pos, focus, 0.92)
+                cam.o_fov = 30.0
+            else:
+                if story.beat == .explore: cam.override = false
+                __greet_camera = false
+        if __greet_t <= 0.0:
+            if old_man.clip == "Greeting": old_man.clip = "sit"
+            if __greet_camera:
+                cam.override = false
+                cam.handoff_duration = 1.5
+                __greet_camera = false
+        return
+    if f64(length(d)) < 10.0 and old_man.clip == "sit":
+        old_man.face = turn_toward(old_man.face, yaw_of(vec3(d.x, 0, d.z)), 1.5 * dt)
+        if not story.met_old_man and f64(length(d)) < 9.0:
+            story.met_old_man = true
+            old_man.clip = "Greeting"
+            __greet_t = 4.0
+            __greet_camera = story.beat == .explore and pl.state == .ground and not cam.override and not cam.locked and not cam.aiming
+            if __greet_camera:
+                cam.handoff_duration = 1.5
+                cam.o_pos = cam.pos
+                cam.o_target = cam.target
+                cam.o_fov = view_fov()
+                cam.override = true
+
+# The blue activation crest belongs to the held wide shot, before the camera
+# leaves the tower for the shrines. Resume/settled towers retain their usual blue.
+tower_activation_glow = () -> vec3:
+    orange = vec3(3.0,1.1,0.25)
+    blue = vec3(0.3,1.0,2.6)
+    if story.beat != .tower_rise: return if story.tower_risen: blue else: orange
+    wake = smooth01((story.t-7.0)/0.6)
+    crest = smooth01((story.t-7.4)/1.0) * (1.0-smooth01((story.t-9.0)/1.4))
+    mix(orange,blue,f32(wake)) + vec3(0.02,0.65,1.45)*f32(crest)
+
+__tower_rise = (dt: f64):
+    t = story.t
+    ui.hide = t <= 15.0
+    story.letterbox = if t <= 14.5: min(1.0, story.letterbox + dt * 0.8) else: story.letterbox
+    # the ground shakes, the tower thrusts up, the shrines rise across the land
+    k = smooth01((t - 1.0) / 6.0)
+    hooks.tower_lift = lerp(-82.0, 0.0, k)
+    tower_set_lift(hooks.tower_lift)
+    cam.shake = (if t < 7.5: 0.35 else: 0.0)
+    cam.override = true
+    if t < 4.0:
+        # from below, looking up at the tower breaking out of the ground
+        cam.o_pos = TOWER + v3(26.0, 4.0, 22.0)
+        cam.o_target = TOWER + v3(0.0, f32(10.0 + hooks.tower_lift + 82.0), 0.0)
+        cam.o_fov = 55.0
+        if random() < dt * 25.0: fx_dust(TOWER + v3(random(-8.0, 8.0), 0.0, random(-8.0, 8.0)), 4)
+    else if t < 7.5:
+        # rising with it
+        cam.o_pos = TOWER + v3(40.0, f32(10.0 + (t - 4.0) * 12.0), 30.0)
+        cam.o_target = TOWER + v3(0.0, f32(30.0 + (t - 4.0) * 8.0), 0.0)
+    else if t < 10.5:
+        # standing: a wide shot held, the camera drawing back and spiralling up round it
+        w = smooth01((t - 7.5) / 3.0)
+        a0 = atan2(30.0, 40.0)
+        a = a0 + w * 1.1
+        rad = 50.0 + 60.0 * smooth01((t - 7.5) / 1.6)
+        cam.o_pos = TOWER + v3(cos(a) * rad, 52.0 + w * 34.0, sin(a) * rad)
+        cam.o_target = TOWER + v3(0.0, f32(52.0 - w * 8.0), 0.0)
+        cam.o_fov = 55.0 - w * 5.0
+    else:
+        # the top: the player stands at the terminal; the world below, the shrines glowing orange
+        pl.face = 0.95
+        # from beside him, the view swings round the plateau from shrine to shrine as each rises
+        k = smooth01((t - 10.5) / 4.5)
+        if shrines.len() > 0:
+            # the shrines in order round the tower (by bearing), the camera turning past each
+            order: int[]
+            loop i in [0..shrines.len()): order.push(i)
+            loop i in [0..order.len()):
+                loop j in [0..order.len() - 1 - i):
+                    aj = atan2(f64(shrines[order[j]].pos.z - TOWER.z), f64(shrines[order[j]].pos.x - TOWER.x))
+                    ak = atan2(f64(shrines[order[j + 1]].pos.z - TOWER.z), f64(shrines[order[j + 1]].pos.x - TOWER.x))
+                    if ak < aj:
+                        tmp = order[j]
+                        order[j] = order[j + 1]
+                        order[j + 1] = tmp
+            fpos = k * f64(order.len() - 1)
+            a = int(floor(fpos))
+            b = min(a + 1, order.len() - 1)
+            # (over his shoulder at the deck's edge: he stands small against the whole plateau;
+            # the view turns by bearing from one shrine to the next, never across the deck)
+            ctr = TOWER + v3(0.0, 74.2, 0.0)
+            ba = atan2(f64(shrines[order[a]].pos.z - ctr.z), f64(shrines[order[a]].pos.x - ctr.x))
+            bb = atan2(f64(shrines[order[b]].pos.z - ctr.z), f64(shrines[order[b]].pos.x - ctr.x))
+            ad = ba + wrap_angle(bb - ba) * smooth01(fpos - f64(a))
+            d = v3(cos(ad), 0.0, sin(ad))
+            pl.pos = ctr + d * 6.0
+            me = pl.pos
+            side = vec3(-d.z, 0, d.x)
+            # (an arm of the crown in line with the view: look past it from the other side)
+            near_arm = 9.0
+            loop ka in [0..4):
+                da = wrap_angle(ad - TAU * (f64(ka) + 0.5) / 4.0)
+                if abs(da) < abs(near_arm): near_arm = da
+            so = 1.3 + 2.0 * smoothstep(0.45, 0.0, abs(near_arm)) * (if near_arm >= 0.0: 1.0 else: -1.65)
+            cam.o_pos = me - d * 4.5 + side * f32(so) + vec3(0.0, 2.4, 0.0)
+            cam.o_target = ctr + d * 120.0 + vec3(0.0, -22.0, 0.0)
+            cam.o_fov = 50.0
+            pl.face = yaw_of(d)
+    if t > 7.0 and not story.tower_risen:
+        story.tower_risen = true
+        loop sh in shrines:
+            hooks.named_hidden[sh.name] = false
+            hooks.named_hidden[sh.name + "_terminal"] = false
+        hooks.named_hidden["far_towers"] = false
+        secret_jingle()
+    # the shrines push up out of the earth, glowing orange, a beam over each
+    if t > 7.0:
+        rk = smooth01((t - 7.0) / 3.5)
+        loop sh in shrines:
+            hooks.named_lift[sh.name] = lerp(-9.0, 0.0, rk)
+            hooks.named_lift[sh.name + "_terminal"] = lerp(-9.0, 0.0, rk)
+            if t < 11.0 and random() < dt * 18.0: fx_dust(sh.pos + v3(random(-4.0, 4.0), 0.0, random(-4.0, 4.0)), 3)
+        if beams.len() == 0:
+            loop sh in shrines: beams.push(sh.pos)
+            beams_from = elapsed()
+    if t > 15.0:
+        ui.hide = false
+        cam.override = false
+        cam.yaw = pl.face
+        camera_snap()
+        pl.state = .ground
+        story.beat = .explore
+        story.t = 0.0
+        ui_location("Grate Plateau Tower")
+        # the old man glides down to the tower's foot
+        old_man.visible = true
+        old_man.glide = true
+        old_man.clip = "glide"
+        old_man.pos = TOWER + v3(-30.0, 60.0, 30.0)
+
+# after the four orbs a light on the Temple of Time's roof; the old man waits there
+__orbs_done = ():
+    if story.orbs >= 4 and story.beat == .explore and not story.glider_given:
+        story.beat = .roof
+        story.t = 0.0
+        old_man.visible = true
+        old_man.glide = false
+        old_man.clip = "idle"
+        old_man.pos = roof_spot()
+        old_man.face = 0.0
+
+__roof = (dt: f64):
+    # a column of light marks him until the player arrives
+    if random() < dt * 8.0: emit(.glow, roof_spot() + v3(random(-0.5, 0.5), random(0.0, 30.0), random(-0.5, 0.5)), v3(0.0, 2.0, 0.0), 2.0, 0.25, rgba(1.0, 0.85, 0.5, 0.6))
+    d = pl.pos - old_man.pos
+    old_man.face = turn_toward(old_man.face, yaw_of(vec3(d.x, 0, d.z)), 2.0 * dt)
+    if f64(length(d)) < 4.0 and act.interact and not story.glider_given:
+        story.glider_given = true
+        story.t = 0.0
+        story.beat = .ending
+        pl.has_glider = true
+        inv_add("paraglider")
+        ui_pickup("Paraglider")
+        item_jingle()
+
+__ending = (dt: f64):
+    # he fades into light; then the plateau is the player's to leave
+    if story.t < 4.0:
+        old_man.clip = "nod"
+        if random() < dt * 30.0: emit(.glow, old_man.pos + v3(random(-0.4, 0.4), random(0.0, 1.8), random(-0.4, 0.4)), v3(0.0, 1.5, 0.0), 1.5, 0.08, rgba(0.6, 1.0, 0.7, 0.8))
+    else:
+        old_man.visible = false
+        story.beat = .explore
+        story.t = 0.0
+
+# outside the plateau without a glider: back to safety; with it, the end of the journey here
+__bounds = (dt: f64):
+    x = f64(pl.pos.x)
+    z = f64(pl.pos.z)
+    out = x < -1600.0 or x > -350.0 or z < 1400.0 or z > 2400.0
+    if out and not pl.has_glider and story.title_done:
+        post.fade = min(1.0, post.fade + dt * 2.0)
+        if post.fade >= 1.0:
+            pl.pos = pl.last_safe
+            pl.vel = vec3(0, 0, 0)
+            pl.state = .ground
+            camera_snap()
+    else if story.beat == .explore and not story.ending_card:
+        post.fade = max(0.0, post.fade - dt * 1.5)
+    if pl.has_glider and edge_at(x, z) > 60.0 and not story.leaving_shown:
+        story.leaving_shown = true
+        story.ending_card = true
+        story.t = 0.0
+        story.title_alpha = 0.0
+
+# ---------------- the beginning ----------------
+story_start = ():
+    hero_wake_t = 0.0
+    story.beat = .black
+    story.t = 0.0
+    pl.pos = SOR_BED + v3(0.0, 0.11, 0.0)
+    pl.face = 0.0
+    pl.state = .cutscene
+    pl.last_safe = SOR_BED + v3(0.0, 0.0, -3.0)
+    cam.yaw = 0.0
+    cam.pitch = 0.5
+    camera_snap()
+    env.hour = 6.4
+    post.fade = 1.0
+    ui.hide = true
+    env.indoor = 1.0
+
+# (testing) the tower already up, the shrines out
+raise_tower_now = ():
+    story.tower_risen = true
+    hooks.tower_lift = 0.0
+    tower_set_lift(0.0)
+    loop sh in shrines:
+        hooks.named_hidden[sh.name] = false
+        hooks.named_hidden[sh.name + "_terminal"] = false
+    hooks.named_hidden["far_towers"] = false
+
+skip_to_outside = ():
+    story.slate = true
+    if not inv.keys.contains("old_shirt"):
+        inv_add("old_shirt")
+        inv_add("trousers")
+    story.door1_open = true
+    story.door2_open = true
+    story.beat = .explore
+    story.title_done = true
+    post.fade = 0.0
+    ui.hide = false
+    pl.pos = v3(-1030.0, 0.0, 1805.0)
+    pl.pos.y = f32(height_at(-1030.0, 1805.0))
+    pl.face = 1.0
+    pl.state = .ground
+    pl.last_safe = pl.pos
+    cam.yaw = 1.0
+    camera_snap()
+    env.hour = 7.0
+
+# the title card: run to the edge, the camera swings around and pulls back over the plateau
+const TITLE_CREST_SECONDS = 1.2
+# The cave's natural exit bearing passes about 15 m east of the overlook.
+# Catch that first approach before it carries the player over the ridge.
+const TITLE_APPROACH_RADIUS = 16.0
+const TITLE_EDGE_WALK_SECONDS = 5.0
+# The gaze finishes its scenic sweep before the first visible lettering.
+const TITLE_LETTERING_START = 9.0
+const TITLE_LETTERING_FADE = 0.85
+
+# Preserve the 16:9 panorama on narrower displays instead of cutting off the
+# castle and volcano. Wider displays retain the vertical composition and Link.
+title_panorama_fov = (aspect: f64) -> f64:
+    2.0 * atan(tan(54.0 * PI / 360.0) * max(1.0, (16.0 / 9.0) / max(aspect, 0.1))) * 180.0 / PI
+
+# Shared by drawing and the projection check; never grow the title into the land
+# on ultrawide screens. The atlas is 1224 x 366, including the subtitle.
+title_lettering_size = (width: f64, height: f64) -> vec2:
+    w = min(min(width * 0.38, 680.0), height * 0.16 * 1224.0 / 366.0)
+    vec2(f32(w), f32(w * 366.0 / 1224.0))
+
+__title_shot = (elapsed: f64):
+    # First lift just above the crest from the incoming player view. The plateau
+    # opens before the familiar orbit starts, and the run settles under it.
+    lift = smooth01(elapsed / TITLE_CREST_SECONDS)
+    direction = normalize(story.crest_target - story.crest_pos)
+    crest_motion = (pl.pos - story.crest_player) * f32(lift)
+    crest_pos = story.crest_pos + crest_motion + vec3(0, f32(lift * 1.15), 0) - direction * f32(lift * 0.4)
+    crest_target = story.crest_target + crest_motion + forward_of(0.5) * f32(lift) + vec3(0, f32(lift * 0.15), 0)
+    raw_t = max(0.0, elapsed - TITLE_CREST_SECONDS)
+    # Settle on his silhouette after the orbit, before widening onto the land.
+    # Catch up gently during the crane so the final control handoff is unchanged.
+    hold = min(max(raw_t - 5.0, 0.0), 0.9) * (1.0 - smoothstep(5.9, 13.0, raw_t))
+    t = max(0.0, raw_t - hold)
+    edge = v3(f64(OVERLOOK.x), height_at(f64(OVERLOOK.x), f64(OVERLOOK.z)) + 1.2, f64(OVERLOOK.z))
+    # Follow his approach during the orbit. A fixed edge anchor lets a player
+    # arriving from the cave leave the frame before he has reached the crest.
+    # Settle onto the authored panorama anchor as he stops at the overlook.
+    o = mix(pl.pos + vec3(0, 1.2, 0), edge, f32(smooth01((t - 3.0) / 2.0)))
+    view_yaw = 0.5
+    fwd = forward_of(view_yaw)
+    # 1 (0..5 s): from in front of him as he runs to the edge, swinging round to behind him
+    k = smooth01(t / 5.0)
+    ang = lerp(view_yaw + 0.5, view_yaw + PI - 0.3, k)
+    dist = lerp(4.0, 6.0, k)
+    h = lerp(0.4, 1.2, k)
+    pos = o + v3(sin(ang) * dist, h, -cos(ang) * dist)
+    tgt = o + vec3(0, 0.3, 0)
+    # 2 (5..13 s): a crane: rising and arcing up over his shoulder, pulling back, the world opening
+    # out ahead; then still drifting up while the title stands
+    k2 = smooth01((t - 5.0) / 8.0)
+    # (he stands small in the lower third; the castle and the land beyond fill the frame)
+    arc = lerp(view_yaw + PI - 0.45, view_yaw + PI - 0.12, k2)
+    drift = max(t - 13.0, 0.0)
+    cdist = lerp(5.0, 12.0, k2) + drift * 0.25
+    behind = o + v3(sin(arc) * cdist, lerp(1.0, 4.2, k2) + drift * 0.18, -cos(arc) * cdist)
+    pos = mix(pos, behind, f32(smooth01((t - 5.0) / 1.5)))
+    # (the look point a little to his right of straight ahead: he stays in the left third)
+    side = v3(cos(view_yaw), 0.0, sin(view_yaw))
+    # The gaze follows the crane half a beat later, opening onto the land
+    # as the lettering becomes legible. Ease direction, not target distance.
+    kg = smooth01((t - 5.5) / 2.5)
+    tgt = camera_aim_blend(pos, tgt, pos, o + fwd * 300.0 + side * 22.0 + vec3(0, -30, 0), kg * 0.92)
+    # The wider approach needs another half beat to join the orbit without a
+    # fast backward camera sweep from the incoming chase lens.
+    orbit = smooth01(t / 1.5)
+    # Join around his body rather than drawing a straight chord through it.
+    # The incoming boom and front orbit are on opposite sides of the hero.
+    start_offset = crest_pos - o
+    end_offset = pos - o
+    # Choose the orbit winding once at entry. Rechoosing the shortest arc as
+    # its front endpoint moves can flip directions at the +/- pi seam.
+    start_angle = story.crest_orbit_angle + wrap_angle(atan2(f64(start_offset.x), -f64(start_offset.z)) - story.crest_orbit_angle)
+    end_angle = story.crest_orbit_angle + wrap_angle(view_yaw + 0.5 - story.crest_orbit_angle) + ang - (view_yaw + 0.5)
+    join_angle = lerp(start_angle, end_angle, orbit)
+    join_dist = lerp(f64(length(start_offset.xz)), f64(length(end_offset.xz)), orbit)
+    cam.o_pos = if orbit >= 1.0: pos else: o + v3(sin(join_angle) * join_dist, lerp(f64(start_offset.y), f64(end_offset.y), orbit), -cos(join_angle) * join_dist)
+    # Both opening look points stay near Link, so blend their positions here.
+    # Blending their directions while the lens crosses him can briefly aim
+    # sideways past his body. The distant panorama still eases direction above.
+    cam.o_target = mix(crest_target, tgt, f32(orbit))
+    # Open the lens over three seconds of crane travel, rather than applying
+    # the narrow-display lens during the short orbit. It settles before opacity.
+    panorama_fov = lerp(40.0, title_panorama_fov(aspect_ratio()), smooth01((t - 4.2) / 3.0))
+    cam.o_fov = lerp(story.crest_fov - lift, panorama_fov, orbit)
+
+__title_tex = Texture(0, 1, 1)
+__title_ready = false
+
+__lb_hid = false
+
+story_update = (dt: f64):
+    story.t += dt
+    hero_wake_t = if story.beat == .black: 0.0 else if story.beat == .wake: story.t else: -1.0
+    story.caption_t = max(0.0, story.caption_t - dt)
+    # Daylight adaptation continues if the player reaches the crest before the
+    # wash has cleared; entering the crane must not freeze its exposure.
+    if story.exit_white > 0.0 and (story.beat == .explore or story.beat == .title):
+        story.exit_white = max(0.0, story.exit_white - dt * 0.45)
+        post.white = story.exit_white
+    # doors slide into the floor
+    if story.door1_open and story.door1 < 1.0:
+        story.door1 = min(1.0, story.door1 + dt * 0.6)
+        if story.door1 >= 1.0: colliders[story_door_cols[0]].active = false
+    if story.door2_open and story.door2 < 1.0:
+        story.door2 = min(1.0, story.door2 + dt * 0.6)
+        if story.door2 >= 1.0: colliders[story_door_cols[1]].active = false
+    match story.beat:
+        black:
+            post.fade = 1.0
+            if story.t > 3.6:
+                story.beat = .wake
+                story.t = 0.0
+                wake_cue()
+                play(sfx.wake_air, 0.45)
+        wake:
+            post.fade = max(0.0, 1.0 - story.t / 3.0)
+            post.white = 0.0
+            # rise from the pool
+            cam.override = true
+            cam.blend = 1.0
+            up = smooth01((story.t - 0.8) / 3.5)
+            # close over his face as his eyes open, then drawing back and round as he rises
+            k = smooth01(story.t / 4.8)
+            ang = lerp(0.35, 1.1, k)
+            dist = lerp(0.9, 3.4, k)
+            cam.o_pos = SOR_BED + v3(sin(ang) * dist, lerp(1.25, 1.9, k), lerp(0.7, 0.0, k) + cos(ang) * dist * 0.6)
+            cam.o_target = SOR_BED + v3(0.0, lerp(0.25, 0.95, up), lerp(0.75, 0.0, k))
+            cam.o_fov = lerp(38.0, 50.0, k)
+            pl.pos = SOR_BED + v3(0.0, 0.11, 0.0)
+            # Settle behind him after the look around, ready for the player's walk.
+            settle = smoothstep(4.8, 5.8, story.t)
+            cam.o_pos = mix(cam.o_pos, SOR_BED + v3(0.0, 2.25, 2.7), f32(settle))
+            cam.o_target = mix(cam.o_target, SOR_BED + v3(0.0, 1.5, 0.0), f32(settle))
+            if story.t > 5.8:
+                story.beat = .inside
+                story.t = 0.0
+                cam.override = false
+                cam.yaw = 0.0
+                cam.pitch = 0.25
+                camera_snap()
+                pl.state = .ground
+                pl.face = 0.0
+        inside:
+            if story.focus_t > 0.0:
+                story.focus_t = max(0.0, story.focus_t - dt)
+                cam.override = true
+                door = if story.focus_door == 1: SOR_DOOR1 else: SOR_DOOR2
+                cam.o_pos = pl.pos + v3(2.2, 2.0, 2.4)
+                cam.o_target = mix(pl.pos + vec3(0, 1.2, 0), door + vec3(0, 1.1, 0), 0.55)
+                cam.o_fov = 50.0
+                if story.focus_t <= 0.0:
+                    cam.override = false
+                    pl.state = .ground
+            # (no HUD until he is out under the sky)
+            ui.hide = true
+            # out through the passage: the world is bright after the dark
+            d = f64(length(pl.pos - SOR_MOUTH_IN))
+            # the daylight floods in as he nears the mouth
+            # Bloom the daylight while retaining the dark figure and cave rim.
+            # A short approach ramp peaks below full white. The post's highlight
+            # shoulder retains the bright rock's relief beneath the daylight wash.
+            post.white = smooth01((10.5 - d) / 7.5) * 0.64
+            if zone_at(pl.pos + vec3(0, 1, 0)) == "" and d > 4.0:
+                story.beat = .explore
+                story.t = 0.0
+                story.exit_white = post.white
+                ui.hide = not story.title_done
+        explore:
+            if not story.title_done:
+                # The first outdoor walk belongs to the opening. Keep hearts,
+                # prompts and the map hidden from cave mouth through title.
+                ui.hide = true
+                d = f64(length(vec3(pl.pos.x, 0, pl.pos.z) - vec3(OVERLOOK.x, 0, OVERLOOK.z)))
+                if d < TITLE_APPROACH_RADIUS and pl.state == .ground:
+                    story.crest_pos = view_pos()
+                    story.crest_target = view_target()
+                    story.crest_player = pl.pos
+                    incoming = story.crest_pos - pl.pos
+                    story.crest_orbit_angle = atan2(f64(incoming.x), -f64(incoming.z))
+                    story.crest_fov = view_fov()
+                    story.beat = .title
+                    story.t = 0.0
+                    music_mood(.title)
+                    pl.state = .cutscene
+                    cam.handoff_duration = 1.1
+                    cam.override = true
+                    __title_shot(0.0)
+        title:
+            if story.t >= TITLE_CREST_SECONDS and story.t - dt < TITLE_CREST_SECONDS: title_cue()
+            # walk up to the edge, then stand looking out
+            to_edge = OVERLOOK - pl.pos
+            to_edge.y = 0
+            if length(to_edge) > 0.6 and story.t < TITLE_EDGE_WALK_SECONDS + TITLE_CREST_SECONDS:
+                d = normalize(to_edge)
+                pl.face = turn_toward(pl.face, yaw_of(d), 6.0 * dt)
+                pl.speed = approach(pl.speed, 3.5, (if story.t < TITLE_CREST_SECONDS: 3.0 else: 6.0), dt)
+                before = pl.pos
+                pl.pos += d * f32(min(pl.speed * dt, max(0.0, f64(length(to_edge)) - 0.6)))
+                pl.pos.y = f32(height_at(f64(pl.pos.x), f64(pl.pos.z)))
+                pl.vel = (pl.pos - before) / f32(dt)
+            else:
+                pl.vel = vec3(0, 0, 0)
+                pl.speed = approach(pl.speed, 0.0, 8.0, dt)
+                pl.face = turn_toward(pl.face, 0.5, 2.0 * dt)
+            cam.override = true
+            __title_shot(story.t)
+            ui.hide = true
+            story.letterbox = min(1.0, story.letterbox + dt * 0.8)
+            title_t = story.t - TITLE_CREST_SECONDS
+            story.title_alpha = clamp((title_t - TITLE_LETTERING_START) / TITLE_LETTERING_FADE, 0.0, 1.0) * clamp((18.4 - title_t) / 2.4, 0.0, 1.0)
+            if title_t > 18.9 or (title_t > TITLE_LETTERING_START + 2.0 and (act.attack or act.interact or act.jump)):
+                story.beat = .explore
+                story.title_done = true
+                cam.return_settle = true
+                # A narrow panorama's wider vertical lens also needs a longer
+                # return: preserve the same sub-quarter-degree lens steps.
+                cam.handoff_duration = max(1.1, abs(view_fov() - cam.fov) / 10.0)
+                # player_update follows story_update: use the displayed crane yaw
+                # immediately, including the first frame of held movement.
+                cam_yaw_global = yaw_of(cam.shown_target - cam.shown_pos)
+                story.title_alpha = 0.0
+                cam.override = false
+                cam.yaw = pl.face
+                pl.state = .ground
+                ui.hide = false
+                ui_location("Grate Plateau")
+                music_mood(.field_day)
+        tower_rise: __tower_rise(dt)
+        roof: __roof(dt)
+        ending: __ending(dt)
+        _: pass
+    if story.beat != .title and story.beat != .tower_rise: story.letterbox = max(0.0, story.letterbox - dt * 0.8)
+    # the HUD waits until the bars have opened
+    if story.letterbox > 0.08:
+        ui.hide = true
+        __lb_hid = true
+    else if __lb_hid:
+        __lb_hid = false
+        ui.hide = false
+    __old_man_life(dt)
+    __orbs_done()
+    __bounds(dt)
+    if story.ending_card:
+        story.title_alpha = clamp(story.t / 3.0, 0.0, 1.0) * clamp((12.0 - story.t) / 2.0, 0.0, 1.0)
+        if story.t > 12.0: story.ending_card = false
+    # the old man's glide down to the tower
+    if old_man.glide:
+        tgt = TOWER + v3(-10.0, 0.0, 10.0)
+        tgt.y = f32(height_at(f64(tgt.x), f64(tgt.z)))
+        dv = tgt - old_man.pos
+        old_man.face = yaw_of(vec3(dv.x, 0, dv.z))
+        old_man.pos += normalize(dv) * f32(dt * 7.0)
+        if f64(length(dv)) < 1.0:
+            old_man.glide = false
+            old_man.clip = "idle"
+
+# The clothing chamber has its own blue/warm light, independent of the restoration pool.
+# Draw its named shell and the ordinary opaque callback together so the floor, lids and
+# character receive the same local source. Preserve the outdoor/cave light for other passes.
+__story_opaque_ready = false
+__story_opaque_base: () -> void = (): pass
+__story_opaque = ():
+    saved_lp = sc_lp
+    saved_lc = sc_lc
+    clothing_light = vec4(-1128.0, 240.7, 1898.0, 12.0)
+    clothing_color = vec3(1.8, 1.7, 2.15)
+    near_room = length(sc.cam - clothing_light.xyz) < 28.0
+    if near_room:
+        # Keep the restoration-pool light on the hero until he enters this chamber.
+        if pl.pos.z < 1907.0 and pl.pos.z > 1893.0:
+            sc_lp = clothing_light
+            sc_lc = clothing_color
+        vp = if sc.shadow: cascades.vps[sc.shadow_k] else: sc.vp
+        bu = build_u(vp, sc.shadow)
+        bu.lp = clothing_light
+        bu.lc = clothing_color
+        bu.glow_color = vec3(0.45, 1.0, 1.8)
+        draw_named("sor_clothing_room", bu)
+    # Low morning sun stretches the small airborne birds into detached path silhouettes.
+    # Keep that ground readable at the close old-man encounter; ground birds and the
+    # characters still cast shadows. Borrowed states are restored before any other pass.
+    omitted: (int, WState)[]
+    if sc.shadow and old_man.visible and length(pl.pos - old_man.pos) < 15.0:
+        loop j in 0.. and a in animals:
+            if a.kind != .sparrow and a.kind != .pigeon and a.kind != .crow: continue
+            if a.state != .fly and a.state != .land: continue
+            if length(a.pos - old_man.pos) > 35.0: continue
+            omitted.push((j, a.state))
+            animals[j].state = .gone
+    __story_opaque_base()
+    if length(sc.cam - SOR_BED) < 40.0:
+        vp = if sc.shadow: cascades.vps[sc.shadow_k] else: sc.vp
+        bu = build_u(vp, sc.shadow)
+        bu.glow_color = vec3(2.8, 0.65, 0.08)
+        draw_named("sor_warm_lights", bu)
+    loop saved in omitted: animals[saved.0].state = saved.1
+    sc_lp = saved_lp
+    sc_lc = saved_lc
+
+# per frame for the renderer: where the doors are
+story_render_hooks = ():
+    if not __story_opaque_ready:
+        __story_opaque_base = hooks.opaque
+        hooks.opaque = __story_opaque
+        __story_opaque_ready = true
+    hooks.named_hidden["sor_clothing_room"] = true
+    hooks.named_hidden["sor_warm_lights"] = true
+    hooks.named_hidden["sor_door1"] = story.door1 >= 1.0
+    hooks.named_hidden["sor_door2"] = story.door2 >= 1.0
+    hooks.named_lift["sor_door1"] = -4.0 * smooth01(story.door1)
+    hooks.named_lift["sor_door2"] = -4.0 * smooth01(story.door2)
+    hooks.tower_lift = hooks.tower_lift
+    # a beacon over the pedestal until the tower has risen
+    if story.title_done and not story.tower_risen and random() < 0.3:
+        emit(.glow, TOWER_PEDESTAL + v3(random(-0.3, 0.3), random(0.5, 40.0), random(-0.3, 0.3)), v3(0, 3.0, 0), 1.5, 0.3, rgba(1.0, 0.55, 0.15, 0.6))
+
+story_assets_init = ():
+    if __title_ready: return
+    __title_ready = true
+    started = time()
+    if let img = startup_image("assets/title.png"):
+        decoded = time()
+        __title_tex = texture(img, true)
+        if env("BOTW_LOADTIME") != none: eprint("  title_atlas decode {decoded - started:.3}s upload {time() - decoded:.3}s")
+
+story_draw_2d = ():
+    r = visible_rect()
+    cx = f64(r.x + r.z / 2.0)
+    cy = f64(r.y + r.w / 2.0)
+    if story.letterbox > 0.0:
+        bh = f64(r.w) * 0.1 * smooth01(story.letterbox)
+        rect(f64(r.x), f64(r.y), f64(r.z), bh, rgba(0, 0, 0, 1))
+        rect(f64(r.x), f64(r.y + r.w) - bh, f64(r.z), bh, rgba(0, 0, 0, 1))
+    if story.caption_t > 0.0:
+        a = f32(clamp(story.caption_t / 0.8, 0.0, 1.0) * clamp((4.0 - story.caption_t) / 0.8 + 0.3, 0.0, 1.0))
+        text_centered(story.caption, vec2(f32(cx), f32(cy - 14.0)), 28, rgba(0.85, 0.92, 1.0, a))
+    if story.title_alpha > 0.0:
+        a = f32(story.title_alpha)
+        # the lettering (tools/title_art.py) in the sky, under the top bar
+        story_assets_init()
+        if __title_tex.width > 1:
+            size = title_lettering_size(f64(r.z), f64(r.w))
+            w = f64(size.x)
+            h = f64(size.y)
+            sprite(__title_tex, vec2(f32(cx - w / 2.0), f32(f64(r.y) + f64(r.w) * 0.115)), vec2(f32(w), f32(h)), rgba(1, 1, 1, a))
+    __opening_capture()
+
+# Render evidence from one uninterrupted normal-input opening. No gameplay presets.
+__opening_seen: {str: bool} = {}
+__opening_directory = env("BOTW_OPENING_CAPTURE")
+__opening_capture = ():
+    # Dense pose/contact evidence accompanies the normal opening checkpoints.
+    if let review = env("BOTW_POSE_CAPTURE") ?? __opening_directory:
+        f = frame_number()
+        if (f >= 300 and f <= 570 and f % 15 == 0) or (f >= 780 and f <= 840 and f % 10 == 0):
+            save_png(screenshot(), review + "/frame-{f}.png")
+    if let rise = env("BOTW_RISE_CAPTURE"):
+        if story.beat == .tower_rise and story.t >= 8.5 and not __opening_seen.has("tower-activation-peak"):
+            __opening_seen["tower-activation-peak"] = true
+            color = tower_activation_glow()
+            assert(story.tower_risen and color.z > 4.0 and color.z > color.x * 8.0, "wide-shot activation peak stays Sheikah blue")
+            ok = save_png(screenshot(),rise+"/tower-activation-peak.png")
+            eprint("rise: tower-activation-peak frame {frame_number()} t {story.t:.3} glow {color} captured {ok}")
+    directory = __opening_directory
+    if directory == none or env("SLOPPY_SCREENSHOT") == none: return
+    checkpoints = ["wake-support", "wake-rise", "awake", "slate-taken", "door1-opening", "door1-open", "door2-opening", "door2-open", "passage-reached", "mouth-reached", "title-crane", "title-shown", "control-returned"]
+    ready = [story.beat == .wake and story.t >= 2.1, story.beat == .wake and story.t >= 3.7,
+        story.beat == .inside, story.slate, story.door1 >= 0.5 and story.door1 < 1.0, story.door1 >= 1.0,
+        story.door2 >= 0.5 and story.door2 < 1.0, story.door2 >= 1.0,
+        story.door2 >= 1.0 and pl.pos.z < 1889.0, story.slate and length(pl.pos - SOR_MOUTH_IN) < 6.0,
+        story.beat == .title and story.t >= TITLE_CREST_SECONDS + 5.0,
+        story.beat == .title and story.title_alpha >= 0.99, story.title_done]
+    loop i in [0..checkpoints.len()):
+        name = checkpoints[i]
+        if ready[i] and not __opening_seen.has(name):
+            __opening_seen[name] = true
+            if name == "title-crane":
+                assert(story.title_alpha == 0.0, "crane checkpoint precedes lettering")
+                assert(story.t < TITLE_CREST_SECONDS + TITLE_LETTERING_START, "capture the moving crane, not the title hold")
+            ok = save_png(screenshot(), directory! + "/" + name + ".png")
+            eprint("opening: {name} frame {frame_number()} position {pl.pos} captured {ok}")
+
+# Restore settled story geometry without replaying the cinematics.
+story_resume = (awake: bool):
+    if not awake:
+        story_start()
+        return
+    story.beat = if zone_at(pl.pos + vec3(0, 1, 0)) == "sor": Beat.inside else: Beat.explore
+    story.door1 = if story.door1_open: 1.0 else: 0.0
+    story.door2 = if story.door2_open: 1.0 else: 0.0
+    if story_door_cols.len() == 2:
+        colliders[story_door_cols[0]].active = not story.door1_open
+        colliders[story_door_cols[1]].active = not story.door2_open
+    if story.tower_risen:
+        raise_tower_now()
+        old_man.pos = TOWER + vec3(-10, 0, 10)
+        old_man.pos.y = f32(height_at(f64(old_man.pos.x), f64(old_man.pos.z)))
+        old_man.clip = "idle"
+    old_man.visible = not story.glider_given
+    old_man.glide = false
+    __orbs_done()
+    use_terrain = zone_at(pl.pos + vec3(0, 1, 0)) == ""
+    env.indoor = if use_terrain: 0.0 else: 1.0
+    pl.warm = has_key("warm_doublet")
+    cam.override = false
+    cam.yaw = pl.face
+    cam.pitch = 0.22
+    camera_snap()
+    ui.hide = false
+    post.fade = 0.0
+    post.white = 0.0
+    story_render_hooks()

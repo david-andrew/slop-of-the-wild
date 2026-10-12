@@ -1,0 +1,883 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'terrain.jo'
+use 'water.jo'
+use 'mesh_assets.jo'
+use 'asset_stream.jo'
+use 'worldgen.jo'
+
+# Water surfaces: one mesh over the water cells (4 m quads at each region's level), drawn
+# blended after the opaque scene. Depth comes from the height texture: clear and green in the
+# shallows, deep blue-green further out, sky reflected at grazing angles, glints, foam at the
+# shore and rings when it rains.
+
+struct WVert:
+    pos: vec3
+    impact: f32 = 0.0
+    fall = vec4(32, 32, -10000, -10000)
+    ledge = vec2(0, 0)
+    mist: f32 = 0.0
+
+struct WaterU:
+    vp: mat4
+    cam: vec3
+    origin: vec2
+    cell: f32
+    heights: Texture
+    sun_dir: vec3
+    sun_color: vec3
+    zenith: vec3
+    horizon: vec3
+    haze: vec3
+    density: f32
+    falloff: f32
+    time: f32
+    rain: f32
+    vp0: mat4
+    sm0: Texture
+    night: f32
+    scene = Texture(0, 1, 1)      # the opaque scene's color and depth (screen-space reflections)
+    scene_depth = Texture(0, 1, 1)
+    near = 0.3
+    far = 20000.0
+    wmap = Texture(0, 1, 1)       # which samples hold water (the level, or -10000)
+    swimmer = vec4(0, 0, 0, 0)
+    motion = vec4(0, 0, 0, 0)
+    entry = vec4(0, 0, 0, 0)
+    wader = vec4(0, 0, 0, 0)
+    clouds: f32 = 0.0
+
+struct WaterO:
+    pos: vec4
+    world: vec3
+    impact: f32
+    fall: vec4
+    ledge: vec2
+    mist: f32
+
+water_vs = (v: WVert, u: WaterU) -> WaterO:
+    w = v.pos
+    # Lift and drift only the existing mist fans; surface vertices stay fixed.
+    if v.mist > 0.0:
+        w += vec3(sin(u.time * 0.38 + v.pos.y) * 1.7, v.mist * (1.4 + sin(u.time * 0.6 + v.pos.x) * 0.35), cos(u.time * 0.29 + v.pos.y) * 0.9)
+    WaterO(u.vp * vec4(w, 1), w, v.impact, v.fall, v.ledge, v.mist)
+
+wave_h = (p: vec2, t: f32) -> f32:
+    a = vnoise(p * 0.35 + vec2(t * 0.25, t * 0.1))
+    b = vnoise(p * 0.9 - vec2(t * 0.3, -t * 0.22))
+    c = vnoise(p * 2.3 + vec2(t * 0.7, t * 0.5))
+    a * 0.55 + b * 0.3 + c * 0.15
+
+# Standing feet still displace water. Keep an outward ring and separated ankle cuffs
+# even when the velocity vanishes; shared with headless weather regressions.
+water_wade_foam = (relative: vec2, motion: vec4, time: f32, strength: f32) -> f32:
+    if strength <= 0.0 or length(relative) >= 2.6: return 0.0
+    rel = relative
+    forward = if length(motion.xy) > 0.03: normalize(motion.xy) else: vec2(0, 1)
+    side = vec2(-forward.y, forward.x)
+    speed = min(length(motion.xy) / 3.0, 1.0)
+    phase = fract(motion.w * 1.6)
+    ring_r = 0.14 + phase * 0.65
+    # A short V opens behind the moving legs; expanding rings are anchored
+    # at each footfall by fx_wade, so they do not travel with Link.
+    behind = -dot(rel, forward)
+    lateral = dot(rel, side)
+    wake = exp(-pow((abs(lateral) - 0.17 - behind * 0.24) * 13.0, 2.0))
+    wake *= smoothstep(-0.04, 0.18, behind) * (1.0 - smoothstep(0.25, 0.95, behind)) * speed
+    gait = sin(motion.w * 10.0) * 0.17 * speed
+    foot0 = length(rel - side * 0.17 - forward * gait)
+    foot1 = length(rel + side * 0.17 + forward * gait)
+    cuffs = exp(-pow((min(foot0, foot1) - 0.14) * 22.0, 2.0))
+    broken = 0.4 + 0.6 * smoothstep(0.3, 0.65, vnoise(rel * 9.0 + vec2(time * 1.3, 0)))
+    # Two small broken ripples grow from the leg contacts, rather than one
+    # large body-centred hoop. Still feet keep their contact points fixed.
+    ring = exp(-pow((min(foot0, foot1) - ring_r) * 18.0, 2.0)) * (1.0 - phase) * 0.22 * (1.0 - speed) * (0.45 + broken * 0.55)
+    clamp((ring * 0.28 + wake * 0.28 + cuffs * broken * (0.4 + speed * 0.4)) * strength, 0.0, 0.7)
+
+# A lightning flash must not turn a short leg wake into white hip blades.
+water_wade_color = (sun: vec3, horizon: vec3) -> vec3:
+    vec3(0.74, 0.87, 0.83) * min(sun * 0.4 + horizon * 0.9 + vec3(0.1, 0.12, 0.14), vec3(0.9, 0.9, 0.9))
+
+water_fs = (i: WaterO, u: WaterU) -> vec4:
+    w = i.world
+    # Low drifting impact veils share the water mesh and draw. Two small layers per
+    # receiving pool join the existing billows without adding a pass or particle count.
+    if i.mist > 0.0:
+        cloud = vnoise(w.xz * 0.24 + vec2(u.time * 0.14, u.time * 0.06))
+        west_pool = w.x > -1505.0 and w.x < -1450.0 and w.z > 1800.0 and w.z < 1848.0 and w.y < 120.0
+        alpha = i.mist * smoothstep(0.20, 0.78, cloud) * (if west_pool: 0.46 else: 0.30)
+        # Forward-scattered sun gives dawn spray a warm rim; skylight keeps
+        # the plume visible in rain without making the cloud emissive.
+        light = pow(max(dot(normalize(w - u.cam), normalize(u.sun_dir)), 0.0), 4.0)
+        col = vec3(0.80, 0.90, 0.91) * (u.sun_color * (0.38 + light * 0.35) + u.horizon * 0.85)
+        return vec4(atmos(col, w, u.cam, normalize(u.sun_dir), u.haze, u.sun_color, u.density, u.falloff), alpha)
+    # The falling face has its own moving whitewater, before shoreline rejection and
+    # horizontal-water reflection. World-anchored strands never turn with the camera.
+    fn = glsl_facet(w)
+    steep = smoothstep(0.85, 0.5, abs(fn.y))
+    # Carry aerated strands across the west fall's two shallow benches. Their
+    # horizontal surface used to reflect a dark bar between each falling cell.
+    west_course = w.x > -1496.0 and w.x < -1404.0 and w.z > 1805.0 and w.z < 1844.0
+    # One authored flow coordinate spans all three drops and the intervening
+    # shallow benches. Local cell top/bottom and facet orientation must never
+    # restart a lip, pinch the sheet or rotate its streaks at those contacts.
+    if west_course and w.x < -1418.0 and w.y > 108.0 and (w.y < 237.0 or steep > 0.5):
+        across = w.z - 1823.0
+        travel = w.y + u.time * 22.0
+        broad = vnoise(vec2(across * 0.30 + sin(w.y * 0.037 + across * 0.19) * 0.38, travel * 0.036))
+        strand = vnoise(vec2(across * 0.91 + broad * 1.35 + sin(travel * 0.09 + across * 0.31) * 0.38, travel * 0.065 + 7.3))
+        fleck = vnoise(vec2(across * 1.80 + broad * 0.85, travel * 0.23 + 3.7))
+        edge = 14.2 - abs(across - sin(w.x * 0.055) * 0.8)
+        margin = smoothstep(0.0, 3.5, edge + (broad - 0.5) * 2.4)
+        core = smoothstep(1.8, 6.0, edge)
+        drop = 249.8 - w.y
+        aeration = smoothstep(4.0, 17.0, drop)
+        # Wide tapered washes carry finer, unequal rivulets. All advect at
+        # 22 m/s; varying lengths break up the paint without dashed marks.
+        white = smoothstep(0.28, 0.72, broad * 0.44 + strand * 0.31 + fleck * 0.25)
+        white = (0.16 + white * 0.80) * aeration * (0.42 + core * 0.58)
+        ledge_d = min(abs(w.y - 144.0), abs(w.y - 194.0))
+        splash = (1.0 - smoothstep(1.0, 5.0, ledge_d + (broad - 0.5) * 4.0)) * smoothstep(0.30, 0.66, strand)
+        white = max(white, splash * 0.90)
+        roll = (1.0 - smoothstep(0.0, 8.0, abs(drop - 7.0))) * (0.32 + strand * 0.40)
+        white = max(white, roll)
+        lit = u.sun_color * 0.46 + u.horizon * 0.82
+        body = vec3(0.10, 0.34, 0.37) * lit
+        foam = vec3(0.96, 1.0, 0.98) * lit
+        c = mix(body, foam, white)
+        c = atmos(c, w, u.cam, normalize(u.sun_dir), u.haze, u.sun_color, u.density, u.falloff)
+        # No alpha notch at a ledge: translucent fringes surround a continuous
+        # aerated core, including the shallow faces between vertical drops.
+        return vec4(c, margin * (0.56 + core * 0.26 + white * 0.16))
+    # The benches slope through 141..144 m and 192..194 m, rather than
+    # lying exactly at their upper lip. Keep whitewater over their full width.
+    bench_height = (w.y > 140.6 and w.y < 144.6) or (w.y > 191.6 and w.y < 194.6)
+    shelf = west_course and i.fall.z > i.fall.w + 7.0 and bench_height
+    if shelf: steep = max(steep, 0.91)
+    if steep > 0.5:
+        # Unequal stream speeds and shorter aerated clumps descend in world space.
+        # Three noise reads, as before; the broader clumps survive the cliff camera.
+        across = if shelf or abs(fn.x) > abs(fn.z): w.z else: w.x
+        speed = 1.0 + sin(across * 0.71) * 0.24
+        s1 = vnoise(vec2(across * 0.62 + sin(w.y * 0.10 + across * 0.16) * 0.35, w.y * 0.11 + u.time * 1.8 * speed))
+        s2 = vnoise(vec2(across * 1.65 + s1 * 0.8 + 3.1, w.y * 0.27 + u.time * 4.1))
+        s3 = vnoise(vec2(across * 0.24 + 7.7, w.y * 0.19 + u.time * 2.5))
+        white = smoothstep(0.30, 0.68, s1 * 0.42 + s2 * 0.25 + s3 * 0.33)
+        lit = u.sun_color * 0.46 + u.horizon * 0.82
+        body = vec3(0.065, 0.28, 0.30) * lit
+        foam = vec3(0.96, 1.0, 0.98) * lit
+        # Feather the actual mesh perimeter, with unequal drifting ribbons. The
+        # boundary distances are baked once, not inferred from a repeating UV cell.
+        edge = if shelf or abs(fn.x) > abs(fn.z): i.fall.y else: i.fall.x
+        drop = clamp((i.fall.z - w.y) / max(i.fall.z - i.fall.w, 1.0), 0.0, 1.0)
+        # Different streams pinch midway and open near their foot; the perimeter
+        # and the local bed heights are cached, rather than a tiled width mask.
+        neck = sin(drop * 3.14159) * i.ledge.y
+        torn = (s1 - 0.5) * 1.5 + (s3 - 0.5) * 2.8 - neck
+        ledge_d = w.y - i.ledge.x + (s3 - 0.5) * 1.4
+        # The authored west course has two shallow benches shared with the
+        # gameplay water/height grids. Their foam follows those actual levels.
+        if west_course:
+            low = w.y - 144.0
+            high = w.y - 194.0
+            ledge_d = (if abs(low) < abs(high): low else: high) + sin(across * 0.47) * 2.4 + (s3 - 0.5) * 3.8
+        # Shelf spray catches selected strands, never a full-width repeated bar.
+        shelf_strand = smoothstep(0.42, 0.68, s1 * 0.65 + s3 * 0.35)
+        ledge_gap = (1.0 - smoothstep(0.45, 2.1, abs(ledge_d))) * shelf_strand
+        contact = ledge_gap * smoothstep(0.24, 0.58, s3)
+        # A broken foam fan lifts above each cached shelf, with quieter water below.
+        splash = smoothstep(-0.7, 0.5, ledge_d) * (1.0 - smoothstep(1.0, 4.8, ledge_d)) * smoothstep(0.24, 0.66, s2 + s3 * 0.2)
+        ribbon0 = smoothstep(0.15, 2.8, edge + torn)
+        ribbon1 = smoothstep(0.35, 3.8, edge - 0.6 + (s2 - 0.5) * 2.0)
+        ribbon2 = smoothstep(0.2, 2.4, edge + (s3 - 0.5) * 3.0)
+        # A scalloped, soft shoulder rolls into the fall instead of a ruler edge.
+        lip_depth = i.fall.z - w.y - (s3 - 0.5) * 3.8
+        lip = smoothstep(-1.0, 4.5, lip_depth)
+        roll = smoothstep(-2.0, 0.6, lip_depth) * (1.0 - smoothstep(1.0, 5.5, lip_depth))
+        ribbons = (ribbon0 * 0.42 + ribbon1 * 0.33 + ribbon2 * 0.25) * smoothstep(0.0, 0.8, edge) * (0.28 + lip * 0.72) * smoothstep(0.0, 4.0, w.y - i.fall.w)
+        # Thin blue-green margins frame a broad aerated core. Do not bleach the
+        # whole sheet: stream gaps and clumps retain a visible value difference.
+        core = smoothstep(1.5, 7.0, edge + (s3 - 0.5) * 2.2 - neck)
+        aerated = core * (0.48 + white * 0.52)
+        shoulder = white * 0.34
+        whiteness = max(aerated + shoulder * (1.0 - core), max(roll * 0.92, max(ledge_gap * 0.55, splash * shelf_strand)))
+        c = mix(body, foam, whiteness)
+        c = atmos(c, w, u.cam, normalize(u.sun_dir), u.haze, u.sun_color, u.density, u.falloff)
+        return vec4(c, (0.38 + core * 0.36 + white * 0.22) * max(ribbons, splash * smoothstep(0.0, 1.0, edge) * 0.82) * (1.0 - contact * 0.32) * smoothstep(0.5, 0.92, steep))
+    t = (w.xz - u.origin) / u.cell
+    ti = floor(t)
+    tf = t - ti
+    g00 = glsl_fetch(u.heights, int(ti.x), int(ti.y)).x
+    g10 = glsl_fetch(u.heights, int(ti.x) + 1, int(ti.y)).x
+    g01 = glsl_fetch(u.heights, int(ti.x), int(ti.y) + 1).x
+    g11 = glsl_fetch(u.heights, int(ti.x) + 1, int(ti.y) + 1).x
+    ground = lerp(lerp(g00, g10, tf.x), lerp(g01, g11, tf.x), tf.y)
+    depth = w.y - ground
+    glsl_discard(depth < 0.0)
+    # only where the map has water: a smooth edge through the wet samples (bilinear), broken a
+    # little by noise, instead of the sheet's square steps
+    m00 = step(-9000.0, glsl_fetch(u.wmap, int(ti.x), int(ti.y)).x)
+    m10 = step(-9000.0, glsl_fetch(u.wmap, int(ti.x) + 1, int(ti.y)).x)
+    m01 = step(-9000.0, glsl_fetch(u.wmap, int(ti.x), int(ti.y) + 1).x)
+    m11 = step(-9000.0, glsl_fetch(u.wmap, int(ti.x) + 1, int(ti.y) + 1).x)
+    wet = lerp(lerp(m00, m10, tf.x), lerp(m01, m11, tf.x), tf.y)
+    shore = smoothstep(0.18, 0.72, wet + (vnoise(w.xz * 0.6) - 0.5) * 0.25)
+    glsl_discard(shore < 0.001 and depth > 0.05)
+    # ripples: a normal from the slope of a moving height field
+    e = 0.15
+    h0 = wave_h(w.xz, u.time)
+    hx = wave_h(w.xz + vec2(e, 0), u.time)
+    hz = wave_h(w.xz + vec2(0, e), u.time)
+    dist = length(u.cam - w)
+    overcast = smoothstep(0.45, 0.95, u.clouds)
+    rip = 0.55 * (1.0 + u.rain * 0.85) / (1.0 + dist * 0.03)
+    n = normalize(vec3((h0 - hx) * rip, e, (h0 - hz) * rip))
+    # rain rings
+    # (two scales of drops, each somewhere in its cell, at its own pace and size; not every cell
+    # has one at a time)
+    rain_foam: f32 = 0.0
+    if u.rain > 0.01 and dist < 45.0:
+        rk = u.rain * (1.0 - smoothstep(20.0, 45.0, dist))
+        cp1 = floor(w.xz * 3.1)
+        clock1 = u.time * (0.9 + hash12(cp1) * 0.8) + hash12(cp1) * 7.0
+        event1 = floor(clock1)
+        a1 = hash12(cp1 + vec2(event1 * 3.7, event1 * 9.1))
+        b1 = hash12(cp1 + vec2(17.3 + event1 * 7.3, 5.1 + event1 * 2.9))
+        f1 = fract(w.xz * 3.1) - vec2(0.5, 0.5) - (vec2(a1, b1) - vec2(0.5, 0.5)) * 0.4
+        p1 = fract(clock1) / (0.55 + 0.45 * b1)
+        r1 = length(f1) - p1 * (0.10 + 0.27 * b1)
+        g1 = exp(-r1 * r1 * 1300.0) * pow(max(0.0, 1.0 - p1), 2.0) * (0.3 + 0.7 * a1) * step(0.12, b1)
+        cp2 = floor(w.xz * 1.7 + vec2(0.37, 0.71))
+        clock2 = u.time * (0.7 + hash12(cp2 + vec2(41.0, 23.0)) * 0.5) + hash12(cp2 + vec2(3.7, 9.2)) * 5.0
+        event2 = floor(clock2)
+        a2 = hash12(cp2 + vec2(3.7 + event2 * 5.3, 9.2 + event2 * 2.7))
+        b2 = hash12(cp2 + vec2(41.0 + event2 * 2.1, 23.0 + event2 * 8.3))
+        f2 = fract(w.xz * 1.7 + vec2(0.37, 0.71)) - vec2(0.5, 0.5) - (vec2(a2, b2) - vec2(0.5, 0.5)) * 0.3
+        p2 = fract(clock2) / (0.5 + 0.5 * a2)
+        r2 = length(f2) - p2 * (0.14 + 0.24 * a2)
+        g2 = exp(-r2 * r2 * 900.0) * pow(max(0.0, 1.0 - p2), 2.0) * (0.25 + 0.6 * b2) * step(0.3, a2)
+        # Brief drop crowns and thin outward rings; no uniform pale coverage.
+        crowns = exp(-dot(f1, f1) * 950.0) * (1.0 - smoothstep(0.02, 0.16, p1))
+        rain_foam = clamp((g1 + g2) * 0.42 + crowns * 0.75, 0.0, 0.7) * rk
+        n = normalize(n + (vec3(f1.x, 0, f1.y) * (g1 / (length(f1) + 0.02)) + vec3(f2.x, 0, f2.y) * (g2 / (length(f2) + 0.02))) * 1.1 * rk)
+    v = normalize(u.cam - w)
+    l = normalize(u.sun_dir)
+    # (a painter's water: always some sky in it)
+    # A calmer normal keeps grazing reflections continuous instead of opaque wave blotches.
+    nv = max(dot(normalize(mix(n, vec3(0, 1, 0), 0.6)), v), 0.0)
+    fres = 0.08 + 0.72 * pow(1.0 - nv, 5.0)
+    # the reflected sky
+    rd = reflect(v * -1.0, n)
+    sky = mix(u.horizon, u.zenith, pow(clamp(rd.y, 0.0, 1.0), 0.5))
+    # and what stands round the water: march the reflected ray across the screen until it passes
+    # behind something the scene drew (trees, cliffs, the far shore)
+    found: f32 = 0.0
+    rc = vec3(0, 0, 0)
+    # (traced off a calmer surface: full ripples scatter it into blotches of the shore's grass)
+    rr = reflect(v * -1.0, normalize(mix(n, vec3(0, 1, 0), 0.75)))
+    loop k in [1..20):
+        if found < 0.5:
+            q = w + rr * (pow(f32(k), 1.6) * 0.7)
+            cq = u.vp * vec4(q, 1)
+            suv = cq.xy / cq.w * 0.5 + vec2(0.5, 0.5)
+            if suv.x > 0.0 and suv.x < 1.0 and suv.y > 0.0 and suv.y < 1.0 and cq.w > 0.0:
+                z = sample(u.scene_depth, suv).x * 2.0 - 1.0
+                sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
+                if sd < cq.w and cq.w - sd < 6.0 + f32(k) * 1.5 and z < 0.9999:
+                    found = 1.0
+                    edge = min(min(suv.x, 1.0 - suv.x), min(suv.y, 1.0 - suv.y))
+                    found = smoothstep(0.0, 0.08, edge)
+                    rc = sample(u.scene, suv).xyz
+    # Rain scatters the reflected bank into short drifting fragments. A dim
+    # sky fill between them prevents broad black patches from burying the rings.
+    reflection_hold: f32 = 1.0
+    if overcast * u.rain > 0.0:
+        scatter = smoothstep(0.24, 0.76, vnoise(w.xz * vec2(2.1, 3.7) + vec2(u.time * 0.18, -u.time * 0.23)))
+        reflection_hold = mix(1.0, 0.16 + scatter * 0.34, overcast * u.rain)
+    sky = mix(sky, rc * 0.9, found * smoothstep(0.02, 0.12, rr.y) * reflection_hold)
+    # (the sky in it never brighter than a pale grey-blue: no white slivers at grazing angles)
+    sky = min(sky, vec3(0.5, 0.58, 0.66))
+    # Clouded water reflects a dim blue-grey sky, rather than a white bed.
+    cloud_sky = mix(vec3(luma(sky), luma(sky), luma(sky)), sky, 0.28) * vec3(0.80, 0.91, 1.0)
+    sky = mix(sky, cloud_sky * 0.68, overcast)
+    spec = pow(max(dot(reflect(l * -1.0, n), v), 0.0), 300.0) * 2.5 + pow(max(dot(reflect(l * -1.0, n), v), 0.0), 30.0) * 0.08
+    # water body color: shallow sand-green to deep teal
+    k = 1.0 - exp(-max(depth, 0.0) * 0.38)
+    shallow = vec3(0.19, 0.36, 0.29)
+    deep = vec3(0.035, 0.16, 0.20)
+    body = mix(shallow, deep, k) * (u.sun_color * 0.35 + u.horizon * 0.5)
+    body = mix(body, vec3(0.035, 0.072, 0.105) * (u.horizon * 0.65 + vec3(0.25, 0.3, 0.35)), overcast)
+    # (the sun glint broken up by the ripples, never a solid sheet)
+    c = mix(body, sky * 0.9, fres * 0.8) + u.sun_color * min(spec, 1.2) * (0.25 + 0.75 * smoothstep(0.55, 0.8, vnoise(i.world.xz * 1.7 + vec2(u.time * 0.3, 0.0)))) * (1.0 - u.night * 0.8)
+    # foam where it meets the shore
+    # (a thin broken line right at the edge, not a milky sheet over every shallow)
+    foam = smoothstep(0.07, 0.0, depth) * smoothstep(0.45, 0.7, vnoise(w.xz * 3.0 + vec2(u.time * 0.5, 0)))
+    c = mix(c, vec3(0.85, 0.9, 0.9) * (u.sun_color * 0.4 + u.horizon * 0.6), foam * 0.6)
+    # Hopper Pond's shallow clear water: transmit the scene and relight only the bed.
+    # Screen depth distinguishes sand from submerged legs, fish and shore geometry.
+    # This keeps the original silhouettes instead of painting a flat bottom over them.
+    figure_behind: f32 = 0.0
+    pond = 1.0 - smoothstep(75.0, 100.0, length(w.xz - vec2(-1230.0, 1650.0)))
+    if pond > 0.001:
+        clip = u.vp * vec4(w, 1)
+        uv = clip.xy / clip.w * 0.5 + vec2(0.5, 0.5)
+        scene_z = sample(u.scene_depth, uv).x * 2.0 - 1.0
+        scene_dist = 2.0 * u.near * u.far / (u.far + u.near - scene_z * (u.far - u.near))
+        bedp = u.cam + (w - u.cam) * (scene_dist / max(clip.w, 0.01))
+        bt = (bedp.xz - u.origin) / u.cell
+        bi = floor(bt)
+        bf = fract(bt)
+        b00 = glsl_fetch(u.heights, int(bi.x), int(bi.y)).x
+        b10 = glsl_fetch(u.heights, int(bi.x) + 1, int(bi.y)).x
+        b01 = glsl_fetch(u.heights, int(bi.x), int(bi.y) + 1).x
+        b11 = glsl_fetch(u.heights, int(bi.x) + 1, int(bi.y) + 1).x
+        bed_height = lerp(lerp(b00, b10, bf.x), lerp(b01, b11, bf.x), bf.y)
+        bed_mask = 1.0 - smoothstep(0.15, 0.45, abs(bedp.y - bed_height))
+        # Keep the opaque bed's shaded relief and silhouettes. A small mineral-grain
+        # modulation adds underwater detail without replacing it with a pale sand sheet.
+        grain = vnoise(bedp.xz * 4.0)
+        opaque = sample(u.scene, uv + n.xz * 0.0007 * smoothstep(0.05, 0.5, depth))
+        transmitted = opaque.xyz
+        figure_behind = smoothstep(0.02, 0.12, opaque.w) * (1.0 - smoothstep(0.45, 0.60, opaque.w))
+        # The existing opaque alpha marks characters, including fish. Even a foot
+        # touching the bed must not inherit the bed's mineral grain or pebbles.
+        # HDR alpha now carries paint response: figures end at .33, while
+        # turf/stone begin at .65. Keep the existing terrain-height rejection.
+        bed_mask = bed_mask * smoothstep(0.45, 0.60, opaque.w)
+        # Pebbles borrow the existing bed light, rather than adding an unshaded
+        # pale material. Their rims and tops reveal scale through clear shallows.
+        cell = floor(bedp.xz * 1.6)
+        pf = fract(bedp.xz * 1.6) - vec2(0.5, 0.5)
+        ph = hash12(cell)
+        pr = length(pf - (vec2(ph, hash12(cell + vec2(4, 7))) - vec2(0.5, 0.5)) * 0.45)
+        pebble = (1.0 - smoothstep(0.10, 0.18, pr)) * step(0.63, ph)
+        relief = pebble * (0.25 - smoothstep(-0.01, 0.12, pf.y) * 0.38)
+        transmitted = transmitted * (1.0 + ((grain - 0.5) * 0.12 + relief) * bed_mask)
+        # Red absorbs first; shallow sand remains legible before the deeper teal takes over.
+        # Use the visible submerged fragment, including a wader or fish, to measure
+        # the path through water. Vertical bed depth over-absorbed the shallow lip.
+        path = min(length(bedp - w), max(depth, 0.0) / max(nv, 0.35))
+        absorb = vec3(exp(-0.19 * path), exp(-0.085 * path), exp(-0.05 * path))
+        through = transmitted * absorb + body * (vec3(1, 1, 1) - absorb) * 0.65
+        # Wet-weather turbidity suppresses only the terrain bed: submerged
+        # bodies keep their shape and value. It cannot inherit bed triangles.
+        rough = clamp(overcast * 0.35 + u.rain * 0.60, 0.0, 0.95)
+        through = mix(through, body, bed_mask * rough)
+        reflection = 0.035 + fres * 0.55 + overcast * 0.25 + u.rain * 0.12
+        reflection = reflection * mix(1.0, 0.55, 1.0 - bed_mask)
+        clear = mix(through, sky * 0.9, reflection) + u.sun_color * min(spec, 1.2) * 0.12 * (1.0 - u.night)
+        c = mix(c, clear, pond)
+    c = mix(c, sky * 0.65 + vec3(0.08, 0.12, 0.15), rain_foam)
+    # The swimmer leaves a narrow V and rings at each stroke; entry rings stay behind.
+    disturbance: f32 = 0.0
+    if (u.swimmer.w > 0.0 or (u.entry.w > 0.0 and u.entry.z < 1.2)) and length(w.xz - u.swimmer.xy) < 6.0:
+        relative = w.xz - u.swimmer.xy
+        forward = u.motion.xy / max(length(u.motion.xy), 0.001)
+        lateral = dot(relative, vec2(-forward.y, forward.x))
+        behind = -dot(relative, forward)
+        radius = length(relative)
+        stroke = sin(radius * 13.0 - u.motion.w * 12.56637 + sin(relative.x * 6.0 + relative.y * 3.0) * 0.55) * 0.5 + 0.5
+        ring = pow(stroke, 8.0) * (1.0 - smoothstep(0.6, 2.8, radius)) * smoothstep(0.2, 0.65, radius) * u.swimmer.w
+        wake = exp(-abs(abs(lateral) - behind * 0.28) * 12.0) * smoothstep(0.0, 0.7, behind) * (1.0 - smoothstep(0.4, 2.8, behind)) * min(length(u.motion.xy) / 2.6, 1.0) * u.swimmer.w
+        arrival_r = length(w.xz - u.entry.xy)
+        arrival = exp(-pow((arrival_r - u.entry.z * 2.1) * 10.0, 2.0)) * smoothstep(0.0, 0.1, u.entry.z) * (1.0 - smoothstep(0.3, 1.2, u.entry.z)) * u.entry.w
+        disturbance = clamp(ring * 0.1 + wake * 0.18 + arrival * 0.4, 0.0, 0.75)
+        disturbance = disturbance * (1.0 - smoothstep(0.3, 0.8, abs(w.y - u.swimmer.z)))
+        c = mix(c, vec3(0.82, 0.9, 0.84) * (u.sun_color * 0.4 + u.horizon * 0.6), disturbance)
+    # An ankle/knee ring and two small broken foam cuffs follow the legs while wading.
+    # Foam belongs to the queried water plane, including at sloping shores.
+    surface_contact = 1.0 - smoothstep(0.025, 0.15, abs(w.y - u.wader.z))
+    wade_foam = water_wade_foam(w.xz - u.wader.xy, u.motion, u.time, u.wader.w * surface_contact)
+    # Keep the contact on the water rather than painting a bright belt on the figure.
+    wade_foam *= 1.0 - figure_behind * 0.82
+    c = mix(c, water_wade_color(u.sun_color, u.horizon), wade_foam)
+    # Depth controls absorption. Reflections strengthen at grazing angles while shallow water
+    # still transmits the bed, rather than becoming the same opaque teal as deep water.
+    a = (0.18 + k * 0.62 + fres * 0.15 + foam * 0.4) * smoothstep(0.0, 0.23, depth)
+    a = min(a + disturbance * 0.4 + wade_foam * 0.35, 0.94)
+    # The pond above already includes scene transmission; do not blend the dark bed twice.
+    a = mix(a, 0.96, pond * smoothstep(0.02, 0.2, depth))
+    # (and thinning out at the shore)
+    a = a * shore
+    # Churn at the actual foot, feathered into the pool. The mesh carries the radial
+    # envelope; existing moving wave noise breaks it into drifting foam islands.
+    if i.impact > 0.01:
+        # Separate narrow moving crests from the broad churn. The cached radial
+        # envelope keeps rings at real receiving pools, in the same water draw.
+        crest = sin((1.0 - i.impact) * 38.0 - u.time * 3.8) * 0.5 + 0.5
+        ring = smoothstep(0.84, 0.98, crest) * smoothstep(0.03, 0.18, i.impact) * (1.0 - smoothstep(0.72, 0.98, i.impact))
+        ring *= 0.6 + h0 * 0.4
+        froth = smoothstep(0.27, 0.66, h0) * i.impact
+        c = mix(c, vec3(0.83, 0.91, 0.89) * (u.sun_color * 0.4 + u.horizon * 0.7), froth * 0.86)
+        c = mix(c, vec3(0.68, 0.86, 0.84) * (u.sun_color * 0.45 + u.horizon * 0.85), ring * 0.65)
+        a = max(a, max(froth * 0.92, ring * 0.78))
+    c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
+    vec4(c, a)
+
+water_sh: Shader
+struct FallShelf:
+    pos: vec3
+    out: vec3
+
+fall_shelves: FallShelf[]       # real sheet intersections at exposed bank ledges
+fall_feet: vec3[]               # where the waterfalls land (for their mist)
+fall_cells: vec4[]              # the steep cells of each waterfall's sheet: x, z, top, bottom (for its spray)
+water_mesh: Mesh
+water_tex = Texture(0, 0, 0)    # the exact water level per sample (grass/water)
+water_bed_tex = Texture(0, 0, 0) # supported surface levels for terrain tint
+__water_ready = false
+
+# A finite flood fill can leave an uncontained flat pool hanging over a ridge:
+# the surface builder drops the unsupported quads, but terrain still paints their
+# dark bed. Reject that connected pool in the shared render mask. A real basin has
+# banks at its boundary; a river/waterfall has descending levels. Gameplay data is
+# unchanged, and no additional shader work or per-frame terrain scan is needed.
+water_render_levels = () -> f32[]:
+    levels = water_grid
+    n = hf.n
+    seen = fill(false, n * n)
+    loop start in [0..n * n):
+        if seen[start] or water_grid[start] < -9000.0: continue
+        cells: int[]
+        cells.push(start)
+        seen[start] = true
+        lo = water_grid[start]
+        hi = lo
+        spill = false
+        head = 0
+        loop head < cells.len():
+            k = cells[head]
+            head += 1
+            level = water_grid[k]
+            lo = min(lo, level)
+            hi = max(hi, level)
+            x = k % n
+            z = k / n
+            loop d in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                xx = x + d.0
+                zz = z + d.1
+                if xx < 0 or zz < 0 or xx >= n or zz >= n: continue
+                q = zz * n + xx
+                if water_grid[q] < -9000.0:
+                    if f64(level - hf.h[q]) > 8.0: spill = true
+                else if not seen[q]:
+                    seen[q] = true
+                    cells.push(q)
+        if spill and hi - lo < 0.1:
+            loop k in cells: levels[k] = -10000.0
+    levels
+
+# build the surface from the grid: a continuous sheet over the water cells (4 m quads that
+# share their corners), each corner at the average level of the water around it
+water_bed_levels = (vs: WVert[], idx: u32[], levels: f32[]) -> f32[]:
+    assert(levels.len() == hf.h.len())
+    pixels = fill(f32(-10000), levels.len())
+    # The surface builder rejects deep unsupported quads even when the stored
+    # flood-fill remains connected to a river. Tint only the actual surface,
+    # using its averaged height rather than the raw flood-fill level.
+    loop t in [0..idx.len()/3):
+        va = vs[int(idx[t*3])]
+        vb = vs[int(idx[t*3+1])]
+        vc = vs[int(idx[t*3+2])]
+        if max(va.mist,max(vb.mist,vc.mist)) > 0.0: continue
+        a=va.pos
+        b=vb.pos
+        c=vc.pos
+        n=cross(b-a,c-a)
+        if abs(n.y) < length(n)*0.55: continue
+        bx=f64(b.x-a.x)
+        bz=f64(b.z-a.z)
+        cx=f64(c.x-a.x)
+        cz=f64(c.z-a.z)
+        area=bx*cz-bz*cx
+        if abs(area)<0.000001: continue
+        x0=max(0,int(ceil((f64(min(a.x,min(b.x,c.x)))-hf.x0)/hf.cell-0.00001)))
+        x1=min(hf.n-1,int(floor((f64(max(a.x,max(b.x,c.x)))-hf.x0)/hf.cell+0.00001)))
+        z0=max(0,int(ceil((f64(min(a.z,min(b.z,c.z)))-hf.z0)/hf.cell-0.00001)))
+        z1=min(hf.n-1,int(floor((f64(max(a.z,max(b.z,c.z)))-hf.z0)/hf.cell+0.00001)))
+        if x0>x1 or z0>z1: continue
+        loop z in [z0..z1]:
+            loop x in [x0..x1]:
+                k=z*hf.n+x
+                if levels[k] < -9000.0: continue
+                dx=hf.x0+f64(x)*hf.cell-f64(a.x)
+                dz=hf.z0+f64(z)*hf.cell-f64(a.z)
+                u=(dx*cz-dz*cx)/area
+                v=(bx*dz-bz*dx)/area
+                if u < -0.00001 or v < -0.00001 or u+v > 1.00001: continue
+                y=f64(a.y)+u*f64(b.y-a.y)+v*f64(c.y-a.y)
+                # Dry fine-grid crests must stay dry even if a distant LOD
+                # dips below this sheet. The fragment also tests its drawn
+                # terrain height against the supported surface level.
+                if y < f64(hf.h[k]) - 0.18: continue
+                pixels[k]=max(pixels[k],f32(y))
+    pixels
+
+water_build = ():
+    water_prepared_hit = water_asset_load()
+    if not water_prepared_hit:
+        water_generate()
+    water_sh = make_sh(shader(water_vs, water_fs))
+    if env("BOTW_BAKE_ASSETS") == none and env("BOTW_ASSET_CHECK") == none:
+        # Separate scalar streams preserve the existing four terrain fetches
+        # and their bandwidth; grass/water still read the original exact levels.
+        water_tex = float_texture(hf.n, hf.n, water_levels)
+        water_bed_tex = float_texture(hf.n, hf.n, water_bed_levels(water_vertices, water_indices, water_levels))
+    water_mesh = static_mesh(water_vertices, water_indices)
+    if env("BOTW_ASSET_CHECK") == none and env("BOTW_BAKE_ASSETS") == none:
+        water_vertices = []
+        water_indices = []
+        water_levels = []
+    __water_ready = true
+
+water_vertices: WVert[]
+water_indices: u32[]
+water_levels: f32[]
+# Refine only the west crest, preserving collision/swimming grids and the sheet.
+west_canyon_lip = (vs: mut WVert[], idx: mut u32[]):
+    refined: u32[]
+    loop tri in [0..idx.len()/3):
+        a = idx[tri*3]
+        b = idx[tri*3+1]
+        c = idx[tri*3+2]
+        q = (vs[int(a)].pos+vs[int(b)].pos+vs[int(c)].pos)/3.0
+        if q.x < -1460.0 or q.x > -1412.0 or q.z < 1807.0 or q.z > 1841.0 or q.y < 228.0 or q.y > 245.0 or vs[int(a)].mist > 0.0:
+            loop k in [a,b,c]: refined.push(k)
+            continue
+        center = u32(vs.len())
+        aa=vs[int(a)]
+        bb=vs[int(b)]
+        cc=vs[int(c)]
+        vs.push(WVert((aa.pos+bb.pos+cc.pos)/3.0,(aa.impact+bb.impact+cc.impact)/3.0,(aa.fall+bb.fall+cc.fall)/3.0,(aa.ledge+bb.ledge+cc.ledge)/3.0,(aa.mist+bb.mist+cc.mist)/3.0))
+        # Shared edges remain exact, including against an unrefined upstream
+        # triangle. Only interior vertices refine the rolling crest.
+        loop k in [a,b,center,b,c,center,c,a,center]:refined.push(k)
+    idx = refined
+    loop mut v in vs:
+        p = v.pos
+        if v.mist > 0.0 or p.x < -1460.0 or p.x > -1412.0 or p.z < 1807.0 or p.z > 1841.0 or p.y > 245.0: continue
+        edge = 1.0 - smoothstep(8.0, 17.0, abs(f64(p.z)-1823.0))
+        roll = exp(-((f64(p.y)-241.0)/7.5)^2.0)*(1.0-smoothstep(242.0,245.0,f64(p.y)))
+        v.pos.x -= f32(edge * roll * (2.4 + sin(f64(p.z)*0.21)*0.6))
+        v.pos.y += f32(edge * roll * (0.65 + sin(f64(p.z)*0.38)*0.28))
+    # Small vertical spray fans peel off unequal heights at the sheet edges.
+    # Existing mist shading and its one water draw carry these 64 triangles.
+    loop side in [-1.0,1.0]:
+        loop k in [0..4):
+            y = 231.0 - f64(k)*21.0 + side*3.0
+            x = if y > 205.0:-1434.0 else if y > 160.0:-1451.0 else:-1471.0
+            center = v3(x-4.0,y,1823.0+side*(11.0+f64(k%2)))
+            base = u32(vs.len())
+            vs.push(WVert(center, mist=0.62))
+            loop j in [0..8):
+                a = f64(j)*TAU/8.0
+                vs.push(WVert(center+v3(-1.4*cos(a),sin(a)*5.0,side*cos(a)*3.1),mist=0.001))
+            loop j in [0..8):
+                loop id in [base,base+1+u32(j),base+1+u32((j+1)%8)]:idx.push(id)
+
+water_generate = ():
+    n = hf.n
+    levels = water_render_levels()
+    st = 2
+    m = n / st + 1
+    # corner levels
+    lv = fill(f32(-10000), m * m)
+    loop cz in [0..m):
+        loop cx in [0..m):
+            s_ = 0.0
+            c = 0
+            # (wide enough that the sheet runs a few meters past the water's edge: the ground then
+            # cuts the shoreline in the shader, smooth, instead of the grid's steps)
+            loop dz in [-4..4]:
+                loop dx in [-4..4]:
+                    xx = cx * st + dx
+                    zz = cz * st + dz
+                    if xx < 0 or zz < 0 or xx >= n or zz >= n: continue
+                    l = f64(levels[zz * n + xx])
+                    if l > -9000.0:
+                        s_ += l
+                        c += 1
+            if c > 0: lv[cz * m + cx] = f32(s_ / f64(c))
+    vs: WVert[]
+    idx: u32[]
+    vid = fill(-1, m * m)
+    falling = fill(false, m * m)
+    vertex = (cx: int, cz: int) -> u32:
+        k = cz * m + cx
+        if vid[k] < 0:
+            vid[k] = vs.len()
+            vs.push(WVert(vec3(f32(hf.x0 + f64(cx * st) * hf.cell), lv[k], f32(hf.z0 + f64(cz * st) * hf.cell))))
+        u32(vid[k])
+    loop cz in [0..m - 1):
+        loop cx in [0..m - 1):
+            ok = lv[cz * m + cx] > -9000.0 and lv[cz * m + cx + 1] > -9000.0 and lv[(cz + 1) * m + cx] > -9000.0 and lv[(cz + 1) * m + cx + 1] > -9000.0
+            if not ok: continue
+            # only quads over water (or right at its edge)
+            wet = false
+            loop dz in [-st..st * 2]:
+                loop dx in [-st..st * 2]:
+                    xx = clamp(cx * st + dx, 0, n - 1)
+                    zz = clamp(cz * st + dz, 0, n - 1)
+                    if levels[zz * n + xx] > -9000.0: wet = true
+            if not wet: continue
+            # not over a drop (the edge of the plateau): water lies in hollows
+            lvq = f64(lv[cz * m + cx])
+            deep = false
+            loop k in [(0, 0), (st, 0), (0, st), (st, st)]:
+                xx = min(cx * st + k.0, n - 1)
+                zz = min(cz * st + k.1, n - 1)
+                if f64(hf.h[zz * n + xx]) < lvq - 8.0: deep = true
+            lmin0 = min(min(f64(lv[cz * m + cx]), f64(lv[cz * m + cx + 1])), min(f64(lv[(cz + 1) * m + cx]), f64(lv[(cz + 1) * m + cx + 1])))
+            lmax0 = max(max(f64(lv[cz * m + cx]), f64(lv[cz * m + cx + 1])), max(f64(lv[(cz + 1) * m + cx]), f64(lv[(cz + 1) * m + cx + 1])))
+            # (a waterfall's sheet steps down with the levels: it is not water hanging over a drop)
+            if deep and lmax0 - lmin0 < 7.0: continue
+            # a fall: the sheet steps down steeply here; remember its foot for the mist
+            lmin = min(min(f64(lv[cz * m + cx]), f64(lv[cz * m + cx + 1])), min(f64(lv[(cz + 1) * m + cx]), f64(lv[(cz + 1) * m + cx + 1])))
+            lmax = max(max(f64(lv[cz * m + cx]), f64(lv[cz * m + cx + 1])), max(f64(lv[(cz + 1) * m + cx]), f64(lv[(cz + 1) * m + cx + 1])))
+            if lmax - lmin > 7.0:
+                loop corner in [cz * m + cx, cz * m + cx + 1, (cz + 1) * m + cx, (cz + 1) * m + cx + 1]: falling[corner] = true
+                fall_cells.push(vec4(f32(hf.x0 + (f64(cx * st) + 1.0) * hf.cell), f32(hf.z0 + (f64(cz * st) + 1.0) * hf.cell), f32(lmax), f32(lmin)))
+                fp = vec3(f32(hf.x0 + (f64(cx * st) + 1.0) * hf.cell), f32(lmin), f32(hf.z0 + (f64(cz * st) + 1.0) * hf.cell))
+                fnear = -1
+                loop qi in 0.. and q in fall_feet:
+                    if f64(length(vec3(q.x - fp.x, 0, q.z - fp.z))) < 25.0: fnear = qi
+                if fnear < 0: fall_feet.push(fp)
+                else if fp.y < fall_feet[fnear].y: fall_feet[fnear] = fp
+            a0 = vertex(cx, cz)
+            b0 = vertex(cx + 1, cz)
+            c0 = vertex(cx, cz + 1)
+            d0 = vertex(cx + 1, cz + 1)
+            loop k in [a0, c0, b0, b0, c0, d0]: idx.push(k)
+    # A steep grid cell may straddle the canyon wall. Place its impact on the
+    # nearest receiving water mesh, not at that cell's dry center or mid-drop level.
+    feet: vec3[]
+    loop foot in fall_feet:
+        landing = foot
+        score = 2304.0
+        loop v in vs:
+            p = v.pos
+            if p.y > foot.y + 1.0 or p.y < foot.y - 50.0: continue
+            dx = f64(p.x - foot.x)
+            dz = f64(p.z - foot.z)
+            d2 = dx * dx + dz * dz
+            if d2 >= score: continue
+            depth = f64(p.y) - height_at(f64(p.x), f64(p.z))
+            if depth < 0.15 or depth > 7.5: continue
+            score = d2
+            landing = p
+        if score >= 2304.0: continue
+        duplicate = false
+        loop other in feet:
+            if length(vec3(landing.x - other.x, 0, landing.z - other.z)) < 12.0: duplicate = true
+        if not duplicate: feet.push(landing)
+    fall_feet = feet
+    # Cache perimeter distances along both grid axes for the falling-face shader.
+    # Shared vertices keep the existing continuous water surface and its topology.
+    # Explicit CPU vec2 construction avoids the runtime's noncontiguous swizzle path.
+    loop k in [0..vs.len()):
+        p = vs[k].pos
+        top = -10000.0
+        bottom = 10000.0
+        loop fc in fall_cells:
+            if length(vec2(p.x, p.z) - vec2(fc.x, fc.y)) < 16.0:
+                top = max(top, f64(fc.z))
+                bottom = min(bottom, f64(fc.w))
+        if top > bottom + 7.0:
+            gx = int(round((f64(p.x) - hf.x0) / (hf.cell * f64(st))))
+            gz = int(round((f64(p.z) - hf.z0) / (hf.cell * f64(st))))
+            edges = vec2(32, 32)
+            loop axis in [0..2):
+                nearest = 32.0
+                loop side in [-1, 1]:
+                    loop step_ in [1..10):
+                        xx = gx + (if axis == 0: side * step_ else: 0)
+                        zz = gz + (if axis == 1: side * step_ else: 0)
+                        if xx < 0 or zz < 0 or xx >= m or zz >= m:
+                            nearest = min(nearest, f64(step_ - 1) * hf.cell * f64(st))
+                            break
+                        if vid[zz * m + xx] < 0 or not falling[zz * m + xx]:
+                            nearest = min(nearest, f64(step_ - 1) * hf.cell * f64(st))
+                            break
+                        # At rock contact keep a translucent fringe; only the real
+                        # mesh boundary reaches zero coverage.
+                        if f64(lv[zz * m + xx]) < hf_sample(xx * st, zz * st) + 0.05:
+                            nearest = min(nearest, f64(step_ - 1) * hf.cell * f64(st) + 2.4)
+                            break
+                if axis == 0: edges.x = f32(nearest)
+                else: edges.y = f32(nearest)
+            vs[k].fall = vec4(edges.x, edges.y, f32(top), f32(bottom))
+            # Use the adjacent exposed bank to locate a shelf inside this drop.
+            bank = max(height_at(f64(p.x) + 6.0, f64(p.z)), height_at(f64(p.x) - 6.0, f64(p.z)))
+            bank = max(bank, max(height_at(f64(p.x), f64(p.z) + 6.0), height_at(f64(p.x), f64(p.z) - 6.0)))
+            shelf = clamp(bank, bottom + (top - bottom) * 0.25, bottom + (top - bottom) * 0.72)
+            vs[k].ledge = vec2(f32(shelf), f32(0.5 + noise(f64(p.x) * 0.037, f64(p.z) * 0.041) * 2.1))
+        impact = 0.0
+        loop foot in fall_feet:
+            if abs(f64(p.y - foot.y)) > 4.0: continue
+            d = f64(length(vec2(p.x, p.z) - vec2(foot.x, foot.z)))
+            impact = max(impact, 1.0 - smoothstep(2.0, 18.0, d))
+        vs[k].impact = f32(impact)
+    # Locate ledge contacts on the actual sloping water triangles. Cell centres
+    # can lie inside the canyon wall, hiding every spray puff under dry stone.
+    fall_shelves.clear()
+    loop triangle in [0..idx.len() / 3):
+        av = vs[int(idx[triangle * 3])]
+        bv = vs[int(idx[triangle * 3 + 1])]
+        cv = vs[int(idx[triangle * 3 + 2])]
+        a = av.pos
+        b = bv.pos
+        c = cv.pos
+        nn = normalize(cross(b - a, c - a))
+        if abs(nn.y) > 0.75: continue
+        ledge = (av.ledge.x + bv.ledge.x + cv.ledge.x) / 3.0
+        ymin = min(a.y, min(b.y, c.y))
+        ymax = max(a.y, max(b.y, c.y))
+        center = (a + b + c) / 3.0
+        if center.x > -1496.0 and center.x < -1404.0 and center.z > 1805.0 and center.z < 1844.0:
+            # Intersect at the real bench heights instead of the adjacent tall
+            # cliff's bank height, which can place a spray fan halfway up a drop.
+            if ymin <= 144.0 and ymax > 144.0: ledge = 144.0
+            else if ymin <= 194.0 and ymax > 194.0: ledge = 194.0
+            else: continue
+        if ledge < ymin or ledge > ymax: continue
+        points = [a, b, c]
+        crossings: vec3[]
+        loop edge in [0..3):
+            aa = points[edge]
+            bb = points[(edge + 1) % 3]
+            if (aa.y <= ledge and bb.y > ledge) or (bb.y <= ledge and aa.y > ledge):
+                crossings.push(mix(aa, bb, (ledge - aa.y) / (bb.y - aa.y)))
+        if crossings.len() != 2: continue
+        contact = (crossings[0] + crossings[1]) * 0.5
+        if nn.y < 0.0: nn = nn * -1.0
+        out = normalize(vec3(nn.x, 0, nn.z))
+        # Move just off the sheet, keeping spray outside the exposed bank.
+        contact = contact + out * 1.8
+        if height_at(f64(contact.x), f64(contact.z)) > f64(contact.y) + 1.0: continue
+        duplicate = false
+        loop shelf in fall_shelves:
+            if length(shelf.pos - contact) < 6.0: duplicate = true
+        if not duplicate: fall_shelves.push(FallShelf(contact, out))
+    if env("BOTW_LOADTIME") != none: eprint("water ledge spray: {fall_shelves.len()} sites")
+    loop foot in fall_feet:
+        loop layer in [0..2):
+            radius = 6.0 + f64(layer) * 3.0
+            center = foot + vec3(0, f32(0.65 + f64(layer) * 0.8), 0)
+            loop k in [0..12):
+                a = f64(k) * TAU / 12.0
+                b = f64(k + 1) * TAU / 12.0
+                base = u32(vs.len())
+                vs.push(WVert(center, mist = f32(1.0 - f64(layer) * 0.25)))
+                vs.push(WVert(center + v3(cos(a) * radius, 0.0, sin(a) * radius), mist = 0.001))
+                vs.push(WVert(center + v3(cos(b) * radius, 0.0, sin(b) * radius), mist = 0.001))
+                loop index in [base, base + 1, base + 2]: idx.push(index)
+    # Averaging shelf water with its neighbouring drops can bury the sheet
+    # inside a protruding rock lip. Bow the curtain just off each bench while
+    # retaining shared vertices and the original collision/swimming grids.
+    loop k in [0..vs.len()):
+        p = vs[k].pos
+        if vs[k].mist > 0.0: continue
+        if p.x > -1496.0 and p.x < -1414.0 and p.z > 1805.0 and p.z < 1844.0 and p.y > 108.0:
+            edge = 1.0 - smoothstep(10.0, 15.0, abs(f64(p.z) - 1823.0))
+            shelf = max(1.0 - smoothstep(2.0, 12.0, abs(f64(p.y) - 144.0)),
+                1.0 - smoothstep(2.0, 12.0, abs(f64(p.y) - 194.0)))
+            release = smoothstep(108.0, 119.0, f64(p.y)) * (1.0 - smoothstep(240.0, 249.8, f64(p.y)))
+            vs[k].pos.x -= f32((1.5 + shelf * 5.0) * edge * release)
+    west_canyon_lip(vs, idx)
+    water_vertices = vs
+    water_indices = idx
+    water_levels = levels
+
+__swimmer = vec4(0, 0, 0, 0)
+__motion = vec4(0, 0, 0, 0)
+__entry = vec4(0, 0, 2, 0)
+__was_swimming = false
+__wader = vec4(0, 0, 0, 0)
+__was_wading = false
+__wade_ring_t = 0.0
+water_wade_enter = false
+water_wade_ring = false
+water_wade_level = () -> f64: f64(__wader.z)
+
+water_swimmer_update = (dt: f64, pos: vec3, vel: vec3, swimming: bool, level: f64):
+    water_wade_enter = false
+    water_wade_ring = false
+    __entry.z += f32(dt)
+    __motion.w += f32(dt * (0.55 + f64(length(vel.xz)) * 0.18))
+    if swimming:
+        if not __was_swimming: __entry = vec4(pos.x, pos.z, 0, 1)
+        __swimmer = vec4(pos.x, pos.z, f32(level), 1)
+        __motion.x = vel.x
+        __motion.y = vel.z
+    else: __swimmer.w = f32(max(0.0, f64(__swimmer.w) - dt * 2.5))
+    # Ground movement does not update pl.water_y; query the water map at the actual feet.
+    wl = water_level(f64(pos.x), f64(pos.z)) ?? -10000.0
+    wet = wl - f64(pos.y)
+    wading = not swimming and wet > 0.025 and wet < 1.3
+    if wading:
+        water_wade_enter = not __was_wading and not __was_swimming
+        __wade_ring_t -= dt
+        if water_wade_enter or (length(vel.xz) > 0.15 and __wade_ring_t <= 0.0):
+            water_wade_ring = true
+            __wade_ring_t = 0.28
+        __wader = vec4(pos.x, pos.z, f32(wl), f32(smoothstep(0.025, 0.12, wet)))
+        __motion.x = vel.x
+        __motion.y = vel.z
+    else: __wader.w = f32(max(0.0, f64(__wader.w) - dt * 5.0))
+    __was_wading = wading
+    __was_swimming = swimming
+
+water_draw = (u0: WaterU):
+    u = u0
+    u.swimmer = __swimmer
+    u.motion = __motion
+    u.entry = __entry
+    u.wader = __wader
+    if not __water_ready: return
+    gl_blend_state()
+    # RGB keeps the original optical coverage. Alpha tends toward smooth wash
+    # in proportion to that coverage; transparent shores/mist retain the bed's
+    # response (including negative occluder markers). No second water pass.
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA)
+    glEnable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    draw_fast(water_sh, water_mesh, u)
+    glDepthMask(1)
+    glDisable(GL_BLEND)
+
+water_asset_key = () -> int:
+    asset_key(["game/water_render.jo", "game/mesh_assets.jo"]) xor world_asset_key()
+water_asset_io = (s: mut AssetStream, vs: mut WVert[], idx: mut u32[], levels: mut f32[], feet: mut vec3[], cells: mut vec4[], shelves: mut FallShelf[], writing: bool):
+    pack_array(s, vs, writing)
+    pack_array(s, idx, writing)
+    pack_array(s, levels, writing)
+    pack_array(s, feet, writing)
+    pack_array(s, cells, writing)
+    pack_array(s, shelves, writing)
+water_asset_write = (path: str = "assets/prepared/water.bin") -> bool:
+    s = pack_create(path, water_asset_key())
+    water_asset_io(s, water_vertices, water_indices, water_levels, fall_feet, fall_cells, fall_shelves, true)
+    pack_publish(s, path)
+water_asset_load = () -> bool:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_NO_PREPARED_ASSETS") != none: return false
+    s = pack_open("assets/prepared/water.bin", water_asset_key())
+    defer asset_close(s)
+    if not s.ok: return false
+    vs: WVert[]
+    idx: u32[]
+    levels: f32[]
+    feet: vec3[]
+    cells: vec4[]
+    shelves: FallShelf[]
+    water_asset_io(s, vs, idx, levels, feet, cells, shelves, false)
+    if not s.ok or s.left != 0 or levels.len() != hf.n * hf.n: return false
+    water_vertices = vs
+    water_indices = idx
+    water_levels = levels
+    fall_feet = feet
+    fall_cells = cells
+    fall_shelves = shelves
+    if env("BOTW_LOADTIME") != none: eprint("prepared water: hit")
+    true
+
+water_prepared_hit = false

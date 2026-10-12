@@ -1,0 +1,43 @@
+use 'gfx.jo'
+use 'build.jo'
+use 'items.jo'
+
+# Back-only sword prop. The drawn weapon retains its full combat blade. The
+# compact leather scabbard and exposed hilt share one cached mesh/draw call.
+__sheaths: {int: Mesh} = {}
+sheathed_sword = (shape: IShape) -> Mesh:
+    if let m = __sheaths.get(int(shape)): return m
+    b = MeshB()
+    wide = if shape == .sword: 0.035 else: (if shape == .broadsword: 0.047 else: 0.058)
+    tip = if shape == .sword: 0.73 else: (if shape == .broadsword: 0.78 else: 0.84)
+    grip = if shape == .claymore: 0.28 else: 0.20
+    leather = rgb(0.20, 0.12, 0.065)
+    metal = rgb(0.48, 0.45, 0.36)
+    # Closed leather body, with a slightly tapered toe and a stitched face seam.
+    mb_box(b, v3(0.0, (0.12 + tip - 0.06) * 0.5, 0.0), v3(wide, (tip - 0.18) * 0.5, 0.020), leather)
+    mb_box(b, v3(0.0, tip - 0.045, 0.0), v3(wide * 0.82, 0.045, 0.018), leather)
+    loop y in [0.25, 0.34, 0.43, 0.52, 0.61]:
+        mb_box(b, v3(wide * 0.68, y, -0.021), v3(0.002, 0.009, 0.0015), rgb(0.42, 0.29, 0.16))
+    # Metal throat (locket) and protective tip (chape).
+    mb_box(b, v3(0.0, 0.15, 0.0), v3(wide + 0.006, 0.035, 0.025), metal)
+    mb_box(b, v3(0.0, tip - 0.024, 0.0), v3(wide * 0.9, 0.027, 0.023), metal)
+    mb_box(b, v3(0.0, 0.10, 0.0), v3(wide * 3.0, 0.016, 0.027), metal)
+    mb_cyl(b, v3(0.0, 0.09 - grip, 0.0), v3(0.0, 0.09, 0.0), 0.021, 0.021, rgb(0.28, 0.17, 0.09), 7)
+    loop k in [0..4):
+        y = 0.09 - grip * (f64(k) + 0.5) / 4.0
+        mb_cyl(b, v3(0.0, y - 0.005, 0.0), v3(0.0, y + 0.005, 0.0), 0.024, 0.024, leather, 7)
+    mb_sphere(b, v3(0.0, 0.07 - grip, 0.0), v3(0.03, 0.03, 0.03), metal, 7)
+    if shape == .sword:
+        loop mut v in b.vs: v.pos = v.pos*vec3(0.88,0.88,0.88)
+    m = mesh(b.vs, b.idx)
+    __sheaths[int(shape)] = m
+    m
+
+# Shared with elemental exposure: attachment points follow the rendered gear.
+sword_back_transform = (m: mat4, shape: IShape) -> mat4:
+    sword = shape == .sword or shape == .broadsword or shape == .claymore
+    m * translation(v3(0.14, 0.2, -0.06)) * rotation_z((if sword: 2.45 else: 2.65))
+shield_back_transform = (m: mat4) -> mat4:
+    m * translation(v3(0.0, 0.05, -0.12)) * rotation_y(PI)
+bow_back_transform = (m: mat4) -> mat4:
+    m * translation(v3(-0.1, 0.0, -0.22)) * rotation_z(-0.6)

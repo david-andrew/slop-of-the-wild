@@ -1,0 +1,198 @@
+# Bakes the nature kit's glTF models (trees, pines, bushes, ferns, flowers, rocks) into compact
+# meshes for the game: assets/nature/<name>.vm, one part per material (bark, leaves, ...).
+#
+#   sloppy/bin/sloppy tools/bake_nature.jo
+#
+# .vm layout (little endian): "VM01", parts:i32, then per part: kind:i32 (0 solid, 1 leaves),
+# texture name (len:i32 + bytes), verts:i32, indices:i32, verts * 12 f32 (pos, normal, uv, rgba),
+# indices * u32. Positions are in meters, y up, the base at y = 0.
+
+build:
+    opt = release
+
+use '../game/gltf.jo'
+
+const SRC = "assets/src/nature/glTF"
+
+names = ["CommonTree_1", "CommonTree_2", "CommonTree_3", "CommonTree_4", "CommonTree_5",
+    "Pine_1", "Pine_2", "Pine_3", "Pine_4", "Pine_5",
+    "DeadTree_1", "DeadTree_2", "DeadTree_3", "DeadTree_4", "DeadTree_5",
+    "TwistedTree_1", "TwistedTree_2", "TwistedTree_3",
+    "Bush_Common", "Bush_Common_Flowers", "Fern_1", "Plant_1", "Plant_7", "Plant_1_Big", "Plant_7_Big",
+    "Flower_3_Group", "Flower_4_Group", "Clover_1", "Clover_2", "Mushroom_Common", "Mushroom_Laetiporus",
+    "Rock_Medium_1", "Rock_Medium_2", "Rock_Medium_3", "Pebble_Round_1", "Pebble_Round_3", "Pebble_Square_2"]
+
+put32 = (b: mut u8[], v: int):
+    loop k in [0..4): b.push(u8((v >> (8 * k)) & 255))
+
+putf = (b: mut u8[], v: f32):
+    x = (&v) as *u32
+    put32(b, int(x[0]))
+
+# Continuous terrace deformation, shared by bark and foliage. Broadleaves spread into
+# offset shelves with a flatter top; pines keep a tall taper with narrower tier necks.
+crown_point = (p: vec3, variant: int, root: f64, pine: bool) -> vec3:
+    x = f64(p.x)
+    y = f64(p.y)
+    z = f64(p.z)
+    phase = f64(variant) * 1.73
+    upper = smoothstep(root - 0.8, root + 1.2, y)
+    if pine:
+        h = max(0.0, y - root)
+        along = x * cos(phase) + z * sin(phase)
+        across = -x * sin(phase) + z * cos(phase)
+        radius = sqrt(x * x + z * z)
+        angle = atan2(z, x)
+        # Unequal whorls: each bough spreads, droops and turns differently. The same
+        # continuous warp carries the woody branches with their needles (no added geometry).
+        whorl = 0.86 + 0.12 * cos(h * 3.1 + phase) + 0.09 * sin(h * 1.2 + across * 0.8 + phase)
+        lobe = 1.0 + 0.18 * sin(angle * 3.0 + h * 1.4 + phase) + 0.10 * cos(angle * 5.0 - h)
+        spread = lerp(1.0, whorl * lobe, upper)
+        turn = upper * h * 0.055 * sin(phase)
+        lean = upper * (h * 0.055 + sin(h * 0.9) * 0.10)
+        droop = upper * (along * 0.22 * sin(h * 0.8 + phase) + across * 0.16 * cos(h * 1.3 + phase) - radius * 0.08)
+        return vec3(f32((x * cos(turn) - z * sin(turn)) * spread + lean * cos(phase)), f32(y * (1.04 + f64(variant) * 0.025) + droop),
+            f32((x * sin(turn) + z * cos(turn)) * spread + lean * sin(phase)))
+    h = max(0.0, y - root)
+    layer = h / 1.65
+    t = fract(layer)
+    shelf = floor(layer) + t * 0.24 + smoothstep(0.28, 0.72, t) * 0.76
+    yy = if y < root: y else: root + shelf * 1.12
+    # Upper limbs spread sideways too, so the foliage remains attached to its branches.
+    stretch = 1.18 + sin(phase) * 0.12
+    lean = upper * (0.12 * h + sin(h * 1.2 + phase) * 0.22)
+    return vec3(f32(x * lerp(1.0, stretch, upper) + lean * cos(phase)), f32(yy),
+        f32(z * lerp(1.0, 1.12 + cos(phase) * 0.10, upper) + lean * sin(phase)))
+
+main = ():
+    mkdir("assets/nature")
+    loop name in names:
+        g = load_gltf("{SRC}/{name}.gltf")
+        if not g.ok:
+            eprint("could not load {name}")
+            continue
+        globals = node_globals(g)
+        # gather triangles per material
+        parts_v: {int: f32[]} = {}
+        parts_i: {int: u32[]} = {}
+        miny = 1e9
+        loop ni in 0.. and nd in g.nodes:
+            if nd.mesh < 0: continue
+            m = globals[ni]
+            loop pr in g.meshes[nd.mesh].prims:
+                key = pr.material
+                vs = parts_v.get(key) ?? []
+                ids = parts_i.get(key) ?? []
+                base = u32(vs.len() / 12)
+                nv = pr.pos.len() / 3
+                loop k in [0..nv):
+                    p = transform_point(m, vec3(pr.pos[k * 3], pr.pos[k * 3 + 1], pr.pos[k * 3 + 2]))
+                    n = vec3(0, 1, 0)
+                    if pr.nrm.len() > 0: n = normalize(transform_dir(m, vec3(pr.nrm[k * 3], pr.nrm[k * 3 + 1], pr.nrm[k * 3 + 2])))
+                    uv = vec2(0, 0)
+                    if pr.uv.len() > 0: uv = vec2(pr.uv[k * 2], pr.uv[k * 2 + 1])
+                    c = vec4(1, 1, 1, 1)
+                    if pr.col.len() > 0: c = vec4(pr.col[k * 4], pr.col[k * 4 + 1], pr.col[k * 4 + 2], pr.col[k * 4 + 3])
+                    loop f in [p.x, p.y, p.z, n.x, n.y, n.z, uv.x, uv.y, c.x, c.y, c.z, c.w]: vs.push(f)
+                    miny = min(miny, f64(p.y))
+                if pr.idx.len() > 0:
+                    loop i in pr.idx: ids.push(base + u32(i))
+                else:
+                    loop i in [0..nv): ids.push(base + u32(i))
+                parts_v[key] = vs
+                parts_i[key] = ids
+        crown_lo = 1e9
+        crown_hi = -1e9
+        loop key, vs in parts_v:
+            if key < 0 or key >= g.materials.len(): continue
+            mat = g.materials[key]
+            tex = if mat.image >= 0: g.images[mat.image].uri else: ""
+            if not contains(lower(mat.name + " " + tex), "lea"): continue
+            loop k in [0..vs.len() / 12):
+                crown_lo = min(crown_lo, f64(vs[k * 12 + 1]) - miny)
+                crown_hi = max(crown_hi, f64(vs[k * 12 + 1]) - miny)
+        out: u8[]
+        loop c in "VM01": out.push(c)
+        put32(out, parts_v.len())
+        total_v = 0
+        loop key, original_vs in parts_v:
+            vs = original_vs
+            ids = parts_i[key]
+            tex = ""
+            kind = 0
+            mc = vec4(1, 1, 1, 1)
+            if key >= 0 and key < g.materials.len():
+                mat = g.materials[key]
+                mc = mat.color
+                if mat.image >= 0: tex = g.images[mat.image].uri
+                lname = lower(mat.name + " " + tex)
+                if contains(lname, "lea") or contains(lname, "flower") or contains(lname, "grass") or contains(lname, "petal") or contains(lname, "fern") or contains(lname, "clover") or contains(lname, "plant"): kind = 1
+            if starts_with(name, "CommonTree") or starts_with(name, "Pine_"):
+                variant = to_int(name[len(name) - 1..]) ?? 1
+                phase = f64(variant) * 1.73
+                pine = starts_with(name, "Pine_")
+                root = max(1.8, crown_lo - 0.5)
+                if kind == 1 and pine:
+                    # A narrow missing bough breaks the concentric skirt at a different
+                    # height/azimuth in each source variant. Remove complete leaf cards.
+                    open_ids: u32[]
+                    loop q in [0..ids.len() / 6):
+                        center = vec3(0, 0, 0)
+                        loop j in [0..6):
+                            k = int(ids[q * 6 + j]) * 12
+                            center += vec3(vs[k], vs[k + 1] - f32(miny), vs[k + 2]) / 6.0
+                        along = f64(center.x) * cos(phase) + f64(center.z) * sin(phase)
+                        across = -f64(center.x) * sin(phase) + f64(center.z) * cos(phase)
+                        h = (f64(center.y) - root) / max(1.0, crown_hi - root)
+                        gap = along > 0.6 and abs(across + 0.22 * along) < 0.26 and h > 0.18 and h < 0.64
+                        if not gap:
+                            loop j in [0..6): open_ids.push(ids[q * 6 + j])
+                    ids = open_ids
+                if kind == 1 and not pine:
+                    # Open two unequal branch corridors through whole leaf cards. Work in
+                    # source space, before the shelves flatten them; retain the outer tips.
+                    open_ids: u32[]
+                    loop q in [0..ids.len() / 6):
+                        center = vec3(0, 0, 0)
+                        loop j in [0..6):
+                            k = int(ids[q * 6 + j]) * 12
+                            center += vec3(vs[k], vs[k + 1] - f32(miny), vs[k + 2]) / 6.0
+                        along = f64(center.x) * cos(phase) + f64(center.z) * sin(phase)
+                        across = -f64(center.x) * sin(phase) + f64(center.z) * cos(phase)
+                        h = (f64(center.y) - root) / max(1.0, crown_hi - root)
+                        gap = along > 0.05 and along < 2.0 and abs(across - 0.16 * along) < 0.52 and h < 0.79
+                        gap2 = along < -0.3 and along > -1.6 and abs(across + 0.3) < 0.32 and h > 0.30 and h < 0.65
+                        if not gap and not gap2:
+                            loop j in [0..6): open_ids.push(ids[q * 6 + j])
+                    ids = open_ids
+                loop k in [0..vs.len() / 12):
+                    p = vec3(vs[k * 12], vs[k * 12 + 1] - f32(miny), vs[k * 12 + 2])
+                    n = vec3(vs[k * 12 + 3], vs[k * 12 + 4], vs[k * 12 + 5])
+                    q = crown_point(p, variant, root, pine)
+                    # Inverse-transpose of the local warp, evaluated only at bake time.
+                    dx = crown_point(p + vec3(0.002, 0, 0), variant, root, pine) - crown_point(p - vec3(0.002, 0, 0), variant, root, pine)
+                    dy = crown_point(p + vec3(0, 0.002, 0), variant, root, pine) - crown_point(p - vec3(0, 0.002, 0), variant, root, pine)
+                    dz = crown_point(p + vec3(0, 0, 0.002), variant, root, pine) - crown_point(p - vec3(0, 0, 0.002), variant, root, pine)
+                    nn = normalize(cross(dy, dz) * n.x + cross(dz, dx) * n.y + cross(dx, dy) * n.z)
+                    vs[k * 12] = q.x
+                    vs[k * 12 + 1] = q.y + f32(miny)
+                    vs[k * 12 + 2] = q.z
+                    vs[k * 12 + 3] = nn.x
+                    vs[k * 12 + 4] = nn.y
+                    vs[k * 12 + 5] = nn.z
+            put32(out, kind)
+            put32(out, len(tex))
+            loop ch in tex: out.push(ch)
+            n = vs.len() / 12
+            put32(out, n)
+            put32(out, ids.len())
+            loop k in [0..n):
+                loop j in [0..12):
+                    v = vs[k * 12 + j]
+                    if j == 1: v = v - f32(miny)
+                    if j >= 8: v = v * mc[j - 8]
+                    putf(out, v)
+            loop i in ids: put32(out, int(i))
+            total_v += n
+        write_bytes("assets/nature/{name}.vm", out)
+        print("{name}: {parts_v.len()} parts, {total_v} vertices")

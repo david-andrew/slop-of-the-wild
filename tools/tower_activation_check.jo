@@ -1,0 +1,29 @@
+# Production glow over the full rise: bounded continuity, chromatic peak in
+# the held wide shot, and the same settled colour on replay/save restoration.
+use '../game/story.jo'
+use '../game/gfx.jo'
+check = ():
+    story = Story(beat = .tower_rise)
+    previous = tower_activation_glow()
+    peak = 0.0
+    peak_at = 0.0
+    loop frame in [1..961):
+        story.t = f64(frame)/60.0
+        story.tower_risen = story.t > 7.0
+        c = tower_activation_glow()
+        assert(f64(length(c-previous)) < 0.20,"tower colour cannot snap between frames")
+        assert(c.x >= 0.0 and c.y >= 0.0 and c.z >= 0.0)
+        if f64(c.z) > peak:
+            peak = f64(c.z)
+            peak_at = story.t
+        if story.t >= 8.4 and story.t <= 9.0:
+            assert(c.z > 4.0 and c.z/c.x > 8.0 and c.y/c.z < 0.5,"activation crest reads saturated Sheikah blue")
+        previous = c
+    assert(peak_at >= 8.4 and peak_at < 9.0 and peak > 4.0,"blue peak occurs in the tower wide shot")
+    story.beat = .explore
+    assert(tower_activation_glow() == vec3(0.3,1.0,2.6),"settled/save-restored tower keeps ordinary blue")
+    story.tower_risen = false
+    assert(tower_activation_glow() == vec3(3.0,1.1,0.25),"unactivated tower remains orange")
+    print("PASS tower activation: smooth orange-to-blue; peak blue {peak:.3} at {peak_at:.3}s in held wide shot; settled/resumed colours unchanged")
+
+check()

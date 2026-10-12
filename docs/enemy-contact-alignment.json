@@ -1,0 +1,288 @@
+{
+  "baseline_commit": "2b2e6bda770fac531e3166b779ccad54a96fc08e",
+  "before_method": "Production enemy_anim_update after a 0.5-second windup, active intervals sampled at 240 Hz, first spawn build/facing on flat terrain, including slam lift. Compared the actual scaled prop draw transform with the old contact segment. All 11 melee weapons and three moves; measurements rounded to six decimals.",
+  "before": [
+    {
+      "weapon": "branch",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 2.824534
+    },
+    {
+      "weapon": "branch",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 2.021641
+    },
+    {
+      "weapon": "branch",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.107484
+    },
+    {
+      "weapon": "torch",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 2.738468
+    },
+    {
+      "weapon": "torch",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 1.970914
+    },
+    {
+      "weapon": "torch",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.056662
+    },
+    {
+      "weapon": "axe",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 2.588629
+    },
+    {
+      "weapon": "axe",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 1.882449
+    },
+    {
+      "weapon": "axe",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 0.967728
+    },
+    {
+      "weapon": "boko_club",
+      "move": 0,
+      "grip_m": 1.241458,
+      "tip_m": 2.91422
+    },
+    {
+      "weapon": "boko_club",
+      "move": 1,
+      "grip_m": 1.146984,
+      "tip_m": 2.244388
+    },
+    {
+      "weapon": "boko_club",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.392538
+    },
+    {
+      "weapon": "spiked_club",
+      "move": 0,
+      "grip_m": 1.241458,
+      "tip_m": 2.91422
+    },
+    {
+      "weapon": "spiked_club",
+      "move": 1,
+      "grip_m": 1.146984,
+      "tip_m": 2.244388
+    },
+    {
+      "weapon": "spiked_club",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.392538
+    },
+    {
+      "weapon": "boko_spear",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 3.675581
+    },
+    {
+      "weapon": "boko_spear",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 2.521195
+    },
+    {
+      "weapon": "boko_spear",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.603024
+    },
+    {
+      "weapon": "travelers_sword",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 2.846096
+    },
+    {
+      "weapon": "travelers_sword",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 2.034341
+    },
+    {
+      "weapon": "travelers_sword",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.120189
+    },
+    {
+      "weapon": "rusty_broadsword",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 3.106102
+    },
+    {
+      "weapon": "rusty_broadsword",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 2.187256
+    },
+    {
+      "weapon": "rusty_broadsword",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.272658
+    },
+    {
+      "weapon": "soldiers_broadsword",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 3.106102
+    },
+    {
+      "weapon": "soldiers_broadsword",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 2.187256
+    },
+    {
+      "weapon": "soldiers_broadsword",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.272658
+    },
+    {
+      "weapon": "travelers_claymore",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 3.852053
+    },
+    {
+      "weapon": "travelers_claymore",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 2.624504
+    },
+    {
+      "weapon": "travelers_claymore",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.704678
+    },
+    {
+      "weapon": "travelers_spear",
+      "move": 0,
+      "grip_m": 1.249213,
+      "tip_m": 3.675581
+    },
+    {
+      "weapon": "travelers_spear",
+      "move": 1,
+      "grip_m": 1.129808,
+      "tip_m": 2.521195
+    },
+    {
+      "weapon": "travelers_spear",
+      "move": 2,
+      "grip_m": 0.242263,
+      "tip_m": 1.603024
+    }
+  ],
+  "after_method": "Production enemy_anim_update and boko_weapon_draw_transform versus enemy_contact_segment, 65 samples per active interval, all 11 melee weapons, three moves, three builds/facings, moving roots, slam lift, footing and recoil. Additional full-world-coordinate rendered strike/slam/shove checks.",
+  "after": {
+    "samples": 6435,
+    "max_grip_m_rounded": 0.0,
+    "max_tip_m_rounded": 1e-06,
+    "max_error_against_fresh_overlay_m": 0.00176,
+    "rendered_error_m": {
+      "strike": 0.000123,
+      "slam": 1.5e-05,
+      "shove": 0.000122
+    },
+    "tolerance_m": 0.003
+  },
+  "contact_sweep_hz": 240,
+  "socket_bake_hz": 1920,
+  "socket_payload_bytes": 885120,
+  "performance_method": "Three CPU-only runs; one-time rig/clip read and socket bake, then 100000 club segment evaluations across the three moves. Runtime segment sampling performs no skinning or GPU work.",
+  "performance": [
+    {
+      "bake_ms": 227.544,
+      "segment_us": 0.745
+    },
+    {
+      "bake_ms": 233.512,
+      "segment_us": 0.674
+    },
+    {
+      "bake_ms": 245.105,
+      "segment_us": 0.697
+    }
+  ],
+  "integration": {
+    "passed": 838,
+    "total": 838,
+    "rates_hz": [
+      30,
+      60,
+      120
+    ],
+    "cases": [
+      "front",
+      "beside",
+      "behind",
+      "above",
+      "cover"
+    ],
+    "defenses": [
+      "guard",
+      "perfect guard",
+      "side hop",
+      "backflip"
+    ]
+  },
+  "changes": [
+    "Extract the hand overlay to a shared CPU function and bake armed/bare socket tracks.",
+    "Anchor the rendered attack hand and its descendants to the same interpolated socket used by collision; elbow IK keeps the arm attached.",
+    "Share the actual weapon draw scale, per-enemy build, facing, leap lift and moving root.",
+    "Pose armed shoves low and forward, following the held weapon instead of testing a right-hand point while the club trails backward.",
+    "Finish scheduled melee contact after collider/crowd resolution; keep attack windows, one-blow scheduling, damage, guarding, perfect guarding and dodge/flurry rules.",
+    "Close the 1 cm body-to-hilt cover-ray gap exposed by the new arc."
+  ],
+  "checks": {
+    "feel_test": "PASS",
+    "fauna_test": "PASS",
+    "element_test": "PASS",
+    "element_check": "PASS",
+    "save_test": "PASS",
+    "architecture_test": "PASS",
+    "contact_check": "PASS",
+    "integration_test": "PASS",
+    "slot_check": "PASS",
+    "input_check": "PASS",
+    "camera_check": "PASS",
+    "combat_check": "PASS",
+    "weather_fx_test": "PASS",
+    "terrain_noise_check": "PASS",
+    "combat_visual_check": "PASS",
+    "shrine_exit_check": "PASS",
+    "passage_check": "PASS",
+    "opening_check": "PASS",
+    "shrine_route_check": "PASS",
+    "late_story_check": "PASS"
+  },
+  "render_serialization": "All game renders under flock /tmp/botw-render.lock. opening_check.sh acquires its own lock; late_story_check.sh invoked directly. No push or merge."
+}

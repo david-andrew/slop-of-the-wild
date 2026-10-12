@@ -1,0 +1,73 @@
+# Production greeting camera: turn/favour/release, plus interruption ownership.
+use '../game/story.jo'
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/chars.jo'
+use '../game/input.jo'
+use '../game/worldgen.jo'
+from '../game/story.jo' import __greet_t, __greet_camera, __old_man_life, __title_shot
+
+check_approaches = ():
+    __audio_state = 2
+    use_terrain = false
+    worldgen_load()
+    story = Story(beat = .explore, title_done = true)
+    old_man.visible = true
+    old_man.pos = vec3(-946, 235, 1883.5)
+    old_man.face = 0.7
+    old_man.clip = "sit"
+    pl = Player(pos = old_man.pos + vec3(-6, 0, -6), face = 2.5)
+    cam = Cam(yaw = 2.5)
+    camera_snap()
+    act = Actions()
+    camera_update(1.0 / 60.0)
+    start = old_man.face
+    step = 0.0
+    turn = 0.0
+    last = view_pos()
+    gaze = normalize(view_target() - last)
+    loop frame in [0..260):
+        __old_man_life(1.0 / 60.0)
+        camera_update(1.0 / 60.0)
+        step = max(step, f64(length(view_pos() - last)))
+        next = normalize(view_target() - view_pos())
+        turn = max(turn, atan2(f64(length(cross(gaze, next))), f64(dot(gaze, next))) * 180.0 / PI)
+        if frame == 100:
+            assert(story.met_old_man and old_man.clip == "Greeting" and cam.override)
+            assert(abs(wrap_angle(old_man.face - start)) > 0.5)
+            toward = normalize(old_man.pos + vec3(0, 1.35, 0) - view_pos())
+            assert(dot(next, toward) > dot(normalize(cam.target - cam.pos), toward))
+            assert(pl.state == .ground)
+            assert(view_fov() < 38.0, "first greeting fills the frame before reaching six meters")
+        last = view_pos()
+        gaze = next
+    assert(not cam.override and not __greet_camera and old_man.clip == "sit")
+    assert(step < 0.02 and turn < 1.0)
+    print("greeting: largest camera step {step:.5}m/{turn:.4}deg; turned toward Link, favoured him, control retained, chase restored")
+    loop cancel in [0..3):
+        __greet_t = 2.0
+        __greet_camera = true
+        cam.override = true
+        story.beat = if cancel == 2: .tower_rise else: .explore
+        pl.state = if cancel == 0: .air else: .ground
+        cam.locked = cancel == 1
+        __old_man_life(1.0 / 60.0)
+        assert(not __greet_camera)
+        assert(cam.override == (cancel == 2))
+    story.crest_pos = vec3(0, 5, 0)
+    story.crest_player = pl.pos
+    story.crest_target = vec3(0, 3, -5)
+    story.crest_fov = 50.0
+    __title_shot(0.0)
+    assert(length(cam.o_pos - story.crest_pos) < 0.001)
+    __title_shot(TITLE_CREST_SECONDS)
+    assert(cam.o_pos.y > story.crest_pos.y + 1.0)
+    assert(cam.o_fov == 49.0)
+    __title_shot(TITLE_CREST_SECONDS + 5.1)
+    silhouette = cam.o_pos
+    silhouette_target = cam.o_target
+    __title_shot(TITLE_CREST_SECONDS + 5.8)
+    assert(length(cam.o_pos - silhouette) < 0.001 and length(cam.o_target - silhouette_target) < 0.001, "silhouette lingers before the title lettering")
+    print("PASS story approaches: 1.2s crest lift before orbit; greeting framing, release and camera ownership")
+
+check_approaches()

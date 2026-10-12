@@ -1,0 +1,147 @@
+use 'gfx.jo'
+use 'cputime.jo'
+
+# Where the GPU's time goes, pass by pass (BOTW_GPU=1): timer queries around each part of the
+# frame, read back a few frames later (no stall), averaged and printed every two seconds.
+#   gpu_mark("terrain") ... gpu_mark("water") ... gpu_frame_end()
+
+@lib("libEGL.so.1")
+extern eglGetProcAddress = (name: *u8) -> *u8
+
+@lib("libEGL.so.1")
+extern eglGetCurrentDisplay = () -> *u8
+@lib("libEGL.so.1")
+extern eglSwapInterval = (d: *u8, interval: i32) -> u32
+
+# BOTW_NOVSYNC=1: frames as fast as they come, for timing the GPU's passes (under vsync whatever
+# pass ends the frame takes in the wait for the screen, and the GPU idles at a lower clock)
+__novsync_done = false
+gpu_vsync_check = ():
+    if __novsync_done: return
+    __novsync_done = true
+    if env("BOTW_NOVSYNC") != none and eglSwapInterval(eglGetCurrentDisplay(), 0) == 0: eprint("BOTW_NOVSYNC: the swap interval could not be changed")
+
+# (in a GLES context the timer is an extension: its entry points come from EGL)
+__q_gen: cfn(i32, *u32) = null
+__q_begin: cfn(u32, u32) = null
+__q_end: cfn(u32) = null
+__q_get: cfn(u32, u32, *u64) = null
+__q_proc = (name: str) -> *u8:
+    b: u8[]
+    loop c in name: b.push(c)
+    b.push(0)
+    eglGetProcAddress(data(b))
+
+const __GL_TIME_ELAPSED = 0x88BF
+const __GL_QUERY_RESULT_AVAILABLE = 0x8867
+const __GL_QUERY_RESULT = 0x8866
+const __GQ_FRAMES = 4
+const __GQ_PASSES = 24
+
+gpu_timing = env("BOTW_GPU") != none
+__gq_ids: u32[]
+__gq_names: str[]
+__gq_used: int[]                 # passes recorded in each of the frames in flight
+__gq_open = false
+__gq_frame = 0
+__gq_pass = 0
+__gq_sum: {str: f64} = {}
+__gq_order: str[]
+__gq_n = 0
+__gq_dropped = 0
+__gq_raw = env("BOTW_GPU_FRAME_LOG") != none
+__gq_lines = ""
+
+__gq_slot = (f: int, p: int) -> int: (f % __GQ_FRAMES) * __GQ_PASSES + p
+
+# end the running pass (if any) and start timing the next one
+gpu_mark = (name: str):
+    cpu_mark(name)
+    if not gpu_timing: return
+    if __gq_ids.len() == 0:
+        g = __q_proc("glGenQueriesEXT")
+        b = __q_proc("glBeginQueryEXT")
+        e = __q_proc("glEndQueryEXT")
+        # (the 64-bit read: some drivers give 0 through the 32-bit one)
+        q = __q_proc("glGetQueryObjectui64vEXT")
+        if g == null or b == null or e == null or q == null:
+            eprint("gpu timing: no timer queries (EXT_disjoint_timer_query) here")
+            gpu_timing = false
+            return
+        __q_gen = g as cfn(i32, *u32)
+        __q_begin = b as cfn(u32, u32)
+        __q_end = e as cfn(u32)
+        __q_get = q as cfn(u32, u32, *u64)
+        __gq_ids = fill(u32(0), __GQ_FRAMES * __GQ_PASSES)
+        __q_gen(i32(__gq_ids.len()), data(__gq_ids))
+        __gq_names = fill("", __GQ_FRAMES * __GQ_PASSES)
+        __gq_used = fill(0, __GQ_FRAMES)
+    if __gq_open: __q_end(__GL_TIME_ELAPSED)
+    __gq_open = false
+    if __gq_pass >= __GQ_PASSES: return
+    __gq_names[__gq_slot(__gq_frame, __gq_pass)] = name
+    if not __gq_sum.has(name):
+        __gq_sum[name] = 0.0
+        __gq_order.push(name)
+    __q_begin(__GL_TIME_ELAPSED, __gq_ids[__gq_slot(__gq_frame, __gq_pass)])
+    __gq_open = true
+    __gq_pass += 1
+
+gpu_frame_end = ():
+    gpu_vsync_check()
+    if not gpu_timing or __gq_ids.len() == 0: return
+    if __gq_open: __q_end(__GL_TIME_ELAPSED)
+    __gq_open = false
+    __gq_used[__gq_frame % __GQ_FRAMES] = __gq_pass
+    # A busy GPU/compositor can still have this frame in flight. Never block timing on it.
+    old = __gq_frame - (__GQ_FRAMES - 1)
+    if old >= 0:
+        k = __gq_used[old % __GQ_FRAMES]
+        # (not `[0]`: the release build folds reads of an all-zero literal array to 0 even after a
+        # foreign call wrote into it through data(); see docs/SLOPPY_NOTES.md)
+        v = fill(u64(1), 1)
+        ready = true
+        loop p in [0..k):
+            __q_get(__gq_ids[__gq_slot(old, p)], __GL_QUERY_RESULT_AVAILABLE, data(v))
+            if v[0] == 0: ready = false
+        if not ready:
+            __gq_dropped += 1
+            # Drop this sample before its query slot is reused; profiling must not hitch play.
+            __gq_frame += 1
+            __gq_pass = 0
+            return
+        frame_total = 0.0
+        frame_line = if __gq_raw: "gpu frame: {old}" else: ""
+        loop p in [0..k):
+            __q_get(__gq_ids[__gq_slot(old, p)], __GL_QUERY_RESULT, data(v))
+            nm = __gq_names[__gq_slot(old, p)]
+            ms = f64(v[0]) / 1e6
+            __gq_sum[nm] = (__gq_sum.get(nm, 0.0)) + ms
+            if __gq_raw:
+                frame_total += ms
+                frame_line += " {nm} {ms:.3}"
+        if __gq_raw: __gq_lines += "{frame_line} = {frame_total:.3}\n"
+        __gq_n += 1
+        if __gq_n >= 120:
+            # (per frame on average: a pass drawn every other frame counts half)
+            line = "gpu ms:"
+            total = 0.0
+            loop nm in __gq_order:
+                t = __gq_sum.get(nm, 0.0) / f64(__gq_n)
+                line = "{line} {nm} {t:.2}"
+                total += t
+                __gq_sum[nm] = 0.0
+            eprint("{line}  = {total:.2}")
+            if __gq_raw:
+                eprint(__gq_lines)
+                __gq_lines = ""
+            if __gq_dropped > 0: eprint("gpu skipped: {__gq_dropped} unfinished query frames (no blocking read)")
+            __gq_dropped = 0
+            __gq_n = 0
+    # Flush a partial diagnostic batch at each producer boundary, including the
+    # final fixed-frame capture. The last three in-flight queries remain unread.
+    if __gq_raw and frame_number() % 120 == 119 and len(__gq_lines) > 0:
+        eprint(__gq_lines)
+        __gq_lines = ""
+    __gq_frame += 1
+    __gq_pass = 0

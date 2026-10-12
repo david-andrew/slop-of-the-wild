@@ -1,0 +1,1323 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'build.jo'
+from 'build.jo' import __begin, __end, __quad, __quad_n, __tri, __n3, cur
+use 'worldgen.jo'
+use 'fx.jo'
+use 'post.jo'
+use 'scene.jo'
+
+# Underground spaces: the Shrine of Resurrection (where the game begins) at its real place
+# under the shrine ridge, and the four shrines' chambers below their entrances. Inside them the
+# terrain is ignored (physics and camera use only the built walls) and the light is their own.
+
+struct Zone:
+    name: str
+    lo: vec3
+    hi: vec3
+
+zones: Zone[]
+
+zone_at = (p: vec3) -> str:
+    loop z in zones:
+        if p.x >= z.lo.x and p.y >= z.lo.y and p.z >= z.lo.z and p.x <= z.hi.x and p.y <= z.hi.y and p.z <= z.hi.z: return z.name
+    ""
+
+SOR_STONE = vec4(0, 0, 0, 6) # natural lining; broad pigment, geometry-led relief
+
+SOR_DRESSED = vec4(0, 0, 0, -1) # cut stone with quiet mineral tooth
+SOR_SHEIKAH = vec4(-1, 0, 0, -1)
+
+SH_STONE = stone(0.19, 0.18, 0.17)
+SH_FLOOR = stone(0.25, 0.24, 0.22)
+SH_GLOW = vec4(0.0, 0.0, 1.4, 0.0)
+SH_TILE = vec4(-1.0, 0.72, 0.3, 0.0)   # Sheikah stone with softly glowing traces (y: how sparse)
+
+# a rectangular room: floor, four walls (with optional door gaps on +z/-z/+x/-x), ceiling
+room = (c: vec3, size: vec3, yaw: f64, doors: str, resurrection: bool = false, carved: bool = false):
+    p = (x: f64, y: f64, z: f64) -> vec3: c + transform_dir(rotation_y(yaw), v3(x, y, z))
+    hx = f64(size.x) / 2.0
+    hz = f64(size.z) / 2.0
+    h = f64(size.y)
+    box(p(0.0, -1.0, 0.0), v3(f64(size.x) + 2.0, 1.0, f64(size.z) + 2.0), yaw, (if resurrection: stone(0.08, 0.105, 0.12) else: SH_FLOOR), (if resurrection: SOR_DRESSED else: SH_TILE), true, false)
+    if carved:
+        add_box(p(0.0,h,0.0),v3(hx+1.0,0.5,hz+1.0),yaw,false,.stone)
+        box(p(0.0,h+0.65,0.0),v3(f64(size.x)+2.0,1.0,f64(size.z)+2.0),yaw,stone(0.11,0.14,0.16),PLAIN,false)
+    else: box(p(0.0, h, 0.0), v3(f64(size.x) + 2.0, 1.0, f64(size.z) + 2.0), yaw, SH_STONE, PLAIN, true, false)
+    # walls: a side with a door has two pieces and a lintel
+    sides = [("n", 0.0, -hz, f64(size.x), 0.0), ("s", 0.0, hz, f64(size.x), 0.0), ("w", -hx, 0.0, f64(size.z), PI / 2.0), ("e", hx, 0.0, f64(size.z), PI / 2.0)]
+    loop sd in sides:
+        if contains(doors, sd.0):
+            seg = (sd.3 - 4.0) / 2.0
+            loop k in [-1.0, 1.0]:
+                off = k * (2.0 + seg / 2.0)
+                q = if sd.4 == 0.0: p(sd.1 + off, 0.0, sd.2) else: p(sd.1, 0.0, sd.2 + off)
+                if resurrection: add_box(q, v3(seg * 0.5, h * 0.5, 0.5), yaw + sd.4, false, .stone)
+                else: box(q, v3(seg, h, 1.0), yaw + sd.4, SH_STONE, SH_TILE, true, false)
+            q2 = p(sd.1, 3.6, sd.2)
+            if resurrection: add_box(q2, v3(2.0, (h - 3.6) * 0.5, 0.5), yaw + sd.4, false, .stone)
+            else: box(q2, v3(4.0, h - 3.6, 1.0), yaw + sd.4, SH_STONE, SH_TILE, true, false)
+        else:
+            if resurrection: add_box(p(sd.1, 0.0, sd.2), v3((sd.3 + 1.0) * 0.5, h * 0.5, 0.5), yaw + sd.4, false, .stone)
+            else: box(p(sd.1, 0.0, sd.2), v3(sd.3 + 1.0, h, 1.0), yaw + sd.4, SH_STONE, SH_TILE, true, false)
+    if resurrection:
+        sor_chamber(c)
+        return
+    if carved:
+        sor_supply_detail(c)
+        return
+    # glowing traces on the walls' inner faces: a line at waist height and one under the ceiling
+    # (broken at a door), joined by upright channels that branch off at right angles
+    loop sd in sides:
+        inx = if sd.1 > 0.0: sd.1 - 0.53 else: (if sd.1 < 0.0: sd.1 + 0.53 else: 0.0)
+        inz = if sd.2 > 0.0: sd.2 - 0.53 else: (if sd.2 < 0.0: sd.2 + 0.53 else: 0.0)
+        along = (t: f64, y: f64) -> vec3: if sd.4 == 0.0: p(t, y, inz) else: p(inx, y, t)
+        door = contains(doors, sd.0)
+        half = sd.3 * 0.45
+        loop y in [1.1, h - 0.6]:
+            if door:
+                loop k in [-1.0, 1.0]: box(along(k * (2.3 + (half - 2.3) / 2.0), y), v3(half - 2.3, 0.05, 0.05), yaw + sd.4, SH_STONE, SH_GLOW, false)
+            else: box(along(0.0, y), v3(half * 2.0, 0.05, 0.05), yaw + sd.4, SH_STONE, SH_GLOW, false)
+        nv = int(sd.3 / 3.5)
+        loop k in [0..nv):
+            t = -half + (f64(k) + 0.5) * (half * 2.0 / f64(nv))
+            if door and abs(t) < 2.6: continue
+            box(along(t, 1.1), v3(0.05, h - 1.7, 0.05), yaw + sd.4, SH_STONE, SH_GLOW, false)
+            # a short branch with a turn, every other channel
+            if k % 2 == 0:
+                yb = 1.1 + (h - 1.7) * (0.35 + 0.3 * hash2(t, f64(k)))
+                box(along(t + 0.5, yb), v3(1.0, 0.05, 0.05), yaw + sd.4, SH_STONE, SH_GLOW, false)
+                box(along(t + 1.0, yb - 0.4), v3(0.05, 0.8, 0.05), yaw + sd.4, SH_STONE, SH_GLOW, false)
+
+# Carved stone is built as an octagonal extrusion with bevels on its top and
+# bottom edges. These are decorative surfaces; the original collision shell
+# and four-metre door apertures remain the authority for the opening route.
+sor_carved = (frame: mat4, size: vec3, bevel: f64, col: vec4, mat: vec4):
+    hx = f64(size.x)*0.5
+    hz = f64(size.z)*0.5
+    h = f64(size.y)
+    b = min(bevel,min(h*0.24,min(hx,hz)*0.65))
+    pt = (k: int, row: int) -> vec3:
+        inset = if row==0 or row==3:b*0.55 else:0.0
+        x = hx-inset
+        z = hz-inset
+        cut = b
+        outline = [v3(-x+cut,0,-z),v3(x-cut,0,-z),v3(x,0,-z+cut),v3(x,0,z-cut),v3(x-cut,0,z),v3(-x+cut,0,z),v3(-x,0,z-cut),v3(-x,0,-z+cut)]
+        q = outline[k%8]
+        q.y = f32([0.0,b,h-b,h][row])
+        transform_point(frame,q)
+    __begin(transform_point(frame,vec3(0,0,0)))
+    loop row in [0..3):
+        loop k in [0..8):
+            a=pt(k,row)
+            b0=pt(k,row+1)
+            c=pt(k+1,row+1)
+            d=pt(k+1,row)
+            normal=normalize(cross(b0-a,d-a))
+            __quad(cur,a,b0,c,d,normal,col,mat)
+    loop row in [0,3]:
+        center=transform_point(frame,v3(0.0,(if row==0:0.0 else:h),0.0))
+        nn=transform_dir(frame,vec3(0,(if row==0:-1 else:1),0))
+        loop k in [0..8):
+            a=pt(k,row)
+            b0=pt(k+1,row)
+            if row==3: __quad(cur,center,b0,a,center,nn,col,mat)
+            else: __quad(cur,center,a,b0,center,nn,col,mat)
+    __end()
+
+# Dark cut, inset luminous filament, and a soft blue spill along its stone lip.
+# Object-local polylines work on wall panels, ribs and horizontal paving alike.
+sor_circuit = (frame: mat4, points: vec3[], glow: f64 = 0.28):
+    __begin(transform_point(frame,vec3(0,0,0)))
+    loop j in [0..points.len()-1):
+        a=points[j]
+        b=points[j+1]
+        d=normalize(b-a)
+        side=vec3(-d.y,d.x,0)
+        loop layer in [0..5):
+            widths=[0.20,0.12,0.072,0.048,0.022]
+            half=side*f32(widths[layer]*0.5)
+            lift=vec3(0,0,f32(0.003+f64(layer)*0.001))
+            col=if layer==3:stone(0.025,0.037,0.047) else:stone(0.15,0.24,0.27)
+            emission=if layer==3:0.0 else:glow*[0.04,0.10,0.22,0.0,3.8][layer]
+            __quad(cur,transform_point(frame,a-half+lift),transform_point(frame,b-half+lift),transform_point(frame,b+half+lift),transform_point(frame,a+half+lift),transform_dir(frame,vec3(0,0,1)),col,vec4(0,0,f32(emission),0))
+    __end()
+
+sor_pier = (o: vec3, height: f64, yaw: f64 = 0.0):
+    frame=translation(o)*rotation_y(yaw)
+    col=stone(0.24,0.27,0.275)
+    sor_carved(frame,v3(1.15,0.26,0.94),0.16,col,PLAIN)
+    sor_carved(frame*translation(vec3(0,0.26,0)),v3(0.98,0.26,0.78),0.11,col,SHEIKAH_M)
+    sor_carved(frame*translation(vec3(0,0.52,0)),v3(0.78,height-1.13,0.65),0.12,stone(0.19,0.225,0.24),vec4(-1,0.85,0.035,0))
+    sor_carved(frame*translation(v3(0.0,height-0.61,0.0)),v3(0.97,0.28,0.80),0.13,col,SHEIKAH_M)
+    sor_carved(frame*translation(v3(0.0,height-0.33,0.0)),v3(1.20,0.33,0.96),0.15,col,PLAIN)
+    loop face in [0.0,PI]:
+        panel=frame*rotation_y(face)*translation(vec3(0,0,0.329))
+        sor_circuit(panel,[v3(-0.19,0.64,0),v3(-0.19,1.5,0),v3(0.12,1.5,0),v3(0.12,height-0.9,0),v3(-0.11,height-0.9,0)],0.26)
+        sor_circuit(panel,[v3(0.22,0.64,0),v3(0.22,1.23,0),v3(0.03,1.23,0),v3(0.03,0.97,0)],0.18)
+
+sor_portal = (o: vec3):
+    # The wall backing is one metre thick. Seat a carved surround on each
+    # exposed face, rather than burying the bevels inside that backing slab.
+    loop face in [-1.0,1.0]:
+        front=o+v3(0,0,face*0.56)
+        loop side in [-1.0,1.0]: sor_pier(front+v3(side*2.62,0,0),4.9)
+        # The stepped moulding stays fixed while the door slab rises behind it.
+        loop step in [0..3):
+            sor_carved(translation(front+v3(0,3.62+f64(step)*0.27,0)),v3(4.75+f64(step)*0.22,0.28,0.85-f64(step)*0.16),0.1,stone(0.23,0.265,0.28),SHEIKAH_M)
+        frame=translation(front)*rotation_y((if face>0:0.0 else:PI))*translation(vec3(0,0,0.433))
+        sor_circuit(frame,[v3(-2.05,3.76,0),v3(-0.70,3.76,0),v3(-0.70,3.90,0),v3(0.70,3.90,0),v3(0.70,3.76,0),v3(2.05,3.76,0)],0.34)
+
+sor_paving = (o: vec3, half_width: int, length_: int):
+    loop x in [-half_width..half_width):
+        loop z in [0..length_):
+            q=o+v3((f64(x)+0.5)*1.6,0.008,(f64(z)+0.5)*1.6)
+            tone=hash2(f64(x)+17.0,f64(z)+41.0)
+            sor_carved(translation(q),v3(1.57,0.026,1.57),0.04,darken(stone(0.235,0.265,0.27),tone*0.20),PLAIN)
+            if (x+z)%3==0:
+                floor_frame=translation(q+vec3(0,0.031,0))*rotation_x(-PI/2.0)
+                sor_circuit(floor_frame,[vec3(-0.52,-0.50,0),vec3(-0.52,0.38,0),vec3(-0.18,0.38,0),vec3(-0.18,0.57,0)],0.20)
+
+sor_supply_detail = (c: vec3):
+    sor_paving(c+vec3(0,0,-6.4),4,8)
+    loop z in [-5.2,0.0,5.2]:
+        loop side in [-1.0,1.0]:
+            sor_pier(c+v3(side*6.12,0,z),4.65,(if side>0:-PI/2 else:PI/2))
+            # Sloped corbels meet the raised centre ribs, catching light on bevels.
+            frame=translation(c+v3(side*5.88,4.32,z))*rotation_z(side*0.72)
+            sor_carved(frame,v3(0.55,2.6,0.66),0.16,stone(0.20,0.235,0.25),SHEIKAH_M)
+        sor_carved(translation(c+v3(0,5.92,z)),v3(8.9,0.35,0.63),0.13,stone(0.20,0.23,0.25),SHEIKAH_M)
+        frame=translation(c+v3(0,5.913,z))*rotation_x(PI/2)
+        sor_circuit(frame,[vec3(-4.2,0,0),vec3(-1.8,0,0),vec3(-1.8,0.12,0),vec3(1.8,0.12,0),vec3(1.8,0,0),vec3(4.2,0,0)],0.15)
+    # Deep ceiling coffers: a high backing plane behind chamfered transverse ribs.
+    loop side in [-1.0,1.0]:
+        sor_carved(translation(c+v3(side*5.55,5.50,0)),v3(2.2,0.6,13.7),0.17,stone(0.15,0.18,0.20),SHEIKAH_M)
+    loop k in [0..22):
+        h=hash2(f64(k),89.0)
+        side=if k%2==0:-1.0 else:1.0
+        q=c+v3(side*(5.4+h*0.62),0.045,-6.0+f64(k/2)*1.12)
+        rock_lump(q,v3(0.07+h*0.13,0.04+h*0.07,0.11+h*0.14),rotation_y(h*6.0),f64(k),stone(0.22,0.235,0.23),PLAIN)
+
+# The short, built vestibule beyond door two uses a chamfered vault rather than
+# the generic cave's boxes and slanted slabs. Its collision boxes are identical.
+sor_vestibule = (mid: vec3, seg: f64, yaw: f64):
+    add_box(mid-vec3(0,1,0),v3((seg+0.3)*0.5,0.5,2.2),yaw,false,.stone)
+    loop side in [-1.0,1.0]:
+        add_box(mid+v3(side*2.6,-1.2,0),v3((seg+0.6)*0.5,3.25,0.5),yaw,false,.stone)
+        sor_pier(mid+v3(side*2.48,0,0),3.6)
+        sor_carved(translation(mid+v3(side*2.54,0,0)),v3(0.7,3.65,seg+0.12),0.18,stone(0.21,0.24,0.26),vec4(-1,0.88,0.06,0))
+        frame=translation(mid+v3(side*2.177,0,0))*rotation_y((if side>0:-PI/2 else:PI/2))
+        sor_circuit(frame,[vec3(-1.1,0.8,0),vec3(-0.5,0.8,0),vec3(-0.5,1.3,0),vec3(0.3,1.3,0),vec3(0.3,2.8,0),vec3(0.7,2.8,0)],0.21)
+        # Narrow corbels tuck into the walls; their underside rises to the coffer.
+        sor_carved(translation(mid+v3(side*2.22,3.05,0))*rotation_z(side*0.63),v3(0.34,1.35,0.44),0.1,stone(0.28,0.29,0.28),SHEIKAH_M)
+    sor_carved(translation(mid+v3(0,4.12,0)),v3(4.8,0.35,seg+0.12),0.1,stone(0.13,0.16,0.19),PLAIN)
+    sor_carved(translation(mid+v3(0,3.92,0)),v3(3.4,0.30,0.45),0.10,stone(0.26,0.285,0.29),SHEIKAH_M)
+    sor_paving(mid+v3(0,0,-seg*0.5),1,2)
+    loop side in [-1.0,1.0]:
+        h=hash2(f64(mid.z),side)
+        rock_lump(mid+v3(side*1.9,0.04,h-0.5),v3(0.16,0.08,0.21),rotation_y(h*4.0),h,stone(0.22,0.24,0.24),PLAIN)
+
+# ---------------- the Shrine of Resurrection ----------------
+# (the rooms in a line toward the north, then a long passage up to the ridge)
+const SOR_BED = v3(-1128.0, 237.0, 1915.0)
+# The wrist solver stays at local y=0.135 on the 0.22 m lip. Water just
+# reaches the palm's underside while the hips remain immersed in the shallow pod.
+const SOR_POD_LIP = 0.22
+const SOR_POD_WATER = SOR_POD_LIP + 0.005
+const SOR_PEDESTAL = v3(-1128.0, 237.0, 1910.0)
+const SOR_DOOR1 = v3(-1128.0, 237.0, 1907.0)
+const SOR_CHEST1 = v3(-1132.5, 237.0, 1897.5)
+const SOR_CHEST2 = v3(-1123.5, 237.0, 1897.5)
+const SOR_TERMINAL = v3(-1130.5, 237.0, 1895.0)
+const SOR_DOOR2 = v3(-1128.0, 237.0, 1893.0)
+const SOR_MOUTH_IN = v3(-1068.0, 248.0, 1845.0)
+
+# the rooms run from the bed toward the north-east (yaw so local -z points that way)
+SOR_YAW = 0.0
+
+sor_pads = ():
+    # a cut through the ridge from the mouth out to the open slope toward the overlook
+    loop i in [0..12):
+        t = f64(i) / 11.0
+        x = lerp(-1069.0, -1046.0, t)
+        z = lerp(1845.5, 1826.0, t)
+        y = lerp(247.4, 251.0, smooth01(t))
+        pads.push(Pad(x, z, 3.2 + t * 2.0, y, 2.5 + t * 3.0))
+    # and in the last meters of the passage the ground sunk just under its floor: he walks out on
+    # the floor (the cut's ground had stood half a meter over it inside the mouth, a step he hopped)
+    loop i in [0..9):
+        d = f64(i)
+        pads.push(Pad(-1067.0 - 0.836 * d, 1844.0 + 0.548 * d, 2.2, 247.5 - 0.144 * d - 0.35, 1.2))
+
+# a slate door: a slab carved with traces, framed, with a slop swirl at its middle
+sheikah_door = (p: vec3):
+    box(p, v3(4.0, 3.6, 0.6), 0.0, SH_STONE, vec4(-1.0, 0.3, 0.5, 0.0), false)
+    loop side in [-1.0, 1.0]:
+        box(p + v3(side * 1.95, 0.0, 0.0), v3(0.2, 3.6, 0.7), 0.0, stone(0.12, 0.12, 0.14), PLAIN, false)
+    box(p + v3(0.0, 3.5, 0.0), v3(4.1, 0.2, 0.7), 0.0, stone(0.12, 0.12, 0.14), PLAIN, false)
+    loop sz in [-1.0, 1.0]:
+        q = p + v3(0.0, 1.9, sz * 0.31)
+        loop k in [0..40):
+            a = TAU * 1.65 * f64(k) / 40.0
+            b = TAU * 1.65 * f64(k + 1) / 40.0
+            r = 0.08 + 0.67 * f64(k) / 40.0
+            rr = 0.08 + 0.67 * f64(k + 1) / 40.0
+            p0 = q + v3(cos(a) * r, sin(a) * r, 0.0)
+            p1 = q + v3(cos(b) * rr, sin(b) * rr, 0.0)
+            box_m(translation((p0 + p1) * 0.5) * rotation_z(atan2(f64(p1.y - p0.y), f64(p1.x - p0.x))) * scaling(v3(f64(length(p1 - p0)) + 0.025, 0.06, 0.03)), SH_STONE, vec4(0.0, 0.0, 1.0, 0.0), false)
+
+# Annular masonry and inset light: no filled luminous discs, no added colliders.
+# Elliptical rings also form the curved pod, with the head end raised into a hood.
+sor_ring = (o: vec3, rx: f64, rz: f64, width: f64, height: f64, col: vec4, mat: vec4, hood: f64 = 0.0, door_gap: bool = false):
+    __begin(o)
+    p = (a: f64, inset: f64, up: f64) -> vec3:
+        o + v3(cos(a) * (rx - inset), up + hood * smoothstep(0.1, 0.9, -sin(a)), sin(a) * (rz - inset))
+    loop k in [0..64):
+        a = TAU * f64(k) / 64.0
+        b = TAU * f64(k + 1) / 64.0
+        mid = (a + b) * 0.5
+        if door_gap and sin(mid) < -0.9 and abs(cos(mid) * rx) < 2.3: continue
+        __quad(cur, p(a, 0.0, height), p(a, width, height), p(b, width, height), p(b, 0.0, height), vec3(0, 1, 0), col, mat)
+        __quad(cur, p(a, 0.0, 0.0), p(a, 0.0, height), p(b, 0.0, height), p(b, 0.0, 0.0), v3(cos((a + b) * 0.5), 0.0, sin((a + b) * 0.5)), col, PLAIN)
+        __quad(cur, p(b, width, 0.0), p(b, width, height), p(a, width, height), p(a, width, 0.0), v3(-cos((a + b) * 0.5), 0.0, -sin((a + b) * 0.5)), col, PLAIN)
+    __end()
+
+# A small slop swirl, engraved into each dark wall panel.
+sor_glyph = (frame: mat4):
+    line = (a: vec3, b: vec3, wide: f64, mat: vec4):
+        d = normalize(b - a)
+        side = vec3(-d.y, d.x, 0) * f32(wide * 0.5)
+        __quad(cur, transform_point(frame, a - side), transform_point(frame, b - side), transform_point(frame, b + side), transform_point(frame, a + side), transform_dir(frame, vec3(0, 0, 1)), stone(0.09, 0.13, 0.16), mat)
+    __begin(transform_point(frame, vec3(0, 2.3, 0)))
+    loop k in [0..40):
+        a = TAU * 1.65 * f64(k) / 40.0
+        b = TAU * 1.65 * f64(k + 1) / 40.0
+        r = 0.035 + 0.40 * f64(k) / 40.0
+        rr = 0.035 + 0.40 * f64(k + 1) / 40.0
+        line(v3(cos(a) * r, 2.35 + sin(a) * r, 0.075), v3(cos(b) * rr, 2.35 + sin(b) * rr, 0.075), 0.055, PLAIN)
+        line(v3(cos(a) * r, 2.35 + sin(a) * r, 0.078), v3(cos(b) * rr, 2.35 + sin(b) * rr, 0.078), 0.014, vec4(0, 0, 0.23, 0))
+    __end()
+
+sor_chamber = (c: vec3):
+    # A dark circular drum and corbelled vault inside the unchanged rectangular collision shell.
+    ys = [0.0, 0.5, 1.0, 4.9, 5.5, 6.15, 6.8]
+    rs = [6.45, 6.45, 6.6, 6.6, 6.0, 4.5, 0.15]
+    __begin(c)
+    loop row in [0..6):
+        loop k in [0..64):
+            a = TAU * f64(k) / 64.0
+            b = TAU * f64(k + 1) / 64.0
+            mid = (a + b) * 0.5
+            # The north door and its approach stay at their original positions and width.
+            if sin(mid) < -0.9 and abs(cos(mid) * 6.6) < 2.3 and row < 3: continue
+            p = (ang: f64, j: int) -> vec3: c + v3(cos(ang) * rs[j], ys[j], sin(ang) * rs[j])
+            nn = normalize(v3(-cos(mid), (rs[row + 1] - rs[row]) / (ys[row + 1] - ys[row]), -sin(mid)))
+            tone = 0.85 + hash2(f64(k), f64(row)) * 0.2
+            __quad(cur, p(a, row), p(b, row), p(b, row + 1), p(a, row + 1), nn, darken(stone(0.13, 0.165, 0.18), 1.0 - tone), vec4(-1.0, 0.94, 0.07, -1))
+    __end()
+    # Staggered courses interrupt the tall smooth drum. Narrow recessed joints,
+    # and varied block tones remain decorative and collider-free.
+    loop row in [0..5):
+        y = 1.0 + f64(row) * 0.72
+        loop k in [0..32):
+            a = TAU * (f64(k) + f64(row % 2) * 0.5) / 32.0
+            b = a + TAU / 32.0 - 0.003
+            mid = (a + b) * 0.5
+            if sin(mid) < -0.9 and abs(cos(mid) * 6.6) < 2.3 and y < 3.6: continue
+            p = (ang: f64, yy: f64) -> vec3: c + v3(cos(ang) * 6.57, yy, sin(ang) * 6.57)
+            __begin(c)
+            col = darken(stone(0.14, 0.175, 0.19), hash2(f64(k), f64(row)) * 0.16)
+            nn = v3(-cos(mid), 0.0, -sin(mid))
+            __quad(cur, p(a, y + 0.014), p(b, y + 0.014), p(b, y + 0.70), p(a, y + 0.70), nn, col, vec4(-1, 0.99, 0.0, -1))
+            __end()
+    # Worn radial paving catches the pool light. Open joints and small differences
+    # in stone tone give the quiet floor a scale without raising its contact plane.
+    __begin(c)
+    loop band in [0..3):
+        inner = 3.12 + f64(band) * 0.88
+        outer = inner + 0.85
+        loop k in [0..40):
+            a = TAU * (f64(k) + f64(band % 2) * 0.5) / 40.0 + 0.002
+            b = a + TAU / 40.0 - 0.004
+            pt = (angle: f64, radius: f64) -> vec3: SOR_BED + v3(cos(angle) * radius, 0.004, sin(angle) * radius)
+            col = darken(stone(0.13, 0.165, 0.18), hash2(f64(k), f64(band) + 72.0) * 0.24)
+            __quad(cur, pt(a, inner), pt(b, inner), pt(b, outer), pt(a, outer), vec3(0, 1, 0), col, SOR_DRESSED)
+    __end()
+    # Low stone courses, with a narrow cyan channel buried between the two lips.
+    loop y in [0.2, 0.62]: sor_ring(c + v3(0.0, y, 0.0), 6.4, 6.4, 0.16, 0.12, stone(0.07, 0.10, 0.115), SOR_DRESSED, 0.0, true)
+    # Sparse ornamental wall panels: bracketed glyphs rather than a bright rectangular grid.
+    loop k in [0..12):
+        a = TAU * (f64(k) + 0.5) / 12.0
+        if sin(a) < -0.85: continue
+        frame = translation(c + v3(cos(a) * 6.38, 0.0, sin(a) * 6.38)) * rotation_y(-PI / 2.0 - a)
+        box_m(frame * translation(v3(0.0, 2.25, 0.0)) * scaling(v3(1.15, 2.45, 0.13)), stone(0.065, 0.085, 0.1), SOR_SHEIKAH, false)
+        sor_glyph(frame)
+        loop side in [-1.0, 1.0]:
+            box_m(frame * translation(v3(side * 0.43, 1.65, 0.075)) * scaling(v3(0.03, 1.1, 0.025)), SH_STONE, vec4(0, 0, 0.32, -1), false)
+            box_m(frame * translation(v3(side * 0.27, 1.12, 0.075)) * scaling(v3(0.35, 0.03, 0.025)), SH_STONE, vec4(0, 0, 0.32, -1), false)
+    sor_ring(c + v3(0.0, 0.012, 0.0), 5.55, 5.55, 0.028, 0.005, SH_STONE, vec4(0, 0, 0.20, -1))
+    # Two recessed channels guide the eye from the basin to the slate terminal.
+    loop side in [-1.0, 1.0]:
+        box(SOR_BED + v3(side * 1.48, 0.006, -3.45), v3(0.19, 0.012, 2.0), 0.0, stone(0.03, 0.05, 0.07), SOR_DRESSED, false)
+        box(SOR_BED + v3(side * 1.48, 0.019, -3.45), v3(0.04, 0.006, 1.85), 0.0, SH_STONE, vec4(0, 0, 0.4, -1), false)
+        box(SOR_BED + v3(side * 1.0, 0.019, -4.38), v3(1.0, 0.006, 0.04), 0.0, SH_STONE, vec4(0, 0, 0.4, -1), false)
+
+# Compact ceramic lamp beside the restoration hood. The tapered rings and
+# recessed amber aperture echo the basin instead of a cuboid with orange tiles.
+sor_warm_terminal = (q: vec3, yaw: f64):
+    frame = translation(q) * rotation_y(yaw)
+    levels = [vec3(0.0,0.135,0.205),vec3(0.055,0.145,0.22),
+        vec3(0.37,0.112,0.177),vec3(0.47,0.12,0.19),vec3(0.52,0.098,0.163)]
+    point = (ring: vec3, angle: f64) -> vec3: transform_point(frame,v3(cos(angle)*f64(ring.y),f64(ring.x),sin(angle)*f64(ring.z)))
+    __begin(q)
+    loop j in [0..levels.len()-1):
+        a = levels[j]
+        b = levels[j+1]
+        loop k in [0..12):
+            t0 = TAU*f64(k)/12.0
+            t1 = TAU*f64(k+1)/12.0
+            p0 = point(a,t0)
+            p1 = point(a,t1)
+            p2 = point(b,t1)
+            p3 = point(b,t0)
+            nn = normalize(cross(p3-p0,p1-p0))
+            __quad(cur,p0,p3,p2,p1,nn,stone(0.10,0.135,0.15),SOR_DRESSED)
+    # A dark inset bed and a small amber lens under a thick ceramic rim.
+    loop k in [0..24):
+        a = TAU*f64(k)/24.0
+        b = TAU*f64(k+1)/24.0
+        ring = vec3(0.515,0.094,0.158)
+        __tri(cur,transform_point(frame,v3(0.0,0.515,0.0)),point(ring,b),point(ring,a),stone(0.035,0.05,0.06),SOR_DRESSED)
+        lens = vec3(0.517,0.055,0.102)
+        __tri(cur,transform_point(frame,v3(0.0,0.517,0.0)),point(lens,b),point(lens,a),SH_STONE,vec4(0,0,0.58,-1))
+    __end()
+    loop y in [0.18,0.29]:
+        # The housing narrows upward; the dark socket backs the thin light.
+        z = lerp(0.22,0.177,(y-0.055)/0.315)
+        box_m(frame*translation(v3(0.0,y,z-0.008))*scaling(v3(0.125,0.042,0.020)),stone(0.035,0.05,0.06),SOR_DRESSED,false)
+        box_m(frame*translation(v3(0.0,y+0.013,z+0.013))*scaling(v3(0.08,0.012,0.006)),SH_STONE,vec4(0,0,0.65,-1),false)
+
+sor_interior = ():
+    room(v3(-1128.0, 237.0, 1914.0), v3(14.0, 7.0, 14.0), SOR_YAW, "n", true)
+    begin_named("sor_pool")
+    # Stepped ring basin: dark, shallow water surrounded by cut stone and an inset luminous seam.
+    column(SOR_BED + v3(0.0, -0.4, 0.0), 2.8, 2.8, 0.42, 48, stone(0.06, 0.095, 0.12), SOR_DRESSED, false)
+    sor_ring(SOR_BED + v3(0.0, 0.02, 0.0), 2.83, 2.83, 0.22, 0.10, stone(0.11, 0.15, 0.17), SOR_SHEIKAH)
+    sor_ring(SOR_BED + v3(0.0, 0.025, 0.0), 2.68, 2.68, 0.038, 0.10, SH_STONE, vec4(0, 0, 0.65, -1))
+    sor_ring(SOR_BED + v3(0.0, 0.0, 0.0), 3.1, 3.1, 0.22, 0.028, stone(0.08, 0.115, 0.14), SOR_SHEIKAH)
+    # A rounded sarcophagus with layered rails and a lifted curved hood at the head.
+    column(SOR_BED + v3(0.0, 0.035, 0.0), 2.6, 2.6, 0.025, 48, stone(0.035, 0.085, 0.12), SOR_DRESSED, false)
+    box(SOR_BED + v3(0.0, -0.1, 0.0), v3(1.0, 0.2, 2.2), 0.0, stone(0.075, 0.11, 0.14), SOR_DRESSED, false)
+    box(SOR_BED + v3(0.0, 0.1, 0.0), v3(0.9, 0.01, 2.0), 0.0, stone(0.065, 0.15, 0.18), vec4(0, 0, 0.05, -1), false)
+    sor_ring(SOR_BED + v3(0.0, -0.04, 0.0), 0.82, 1.61, 0.16, 0.27, stone(0.065, 0.085, 0.105), SOR_SHEIKAH, 0.18)
+    sor_ring(SOR_BED + v3(0.0, 0.21, 0.0), 0.76, 1.54, 0.035, 0.025, SH_STONE, vec4(0, 0, 0.45, -1), 0.18)
+    sor_ring(SOR_BED + v3(0.0, 0.0, 0.0), 0.65, 1.40, 0.07, SOR_POD_LIP, stone(0.13, 0.18, 0.2), SOR_SHEIKAH, 0.18)
+    dome(SOR_BED + v3(0.0, 0.21, -1.62), 0.92, 0.55, 32, 8, stone(0.085, 0.12, 0.14), vec4(-1, 0.82, 0.12, -1), scaling(v3(0.9, 1.0, 0.6)))
+    loop side in [-1.0, 1.0]:
+        loop k in [0..5):
+            z = -0.85 + f64(k) * 0.4
+            box(SOR_BED + v3(side * 0.68, 0.17, z), v3(0.045, 0.014, 0.14), side * 0.2, SH_STONE, vec4(0, 0, 0.28, -1), false)
+    # Dark transverse bed inlays and small stone fasteners break up the smooth shell.
+    loop k in [0..7):
+        z = -1.12 + f64(k) * 0.34
+        box(SOR_BED + v3(0.0, 0.111, z), v3(0.86, 0.008, 0.018), 0.0, stone(0.04, 0.08, 0.095), SOR_DRESSED, false)
+        loop side in [-1.0, 1.0]:
+            box(SOR_BED + v3(side * 0.73, 0.147, z), v3(0.035, 0.019, 0.035), 0.0, stone(0.17, 0.21, 0.22), SOR_DRESSED, false)
+    # Segmented ceramic collar: short radial joints, worn outer facets and tiny
+    # recessed vents. All lie outside the palm/hip contact bed and water sheet.
+    __begin(SOR_BED)
+    loop k in [0..40):
+        a = TAU * f64(k) / 40.0 + 0.014
+        b = TAU * f64(k + 1) / 40.0 - 0.014
+        pt = (ang: f64, rx: f64, rz: f64, y: f64) -> vec3:
+            SOR_BED + v3(cos(ang) * rx, y + 0.18 * smoothstep(0.1, 0.9, -sin(ang)), sin(ang) * rz)
+        tone = hash2(f64(k), 31.0)
+        col = darken(stone(0.18, 0.235, 0.25), tone * 0.25)
+        __quad(cur, pt(a, 0.815, 1.605, 0.231), pt(a, 0.77, 1.56, 0.231), pt(b, 0.77, 1.56, 0.231), pt(b, 0.815, 1.605, 0.231), vec3(0, 1, 0), col, SOR_DRESSED)
+        nn = v3(cos((a + b) * 0.5), 0.0, sin((a + b) * 0.5))
+        __quad(cur, pt(a, 0.824, 1.614, 0.06), pt(a, 0.824, 1.614, 0.17), pt(b, 0.824, 1.614, 0.17), pt(b, 0.824, 1.614, 0.06), nn, stone(0.045, 0.075, 0.09), SOR_DRESSED)
+    __end()
+    end_named()
+    # Amber status terminals at the hood contrast with the restoration water.
+    begin_named("sor_warm_lights")
+    loop side in [-1.0, 1.0]:
+        q = SOR_BED + v3(side * 0.96, 0.06, -1.22)
+        sor_warm_terminal(q,side*0.15)
+    end_named()
+    begin_named("sor_pedestal")
+    sor_ring(SOR_PEDESTAL + v3(0.0, 0.01, 0.0), 0.84, 0.84, 0.14, 0.055, stone(0.1, 0.14, 0.17), SOR_SHEIKAH)
+    column(SOR_PEDESTAL, 0.5, 0.33, 0.86, 16, stone(0.085, 0.115, 0.14), SOR_SHEIKAH, false)
+    column(SOR_PEDESTAL + v3(0.0, 0.82, 0.0), 0.33, 0.48, 0.24, 16, stone(0.12, 0.165, 0.19), SOR_SHEIKAH, false)
+    sor_ring(SOR_PEDESTAL + v3(0.0, 0.91, 0.0), 0.41, 0.41, 0.025, 0.02, SH_STONE, vec4(0, 0, 0.45, -1))
+    slate_frame = translation(SOR_PEDESTAL + v3(0.0, 1.15, 0.0)) * rotation_x(-0.5)
+    box_m(slate_frame * scaling(v3(0.83, 0.13, 0.67)), stone(0.06, 0.08, 0.11), SOR_SHEIKAH, false)
+    box_m(slate_frame * translation(v3(0.0, 0.075, 0.0)) * scaling(v3(0.58, 0.016, 0.43)), stone(0.03, 0.12, 0.17), vec4(-1, 0.6, 0.45, -1), false)
+    loop side in [-1.0, 1.0]: box_m(slate_frame * translation(v3(side * 0.33, 0.076, 0.0)) * scaling(v3(0.025, 0.012, 0.47)), SH_STONE, vec4(0, 0, 0.55, -1), false)
+    end_named()
+    add_cyl(SOR_PEDESTAL, 0.5, 1.1, false, .stone)
+    # the second room with the chests and the terminal
+    begin_named("sor_clothing_room")
+    room(v3(-1128.0, 237.0, 1900.0), v3(14.0, 6.0, 14.0), 0.0, "ns", false, true)
+    # Inset courses articulate the supply room's flat walls.
+    # Decoration stays outside the existing doorway and never enters collision.
+    loop side in [-1.0, 1.0]:
+        loop row in [0..5):
+            loop k in [0..9):
+                z = 1894.0 + f64(k) * 1.48 + f64(row % 2) * 0.32
+                if z > 1906.0: continue
+                col = darken(stone(0.29, 0.31, 0.30), hash2(f64(k), f64(row) + side) * 0.19)
+                box(v3(-1128.0 + side * 6.46, 237.15 + f64(row) * 0.83, z), v3(0.045, 0.80, 1.44), 0.0, col, vec4(-1, 0.98, 0, 0), false)
+        loop k in [0..7):
+            box(v3(-1128.0 + side * 3.7, 237.01, 1894.0 + f64(k) * 1.8), v3(0.06, 0.008, 1.65), 0.0, stone(0.07, 0.10, 0.115), PLAIN, false)
+    # Recessed chest alcoves: pale stone catches the overhead blue light, with a warm
+    # inset behind the lids. All dressing is outside the unchanged walkable space.
+    loop chest in [SOR_CHEST1, SOR_CHEST2]:
+        box(chest + v3(0.0, 0.008, 0.0), v3(3.0, 0.016, 2.6), 0.0, stone(0.4, 0.38, 0.31), SHEIKAH_M, false)
+        box(chest + v3(0.0, 0.0, -1.15), v3(2.8, 2.3, 0.16), 0.0, stone(0.24, 0.28, 0.3), SHEIKAH_M, false)
+        loop side in [-1.0, 1.0]:
+            box(chest + v3(side * 1.35, 0.0, -1.04), v3(0.18, 2.5, 0.2), 0.0, stone(0.36, 0.34, 0.27), PLAIN, false)
+            box(chest + v3(side * 1.17, 0.12, -0.92), v3(0.035, 1.8, 0.025), 0.0, SH_STONE, vec4(0, 0, 0.36, 0), false)
+        box(chest + v3(0.0, 2.25, -0.98), v3(2.7, 0.06, 0.035), 0.0, SH_STONE, vec4(0, 0, 0.55, 0), false)
+    end_named()
+    sor_portal(SOR_DOOR1)
+    sor_portal(SOR_DOOR2)
+    begin_named("sor_door1")
+    sheikah_door(SOR_DOOR1)
+    end_named()
+    begin_named("sor_terminal")
+    column(SOR_TERMINAL, 0.45, 0.35, 1.2, 6, SH_STONE, PLAIN, false)
+    box_m(translation(SOR_TERMINAL + v3(0.0, 1.2, 0.0)) * rotation_x(-0.6) * scaling(v3(0.8, 0.1, 0.6)), SH_STONE, vec4(0.0, 0.0, 1.6, 0.0), false)
+    end_named()
+    add_cyl(SOR_TERMINAL, 0.45, 1.2, false, .stone)
+    begin_named("sor_door2")
+    sheikah_door(SOR_DOOR2)
+    end_named()
+    # the passage: straight out of the second room's north door, then a long climb north-east
+    # to the mouth on the ridge
+    leg1a = v3(-1128.0, 237.0, 1893.0)
+    corner = v3(-1128.0, 237.0, 1884.0)
+    mouth = v3(-1067.0, 247.5, 1844.0)
+    corridor(leg1a, corner, 3)
+    corridor(corner, mouth, 36)
+    # close the outside of the bend
+    box(corner + v3(-2.7, -1.2, -2.7), v3(2.0, 6.5, 2.0), 0.0, stone(0.3, 0.29, 0.28), PLAIN, true, false)
+    box(corner + v3(0.0, 3.5, 0.0), v3(7.0, 1.0, 7.0), 0.0, stone(0.3, 0.29, 0.28), PLAIN, true, false)
+    box(corner + v3(0.0, -1.0, 0.0), v3(6.0, 1.0, 6.0), 0.0, SH_FLOOR, SH_TILE, true, false)
+    zones.push(Zone("sor", v3(-1142.0, 228.0, 1886.0), v3(-1114.0, 248.0, 1926.0)))
+    zones.push(Zone("sor", v3(-1133.0, 230.0, 1879.0), v3(-1123.0, 244.0, 1894.0)))
+
+# The tunnel and the hillside share this exact recessed rim. No independently
+# sampled arches can leave triangular daylight slits at their join.
+sor_rim_points: {int: vec3} = {}
+sor_rim = (j: int, layer: int) -> vec3:
+    key = j * 7 + layer
+    if let cached = sor_rim_points.get(key): return cached
+    a = PI * f64(j) / 32.0
+    yy = pow(max(0.0, sin(a)), 0.46)
+    widths = [2.7, 3.65, 6.8, 10.2, 14.5, 20.0, 29.0]
+    heights = [4.5, 5.4, 11.0, 15.0, 19.0, 23.0, 28.0]
+    # Carry the flared lip past the terrain cut, including oblique side views.
+    depths = [-3.0, 4.5, 15.5, 16.2, 9.5, 0.0, -17.0]
+    x = -cos(a) * widths[layer] + yy * sin(a * 2.0 + 0.4) * 0.4
+    y = -1.0 + yy * heights[layer] + sin(a * 3.0) * 0.4 + sin(a * 7.0) * 0.32 + sin(a * 11.0 + f64(layer)) * 0.18
+    # Bury the jambs below the terrain, including the lower outer hillside.
+    y -= pow(abs(cos(a)), 12.0) * 2.0
+    z = depths[layer] + sin(a * 5.0 + f64(layer) * 0.6) * 0.65
+    # One projecting shoulder, a recessed central bed and a lower right lip.
+    # These large masses break the flared brow without roughening the sealed rim.
+    relief = smoothstep(1.0,2.0,f64(layer))*(1.0-smoothstep(5.0,6.0,f64(layer)))
+    shoulder = exp(-((a-0.70)/0.34)^2.0)*1.6
+    hollow = exp(-((a-1.70)/0.36)^2.0)*1.1
+    lip = exp(-((a-2.40)/0.28)^2.0)*0.9
+    z += relief*(shoulder-hollow+lip)
+    y += relief*(shoulder*0.35-lip*0.25)
+    # Tall joint-bounded shoulders carry the brow and broken shelves. The exact
+    # inner rim remains shared with the passage; faults start at the daylight lip.
+    exterior = smoothstep(0.0, 1.0, f64(layer))
+    fault = smoothstep(0.05, 0.20, abs(sin(a * 6.0 + 0.35)))
+    mass = sin(a * 4.0 + 0.4) * 0.9 + sin(a * 9.0) * 0.35
+    # Unequal crown collapse and one stepped lip break the radial arch rhythm.
+    collapse = exp(-((a-1.12)/0.19)^2.0)
+    shelf = exp(-((a-2.18)/0.27)^2.0)
+    y -= exterior * relief * collapse * 1.55
+    z += exterior * relief * shelf * 1.8
+    x += exterior * mass * 0.6
+    y += exterior * (sin(a * 5.0 + 0.2) * 0.65 + sin(a * 13.0) * 0.24)
+    z += exterior * (mass + fault * 0.85)
+    # Deep joints split the broad shoulder masses, tapering before the sealed
+    # lining and buried outer return. The fissures are geometry, not stripes.
+    cleft = exp(-((a-0.72)/0.065)^2.0) + exp(-((a-1.36)/0.060)^2.0) + exp(-((a-2.48)/0.075)^2.0)
+    # Seat the exterior in front of the host cliff, not behind its narrow
+    # heightfield notch. Only the last boundary retreats into buried rock.
+    if layer > 1 and layer < 6:
+        front = -20.0
+        # Bridge the heightfield notch with broad rock. Taking the neighbouring
+        # face seats avoids tracing its door-shaped slot into the new cliff.
+        loop offset in [-3.5,0.0,3.5]:
+            d = 36.0
+            loop d > -20.0:
+                q = SOR_MOUTH_IN + transform_dir(rotation_y(2.24),v3(x+offset,y,d))
+                if height_at(f64(q.x),f64(q.z)) > f64(q.y): break
+                d -= 0.5
+            front = max(front,d)
+        shoulder = smoothstep(1.5,7.5,abs(x))
+        z = lerp(z,max(z,front+0.6+mass*0.25),shoulder)-cleft*1.65
+    q = SOR_MOUTH_IN + transform_dir(rotation_y(2.24), v3(x, y, z))
+    sor_rim_points[key] = q
+    q
+
+# Bake mineral seams and damp moss into rock vertices so the watercolor pass
+# retains local value changes without another fragment-noise stack.
+sor_rock_finish = (first: int):
+    loop k in [first..cur.verts.len()):
+        p = cur.verts[k].pos
+        n = cur.verts[k].normal
+        # Retain the continuous form normal; a small geometric contribution
+        # articulates ledges without outlining every tessellation panel.
+        face_start = first+((k-first)/4)*4
+        a = cur.verts[face_start].pos
+        c = cur.verts[face_start+1].pos
+        d = cur.verts[face_start+2].pos
+        face = normalize(cross(c-a,d-a))
+        facet = if cur.verts[k].mat.w > 6.5: 0.10 else: 0.08
+        n = normalize(n*f32(1.0-facet)+face*f32(facet))
+        cur.verts[k].normal = n
+        # Shared world positions carry a coherent wash across mesh boundaries.
+        patch = __n3(p*0.075)
+        recess = smoothstep(0.20,0.62,-f64(n.y))
+        col = cur.verts[k].color
+        col = vec4(col.xyz*f32(0.68+patch*0.28-recess*0.07),col.w)
+        moss = smoothstep(0.15,0.72,f64(n.y))*smoothstep(0.66,0.88,__n3(p*0.18))
+        col = vec4(mix(col.xyz,col.xyz*vec3(0.72,0.88,0.67),f32(moss*0.35)),col.w)
+        cur.verts[k].color = col
+
+sor_mouth_point = (j: int, k: int) -> vec3:
+    layer = min(5,k/6)
+    t = f64(k-layer*6)/6.0
+    p = mix(sor_rim(j,layer),sor_rim(j,layer+1),f32(t))
+    # Subdivide the broad radial slabs into fractured relief, keeping every
+    # shared boundary exact and leaving the continuous tunnel seal untouched.
+    rough = (__n3(p*0.18)-0.5)*0.16*sin(t*PI)
+    exterior = smoothstep(0.0,6.0,f64(k))
+    shelf = sin(t*PI)*exterior
+    joint = smoothstep(0.03,0.18,abs(sin(f64(j)*0.58+0.4)))
+    p+transform_dir(rotation_y(2.24),v3(rough*0.35,rough-shelf*0.24,(joint*0.9-0.3)*shelf))
+
+# Shared by the mesh and its seating regression: exact tessellated arch vertices.
+sor_mouth_block = (sign: f64, k: int, row: int) -> vec3:
+    j = if sign < 0.0: 3+row*3 else: 29-row*3
+    sor_mouth_point(j,1+k*2)
+
+sor_mouth_block_inset = (sign: f64, row: int) -> vec3:
+    j = if sign < 0.0: 3+row*3 else: 29-row*3
+    a = PI*f64(j)/32.0
+    transform_dir(rotation_y(2.24),normalize(v3(-cos(a),pow(sin(a),0.46),0.0)))*0.38
+
+# Sample the actual arch triangles so shelf grass roots in the continuous
+# surface, including the diagonal shared by each tessellated cell.
+sor_mouth_seat = (j: f64, k: f64) -> vec3:
+    jj = int(floor(j))
+    kk = int(floor(k))
+    u = f32(fract(j))
+    v = f32(fract(k))
+    a = sor_mouth_point(jj,kk)
+    b = sor_mouth_point(jj+1,kk)
+    c = sor_mouth_point(jj+1,kk+1)
+    d = sor_mouth_point(jj,kk+1)
+    if u >= v: a*(1.0-u)+b*(u-v)+c*v else: a*(1.0-v)+c*u+d*(v-u)
+
+sor_rock_mouth = ():
+    # A turf triangle crosses the left footing ahead of the flared brow.
+    burn_mark(-1057.0,1842.0,3.0,3,8.0)
+    # Rasterize the rock projection, including the recessed brow and flared feet.
+    # A full texel/blade-lean margin keeps bilinear edges from sprouting in rock.
+    loop j in [0..33):
+        loop k in [0..37):
+            foot = sor_mouth_point(j,k)
+            ground = height_at(f64(foot.x),f64(foot.z))
+            # The lining owns the corridor footprint; its walls and roof must
+            # suppress plants below them. Outside, clear only grounded stone,
+            # leaving the meadow under the high overhang and around the rubble.
+            across = abs((f64(foot.x)+1068.0)*cos(2.24)-(f64(foot.z)-1845.0)*sin(2.24))
+            lining = k <= 6 or (k <= 12 and across > 2.0)
+            if lining or (f64(foot.y) > ground-2.0 and f64(foot.y) < ground+0.75):
+                burn_mark(f64(foot.x),f64(foot.z),(if lining: 2.1 else: 1.45),3,8.0)
+    __begin(SOR_MOUTH_IN)
+    first = cur.verts.len()
+    normal = (j: int, k: int) -> vec3:
+        normalize(cross(sor_mouth_point(min(j + 1, 32), k) - sor_mouth_point(max(j - 1, 0), k), sor_mouth_point(j, min(k + 1, 36)) - sor_mouth_point(j, max(k - 1, 0))))
+    loop k in [0..36):
+        loop j in [0..32):
+            mat = vec4(0,f32(smoothstep(5.0,10.0,f64(k))*0.6),0,f32(6.0+smoothstep(0.0,6.0,f64(k))))
+            col = mix(stone(0.20, 0.215, 0.19), stone(0.335, 0.345, 0.31), f32(smoothstep(0.0, 24.0, f64(k))))
+            __quad_n(cur, sor_mouth_point(j, k), sor_mouth_point(j + 1, k), sor_mouth_point(j + 1, k + 1), sor_mouth_point(j, k + 1), normal(j, k), normal(j + 1, k), normal(j + 1, k + 1), normal(j, k + 1), col, mat)
+            __quad_n(cur, sor_mouth_point(j, k), sor_mouth_point(j, k + 1), sor_mouth_point(j + 1, k + 1), sor_mouth_point(j + 1, k), -normal(j, k), -normal(j, k + 1), -normal(j + 1, k + 1), -normal(j + 1, k), col, mat)
+    sor_rock_finish(first)
+    __end()
+    # Tufts grow in exposed shelf cracks, rooted in the same triangles that
+    # carry the stone. Sparse blades leave the brow's vertical faces bare.
+    __begin(SOR_MOUTH_IN)
+    loop i in [0..30):
+        j = 2.0 + hash2(f64(i),47.0)*28.0
+        k = 13.0 + hash2(f64(i),23.0)*17.0
+        root = sor_mouth_seat(j,k)
+        n = normalize(cross(sor_mouth_seat(j+0.05,k)-root,sor_mouth_seat(j,k+0.05)-root))
+        if n.y < 0.38: continue
+        loop b in [0..9):
+            h = hash2(f64(i*11+b),19.0)
+            q = sor_mouth_seat(j+(h-0.5)*0.35,k+(hash2(f64(b),f64(i))-0.5)*0.35)
+            edge = v3(0.028,0.0,0.018)
+            __tri(cur,q-edge,q+edge,q+v3((h-0.5)*0.18,0.20+h*0.35,0.06),stone(0.24+h*0.12,0.35+h*0.12,0.14),PLAIN)
+    __end()
+    # Thick eroded feet bridge the cut's lower corners into the turf. A thin
+    # arch alone leaves the heightfield's clipped edge visible at grazing angles.
+    axis = normalize(v3(61.0, 0.0, -40.0))
+    side = vec3(-axis.z, 0, axis.x)
+    yaw = atan2(-f64(axis.z), f64(axis.x))
+    # The buried outer return used to clear these wall footprints incidentally.
+    # Keep the final passage's plants off its lining independently of the brow.
+    loop i in [0..14):
+        loop sign in [-1.0,1.0]:
+            q = SOR_MOUTH_IN-axis*f32(f64(i)*1.5)+side*f32(sign*2.6)
+            burn_mark(f64(q.x),f64(q.z),2.1,3,8.0)
+    loop sign in [-1.0, 1.0]:
+        loop k in [0..4):
+            along = -3.0 + f64(k) * 2.5
+            q = SOR_MOUTH_IN + axis * f32(along) + side * f32(sign * 3.0) + v3(0.0, -0.5 + along * 0.144, 0.0)
+            # Cover the rotated foot ellipse and its blade lean margin.
+            loop t in [-1.2, -0.6, 0.0, 0.6, 1.2]:
+                foot = q + axis * f32(t)
+                burn_mark(f64(foot.x), f64(foot.z), 1.25, 3, 8.0)
+            rock_lump(q, v3(1.8, 1.2, 0.78), rotation_y(yaw), 431.0 + f64(k) * 13.0 + sign, stone(0.20, 0.215, 0.19), SOR_STONE)
+    loop i in [0..14):
+        h = hash2(f64(i), 93.0)
+        sign = if i % 2 == 0: -1.0 else: 1.0
+        q = SOR_MOUTH_IN + axis*f32(4.0+h*5.0) + side*f32(sign*(2.2+hash2(f64(i),29.0)*2.5))
+        q.y = f32(height_at(f64(q.x),f64(q.z)))
+        sz = 0.25 + h*0.55
+        sor_split_stone(q-v3(0,sz*0.12,0),v3(sz*1.3,sz*0.45,sz),2.24+h,1500.0+f64(i),stone(0.30,0.32,0.32),vec4(0,0.4,0,7))
+        __begin(q)
+        loop b in [0..8):
+            t = hash2(f64(i*11+b),31.0)
+            root = q + side*f32(sign*(sz+0.10+t*0.45)) + axis*f32((t-0.5)*0.8)
+            root.y = f32(height_at(f64(root.x),f64(root.z))+0.015)
+            edge = side*0.032
+            __tri(cur,root-edge,root+edge,root+v3(0.06,0.22+t*0.32,0.04),stone(0.25+t*0.09,0.35+t*0.10,0.13),PLAIN)
+        __end()
+
+# Reuse the existing additive shaft batch at the daylight threshold. Depth
+# testing clips the light against the irregular brow; no extra full-screen pass.
+sor_passage_light = (cam: vec3, sunlight: f32):
+    if length(cam-SOR_MOUTH_IN)>45.0: return
+    axis = normalize(vec3(61,0,-40))
+    side = vec3(-axis.z,0,axis.x)
+    loop k in [0..2):
+        p = SOR_MOUTH_IN + axis*f32(1.0-f64(k)*2.3) + side*f32(0.65-f64(k)*1.0) - vec3(0,0.35,0)
+        shafts.push(vec4(p,f32(0.11-f64(k)*0.03)*sunlight))
+
+# Angular split slabs, with broad planes and an undercut dark lip. These are
+# decorative relief only; the continuous lining and all ramp colliders stay sealed.
+sor_split_stone = (c: vec3, r: vec3, yaw: f64, seed: f64, col: vec4, mat: vec4 = SOR_STONE):
+    __begin(c)
+    first = cur.verts.len()
+    outline = [vec2(-1,-0.45),vec2(-0.60,-1),vec2(0.55,-0.9),vec2(1,0.08),vec2(0.7,0.85),vec2(-0.65,1)]
+    top: vec3[]
+    bottom: vec3[]
+    loop j in [0..outline.len()):
+        q = outline[j]
+        h = hash2(seed+f64(j)*3.7,4.7)
+        bottom.push(c+transform_dir(rotation_y(yaw),v3(f64(q.x),-0.62-h*0.18,f64(q.y))*r))
+        top.push(c+transform_dir(rotation_y(yaw),v3(f64(q.x)*0.84,0.38+h*0.35,f64(q.y)*0.88)*r))
+    crown = c+vec3(0,r.y*0.78,0)
+    foot = c-vec3(0,r.y*0.70,0)
+    loop j in [0..outline.len()):
+        next = (j+1)%outline.len()
+        __quad(cur,crown,top[next],top[j],crown,normalize(cross(top[next]-crown,top[j]-crown)),col,mat)
+        __quad(cur,foot,bottom[j],bottom[next],foot,normalize(cross(bottom[j]-foot,bottom[next]-foot)),darken(col,0.30),mat)
+        nn = normalize(cross(top[j]-bottom[j],bottom[next]-bottom[j]))
+        shade = 0.06+hash2(seed,f64(j))*0.12
+        __quad(cur,bottom[j],top[j],top[next],bottom[next],nn,darken(col,f32(shade)),mat)
+    sor_rock_finish(first)
+    __end()
+
+sor_passage_surface = (a: vec3, b: vec3, n: int, station: f64, ang: f64) -> vec3:
+    side = normalize(v3(-f64(b.z - a.z), 0.0, f64(b.x - a.x)))
+    base = mix(a, b, f32(station / f64(n)))
+    bed = fract(ang*3.2 + noise(station*0.28,3.7)*0.55)
+    cleft = smoothstep(0.66,0.82,bed)*(1.0-smoothstep(0.86,1.0,bed))
+    # The lining carries broad bedding rather than a metre-by-metre faceted
+    # mosaic beside the opening camera. Keep the sealed rim and clearance.
+    rough = sin(station*0.31+ang*2.0)*0.14 + (noise(station*0.26,ang*1.6)-0.5)*0.14 + cleft*0.12
+    up = -0.65 + pow(max(sin(ang), 0.0), 0.55) * (4.65 + rough)
+    q = base + side * f32(-cos(ang) * (2.7 + rough)) + v3(0.0, up, 0.0)
+    # Side ordering is reversed in the mouth's local frame.
+    mix(q, sor_rim(32 - int(round(ang * 32.0 / PI)), 0), f32(smoothstep(f64(n - 4), f64(n), station)))
+
+
+# Low relief follows the lining triangles. Its ragged perimeter is buried in
+# their surface, while a shallow broken crown and shared mineral finish emerge.
+sor_passage_seat = (a: vec3, b: vec3, n: int, station: f64, j: f64) -> vec3:
+    k0 = floor(station * 2.0) * 0.5
+    j0 = floor(j)
+    u = f32((station - k0) * 2.0)
+    v = f32(j - j0)
+    pt = (jj: f64, ss: f64) -> vec3: sor_passage_surface(a,b,n,ss,PI*jj/32.0)
+    aa = pt(j0,k0)
+    bb = pt(j0,k0+0.5)
+    cc = pt(j0+1.0,k0+0.5)
+    dd = pt(j0+1.0,k0)
+    if u >= v: aa*(1.0-u)+bb*(u-v)+cc*v else: aa*(1.0-v)+cc*u+dd*(v-u)
+
+sor_passage_stratum = (a: vec3, b: vec3, n: int, station: f64, sign: f64, row: int):
+    side = normalize(v3(-f64(b.z-a.z),0.0,f64(b.x-a.x)))
+    seed = station*17.0+sign*31.0+f64(row)*13.0
+    lower = row == 0
+    point = (x: int, y: int) -> vec3:
+        u = f64(x)/6.0
+        v = f64(y)/4.0
+        ss = station+(u-0.5)*(0.48+hash2(seed,4.1)*1.25)
+        # Each lens has its own bedding height, thickness and axial length.
+        # Opposite walls share geology but never matching rows or end joints.
+        j = (if lower: 0.2 + hash2(seed, 7.2) * 1.2 else: 3.0 + hash2(seed, 8.4) * 3.0)
+        j += v * (2.0 + hash2(seed, 2.8) * 3.0)
+        ss += (v - 0.5) * (hash2(seed, 6.5) - 0.5) * 0.55
+        ss += sin(v*PI*2.0+seed)*0.07
+        jj = if sign < 0.0: j else: 32.0-j
+        seat = sor_passage_seat(a,b,n,ss,jj)
+        edge = pow(max(0.0,sin(u*PI)*sin(v*PI)),0.6)
+        crown = (0.17+sin(u*PI+seed)*0.04)*edge-0.035
+        seat-side*f32(sign*crown)
+    # The ledge is seated in a curved lining. Shared normals describe that
+    # curve; independent quad normals made huge bright/dark panels beside
+    # the opening camera even after reducing the shell's small relief.
+    normal = (x: int, y: int) -> vec3:
+        dx = point(min(6,x+1),y)-point(max(0,x-1),y)
+        dy = point(x,min(4,y+1))-point(x,max(0,y-1))
+        normalize(cross(dx,dy))*f32(if sign < 0.0: 1.0 else: -1.0)
+    __begin(mix(a,b,f32(station/f64(n))))
+    first = cur.verts.len()
+    loop y in [0..4):
+        loop x in [0..6):
+            aa=point(x,y)
+            bb=point(x+1,y)
+            cc=point(x+1,y+1)
+            dd=point(x,y+1)
+            if sign < 0.0:
+                __quad_n(cur,aa,bb,cc,dd,normal(x,y),normal(x+1,y),normal(x+1,y+1),normal(x,y+1),stone(0.255,0.265,0.245),SOR_STONE)
+            else:
+                __quad_n(cur,dd,cc,bb,aa,normal(x,y+1),normal(x+1,y+1),normal(x+1,y),normal(x,y),stone(0.255,0.265,0.245),SOR_STONE)
+    sor_rock_finish(first)
+    # A shallow contact crease darkens only the buried lower/outer courses.
+    loop k in [first..cur.verts.len()):
+        course = (k-first)/24
+        cur.verts[k].color = darken(cur.verts[k].color,f32(if course == 0: 0.16 else: 0.03))
+    __end()
+
+# Last forty metres: one continuous, fractured shell. The old collision
+# backing remains separate, while this surface seals every wall and roof seam.
+sor_passage_shell = (a: vec3, b: vec3, n: int):
+    side = normalize(v3(-f64(b.z - a.z), 0.0, f64(b.x - a.x)))
+    raw_point = (j: int, k: int) -> vec3: sor_passage_surface(a,b,n,16.0+f64(k)*0.5,PI*f64(j)/32.0)
+    # The shrine end uses sixteen angular panels, this shell thirty-two.
+    # Seat new midpoint vertices on the old straight edge at the shared ring.
+    p = (j: int, k: int) -> vec3:
+        if k == 0 and j % 2 == 1: return (raw_point(j-1,k)+raw_point(j+1,k))*0.5
+        raw_point(j,k)
+    rings = (n - 16) * 2
+    normal = (j: int, k: int) -> vec3:
+        normalize(cross(p(j, min(k + 1, rings)) - p(j, max(k - 1, 0)), p(min(j + 1, 32), k) - p(max(j - 1, 0), k)))
+    loop k in [0..rings):
+        __begin((p(0, k) + p(32, k)) * 0.5)
+        first = cur.verts.len()
+        loop j in [0..32):
+            __quad_n(cur, p(j, k), p(j, k + 1), p(j + 1, k + 1), p(j + 1, k), normal(j, k), normal(j, k + 1), normal(j + 1, k + 1), normal(j + 1, k), stone(0.255, 0.265, 0.245), SOR_STONE)
+        sor_rock_finish(first)
+        __end()
+
+# A shallow, irregular scree surface over the unchanged walkable ramp. Across
+# the threshold its ragged tongues sink into turf instead of exposing a box end.
+sor_passage_floor = (a: vec3, b: vec3, i: int, n: int):
+    side = normalize(v3(-f64(b.z - a.z), 0.0, f64(b.x - a.x)))
+    ax = normalize(vec3(b.x - a.x, 0, b.z - a.z))
+    point = (j: int, k: int) -> vec3:
+        station = f64(i + k)
+        across = (f64(j) / 8.0 * 2.0 - 1.0) * 3.15
+        base = mix(a, b, f32(station / f64(n))) + side * f32(across)
+        edge = pow(abs(across) / 3.15, 3.0)
+        base.y += f32(0.025 + edge * (0.18 + 0.08 * sin(station * 2.3 + across)))
+        if i >= n - 1:
+            blend = f64(k)
+            base += ax * f32(blend * (1.9 + 0.25 * sin(across * 4.7)))
+            base.y = f32(lerp(f64(base.y), height_at(f64(base.x), f64(base.z)) - 0.035, blend))
+        base
+    __begin(mix(a, b, f32((f64(i) + 0.5) / f64(n))))
+    loop j in [0..8):
+        pa = point(j, 0)
+        pb = point(j, 1)
+        pc = point(j + 1, 1)
+        pd = point(j + 1, 0)
+        nn = normalize(cross(pb - pa, pd - pa))
+        if nn.y < 0.0: nn = -nn
+        col = stone(0.22, 0.205, 0.18)
+        __quad(cur, pa, pd, pc, pb, nn, col, SOR_STONE)
+    __end()
+
+# a sloping corridor with walls, a ceiling and glowing strips, from a to b (floor heights)
+corridor = (a: vec3, b: vec3, n: int):
+    d = b - a
+    len_ = f64(length(vec3(d.x, 0, d.z)))
+    yaw = atan2(-f64(d.z), f64(d.x))
+    side = normalize(v3(-f64(d.z), 0.0, f64(d.x)))
+    slope = atan2(f64(d.y), len_)
+    seg = len_ / f64(n)
+    if n > 3: sor_passage_shell(a, b, n)
+    loop i in [0..n):
+        p0 = a + d * f32(f64(i) / f64(n))
+        p1 = a + d * f32(f64(i + 1) / f64(n))
+        mid = (p0 + p1) * 0.5
+        # (the shrine's built passage gives way to a rough cave toward the mouth)
+        cave = if n > 3: smoothstep(0.12, 0.38, f64(i) / f64(n)) else: 0.0
+        if n > 3 and i >= 16:
+            # Preserve box_m's ramp collider exactly (its physics is yaw-only).
+            add_box(mid - vec3(0, 1, 0), v3((seg + 0.3) * 0.5, 0.5, 2.2), yaw, false, .stone)
+            sor_passage_floor(a, b, i, n)
+            if i < n - 4: add_box(mid + vec3(0, 4, 0), v3((seg + 0.4) * 0.5, 0.5, 3.1), yaw, false, .stone)
+            loop k in [-1.0, 1.0]:
+                add_box(mid + side * f32(k * 2.6) - vec3(0, 1.2, 0), v3((seg + 0.6) * 0.5, 3.25, 0.5), yaw, false, .stone)
+                h = hash2(f64(i), k + 31.0)
+                pocket = noise(f64(i)*0.35,k*7.0+53.0)
+                if h > 0.32 and pocket > 0.40:
+                    sor_split_stone(mid + side * f32(k * (2.10 + h * 0.18)) + normalize(vec3(d.x,0,d.z)) * f32((h-0.5)*seg*0.75), v3(0.25 + h * 0.42, 0.14 + h * 0.18, 0.24 + h * 0.23), yaw + h * 2.0, f64(i) + k * 33.0, stone(0.20, 0.215, 0.195), SOR_STONE)
+                ax = normalize(vec3(d.x,0,d.z))
+                # Broken strata sit in the lining: exposed faces project less than
+                # half a metre, with dark undersides instead of rounded beige bulges.
+                if i < n - 3:
+                    loop row in [0..2):
+                        hh = hash2(f64(i)*7.0+f64(row),k+81.0)
+                        if hh < (if row == 0: 0.24 else: 0.44): continue
+                        sor_passage_stratum(a,b,n,f64(i)+0.5+(hh-0.5)*0.75,k,row)
+                # The larger seated stones carry the talus mass. Tiny split slabs
+                # read as unlit chips at walking distance, so leave this floor clear.
+                # Roots follow the wall's lower flanks near the daylight mouth.
+                if i >= n - 12 and i < n - 3 and i % 3 == 0:
+                    top = mid + side*f32(k*2.75) + v3(0,3.05,0)
+                    knee = mid + side*f32(k*2.51) + ax*0.28 + v3(0,1.85+h*0.25,0)
+                    tip = mid + side*f32(k*2.43) + ax*0.65 + v3(0,0.45+h*0.35,0)
+                    tube(top,knee,0.070,0.045,5,stone(0.12,0.105,0.065),WOODM)
+                    tube(knee,tip,0.045,0.012,5,stone(0.16,0.135,0.075),WOODM)
+                    tube(knee,knee-ax*0.65-v3(0,0.65,0),0.03,0.008,5,stone(0.13,0.11,0.065),WOODM)
+                    # Upright shoots root beside the talus. A very shallow
+                    # green slab here had read as a square floor tile.
+                    __begin(mid)
+                    loop blade in [0..7):
+                        h = hash2(f64(i*11+blade),k+49.0)
+                        across = 2.25+h*0.22
+                        root = mid+side*f32(k*across)+ax*f32((f64(blade)-3.0)*0.10)
+                        root.y += f32(0.027+pow(across/3.15,3.0)*0.18)
+                        edge = ax*0.018
+                        tip = root+side*f32(-k*0.04)+v3(0,0.10+h*0.15,0)
+                        __tri(cur,root-edge,root+edge,tip,stone(0.15,0.23,0.105),PLAIN)
+                    __end()
+            if f64(i) / f64(n) < 0.9 and f64(length(mid - SOR_MOUTH_IN)) > 6.0: zones.push(Zone("sor", mid - vec3(4.0, 3.0, 4.0), mid + vec3(4.0, 4.0, 4.0)))
+            continue
+        if n==3:
+            sor_vestibule(mid,seg,yaw)
+            continue
+        rockc = stone(0.265, 0.27, 0.25)
+        mouthmat = if i >= n - 4 and n > 3: vec4(0, 0, 0, 5) else: SOR_STONE
+        box_m(translation(mid - vec3(0, 0.5, 0)) * rotation_y(yaw) * rotation_z(slope) * scaling(v3(seg + 0.3, 1.0, 4.4)), (if cave > 0.5: stone(0.3, 0.28, 0.24) else: SH_FLOOR), (if cave > 0.5: SOR_STONE else: SH_TILE), true, false)
+        ax = normalize(v3(f64(d.x), 0.0, f64(d.z)))
+        if n > 3 and i < n - 4:
+            if cave > 0.15:
+                # An unbroken, inward-facing rock shell hides the flat collision backing.
+                # Shared cross sections avoid the repeated sawtooth slab silhouette.
+                __begin(mid)
+                first = cur.verts.len()
+                pt = (j: int, ring: int) -> vec3:
+                    ang = PI * f64(j) / 16.0
+                    station = f64(i + ring)
+                    base = a + d * f32(station / f64(n))
+                    bed = fract(ang*3.2+noise(station*0.28,3.7)*0.55)
+                    cleft = smoothstep(0.66,0.82,bed)*(1.0-smoothstep(0.86,1.0,bed))
+                    rough = sin(station*0.63+ang*3.0)*0.16+(noise(station*0.8,ang*3.2)-0.5)*0.34+cleft*0.24
+                    wide = 2.7 + rough
+                    up = -0.65 + pow(max(sin(ang), 0.0), 0.55) * (4.65 + rough)
+                    base + side * f32(-cos(ang) * wide) + vec3(0, f32(up), 0)
+                loop j in [0..16):
+                    pa = pt(j, 0)
+                    pb = pt(j, 1)
+                    pc = pt(j + 1, 1)
+                    pd = pt(j + 1, 0)
+                    nn = normalize(cross(pb - pa, pd - pa))
+                    tone = 0.08 + hash2(f64(i / 3), f64(j / 2)) * 0.12
+                    __quad(cur, pa, pb, pc, pd, nn, darken(rockc, f32(tone)), SOR_STONE)
+                sor_rock_finish(first)
+                __end()
+            else if i % 3 == 1:
+                # Surviving corbelled stone ribs at the shrine end of the passage.
+                loop k in [-1.0, 1.0]:
+                    box(mid + side * f32(k * 2.02), v3(0.5, 3.0, 0.3), yaw, stone(0.32, 0.33, 0.31), SHEIKAH_M, false)
+                    rock_lump(mid + side * f32(k * 1.75) + vec3(0, 3.35, 0), v3(0.55, 0.7, 0.65), rotation_y(yaw), f64(i) + k, rockc, SOR_STONE)
+            # Broken masonry and stone fragments continue back toward the door.
+            loop k in [-1.0, 1.0]:
+                h = hash2(f64(i), k + 19.0)
+                rock_lump(mid + side * f32(k * (1.7 + h * 0.3)) + ax * f32((h - 0.5) * seg) + vec3(0, 0.04, 0), v3(0.22 + h * 0.28, 0.12 + h * 0.16, 0.2 + h * 0.17), rotation_y(h * 6.0), f64(i) * 9.0 + k, darken(rockc, 0.13), SOR_STONE)
+        # the cave floor: rubble and stones fallen along it, kept off the middle of the way
+        if cave > 0.5:
+            ax3 = normalize(v3(f64(d.x), 0.0, f64(d.z)))
+            loop q in [0..5):
+                hq = hash2(f64(i) * 5.0 + f64(q), 21.0)
+                sd2 = if hash2(f64(i), f64(q) + 4.0) < 0.5: -1.0 else: 1.0
+                off = 0.9 + hq * 1.1
+                rp = mid + side * f32(sd2 * off) + ax3 * f32((hash2(f64(q), f64(i) + 9.0) - 0.5) * seg) + vec3(0, f32(seg * sin(slope) * 0.0), 0)
+                rs = 0.12 + hq * hq * 0.35
+                rock_lump(rp + vec3(0, f32(rs * 0.3), 0), v3(rs * 1.3, rs * 0.7, rs), rotation_y(hq * 9.0), f64(i) * 17.0 + f64(q), darken(rockc, f32(0.1 + hq * 0.2)), mouthmat)
+        loop k in [-1.0, 1.0]:
+            # (the last walls end short of the mouth, behind its rock: their cut ends stood in the daylight)
+            if n > 3 and i >= n - 4:
+                add_box(mid + side * f32(k * 2.6) - vec3(0, 1.2, 0), v3((seg + 0.6) * 0.5, 3.25, 0.5), yaw, false, .stone)
+            else if i == n - 1:
+                axw = normalize(v3(f64(d.x), 0.0, f64(d.z)))
+                box(mid - axw * f32(seg * 0.3) + side * f32(k * 2.6) - vec3(0, 1.2, 0), v3(seg * 0.4, 6.5, 1.0), yaw, darken(rockc, 0.3), mouthmat, false)
+                add_box(mid + side * f32(k * 2.6) - vec3(0, 1.2, 0), v3((seg + 0.6) * 0.5, 3.25, 0.5), yaw, false, .stone)
+            else: box(mid + side * f32(k * 2.6) - vec3(0, 1.2, 0), v3(seg + 0.6, 6.5, 1.0), yaw, (if cave > 0.5: rockc else: stone(0.3, 0.29, 0.28)), PLAIN, true, false)
+            if i % 2 == 0 and cave < 0.5: box(mid + side * f32(k * 2.05) + vec3(0, 0.9, 0), v3(seg * 0.8, 0.08, 0.1), yaw, SH_STONE, SH_GLOW, false)
+            # the cave's walls: boulders bulging out of the rock, fallen stones along the foot
+            if cave > 0.15 and i < n - 4:
+                # the cave's walls: lumps of rock crowding in, low ones kept clear of the way, higher
+                # ones leaning over it
+                ax = normalize(v3(f64(d.x), 0.0, f64(d.z)))
+                # (in the last stretch the mouth's own rock leans over it)
+                loop q in [0..(if i < n - 3: 3 else: 2)):
+                    hh = hash2(f64(i) * 3.0 + f64(q), k + 1.3)
+                    up_ = 0.1 + f64(q) * 1.4 + hh * 0.55
+                    ctr = mid + side * f32(k * (2.7 - f64(q) * 0.12 + hh * 0.3)) + vec3(0, f32(up_), 0) + ax * f32((hh - 0.5) * seg * 0.7)
+                    sor_split_stone(ctr,v3(seg*(0.55+hh*0.3),0.36+hh*0.45,0.65+hh*0.3),yaw+(hh-0.5)*0.18,f64(i)*7.0+f64(q)+k*50.0,darken(rockc,f32(0.14+hh*0.18)))
+                h1 = hash2(f64(i), k)
+                if h1 > 0.6: rock_lump(mid + side * f32(k * 1.75) + vec3(0, 0.1, 0) + ax * f32((h1 - 0.8) * seg), v3(0.5, 0.3, 0.45), rotation_y(h1 * 6.0), f64(i) * 3.1 + k, darken(rockc, 0.15), mouthmat)
+            else if cave > 0.0 and cave <= 0.15:
+                h1 = hash2(f64(i), k)
+                # (slabs of rock leaning out of the wall a little, each its own tilt and tone)
+                box_m(translation(mid + side * f32(k * 2.05) + vec3(0, f32(0.3 + h1 * 2.0), 0)) * rotation_y(yaw + (h1 - 0.5) * 0.35) * rotation_x(k * (0.1 + h1 * 0.15)) * scaling(v3(seg * (0.8 + h1 * 0.5), 1.2 + h1 * 1.6, 0.5)), darken(rockc, f32(h1 * 0.2)), PLAIN, false)
+                if h1 > 0.65: box_m(translation(mid + side * f32(k * 1.6) + vec3(0, 0.05, 0)) * rotation_y(h1 * 6.0) * rotation_z(0.3) * scaling(v3(0.45, 0.25, 0.4)), darken(rockc, 0.15), PLAIN, false)
+        # (the last few meters roofed by rock, no flat slab: it showed through the mouth as a dark beam)
+        if n > 3 and i >= n - 4: pass
+        else if i >= n - 3 and i < n - 1: rock_lump(mid + vec3(0, 4.9, 0), v3(seg * 0.8 + 0.6, 1.1, 3.4), rotation_y(yaw), f64(i) * 13.0 + 400.0, darken(rockc, 0.3), mouthmat)
+        else if i < n - 3: box(mid + vec3(0, 4.0, 0), v3(seg + 0.4, 1.0, 6.2), yaw, (if cave > 0.15: darken(rockc, 0.45) else: stone(0.3, 0.29, 0.28)), (if cave > 0.15: mouthmat else: PLAIN), true, false)
+        # a vaulted roof: slabs slanting in from the tops of the walls (lumps of rock in the cave)
+        # (not in the last few meters: the mouth's brow of rock roofs them, and lumps there hang across the opening)
+        if cave > 0.15 and i < n - 4:
+            ax2 = normalize(v3(f64(d.x), 0.0, f64(d.z)))
+            loop k in [-1.0, -0.5, 0.0, 0.5, 1.0]:
+                hv = hash2(f64(i), k + 7.5)
+                sor_split_stone(mid+side*f32(k*1.6)+v3(0,3.75+hv*0.3-abs(k)*0.35,0)+ax2*f32((hv-0.5)*seg*0.5),v3(seg*0.75+0.7,0.55+hv*0.3,1.0+hv*0.4),yaw,f64(i)*11.0+k*3.0+100.0,darken(rockc,f32(0.08+hv*0.2)))
+        loop k in (if cave > 0.15: [] else: [-1.0, 1.0]):
+            hv = hash2(f64(i), k + 7.5)
+            box_m(translation(mid + side * f32(k * 1.75) + vec3(0, f32(3.55 + hv * 0.2), 0)) * rotation_y(yaw) * rotation_x(k * (0.75 + cave * hv * 0.3)) * scaling(v3(seg + 0.35, 0.6, 1.9)), (if cave > 0.5: darken(rockc, f32(hv * 0.2)) else: stone(0.27, 0.26, 0.25)), PLAIN, false)
+        if cave > 0.0 and cave <= 0.15: box_m(translation(mid + vec3(0, f32(3.2 + hash2(f64(i), 3.0) * 0.5), 0)) * rotation_y(yaw) * rotation_z(hash2(f64(i), 5.0) - 0.5) * scaling(v3(seg * 1.1, 0.9, 3.6)), darken(rockc, 0.1), PLAIN, false)
+        if n > 3 and cave > 0.5 and i % 3 == 0 and i < n - 4:
+            loop k in [-1.0, 1.0]:
+                h = hash2(f64(i), k + 32.0)
+                top = mid + side * f32(k * 2.25) + vec3(0, 3.55, 0) - ax * 0.6
+                knee = mid + side * f32(k * 2.0) + vec3(0, f32(2.4 + h * 0.35), 0)
+                tip = mid + side * f32(k * 2.12) + vec3(0, f32(1.2 + h * 0.7), 0) + ax * 0.6
+                tube(top, knee, 0.095, 0.065, 6, stone(0.25, 0.21, 0.15), WOODM)
+                tube(knee, tip, 0.065, 0.018, 5, stone(0.3, 0.25, 0.16), WOODM)
+                tube(knee, tip + ax * 0.55 + vec3(0, 0.4, 0), 0.045, 0.01, 5, stone(0.25, 0.22, 0.15), WOODM)
+                # Damp moss cushions in the ledges below the roots, stronger toward daylight.
+                rock_lump(mid + side * f32(k * 2.16) + vec3(0, 0.06, 0), v3(0.7, 0.10, 0.36), rotation_y(yaw), f64(i) + k * 3.0, stone(0.18, 0.25, 0.12), PLAIN)
+        # underground all along, until the last stretch where it opens onto the ridge
+        if f64(i) / f64(n) < 0.9 and f64(length(mid - SOR_MOUTH_IN)) > 6.0: zones.push(Zone("sor", mid - vec3(4.0, 3.0, 4.0), mid + vec3(4.0, 4.0, 4.0)))
+
+# ---------------- shrine chambers (below their entrances) ----------------
+struct ShrineRoom:
+    name: str
+    origin: vec3          # the chamber's floor center (the lift arrives here)
+    exit_to: vec3         # where the lift brings you back up
+    monk: vec3
+    chest: vec3
+    chest_item: str
+
+shrine_rooms: ShrineRoom[]
+
+# ---------------- the resurrection pool's surface ----------------
+# a shallow sheet of glowing water over the bed: pale light, slow ripples moving out from the
+# middle, brighter where they crest
+struct PoolV:
+    pos: vec3
+    mist: f32
+
+struct PoolU:
+    vp: mat4
+    center: vec3
+    time: f32
+    strength: f32
+    scene_depth: Texture
+    scene_color: Texture
+    near: f32
+    far: f32
+
+struct PoolO:
+    pos: vec4
+    local: vec2
+    mist: f32
+    height: f32
+
+pool_vs = (v: PoolV, u: PoolU) -> PoolO:
+    p=v.pos
+    if v.mist>1.5:
+        # Tiny suspended specks drift as complete crossed quads, never spawn
+        # particles or mutate the simulation from a render callback.
+        p.x += sin(u.time*0.13+v.mist*1.7)*0.10
+        p.y += sin(u.time*0.19+v.mist)*0.12
+        p.z += cos(u.time*0.11+v.mist*2.3)*0.08
+    PoolO(u.vp * vec4(u.center + p, 1), p.xz, v.mist, p.y)
+
+# Feather the shallow sheet/mist where it meets skin. Constant-alpha planes
+# cut dark cuffs through knees and ankles despite the skin being welded.
+pool_figure_contact = (separation: f32, material: f32) -> f32:
+    figure=1.0-smoothstep(0.35,0.55,material)
+    lerp(f32(1),smoothstep(0.002,0.055,max(0.0,separation)),figure)
+
+pool_contact = (i: PoolO, u: PoolU) -> f32:
+    clip=u.vp*vec4(u.center+vec3(i.local.x,i.height,i.local.y),1)
+    uv=clip.xy/clip.w*0.5+vec2(0.5,0.5)
+    z=sample(u.scene_depth,uv).x*2.0-1.0
+    distance=2.0*u.near*u.far/(u.far+u.near-z*(u.far-u.near))
+    pool_figure_contact(distance-clip.w,sample(u.scene_color,uv).w)
+
+pool_fs = (i: PoolO, u: PoolU) -> vec4:
+    r = length(i.local)
+    if i.mist>1.5:
+        return vec4(vec3(0.32,0.49,0.56)*u.strength,0.16+0.08*sin(u.time*0.4+i.mist))
+    if i.mist < -2.5:
+        # Smooth reflected blue pools under the floor channels in the supply
+        # room and vestibule. Geometry hugs the existing floor contact plane.
+        z=mod(i.local.y+21.0,3.0)-1.5
+        x=abs(i.local.x)-1.0
+        glow=exp(-(x*x*2.2+z*z*1.3))*0.065
+        return vec4(vec3(0.09,0.38,0.53)*u.strength,glow)
+    if i.mist < -1.5:
+        # Soft caustic light on the chamber masonry. Two warped, travelling wave
+        # families cross into moving cells; light dies away above the water line.
+        q = i.local * 1.8 + vec2(i.height * 0.7, i.height * 0.9)
+        a = sin(q.x * 3.1 + sin(q.y * 2.7 - u.time * 0.45) * 1.5 + u.time * 0.32)
+        b = sin(q.y * 3.4 + sin(q.x * 2.3 + u.time * 0.38) * 1.4 - u.time * 0.27)
+        net = max(pow(1.0 - abs(a), 5.0), pow(1.0 - abs(b), 5.0))
+        shimmer = 0.75 + 0.25 * sin(q.x + q.y - u.time * 0.65)
+        fade = smoothstep(0.1, 0.55, i.height) * (1.0 - smoothstep(0.8, 2.8, i.height))
+        return vec4(vec3(0.12, 0.58, 0.70) * u.strength, net * fade * shimmer * 0.30)
+    if i.mist < -0.5:
+        # A separate sheet inside the pod, above its contact bed and below its rails.
+        # Intersecting travelling crests and fine caustics make the shallow water readable.
+        oval = length(i.local / vec2(0.64, 1.30))
+        wave = sin(r * 21.0 - u.time * 1.5 + sin(i.local.y * 7.0 + u.time * 0.6) * 0.7)
+        crosswave = sin(i.local.x * 31.0 + i.local.y * 13.0 + u.time * 0.8)
+        crest = smoothstep(0.58, 0.98, wave * 0.65 + crosswave * 0.35)
+        caustic = pow(1.0 - abs(sin(i.local.x * 16.0 + sin(i.local.y * 11.0 + u.time * 0.4))), 8.0)
+        c = vec3(0.07, 0.37, 0.47) + vec3(0.30, 0.72, 0.82) * (crest * 0.6 + caustic * 0.25)
+        return vec4(c * u.strength, smoothstep(1.0, 0.91, oval) * (0.30 + crest * 0.22 + caustic * 0.08) * pool_contact(i,u))
+    if i.mist > 0.5:
+        drift = vnoise(i.local * vec2(1.1, 0.7) + vec2(u.time * 0.05, -u.time * 0.025))
+        veil = smoothstep(2.5, 1.65, r) * smoothstep(0.8, 1.25, r)
+        return vec4(vec3(0.14, 0.40, 0.51) * u.strength, veil * (0.022 + drift * 0.035) * pool_contact(i,u))
+    edge = smoothstep(2.5, 2.2, r)
+    rip = sin(r * 9.0 - u.time * 1.1 + vnoise(i.local * 1.3) * 1.5) * 0.5 + 0.5
+    caust = vnoise(i.local * 2.2 + vec2(u.time * 0.3, -u.time * 0.2)) * vnoise(i.local * 3.1 - vec2(u.time * 0.25, u.time * 0.35))
+    # (clear shallow water: the dark floor shows through; light only on the crests and caustics,
+    # and a glow toward the rim)
+    crest = smoothstep(0.7, 1.0, rip)
+    rim = smoothstep(1.4, 2.4, r)
+    # Low cyan light pools between the pod and the stone rim; the floor remains visible.
+    c = mix(vec3(0.04, 0.19, 0.26), vec3(0.25, 0.72, 0.86), crest * 0.35 + caust * 0.6 + rim * 0.25)
+    vec4(c * u.strength, edge * (0.12 + 0.10 * crest + caust * 0.16 + rim * 0.08) * pool_contact(i,u))
+
+__pool_sh = Shader()
+__pool_mesh = Mesh()
+__pool_ready = false
+
+pool_draw = (vp: mat4, strength: f64):
+    if strength <= 0.0: return
+    if not __pool_ready:
+        __pool_ready = true
+        __pool_sh = make_sh(shader(pool_vs, pool_fs))
+        vs: PoolV[]
+        n = 32
+        # Water and three faint low mist layers share this cached mesh and draw call.
+        loop layer in [0..4):
+            y = if layer == 0: 0.08 - SOR_POD_WATER else: 0.08 + f64(layer) * 0.10 - SOR_POD_WATER + 0.16
+            mist = f32(int(layer > 0))
+            loop k in [0..n):
+                a0 = TAU * f64(k) / f64(n)
+                a1 = TAU * f64(k + 1) / f64(n)
+                vs.push(PoolV(v3(0.0, y, 0.0), mist))
+                vs.push(PoolV(v3(cos(a0) * 2.5, y, sin(a0) * 2.5), mist))
+                vs.push(PoolV(v3(cos(a1) * 2.5, y, sin(a1) * 2.5), mist))
+        # The basin is lower than the pod. Its surface must not wash across the rails.
+        loop k in [0..n):
+            a0 = TAU * f64(k) / f64(n)
+            a1 = TAU * f64(k + 1) / f64(n)
+            vs.push(PoolV(vec3(0, 0, 0), -1))
+            vs.push(PoolV(v3(cos(a0) * 0.64, 0.0, sin(a0) * 1.30), -1))
+            vs.push(PoolV(v3(cos(a1) * 0.64, 0.0, sin(a1) * 1.30), -1))
+        # Reuse the pool shader and cached draw for wall caustics; no extra pass.
+        chamber = v3(0.0, -SOR_POD_WATER, -1.0)
+        loop k in [0..64):
+            a = TAU * f64(k) / 64.0
+            b = TAU * f64(k + 1) / 64.0
+            mid = (a + b) * 0.5
+            if sin(mid) < -0.9 and abs(cos(mid) * 6.6) < 2.3: continue
+            p = (ang: f64, y: f64) -> vec3: chamber + v3(cos(ang) * 6.525, y, sin(ang) * 6.525)
+            loop v in [p(a, 1.0), p(b, 1.0), p(b, 2.85), p(a, 1.0), p(b, 2.85), p(a, 2.85)]: vs.push(PoolV(v, -2))
+        # Fine floating dust throughout the two chambers and the carved vestibule.
+        loop k in [0..96):
+            x=(hash2(f64(k),81.0)-0.5)*10.0
+            z=-27.0+hash2(f64(k),82.0)*31.0
+            y=0.5+hash2(f64(k),83.0)*3.0-SOR_POD_WATER
+            size=0.006+hash2(f64(k),84.0)*0.006
+            o=v3(x,y,z)
+            loop axis in [0..2):
+                dx=if axis==0:v3(size,0,0) else:v3(0,0,size)
+                dy=v3(0,size,0)
+                loop p in [o-dx-dy,o+dx-dy,o+dx+dy,o-dx-dy,o+dx+dy,o-dx+dy]: vs.push(PoolV(p,f32(k)+2.0))
+        loop z in [-26.0,-23.0,-20.0,-17.0,-14.0,-11.0]:
+            loop side in [-1.0,1.0]:
+                o=v3(side*1.0,0.049-SOR_POD_WATER,z)
+                loop p in [o+vec3(-0.9,0,-1.4),o+vec3(0.9,0,-1.4),o+vec3(0.9,0,1.4),o+vec3(-0.9,0,-1.4),o+vec3(0.9,0,1.4),o+vec3(-0.9,0,1.4)]: vs.push(PoolV(p,-3))
+        __pool_mesh = mesh(vs)
+    gl_blend_state(true)
+    glDisable(GL_CULL_FACE)
+    draw_fast(__pool_sh, __pool_mesh, PoolU(vp, SOR_BED + v3(0.0, SOR_POD_WATER, 0.0), f32(elapsed()), f32(strength), post.depth_copy.depth, post.depth_copy.color, f32(sc.near), f32(sc.far)))
+    glDepthMask(1)
+    glDisable(GL_BLEND)
+
+# Shrine-only air: three soft sheets below each pit, and crossed lantern cones.
+# Cached as one small mesh per shrine; no depth reads, ray marching, or collision geometry.
+struct ShrineAirV:
+    pos: vec3
+    uv: vec2
+    color: vec4
+    kind: f32
+
+struct ShrineAirU:
+    vp: mat4
+    origin: vec3
+    time: f32
+
+struct ShrineAirO:
+    pos: vec4
+    uv: vec2
+    local: vec3
+    color: vec4
+    kind: f32
+
+shrine_air_vs = (v: ShrineAirV, u: ShrineAirU) -> ShrineAirO:
+    ShrineAirO(u.vp * vec4(u.origin + v.pos, 1), v.uv, v.pos, v.color, v.kind)
+
+shrine_air_fs = (i: ShrineAirO, u: ShrineAirU) -> vec4:
+    edge = smoothstep(1.0, 0.45, abs(i.uv.x))
+    a = i.color.w
+    if i.kind < 0.5:
+        edge = edge * smoothstep(1.0, 0.55, abs(i.uv.y))
+        drift = vnoise(i.local.xz * 0.22 + vec2(u.time * 0.025, -u.time * 0.018))
+        a = a * edge * (0.65 + drift * 0.35)
+    else if i.kind < 1.5:
+        a = a * edge * smoothstep(0.0, 0.12, i.uv.y) * pow(1.0 - i.uv.y, 1.4)
+    else:
+        a = a * smoothstep(1.0, 0.0, length(i.uv))
+    vec4(i.color.xyz, a)
+
+__shrine_air_sh = Shader()
+__shrine_air_mesh = fill(Mesh(), 4)
+__shrine_air_ready = fill(false, 4)
+
+__air_quad = (vs: mut ShrineAirV[], corners: vec3[], uv: vec2[], color: vec4, kind: f32):
+    loop k in [0, 1, 2, 0, 2, 3]: vs.push(ShrineAirV(corners[k], uv[k], color, kind))
+
+shrine_air_draw = (vp: mat4, origin: vec3, id: int, lamps: vec4[]):
+    if not __shrine_air_ready[id]:
+        if __shrine_air_sh.prog == 0: __shrine_air_sh = make_sh(shader(shrine_air_vs, shrine_air_fs))
+        vs: ShrineAirV[]
+        square = [vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1)]
+        if id < 3:
+            half = if id == 2: 12.0 else: 10.0
+            z0 = [-16.0, -36.0, -36.0][id]
+            z1 = [-8.0, -26.0, -6.0][id]
+            loop y in [-7.8, -5.8, -3.8]:
+                __air_quad(vs, [v3(-half, y, z0), v3(half, y, z0), v3(half, y, z1), v3(-half, y, z1)], square, rgba(0.055, 0.105, 0.15, 0.3), 0.0)
+        loop l in lamps:
+            p = l.xyz
+            floor_ = f64(l.w) + 0.035
+            spill = if id == 2: 1.45 else: 2.4
+            uv = [vec2(-1, 0), vec2(1, 0), vec2(1, 1), vec2(-1, 1)]
+            __air_quad(vs, [p + vec3(-0.19, 0, 0), p + vec3(0.19, 0, 0), v3(f64(p.x) + 1.7, floor_, f64(p.z)), v3(f64(p.x) - 1.7, floor_, f64(p.z))], uv, rgba(0.8, 0.52, 0.26, 0.065), 1.0)
+            __air_quad(vs, [p + vec3(0, 0, -0.19), p + vec3(0, 0, 0.19), v3(f64(p.x), floor_, f64(p.z) + 1.7), v3(f64(p.x), floor_, f64(p.z) - 1.7)], uv, rgba(0.8, 0.52, 0.26, 0.065), 1.0)
+            __air_quad(vs, [v3(f64(p.x) - spill, floor_, f64(p.z) - spill), v3(f64(p.x) + spill, floor_, f64(p.z) - spill), v3(f64(p.x) + spill, floor_, f64(p.z) + spill), v3(f64(p.x) - spill, floor_, f64(p.z) + spill)], square, rgba(0.5, 0.36, 0.2, 0.12), 2.0)
+        __shrine_air_mesh[id] = mesh(vs)
+        __shrine_air_ready[id] = true
+    gl_blend_state()
+    glDisable(GL_CULL_FACE)
+    draw_fast(__shrine_air_sh, __shrine_air_mesh[id], ShrineAirU(vp, origin, f32(elapsed())))
+    gl_opaque_state()
+
+# The cistern surface stays dark and translucent. A crisp edge, a grazing-angle sheen and
+# moving cyan crests make the level and inflow legible without another full-scene pass.
+struct ShrineWaterU:
+    vp: mat4
+    center: vec3
+    cam: vec3
+    time: f32
+    high: f32
+    current = f32(0)            # directional current belongs to the main Keh pool
+
+struct ShrineWaterO:
+    pos: vec4
+    world: vec3
+    local: vec2
+
+shrine_water_vs = (v: PoolV, u: ShrineWaterU) -> ShrineWaterO:
+    w = u.center + v.pos
+    ShrineWaterO(u.vp * vec4(w, 1), w, v.pos.xz)
+
+shrine_water_fs = (i: ShrineWaterO, u: ShrineWaterU) -> vec4:
+    p = i.local
+    wave = sin(p.x * 2.7 + p.y * 1.8 - u.time * 1.5 + vnoise(p * 0.6) * 2.0)
+    crest = smoothstep(0.88, 1.0, wave)
+    edge_dist = min(12.0 - abs(p.x), 10.0 - abs(p.y))
+    rim = smoothstep(0.12, 0.02, edge_dist)
+    v = normalize(u.cam - i.world)
+    fresnel = pow(1.0 - abs(v.y), 3.0)
+    # Slim drifting streaks follow the crate's diagonal current to the receiver.
+    # Pool-local coordinates: crate starts (-4,0), plate is (9,-7).
+    along = dot(p - vec2(-4, 0), normalize(vec2(13, -7)))
+    across = dot(p - vec2(-4, 0), normalize(vec2(7, 13)))
+    corridor = smoothstep(2.8, 1.4, abs(across)) * smoothstep(-1.0, 0.5, along) * (1.0 - smoothstep(13.0, 15.0, along))
+    lanes = pow(0.5 + 0.5 * cos(across * 9.0), 12.0)
+    drift = smoothstep(0.62, 0.96, sin(along * 2.0 - u.time * 2.4))
+    flow = corridor * u.high * u.current
+    ripple = lanes * drift * flow
+    # The separate frost cistern keeps its original inlet ripples.
+    inlet = smoothstep(2.0, 0.4, abs(p.y + 7.0)) * smoothstep(3.0, 9.0, p.x) * u.high
+    inlet_ripple = smoothstep(0.85, 1.0, sin(p.x * 4.5 - u.time * 3.0)) * inlet * (1.0 - u.current)
+    c = vec3(0.045, 0.16, 0.22) + vec3(0.08, 0.21, 0.28) * fresnel
+    c = c + vec3(0.18, 0.52, 0.68) * (crest * 0.14 + rim * 0.9 + inlet_ripple * 0.35) + vec3(0.7, 1.2, 1.4) * ripple
+    vec4(c, 0.38 + fresnel * 0.18 + rim * 0.4 + inlet_ripple * 0.12 + ripple * 0.2)
+
+__shrine_water_sh = Shader()
+__shrine_water_mesh = Mesh()
+__shrine_water_ready = false
+
+shrine_water_draw = (vp: mat4, center: vec3, cam: vec3, high: f64):
+    if not __shrine_water_ready:
+        __shrine_water_sh = make_sh(shader(shrine_water_vs, shrine_water_fs))
+        vs: PoolV[]
+        corners = [vec3(-12, 0, -10), vec3(12, 0, -10), vec3(12, 0, 18), vec3(-12, 0, 18)]
+        loop k in [0, 1, 2, 0, 2, 3]: vs.push(PoolV(corners[k]))
+        __shrine_water_mesh = mesh(vs)
+        __shrine_water_ready = true
+    gl_blend_state()
+    glDisable(GL_CULL_FACE)
+    draw_fast(__shrine_water_sh, __shrine_water_mesh, ShrineWaterU(vp, center, cam, f32(elapsed()), f32(high), f32(1)))
+    gl_opaque_state()

@@ -1,0 +1,351 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'terrain.jo'
+
+# Grass: patches of blades (4 x 4 m, 1500 leafy blades and seed stems each) instanced around
+# the camera. Everything happens in the vertex shader: the blade stands on the terrain (height
+# texture), skips rock, snow, paths and water, and leaves stubble on scorched/cut ground,
+# thins out with distance, sways in rolling gusts and bends away from the player.
+
+const GPATCH = 4.0
+const GBLADES = 1500
+
+struct GrassV:
+    pos: vec3          # local x, local z, t along the blade (0 root .. 1 tip)
+    side: f32          # -1 left edge, 1 right edge
+    rnd: vec4          # height, facing, lean, keep (thinning order)
+    kind: f32          # 0 grass, 5 seed-bearing stems
+
+struct GPatch:
+    offs: vec4         # x0, z0, density (0..1), fade (0..1 shrinks blades)
+
+struct GrassU:
+    vp: mat4
+    cam: vec3
+    origin: vec2
+    cell: f32
+    nsamp: f32
+    heights: Texture
+    mats: Texture
+    burn: Texture
+    normals: Texture
+    water: Texture
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    falloff: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+    time: f32
+    wind: vec2
+    gust: f32
+    player: vec3
+    snow_line: f32
+    height_scale: f32
+    lp = vec4(0, 0, 0, 0)
+    lc = vec3(0, 0, 0)
+    wet = 0.0
+    clouds = 0.0
+    canopy = Texture(0, 1, 1)    # where tree crowns stand (the forest floor is only under them)
+
+struct GrassO:
+    pos: vec4
+    world: vec3
+    root: vec3
+    normal: vec3
+    t: f32
+    kind: f32
+    shade: vec2        # coherent clump tint, continuous wind sheen
+    forest: f32
+    habitat: f32
+    scorch: f32         # heat of a fire close by
+    charred: f32        # settled scorch: sparse ash stubble, brown as the scar recovers
+
+__ghf = (u: GrassU, xz: vec2) -> f32:
+    t = (xz - u.origin) / u.cell
+    i = floor(t)
+    f = t - i
+    a = glsl_fetch(u.heights, int(i.x), int(i.y)).x
+    b = glsl_fetch(u.heights, int(i.x) + 1, int(i.y)).x
+    c = glsl_fetch(u.heights, int(i.x), int(i.y) + 1).x
+    d = glsl_fetch(u.heights, int(i.x) + 1, int(i.y) + 1).x
+    lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y)
+
+# steepness at a point (rise over run)
+__gslope = (u: GrassU, xz: vec2) -> f32:
+    t = (xz - u.origin) / u.cell
+    x = int(t.x + 0.5)
+    y = int(t.y + 0.5)
+    hx = glsl_fetch(u.heights, x + 1, y).x - glsl_fetch(u.heights, x - 1, y).x
+    hz = glsl_fetch(u.heights, x, y + 1).x - glsl_fetch(u.heights, x, y - 1).x
+    length(vec2(hx, hz)) / (2.0 * u.cell)
+
+grass_vs = (v: GrassV, p: GPatch, u: GrassU) -> GrassO:
+    # A stable toroidal shift and reflection break the repeated four-metre stamp.
+    # All LODs use this same mapping, so individual stems never jump at a boundary.
+    seed = hash12(p.offs.xy + vec2(17, 53))
+    # De-correlate each patch's blade proportions as well as its root positions.
+    # One seed serves every mesh prefix, keeping species and height stable through LODs.
+    blade = vec3(fract(v.rnd.x + seed * 1.91), fract(v.rnd.y + seed * 3.73), fract(v.rnd.z + seed * 5.17))
+    local = v.pos.xy
+    if seed > 0.5: local = vec2(local.y, local.x)
+    base = p.offs.xy + fract(local / 4.0 + vec2(seed, fract(seed * 7.13))) * 4.0
+    uv = (base - u.origin) / (u.cell * u.nsamp)
+    mt = glsl_lod(u.mats, uv, 0.0)
+    # (the forest floor where crowns stand over it: clearings and the edges of woods keep their grass)
+    mt = vec4(mt.x * smoothstep(0.05, 0.5, glsl_lod(u.canopy, uv, 2.0).x), mt.y, mt.z, mt.w)
+    mt = vec4(mt.x, mt.y, glsl_lod(u.mats, cold_uv(uv, base, u.cell * u.nsamp), 0.0).z, mt.w)
+    bt = glsl_lod(u.burn, uv, 0.0)
+    h0 = __ghf(u, base)
+    # where the sward grows: not rock, snow or paths; sparse stubble on burns, thin under trees
+    # (burnt ground's edge ragged: stubble standing on a little way into it)
+    burnt = clamp(bt.x * 1.5 - (vnoise(base * 1.9) - 0.3) * 0.6 * smoothstep(0.9, 0.5, bt.x), 0.0, 1.0)
+    grow = (1.0 - mt.y * 1.6) * (1.0 - smoothstep(0.12, 0.78, mt.z)) * (1.0 - mt.w * 1.8) * (1.0 - burnt * 0.9) * (1.0 - smoothstep(0.3, 1.0, mt.x) * 0.7)
+    grow = grow * (1.0 - smoothstep(u.snow_line - 30.0, u.snow_line, h0))
+    grow = grow * (1.0 - smoothstep(0.9, 1.3, __gslope(u, base)))
+    # (and none on the faces of cliffs, whatever the samples' slope says)
+    ground_normal = glsl_lod(u.normals, uv, 0.0)
+    grow = grow * smoothstep(0.5, 0.65, ground_normal.y * 2.0 - 1.0)
+    habitat = ground_normal.w
+    # (none on paved floors: shrine and tower bases, under tents; the burn map's fourth channel)
+    grow = grow * (1.0 - bt.w)
+    # none under water
+    wt = (base - u.origin) / u.cell
+    wlev = glsl_fetch(u.water, int(wt.x + 0.5), int(wt.y + 0.5)).x
+    grow = grow * (1.0 - step(h0 - 0.45, wlev))
+    # Larger connected swathes leave quiet exposed ground between them.
+    tuft = vnoise(base * 0.18 + vec2(3.0, 11.0)) * 0.6 + vnoise(base * 0.055 + vec2(1.0, 4.0)) * 0.4
+    # Spend the same ribbon budget on lush islands, with short sparse gaps on
+    # dry crests. Habitat shares the normal texture tap already used above.
+    mass = smoothstep(0.32, 0.64, tuft)
+    coverage = mix(0.35 + 0.65 * mass, mass, smoothstep(0.3, 0.65, mt.x))
+    # Fewer, wider ribbons retain clump coverage without a mesh of fine wires.
+    keep = v.rnd.w < p.offs.z * clamp(grow * 1.3, 0.0, 1.0) * coverage * (0.72 + habitat * 0.65) * 0.66
+    # the blade: height, facing, lean
+    cutk = (1.0 - bt.y * 0.85) * (1.0 - bt.z * 0.35)
+    hgt = (0.12 + blade.x * blade.x * 0.63) * u.height_scale * cutk * (1.0 - p.offs.w) * clamp(grow * 1.5, 0.35, 1.0)
+    # the field in patches: tall swaths and short-cropped ones
+    patchn = vnoise(base * 0.045 + vec2(7.0, 3.0))
+    hgt = hgt * (0.85 + habitat * 0.55) * (0.3 + 1.05 * patchn) * (0.7 + 0.5 * mass) * (1.0 - smoothstep(0.08, 0.72, mt.z) * 0.82)
+    charred = f32(0.0)
+    fl = v.kind
+    # Untouched grass skips the burn-shape arithmetic; existing ribbons become stubble.
+    if max(bt.x, bt.z) > 0.01:
+        scar = clamp(max(bt.x, bt.z) + (vnoise(base * 1.9) - 0.5) * 0.22, 0.0, 1.0)
+        charred = smoothstep(0.12, 0.72, scar)
+        # Sparse standing black stems among shorter collapsed ash, using existing blades.
+        remnant = smoothstep(0.76, 0.94, v.rnd.x)
+        hgt = mix(hgt, (0.025 + v.rnd.y * 0.04 + remnant * 0.20) * (1.0 - p.offs.w), charred)
+        if charred > 0.15: fl = 0.0
+    # Seed heads grow in small ripe drifts; the rest of the meadow keeps leafy blades.
+    if fl > 4.5 and (tuft < 0.56 or patchn < 0.52 or blade.x < 0.55): fl = 0.0
+    if fl > 4.5: hgt = hgt * 1.3
+    # Only shorten blades right at the lens; a wide shrink radius makes close grass squat.
+    hgt = hgt * smoothstep(0.45, 1.6, length(vec3(base.x, h0, base.y) - u.cam))
+    ang = blade.y * 6.2832
+    fdir = vec2(cos(ang), sin(ang))
+    sdir = vec2(-fdir.y, fdir.x)
+    t = v.pos.z
+    # Narrow roots open into curved lance-shaped leaves and taper back to fine tips.
+    # Reuse the blade seed so every LOD keeps its species and silhouette.
+    broad = smoothstep(0.60, 0.95, blade.z)
+    width = mix(0.009 + blade.z * 0.008, 0.022 + blade.z * 0.018, broad)
+    width = width * (0.3 + t * (1.0 - t) * 3.6) * (1.0 - t) * (1.0 + clamp(length(base - u.cam.xz) / 35.0, 0.0, 0.85))
+    if charred > 0.0: width = width * (1.0 - charred * 0.45)
+    if fl > 4.5:
+        # Tapered ochre panicles on thin stalks, with unequal notched shoulders.
+        width = 0.003 + 0.027 * smoothstep(0.57, 0.72, t) * (1.0 - smoothstep(0.76, 1.0, t)) * (0.65 + 0.35 * sin(t * 39.0 + v.rnd.y * 6.0))
+    # wind: a slow swell that rolls across the field, plus flutter
+    wdir = normalize(u.wind + vec2(0.0001, 0))
+    swell = sin(dot(base, wdir) * 0.09 - u.time * 1.7) * 0.5 + 0.5
+    swell = swell * swell * u.gust
+    flutter = sin(u.time * 4.3 + base.x * 0.7 + base.y * 0.4 + v.rnd.x * 1.2) * 0.07
+    # (each blade droops over its own way, the longer ones more)
+    bendv = wdir * (swell * 0.9 + 0.12 + flutter) + fdir * ((blade.z - 0.5) * 0.5 + 0.25 + 0.45 * blade.x)
+    # the player pushes blades aside
+    away = base - u.player.xz
+    dd = length(away)
+    near = (1.0 - smoothstep(0.25, 1.1, dd)) * (1.0 - smoothstep(0.5, 2.0, abs(h0 - u.player.y)))
+    bendv = bendv + normalize(away + vec2(0.0001, 0)) * near * 1.6
+    bend = t * t
+    off = bendv * (bend * hgt)
+    y = t * hgt * (1.0 - length(bendv) * 0.25 * bend)
+    w = vec3(base.x + off.x + sdir.x * width * v.side, h0 + y, base.y + off.y + sdir.y * width * v.side)
+    gn = ground_normal.xyz * 2.0 - vec3(1, 1, 1)
+    # lit like the ground they grow from, with a little of the blade's own lean
+    # A gently rolled ribbon; neighboring blades mostly share the ground lighting.
+    roll = v.side * 0.12 * sin(t * 3.1416)
+    n = normalize(normalize(gn) * 2.8 + vec3(fdir.x * 0.12 + off.x * 0.6 + sdir.x * roll, 0.4, fdir.y * 0.12 + off.y * 0.6 + sdir.y * roll))
+    pos = u.vp * vec4(w, 1)
+    if not keep or hgt < 0.03: pos = vec4(2, 2, 2, 1)
+    GrassO(pos, w, vec3(base.x, h0 + 0.05, base.y), n, t, fl, vec2(tuft * 0.8 + v.rnd.y * 0.2, swell), smoothstep(0.20, 0.80, mt.x), habitat, bt.z, bt.x)
+
+grass_fs = (i: GrassO, u: GrassU) -> vec4:
+    w = i.world
+    r = i.shade.x
+    swell = i.shade.y
+    c = meadow_color(w, u.time)
+    turf = mix(c * vec3(1.20, 1.08, 0.80), c * vec3(0.75, 0.94, 1.04), i.habitat) * (0.79 - i.habitat * 0.12)
+    # Shared tuft color lets blades merge into washes, with just a trace of variation.
+    c = c * (0.96 + 0.08 * r) + vec3(0.02, 0.015, -0.01) * (r - 0.5)
+    # patches across the field lean yellow-ochre or cool blue-green
+    hp = vnoise(i.root.xz * 0.03 + vec2(13.0, 5.0))
+    c = mix(c, c * mix(vec3(0.88, 0.98, 1.1), vec3(1.1, 1.0, 0.8), hp), 0.7)
+    # (a painter's green: a little greyed, never acid chartreuse)
+    gl_ = dot(c, vec3(0.3, 0.55, 0.15))
+    c = mix(vec3(gl_, gl_, gl_), c, 0.95) * 0.88
+    # darker and cooler at the roots, deep in the sward; tips lit and bleached by the sun
+    tip = smoothstep(0.55, 1.0, i.t)
+    c = mix(c * vec3(0.82, 0.86, 0.81), c, smoothstep(0.0, 0.75, i.t))
+    c = mix(c, c * 1.06 + vec3(0.02, 0.02, 0.0), tip * 0.35)
+    # the wind's sheen: bent blades catch the sky
+    c = c + vec3(0.07, 0.08, 0.03) * swell * i.t
+    if i.kind > 4.5 and i.t > 0.6:
+        c = mix(c, vec3(0.39, 0.32, 0.16), smoothstep(0.6, 0.78, i.t) * 0.8)
+    # under the trees: darker, deeper green
+    # (in the woods a deep mossy green, the light under the canopy cool)
+    c = mix(c, c * vec3(0.72, 0.78, 0.66) + vec3(0.015, 0.018, 0.008), i.forest * 0.75)
+    # In canopy shade use the same moss/litter wash as the supporting ground.
+    # The previous meadow-only pigment made blue threads over warm root soil.
+    if i.forest > 0.001:
+        drift = vnoise(i.root.xz * 0.085 + vec2(3.0, 8.0))
+        cushion = vnoise(i.root.xz * 0.19 + vec2(13.0, 2.0))
+        grain = vnoise(i.root.xz * 0.65)
+        litter = mix(vec3(0.24, 0.205, 0.14), vec3(0.34, 0.30, 0.21), drift)
+        litter = mix(litter, vec3(0.16, 0.22, 0.10) * (0.82 + grain * 0.34), smoothstep(0.36, 0.68, cushion))
+        turf = mix(turf, litter, i.forest * 0.93)
+        if i.kind < 0.5: c = mix(c, turf * (0.90 + 0.10 * i.t), i.forest)
+    # Heat curls the blade to a dull coal; cooled scars leave ash-grey stubble.
+    # The existing scar recovery fades that ash toward brown before grass returns.
+    if max(i.charred, i.scorch) > 0.01:
+        ash = mix(vec3(0.035, 0.030, 0.025), vec3(0.28, 0.265, 0.235), smoothstep(0.35, 0.78, r) * (1.0 - smoothstep(0.10, 0.22, i.t * 0.25)))
+        # Singed ochre blades fringe the surviving green; cool stubble matches
+        # the pale ash islands behind the darker hot coal seam.
+        c = mix(c, vec3(0.30, 0.22, 0.095), smoothstep(0.02, 0.20, i.charred))
+        c = mix(c, ash, smoothstep(0.18, 0.62, i.charred))
+        c = mix(c, vec3(0.15, 0.11, 0.075), smoothstep(0.05, 0.8, i.scorch))
+    # rain: darker, deeper green blades with a wet glint
+    c = c * (1.0 - u.wet * 0.3)
+    c = mix(c, vec3(1, 1, 1) * dot(c, vec3(0.3, 0.55, 0.15)), u.wet * 0.12)
+    l = normalize(u.sun_dir)
+    v = normalize(u.cam - w)
+    n = normalize(i.normal)
+    sh = cascade_shadow_fast(i.root, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) * cloud_shade(i.root.xz, u.time, u.clouds)
+    c = low_sun_turf(c,n,l,u.sun_color,sh,(1.0-i.charred)*(1.0-i.forest)*smoothstep(-0.05,0.10,dot(n,l))*sh)
+    # Shade joins the surrounding turf instead of outlining every blade in ink.
+    # Match the ground's restrained canopy sky and open-meadow bounce. Fire
+    # scars keep their coal/ash pigments and seed heads retain their ochre.
+    night = 1.0 - smoothstep(0.16, 0.32, luma(u.sky))
+    if i.kind < 0.5:
+        c = mix(c, turf * (1.0 - u.wet * 0.3), max(1.0 - sh, night) * 0.92 * (1.0 - smoothstep(0.01, 0.15, max(i.charred, i.scorch))))
+    floor_sky = mix(u.sky, luma(u.sky) * vec3(1.02, 1.01, 0.95), i.forest * 0.8)
+    col = paint_light(c, n, l, v, u.sun_color, floor_sky, u.ground, sh, 0.45)
+    col = col + point_light(c, n, w, u.lp, u.lc)
+    col = col + c * floor_sky * mix(vec3(0.8, 0.95, 1.1), vec3(1.0, 1.0, 0.95), i.forest) * (0.12 + 0.23 * i.forest) * (1.0 - sh)
+    # Moonlit clumps carry broad value changes rather than an even blue carpet.
+    col = col * (1.0 + night * (hp - 0.5) * 0.22)
+    col = col + c * u.sky * vec3(0.75, 0.95, 1.18) * i.forest * u.wet * smoothstep(0.84, 0.95, u.clouds) * 0.16
+    # light through the blades when looking toward the sun
+    # (in the upper blades, and not every one alike: against a low sun the whole field glowed mustard)
+    trans = pow(max(dot(v * -1.0, l), 0.0), 4.0) * smoothstep(0.45, 1.0, i.t) * 0.25 * sh * (0.3 + 0.9 * r)
+    col = col + c * u.sun_color * trans
+    col = col + (u.sky * 0.5 + u.sun_color * 0.2 * sh) * pow(1.0 - abs(dot(n, v)), 4.0) * u.wet * 0.25 * i.t
+    # A few hot stubble tips glow; the charred ribbons remain dark as they cool.
+    ember = smoothstep(0.975, 0.995, r) * smoothstep(0.88, 1.0, i.t)
+    heat = i.scorch * i.scorch * smoothstep(0.65, 1.0, i.scorch)
+    col = col + vec3(0.55, 0.075, 0.008) * ember * heat * (0.85 + 0.15 * sin(u.time * 2.0 + r * 40.0))
+    col = atmos(col, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
+    vec4(col, 0.65)
+
+grass_sh: Shader
+grass_patch: Mesh
+grass_patch_close: Mesh        # six curved segments only within 10 m
+grass_patch_far: Mesh          # a reduced prefix of the same patch
+grass_buf = InstBuf()
+grass_buf_close = InstBuf()
+grass_buf_far = InstBuf()
+gpatches: GPatch[]
+gpatches_close: GPatch[]
+gpatches_far: GPatch[]
+const GFAR_BLADES = 360
+
+# Re-seeding each mesh preserves every blade position, size and species across LODs.
+grass_mesh = (blades: int, segments: int) -> Mesh:
+    vs: GrassV[]
+    idx: u32[]
+    rng_ = rng(1234)
+    loop b in [0..blades):
+        lx = f32(next_float(rng_) * GPATCH)
+        lz = f32(next_float(rng_) * GPATCH)
+        r = vec4(f32(next_float(rng_)), f32(next_float(rng_)), f32(next_float(rng_)), f32(f64(b) / f64(GBLADES)))
+        kind: f32 = 0.0
+        fr = next_float(rng_)
+        # Modeled flower patches own the blossoms. Keep the old species draw
+        # so every subsequent blade and LOD retains its placement.
+        if fr < 0.075: next_int(rng_, 0, 4)
+        else if fr < 0.22: kind = 5.0
+        base = u32(vs.len())
+        loop s in [0..segments):
+            t = f32(f64(s) / f64(segments))
+            vs.push(GrassV(vec3(lx, lz, t), -1.0, r, kind))
+            vs.push(GrassV(vec3(lx, lz, t), 1.0, r, kind))
+        vs.push(GrassV(vec3(lx, lz, 1.0), 0.0, r, kind))
+        loop s in [0..segments - 1):
+            a = base + u32(s * 2)
+            loop k in [a, a + 1, a + 2, a + 1, a + 3, a + 2]: idx.push(k)
+        tipbase = base + u32((segments - 1) * 2)
+        loop k in [tipbase, tipbase + 1, tipbase + 2]: idx.push(k)
+    mesh(vs, idx)
+
+grass_init = ():
+    grass_sh = make_sh(shader(grass_vs, grass_fs))
+    grass_patch_close = grass_mesh(GBLADES, 6)
+    grass_patch = grass_mesh(GBLADES, 3)
+    grass_patch_far = grass_mesh(GFAR_BLADES, 3)
+    grass_buf_close = inst_buffer(gpatches_close)
+    grass_buf = inst_buffer(gpatches)
+    grass_buf_far = inst_buffer(gpatches)
+
+# patches around the camera inside the view
+grass_select = (cam: vec3, vp: mat4, radius: f64 = 58.0):
+    gpatches.clear()
+    gpatches_close.clear()
+    gpatches_far.clear()
+    f = frustum_from(vp)
+    cx = int(floor(f64(cam.x) / GPATCH))
+    cz = int(floor(f64(cam.z) / GPATCH))
+    r = int(radius / GPATCH) + 1
+    loop dz in [-r..r]:
+        loop dx in [-r..r]:
+            x0 = f64(cx + dx) * GPATCH
+            z0 = f64(cz + dz) * GPATCH
+            mx = x0 + GPATCH * 0.5
+            mz = z0 + GPATCH * 0.5
+            d = hypot(mx - f64(cam.x), mz - f64(cam.z))
+            if d > radius: continue
+            if not in_bounds(mx, mz): continue
+            h = height_at(mx, mz)
+            if abs(h - f64(cam.y)) > radius: continue
+            if not box_visible(f, v3(x0, h - 3.0, z0), v3(x0 + GPATCH, h + 3.0, z0 + GPATCH)): continue
+            dens = 1.0 - smooth01((d - 18.0) / (radius - 18.0)) * 0.8
+            fade = smooth01((d - radius * 0.8) / (radius * 0.2))
+            if d < 10.0: gpatches_close.push(GPatch(vec4(f32(x0), f32(z0), f32(dens), f32(fade))))
+            else if d < 22.0: gpatches.push(GPatch(vec4(f32(x0), f32(z0), f32(dens), f32(fade))))
+            else: gpatches_far.push(GPatch(vec4(f32(x0), f32(z0), f32(min(dens * f64(GBLADES) / f64(GFAR_BLADES), 1.0)), f32(fade))))
+    inst_update(grass_buf_close, gpatches_close)
+    inst_update(grass_buf, gpatches)
+    inst_update(grass_buf_far, gpatches_far)
+
+grass_draw = (u: GrassU):
+    glDisable(GL_CULL_FACE)
+    draw_static(grass_sh, grass_patch_close, grass_buf_close, u)
+    draw_static(grass_sh, grass_patch, grass_buf, u)
+    draw_static(grass_sh, grass_patch_far, grass_buf_far, u)
+    glEnable(GL_CULL_FACE)

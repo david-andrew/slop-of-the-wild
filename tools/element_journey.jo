@@ -1,0 +1,142 @@
+# Run tools/element_journey_check.sh; the runner appends the production item-slot callback.
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/water.jo'
+use '../game/vegetation.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/combat.jo'
+use '../game/items.jo'
+use '../game/elements.jo'
+use '../game/trees.jo'
+use '../game/env.jo'
+use '../game/save.jo'
+use '../game/wildlife.jo'
+use '../game/enemies.jo'
+use '../game/interact.jo'
+use '../game/sfx.jo'
+# One continuous, normal-key-input course. Only this initial scene is a fixture.
+# Tree chops, traversal and ignition use production input, movement, blade and element paths.
+use 'tree_checks.jo'
+from 'tree_checks.jo' import __tree_course, __plant_tree
+use '../game/input.jo'
+use '../game/chars.jo'
+use '../game/camera.jo'
+use '../game/hero_motion.jo'
+use '../game/story.jo'
+use '../game/ui.jo'
+use '../game/inventory.jo'
+from '../game/inventory.jo' import __bind
+from '../game/save.jo' import __save_file
+
+const JOURNEY_DT = 1.0/60.0
+journey_frame = 0
+journey_log_frames = 0
+journey_deep_frames = 0
+journey_swim_frames = 0
+journey_ignition = -1
+journey_lit = false
+
+journey_key = (k: Key, held: bool):
+    __key_pressed[int(k)] = held and not __key_down[int(k)]
+    __key_down[int(k)] = held
+
+journey_tick = (walk: bool = false, chop: bool = false, slot: bool = false):
+    journey_key(.w, walk)
+    journey_key(.j, chop)
+    journey_key(.n1, slot)
+    input_update(JOURNEY_DT, false)
+    if act.slot >= 0: use_slot(act.slot) # extracted verbatim from game/main.jo by runner
+    player_update(JOURNEY_DT)
+    combat_update(JOURNEY_DT, enemy_pos, 0)
+    hero_animate(JOURNEY_DT, 0.0)
+    hero_blade_hits()
+    player_torch_update(JOURNEY_DT, journey_lit)
+    enemies_update(JOURNEY_DT, false)
+    wildlife_update(JOURNEY_DT)
+    items_physics(JOURNEY_DT)
+    elements_update(JOURNEY_DT, pl.pos)
+    save_update(JOURNEY_DT)
+    if tree_states.len() > 0 and tree_states[0].phase == 2 and tree_states[0].col >= 0 and pl.ground.collider == tree_states[0].col: journey_log_frames += 1
+    if water_depth(f64(pl.pos.x),f64(pl.pos.z)) > 1.0:
+        journey_deep_frames += 1
+        if pl.state == .swim: journey_swim_frames += 1
+    if bonfires.len() > 1 and journey_ignition < 0: journey_ignition = journey_frame
+    if journey_frame % 30 == 0:
+        phase = if tree_states.len() > 0: tree_states[0].phase else: -1
+        print("JOURNEY frame={journey_frame} pos={pl.pos} state={pl.state} tree={phase} log_frames={journey_log_frames} torch={journey_lit} fires={bonfires.len()}")
+    __input_end_frame()
+    journey_frame += 1
+
+main = ():
+    __audio_state = 2
+    __input_init()
+    items_init()
+    chars_init()
+    __tree_course()
+    # Deep water separates two banks; the felled trunk reaches across it.
+    wl = fill(f32(-10000),4096)
+    loop z in [0..64):
+        wz = f64(z)-32.0
+        if wz <= -2.0 and wz >= -5.0:
+            loop x in [0..64):
+                hf.h[z*64+x] = -3.0
+                wl[z*64+x] = 0.0
+    water_grid_set(wl,64,-32.0,-32.0,1.0)
+    __plant_tree()
+    inv_add("torch")
+    # Bind the actual gear copy, as the inventory UI does, not just its item ID.
+    __bind(0, "torch")
+    pl.pos = vec3(0,0,0.95)
+    pl.last_safe = pl.pos
+    pl.face = 0.0
+    cam_yaw_global = 0.0
+    fight.weapon_out = true
+    story = Story(beat = .explore, title_done = true)
+    # The first fire lights the carried torch; a separate wood bundle is the ignition target.
+    bonfires = [Bonfire(vec3(1.4,0,-6.7))]
+    spawn_item("firewood", vec3(0,0.1,-8.9), resting = true)
+    # Full input stream: three accepted axe swings, then walk over that same physical log.
+    loop f in [0..300): journey_tick(chop = f == 20 or f == 100 or f == 180)
+    assert(tree_states.len() == 1 and tree_states[0].phase == 2, "normal-input chops fell tree to physical log")
+    print("JOURNEY felled at frame={journey_frame} hits={tree_states[0].hits} log={tree_states[0].pos}")
+    loop f in [0..240):
+        if pl.pos.z < -6.2: break
+        journey_tick(walk = true)
+    assert(pl.pos.z < -6.2 and journey_log_frames > 20 and journey_deep_frames > 20 and journey_swim_frames == 0, "normal-input traversal crosses deep water on the floating log")
+    print("JOURNEY crossed frame={journey_frame} supported_frames={journey_log_frames} deep_water_frames={journey_deep_frames} swim_frames={journey_swim_frames} log_y={tree_states[0].pos.y:.3}")
+    journey_tick(slot = true)
+    loop f in [0..150): journey_tick(chop = f == 2)
+    assert(equipped_weapon() == "torch" and journey_lit, "normal slot/draw input lights torch at shore fire")
+    loop f in [0..80):
+        if pl.pos.z < -8.0: break
+        journey_tick(walk = true)
+    loop f in [0..120): journey_tick(chop = f == 5)
+    assert(journey_ignition >= 0 and bonfires.len() == 2 and pl.hp > 0, "carried torch ignites wood after the log crossing")
+    print("JOURNEY ignition frame={journey_ignition} wood_consumed={not witems[0].alive} fires={bonfires.len()}")
+    # A wound now interrupts a swing. Walk clear of the newly lit fire and
+    # finish the recoil before testing a grounded save/resume position; saving
+    # a midair hurt pose legitimately resolves to support on restore.
+    loop f in [0..240):
+        if pl.pos.z < -12.0 and pl.state == .ground: break
+        journey_tick(walk = true)
+    assert(pl.pos.z < -12.0 and pl.state == .ground, "normal input leaves the ignition fire before saving")
+    # Actual isolated save file and the production resume path. Keep walking afterward.
+    save_enabled = true
+    __save_file = "build/round57/element-journey.save"
+    journey_tick()
+    before = pl.pos
+    log_before = tree_states[0].pos
+    save_now()
+    disk = save_decode(read_file(__save_file) ?? "")
+    assert(disk != none and disk!.trees.len() == 1, "continuous journey save records the felled log")
+    save_apply(disk!)
+    assert(length(pl.pos-before) < 0.05 and equipped_weapon() == "torch" and tree_states[0].phase == 2 and colliders[tree_states[0].col].active and length(tree_states[0].pos-log_before) < 0.001, "resume preserves player position and floating-log physics")
+    fight = Fight()
+    journey_lit = false
+    resume = pl.pos
+    loop f in [0..60): journey_tick(walk = true)
+    assert(length(pl.pos-resume) > 1.0, "normal movement continues after resume")
+    save_enabled = false
+    print("element continuous journey: 7/7 passed; frames={journey_frame} log_support={journey_log_frames} deep_water={journey_deep_frames} swimming={journey_swim_frames} ignition_frame={journey_ignition} resume_distance={length(pl.pos-resume):.3}m")

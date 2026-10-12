@@ -1,0 +1,42 @@
+# Caller owns one render flock. Distant/stale poses reuse a palette row across
+# shadow and colour draws; copy-on-write edits, texture rotation and row wrap
+# must retain the correct GPU matrix bytes.
+use '../game/skel.jo'
+use '../game/gfx.jo'
+from '../game/skel.jo' import __skin_row, __pal, __pal_upload
+
+window("Skin palette reuse", 32, 32)
+a = Skin(mats = [f32(1), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+r = __skin_row(a)
+written = __pal.row
+loop draw_pass in [0..3): assert(__skin_row(a) == r)
+assert(__pal.row == written, "one stale-pose upload across shadow/colour passes")
+edited = a
+edited.mats[0] = 42.0
+r2 = __skin_row(edited)
+assert(r2 != r, "edited pose detaches from cached immutable matrix storage")
+palette_flush()
+read_row = (row: int) -> f32:
+    t = palette_texture()
+    fb = gl_create_framebuffer()
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(fb))
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(t.id), 0)
+    assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+    values = fill(f32(-1), 4)
+    gl_read_pixels_f32(0, row, 1, 1, data(values) as *u8)
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    gl_delete_framebuffer(fb)
+    values[0]
+assert(read_row(r) == 1.0 and read_row(r2) == 42.0)
+# A very long catch-up / crowded scene can wrap the fixed palette. The cached
+# row is then no longer owned by its old pose, even within the same frame.
+loop k in [0..PAL_ROWS): __pal_upload(fill(f32(7.0), 12))
+r3 = __skin_row(a)
+palette_flush()
+assert(read_row(r3) == 1.0, "wrapped row is uploaded again before reuse")
+# Exercise the actual frame counter read by the production cache and texture ring.
+__frame_count += 1
+r4 = __skin_row(a)
+palette_flush()
+assert(r4 == 0 and read_row(r4) == 1.0, "new frame uploads into its own palette texture")
+print("skin row: stale pose shared across 3 passes; edited pose isolated; palette wrap and next-frame texture RGBA32F readback PASS")

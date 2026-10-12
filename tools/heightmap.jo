@@ -1,0 +1,480 @@
+# Builds the plateau's heightfield from the original's map: the in-game map is shaded by
+# elevation (lighter is higher), so brightness, calibrated against the elevations of thousands
+# of placed objects (assets/actors.tsv), gives the terrain; contour lines and icons are
+# filtered out, water regions get one level each, and the objects' own heights correct what
+# is left. Writes assets/height.f32 and assets/water.f32 (2 m grid, HF_N x HF_N).
+#
+#   sloppy/bin/sloppy tools/heightmap.jo
+
+build:
+    opt = release
+
+const N = 2048
+const CELL = 2.0
+const X0 = -3018.0
+const Z0 = -133.0
+
+struct Img:
+    w: int
+    h: int
+    x0: f64          # world position of pixel (0, 0)
+    z0: f64
+    mpp: f64         # meters per pixel
+    lum: f32[]       # brightness
+    water: u8[]
+
+# assemble map tiles: zoom z covers 512 * 2^(5 - z) m per 256 px tile, from (-6000, -5000)
+load_tiles = (dir: str, zoom: int, tx0: int, tx1: int, ty0: int, ty1: int) -> Img:
+    tile_m = 512.0 * pow(2.0, f64(5 - zoom))
+    w = (tx1 - tx0 + 1) * 256
+    h = (ty1 - ty0 + 1) * 256
+    im = Img(w, h, -6000.0 + f64(tx0) * tile_m, -5000.0 + f64(ty0) * tile_m, tile_m / 256.0, fill(f32(0), w * h), fill(u8(0), w * h))
+    loop ty in [ty0..ty1]:
+        loop tx in [tx0..tx1]:
+            p = "{dir}/z{zoom}_{tx}_{ty}.png"
+            bytes_ = read_bytes(p)
+            if bytes_ == none:
+                eprint("missing {p}")
+                continue
+            img = load_png(bytes_!)!
+            loop y in [0..256):
+                loop x in [0..256):
+                    c = get(img, x, y)
+                    k = ((ty - ty0) * 256 + y) * w + (tx - tx0) * 256 + x
+                    im.lum[k] = f32(0.3 * f64(c.x) + 0.59 * f64(c.y) + 0.11 * f64(c.z))
+                    # water is blue-gray: blue above red
+                    if f64(c.z) > f64(c.x) + 0.04: im.water[k] = 1
+    im
+
+# a median of the 5x5 neighborhood (removes 1-2 px contour lines)
+median5 = (im: Img) -> f32[]:
+    out = fill(f32(0), im.w * im.h)
+    rows = parallel_range(im.h, (y: int):
+        r = fill(f32(0), im.w)
+        buf = fill(f32(0), 25)
+        loop x in [0..im.w):
+            n = 0
+            loop dy in [-2..2]:
+                loop dx in [-2..2]:
+                    xx = clamp(x + dx, 0, im.w - 1)
+                    yy = clamp(y + dy, 0, im.h - 1)
+                    buf[n] = im.lum[yy * im.w + xx]
+                    n += 1
+            sort(buf)
+            r[x] = buf[12]
+        r
+    )
+    loop y in [0..im.h): mem_copy((data(out) as *u8) + y * im.w * 4, data(rows[y]) as *u8, im.w * 4)
+    out
+
+struct Sample:
+    x: f64
+    y: f64
+    z: f64
+
+ground_kinds = ["Obj_TreeBroadleaf", "Obj_TreeConiferous", "Obj_TreeWhiteBirch", "Obj_Plant_", "Item_Mushroom", "Item_Plant",
+    "Obj_RockWhite", "FldObj_Rock", "Obj_LiftRock", "FldObj_KorokStone", "Animal_Boar", "Obj_TreeApple", "Obj_RockSnow",
+    "Obj_TreeBroadleafLow", "Obj_TreeConiferousLow", "FldObj_PushRock", "GrassCutTag", "Obj_TreeDead", "Obj_TreeBroadleafDead",
+    "RockSetWhite", "Item_Ore", "FldObj_HyliaStoneRuinDebris", "TwnObj_TempleOfTime_Debris"]
+
+load_samples = () -> Sample[]:
+    out: Sample[]
+    t = read_file("assets/actors.tsv")!
+    loop line in lines(t):
+        f = split(line, "\t")
+        if f.len() < 4: continue
+        ok = false
+        loop k in ground_kinds:
+            if starts_with(f[0], k): ok = true
+        if not ok or contains(f[0], "TreeHouse"): continue
+        out.push(Sample(to_float(f[1]) ?? 0.0, to_float(f[2]) ?? 0.0, to_float(f[3]) ?? 0.0))
+    out
+
+img_at = (im: Img, a: f32[], x: f64, z: f64) -> f64:
+    px = (x - im.x0) / im.mpp
+    pz = (z - im.z0) / im.mpp
+    ix = clamp(int(px), 0, im.w - 1)
+    iz = clamp(int(pz), 0, im.h - 1)
+    f64(a[iz * im.w + ix])
+
+inside = (im: Img, x: f64, z: f64) -> bool:
+    x >= im.x0 and z >= im.z0 and x < im.x0 + f64(im.w) * im.mpp and z < im.z0 + f64(im.h) * im.mpp
+
+# brightness -> height: binned medians, made monotonic
+struct Ramp:
+    h: f64[]
+
+fit_ramp = (im: Img, med: f32[], ss: Sample[]) -> Ramp:
+    bins: f64[][] = [loop i in [0..64): []]
+    loop s in ss:
+        if not inside(im, s.x, s.z): continue
+        px = clamp(int((s.x - im.x0) / im.mpp), 0, im.w - 1)
+        pz = clamp(int((s.z - im.z0) / im.mpp), 0, im.h - 1)
+        if im.water[pz * im.w + px] != 0: continue
+        l = f64(med[pz * im.w + px])
+        b = clamp(int(l * 64.0), 0, 63)
+        bins[b].push(s.y)
+    hs = fill(-1.0, 64)
+    loop i in [0..64):
+        if bins[i].len() >= 3:
+            v = bins[i]
+            sort(v)
+            hs[i] = v[v.len() / 2]
+    # fill empty bins by interpolation, then enforce monotonic (pool adjacent violators)
+    loop i in [0..64):
+        if hs[i] < 0.0:
+            lo = i - 1
+            loop lo >= 0 and hs[lo] < 0.0: lo -= 1
+            hi = i + 1
+            loop hi < 64 and hs[hi] < 0.0: hi += 1
+            if lo >= 0 and hi < 64: hs[i] = lerp(hs[lo], hs[hi], f64(i - lo) / f64(hi - lo))
+            else if lo >= 0: hs[i] = hs[lo]
+            else if hi < 64: hs[i] = hs[hi]
+    loop iter in [0..200):
+        loop i in [1..64):
+            if hs[i] < hs[i - 1]:
+                m = (hs[i] + hs[i - 1]) * 0.5
+                hs[i] = m
+                hs[i - 1] = m
+    loop i in [0..64): eprint("  lum {f64(i) / 64.0:.3} -> {hs[i]:.1}  ({bins[i].len()})")
+    Ramp(hs)
+
+ramp_at = (r: Ramp, l: f64) -> f64:
+    f = clamp(l * 64.0 - 0.5, 0.0, 62.999)
+    i = int(f)
+    lerp(r.h[i], r.h[i + 1], f - f64(i))
+
+# fill cells marked invalid (NaN-free: weight 0) by a pyramid: average down, fill, blend up
+fill_holes = (v: mut f64[], w: f64[], n: int):
+    if n <= 4: return
+    m = n / 2
+    cv = fill(0.0, m * m)
+    cw = fill(0.0, m * m)
+    loop z in [0..m):
+        loop x in [0..m):
+            s = 0.0
+            sw = 0.0
+            loop dz in [0..2):
+                loop dx in [0..2):
+                    k = (z * 2 + dz) * n + x * 2 + dx
+                    s += v[k] * w[k]
+                    sw += w[k]
+            cw[z * m + x] = min(sw, 1.0)
+            cv[z * m + x] = if sw > 0.0: s / sw else: 0.0
+    fill_holes(cv, cw, m)
+    loop z in [0..n):
+        loop x in [0..n):
+            k = z * n + x
+            if w[k] < 1.0:
+                # bilinear from the coarse level
+                fx = clamp((f64(x) + 0.5) / 2.0 - 0.5, 0.0, f64(m - 1))
+                fz = clamp((f64(z) + 0.5) / 2.0 - 0.5, 0.0, f64(m - 1))
+                ix = min(int(fx), m - 2)
+                iz = min(int(fz), m - 2)
+                tx = fx - f64(ix)
+                tz = fz - f64(iz)
+                c = (cv[iz * m + ix] * (1.0 - tx) + cv[iz * m + ix + 1] * tx) * (1.0 - tz) + (cv[(iz + 1) * m + ix] * (1.0 - tx) + cv[(iz + 1) * m + ix + 1] * tx) * tz
+                v[k] = v[k] * w[k] + c * (1.0 - w[k])
+
+# the plateau's outline (top edge of the cliffs), clockwise from the north-west
+outline = [(-1410.0, 1500.0), (-1336.0, 1494.0), (-1265.0, 1502.0), (-1240.0, 1545.0), (-1160.0, 1563.0), (-1080.0, 1548.0),
+    (-1060.0, 1505.0), (-990.0, 1476.0), (-951.0, 1480.0), (-866.0, 1505.0), (-800.0, 1473.0), (-700.0, 1478.0), (-622.0, 1494.0),
+    (-575.0, 1525.0), (-545.0, 1552.0), (-515.0, 1600.0), (-492.0, 1700.0), (-495.0, 1800.0), (-485.0, 1825.0), (-425.0, 1900.0),
+    (-410.0, 1960.0), (-418.0, 2010.0), (-430.0, 2045.0), (-505.0, 2100.0), (-560.0, 2112.0), (-600.0, 2160.0), (-640.0, 2245.0),
+    (-695.0, 2300.0), (-743.0, 2328.0), (-800.0, 2352.0), (-960.0, 2358.0), (-1130.0, 2352.0), (-1169.0, 2318.0), (-1374.0, 2302.0),
+    (-1445.0, 2298.0), (-1470.0, 2250.0), (-1490.0, 2150.0), (-1482.0, 2100.0), (-1510.0, 2050.0), (-1525.0, 1950.0), (-1525.0, 1900.0),
+    (-1500.0, 1852.0), (-1440.0, 1842.0), (-1440.0, 1812.0), (-1495.0, 1800.0), (-1535.0, 1700.0), (-1515.0, 1600.0), (-1480.0, 1550.0),
+    (-1446.0, 1545.0)]
+
+# signed distance to the outline (negative inside)
+outline_sd = (x: f64, z: f64) -> f64:
+    best = 1e9
+    ins = false
+    n = outline.len()
+    loop i in [0..n):
+        a = outline[i]
+        b = outline[(i + 1) % n]
+        # crossing test
+        if (a.1 > z) != (b.1 > z):
+            xc = a.0 + (z - a.1) / (b.1 - a.1) * (b.0 - a.0)
+            if x < xc: ins = not ins
+        ex = b.0 - a.0
+        ez = b.1 - a.1
+        t = clamp(((x - a.0) * ex + (z - a.1) * ez) / (ex * ex + ez * ez), 0.0, 1.0)
+        d = hypot(x - (a.0 + ex * t), z - (a.1 + ez * t))
+        best = min(best, d)
+    if ins: return -best
+    best
+
+# scattered samples -> a smooth surface: kernel regression with a bandwidth that follows the
+# local density of samples (sigma ~ distance to the 8th nearest), at 4 m, then upsampled
+const HC = 16.0
+const HN = 256
+interpolate = (ss: Sample[], keep: (f64, f64) -> bool, base: f64) -> f64[]:
+    pts: Sample[]
+    loop s in ss:
+        if keep(s.x, s.z): pts.push(s)
+    cells: int[][] = [loop i in [0..HN * HN): []]
+    loop i in 0.. and p in pts:
+        cx = int((p.x - X0) / HC)
+        cz = int((p.z - Z0) / HC)
+        if cx < 0 or cz < 0 or cx >= HN or cz >= HN: continue
+        cells[cz * HN + cx].push(i)
+    # bandwidth on a 16 m grid
+    sig = fill(0.0, HN * HN)
+    srows = parallel_range(HN, (cz: int):
+        r = fill(0.0, HN)
+        loop cx in [0..HN):
+            wx = X0 + (f64(cx) + 0.5) * HC
+            wz = Z0 + (f64(cz) + 0.5) * HC
+            ds: f64[]
+            rad = 0
+            loop ds.len() < 8 and rad < 30:
+                loop dz in [-rad..rad]:
+                    loop dx in [-rad..rad]:
+                        if max(abs(dx), abs(dz)) != rad: continue
+                        xx = cx + dx
+                        zz = cz + dz
+                        if xx < 0 or zz < 0 or xx >= HN or zz >= HN: continue
+                        loop i in cells[zz * HN + xx]: ds.push(hypot(pts[i].x - wx, pts[i].z - wz))
+                rad += 1
+            sort(ds)
+            d8 = if ds.len() >= 8: ds[7] else: 400.0
+            r[cx] = clamp(d8 * 0.55, 5.0, 90.0)
+        r
+    )
+    loop cz in [0..HN):
+        loop cx in [0..HN): sig[cz * HN + cx] = srows[cz][cx]
+    M = N / 2
+    coarse = parallel_range(M, (z: int):
+        r = fill(0.0, M)
+        loop x in [0..M):
+            wx = X0 + (f64(x) + 0.5) * CELL * 2.0
+            wz = Z0 + (f64(z) + 0.5) * CELL * 2.0
+            cx = clamp(int((wx - X0) / HC), 0, HN - 1)
+            cz = clamp(int((wz - Z0) / HC), 0, HN - 1)
+            fx = clamp((wx - X0) / HC - 0.5, 0.0, f64(HN - 1))
+            fz = clamp((wz - Z0) / HC - 0.5, 0.0, f64(HN - 1))
+            ix = min(int(fx), HN - 2)
+            iz = min(int(fz), HN - 2)
+            tx = fx - f64(ix)
+            tz = fz - f64(iz)
+            sg = (sig[iz * HN + ix] * (1.0 - tx) + sig[iz * HN + ix + 1] * tx) * (1.0 - tz) + (sig[(iz + 1) * HN + ix] * (1.0 - tx) + sig[(iz + 1) * HN + ix + 1] * tx) * tz
+            rad = int(ceil(sg * 2.5 / HC))
+            sw = 0.0005
+            sv = base * 0.0005
+            inv = 1.0 / (2.0 * sg * sg)
+            loop dz in [-rad..rad]:
+                loop dx in [-rad..rad]:
+                    xx = cx + dx
+                    zz = cz + dz
+                    if xx < 0 or zz < 0 or xx >= HN or zz >= HN: continue
+                    loop i in cells[zz * HN + xx]:
+                        p = pts[i]
+                        d2 = (p.x - wx) * (p.x - wx) + (p.z - wz) * (p.z - wz)
+                        w = exp(-d2 * inv)
+                        sw += w
+                        sv += w * p.y
+            r[x] = sv / sw
+        r
+    )
+    v = fill(0.0, N * N)
+    loop z in [0..N):
+        loop x in [0..N):
+            fx = clamp((f64(x) + 0.5) / 2.0 - 0.5, 0.0, f64(M - 1))
+            fz = clamp((f64(z) + 0.5) / 2.0 - 0.5, 0.0, f64(M - 1))
+            ix = min(int(fx), M - 2)
+            iz = min(int(fz), M - 2)
+            tx = fx - f64(ix)
+            tz = fz - f64(iz)
+            v[z * N + x] = (coarse[iz][ix] * (1.0 - tx) + coarse[iz][ix + 1] * tx) * (1.0 - tz) + (coarse[iz + 1][ix] * (1.0 - tx) + coarse[iz + 1][ix + 1] * tx) * tz
+    v
+
+main = ():
+    t0 = time()
+    z6 = load_tiles("docs/mapref/tiles", 6, 17, 22, 25, 29)
+    z5 = load_tiles("docs/mapref/tiles", 5, 8, 11, 12, 14)
+    ss = load_samples()
+    eprint("{ss.len()} ground samples")
+    # the cliffs: samples within 8 m of the edge are ambiguous (top or bottom): leave them out
+    top = interpolate(ss, (x: f64, z: f64): outline_sd(x, z) < -8.0, 200.0)
+    eprint("top {time() - t0:.2}s")
+    bottom = interpolate(ss, (x: f64, z: f64): outline_sd(x, z) > 8.0, 115.0)
+    eprint("bottom {time() - t0:.2}s")
+    hv = fill(0.0, N * N)
+    sdv = fill(0.0, N * N)
+    rows = parallel_range(N, (z: int):
+        r = fill(0.0, N)
+        loop x in [0..N): r[x] = outline_sd(X0 + f64(x) * CELL, Z0 + f64(z) * CELL)
+        r
+    )
+    loop z in [0..N):
+        loop x in [0..N): sdv[z * N + x] = rows[z][x]
+    loop k in [0..N * N):
+        t = smoothstep(0.0, 1.0, (sdv[k] - 5.0) / 8.0)          # 0 on the top, 1 at the bottom, over ~9 m
+        hv[k] = lerp(top[k], bottom[k], t)
+    # error at the samples
+    err = 0.0
+    cnt = 0
+    loop s in ss:
+        gx = int((s.x - X0) / CELL)
+        gz = int((s.z - Z0) / CELL)
+        if gx < 0 or gz < 0 or gx >= N or gz >= N: continue
+        if abs(outline_sd(s.x, s.z)) < 10.0: continue
+        err += abs(s.y - hv[gz * N + gx])
+        cnt += 1
+    eprint("mean |error| at objects: {err / f64(max(cnt, 1)):.2} m ({cnt} samples)")
+    # water from the map: each connected region gets the height of its shore
+    wmask = fill(u8(0), N * N)
+    loop z in [0..N):
+        loop x in [0..N):
+            wx = X0 + f64(x) * CELL
+            wz = Z0 + f64(z) * CELL
+            im = if inside(z6, wx, wz): z6 else: z5
+            if not inside(im, wx, wz): continue
+            px = clamp(int((wx - im.x0) / im.mpp), 0, im.w - 1)
+            pz = clamp(int((wz - im.z0) / im.mpp), 0, im.h - 1)
+            if im.water[pz * im.w + px] != 0: wmask[z * N + x] = 1
+    lev = fill(-10000.0, N * N)
+    seen = fill(u8(0), N * N)
+    regions = 0
+    loop start in [0..N * N):
+        if wmask[start] == 0 or seen[start] != 0: continue
+        inside = sdv[start] < 0.0
+        stack = [start]
+        seen[start] = 1
+        cells: int[]
+        shore: f64[]
+        shore_k: int[]
+        loop stack.len() > 0:
+            k = stack.pop()
+            cells.push(k)
+            x = k % N
+            z = k / N
+            loop d in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                xx = x + d.0
+                zz = z + d.1
+                if xx < 0 or zz < 0 or xx >= N or zz >= N: continue
+                kk = zz * N + xx
+                # (water on top of the plateau and below its cliffs are separate bodies)
+                if wmask[kk] != 0 and (sdv[kk] < 0.0) == inside:
+                    if seen[kk] == 0:
+                        seen[kk] = 1
+                        stack.push(kk)
+                else if wmask[kk] == 0:
+                    shore.push(hv[kk])
+                    shore_k.push(kk)
+        if shore.len() == 0 or cells.len() < 6: continue
+        sorted_ = shore
+        sort(sorted_)
+        regions += 1
+        spread = sorted_[sorted_.len() * 9 / 10] - sorted_[sorted_.len() / 10]
+        if spread < 5.0:
+            # a pond or lake: one level
+            level = sorted_[sorted_.len() / 25]
+            loop k in cells: lev[k] = level
+        else:
+            # a river: flat across, falling downstream: the lowest bank within 50 m
+            rlev = parallel_map(cells, (k: int):
+                x = k % N
+                z = k / N
+                lo = 1e9
+                loop i in 0.. and sk in shore_k:
+                    dx = sk % N - x
+                    dz = sk / N - z
+                    if dx * dx + dz * dz < 625 and shore[i] < lo: lo = shore[i]
+                if lo < 1e8: lo - 0.3 else: hv[k] - 1.2
+            )
+            loop i in 0.. and k in cells: lev[k] = rlev[i]
+            # on the plateau the River of the Dead lies at ~250 m (the original's water height)
+            if inside:
+                loop k in cells:
+                    wx = X0 + f64(k % N) * CELL
+                    wz = Z0 + f64(k / N) * CELL
+                    if wx > -1460.0 and wx < -1030.0 and wz > 1800.0 and wz < 2140.0 and lev[k] < 262.0: lev[k] = 250.0
+    eprint("{regions} water regions")
+    # smooth the water surface (rivers): each water cell averages the water cells around it
+    loop it in [0..30):
+        l2 = lev
+        loop z in [2..N - 2):
+            loop x in [2..N - 2):
+                k = z * N + x
+                if lev[k] < -9000.0: continue
+                s_ = 0.0
+                c = 0
+                loop dz in [-2..2]:
+                    loop dx in [-2..2]:
+                        v = lev[k + dz * N + dx]
+                        if v > -9000.0:
+                            s_ += v
+                            c += 1
+                l2[k] = s_ / f64(c)
+        lev = l2
+    # carve beds: deeper away from the shore
+    loop k in [0..N * N):
+        if lev[k] > -9000.0:
+            x = k % N
+            z = k / N
+            dd = 30
+            loop r in [1..30]:
+                hit = false
+                loop d in [(r, 0), (-r, 0), (0, r), (0, -r)]:
+                    xx = clamp(x + d.0, 0, N - 1)
+                    zz = clamp(z + d.1, 0, N - 1)
+                    if lev[zz * N + xx] < -9000.0: hit = true
+                if hit:
+                    dd = r
+                    break
+            depth = min(0.3 + f64(dd) * CELL * 0.1, 4.5)
+            hv[k] = min(hv[k], lev[k] - depth)
+    hf32 = fill(f32(0), N * N)
+    wf32 = fill(f32(0), N * N)
+    sdf = fill(f32(0), N * N)
+    loop k in [0..N * N):
+        hf32[k] = f32(hv[k])
+        wf32[k] = f32(lev[k])
+        sdf[k] = f32(sdv[k])
+    hb = fill(u8(0), N * N * 4)
+    mem_copy(data(hb), data(hf32) as *u8, N * N * 4)
+    write_bytes("assets/height.f32", hb)
+    mem_copy(data(hb), data(wf32) as *u8, N * N * 4)
+    write_bytes("assets/water.f32", hb)
+    mem_copy(data(hb), data(sdf) as *u8, N * N * 4)
+    write_bytes("assets/edge.f32", hb)
+    # a preview: hillshade, elevation tint, 10 m contours, water, the outline
+    prev = image(1024, 1024)
+    loop z in [0..1024):
+        loop x in [0..1024):
+            k = z * 2 * N + x * 2
+            h = hv[k]
+            sx = (hv[min(k + 2, N * N - 1)] - hv[max(k - 2, 0)]) / 8.0
+            sz = (hv[min(k + 2 * N, N * N - 1)] - hv[max(k - 2 * N, 0)]) / 8.0
+            shade = clamp(0.75 - (sx * 0.7 + sz * 0.7), 0.15, 1.0)
+            t = clamp((h - 100.0) / 320.0, 0.0, 1.0)
+            c = vec3(f32(0.35 + 0.6 * t), f32(0.45 + 0.45 * t), f32(0.25 + 0.7 * t)) * f32(shade)
+            if floor(h / 10.0) != floor(hv[min(k + 2, N * N - 1)] / 10.0) or floor(h / 10.0) != floor(hv[min(k + 2 * N, N * N - 1)] / 10.0): c = c * 0.7
+            if lev[k] > -9000.0: c = vec3(0.2, 0.35, 0.6)
+            if abs(sdv[k]) < 1.5: c = vec3(1, 0.2, 0.1)
+            set(prev, x, z, vec4(c.x, c.y, c.z, 1))
+    save_png(prev, "docs/height_preview.png")
+    # the plateau at 2 m per pixel
+    pw = 680
+    ph = 540
+    zp = image(pw, ph)
+    loop pz in [0..ph):
+        loop px in [0..pw):
+            x = int((-1620.0 + f64(px) * 2.0 - X0) / CELL)
+            z = int((1420.0 + f64(pz) * 2.0 - Z0) / CELL)
+            k = z * N + x
+            h = hv[k]
+            sx = (hv[k + 1] - hv[k - 1]) / 4.0
+            sz = (hv[k + N] - hv[k - N]) / 4.0
+            shade = clamp(0.75 - (sx * 0.9 + sz * 0.9), 0.15, 1.0)
+            t = clamp((h - 100.0) / 320.0, 0.0, 1.0)
+            c = vec3(f32(0.35 + 0.6 * t), f32(0.45 + 0.45 * t), f32(0.25 + 0.7 * t)) * f32(shade)
+            if floor(h / 5.0) != floor(hv[k + 1] / 5.0) or floor(h / 5.0) != floor(hv[k + N] / 5.0): c = c * 0.75
+            if lev[k] > -9000.0: c = mix(c, vec3(0.2, 0.35, 0.6), 0.7)
+            if abs(sdv[k]) < 1.0: c = vec3(1, 0.2, 0.1)
+            set(zp, px, pz, vec4(c.x, c.y, c.z, 1))
+    save_png(zp, "docs/plateau_preview.png")
+    eprint("done {time() - t0:.2}s")

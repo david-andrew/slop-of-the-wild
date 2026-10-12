@@ -1,0 +1,2281 @@
+{
+  "protocol": "Opt-in Wayland return tracing; fixed 1/60 steady scenes, real-dt traversal. Return frame n describes callback n; raw sample n+1 contains callback n but may shift poll work to the previous runtime gap. Wall/thread stages separate CPU work from waits; GPU queries are asynchronous. Diagnostic instrumentation and concurrent desktop activity prevent direct percentile comparison with untraced runs.",
+  "runs": {
+    "forest-default": {
+      "log": "build/music-tails/forest-default.log",
+      "log_sha256": "a682c1741a9743b8f0835914789503bd5d743244ecddeae33172598612e0dc0d",
+      "samples_after_frame_240": 1200,
+      "intervals_over_25ms": 5,
+      "dominant_tail_stages": {
+        "present": 5
+      },
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.670889,
+          "p99": 19.053278,
+          "worst": 50.985162
+        },
+        "present_call": {
+          "p50": 10.338406,
+          "p99": 13.295208,
+          "worst": 44.494052
+        },
+        "callback_wall": {
+          "p50": 6.263252,
+          "p99": 12.32323,
+          "worst": 19.964038
+        },
+        "callback_thread": {
+          "p50": 6.157643,
+          "p99": 12.163008,
+          "worst": 19.557437
+        }
+      },
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/music-tails/forest-default.png",
+        "PROBE_FRAMES": "1440",
+        "BOTW_CPU": "1",
+        "BOTW_CPU_TRACE_MS": "8",
+        "BOTW_GPU": "1",
+        "BOTW_GPU_FRAME_LOG": "1",
+        "PROBE_STAGES": "1",
+        "BOTW_AT": "-1000,1620,3.14"
+      },
+      "presentation": "wayland+libdecor dma-buf, paced, scale 1.667",
+      "steady_shader_request_frames": [],
+      "worst_intervals": [
+        {
+          "frame": 1283,
+          "elapsed_s": 25.211345,
+          "interval_ms": 50.985162,
+          "present_ms": 44.494052,
+          "callback_wall_ms": 6.365909,
+          "callback_thread_ms": 6.313822,
+          "return_trace": {
+            "line": "return stages: frame 1283 interval 50.985 prior 0.008 poll 0.017/0.015 resize 0.005/0.005 runtime_pre 0.010/0.010 callback 6.366/6.314 runtime_post 0.083/0.083 present 44.494",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.008,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.017,
+                "thread_ms": 0.015
+              },
+              "resize": {
+                "wall_ms": 0.005,
+                "thread_ms": 0.005
+              },
+              "runtime_pre": {
+                "wall_ms": 0.01,
+                "thread_ms": 0.01
+              },
+              "callback": {
+                "wall_ms": 6.366,
+                "thread_ms": 6.314
+              },
+              "runtime_post": {
+                "wall_ms": 0.083,
+                "thread_ms": 0.083
+              },
+              "present": {
+                "wall_ms": 44.494,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 7.818
+        },
+        {
+          "frame": 490,
+          "elapsed_s": 11.925237,
+          "interval_ms": 31.38326,
+          "present_ms": 25.227463,
+          "callback_wall_ms": 5.98934,
+          "callback_thread_ms": 4.984423,
+          "return_trace": {
+            "line": "return stages: frame 490 interval 31.383 prior 0.006 poll 0.016/0.015 resize 0.004/0.004 runtime_pre 0.009/0.009 callback 5.989/4.984 runtime_post 0.130/0.130 present 25.227",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.006,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.016,
+                "thread_ms": 0.015
+              },
+              "resize": {
+                "wall_ms": 0.004,
+                "thread_ms": 0.004
+              },
+              "runtime_pre": {
+                "wall_ms": 0.009,
+                "thread_ms": 0.009
+              },
+              "callback": {
+                "wall_ms": 5.989,
+                "thread_ms": 4.984
+              },
+              "runtime_post": {
+                "wall_ms": 0.13,
+                "thread_ms": 0.13
+              },
+              "present": {
+                "wall_ms": 25.227,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 9.128
+        },
+        {
+          "frame": 906,
+          "elapsed_s": 18.894169,
+          "interval_ms": 30.704623,
+          "present_ms": 23.944296,
+          "callback_wall_ms": 6.665592,
+          "callback_thread_ms": 6.603578,
+          "return_trace": {
+            "line": "return stages: frame 906 interval 30.705 prior 0.008 poll 0.018/0.017 resize 0.005/0.005 runtime_pre 0.010/0.010 callback 6.666/6.604 runtime_post 0.049/0.049 present 23.944",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.008,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.018,
+                "thread_ms": 0.017
+              },
+              "resize": {
+                "wall_ms": 0.005,
+                "thread_ms": 0.005
+              },
+              "runtime_pre": {
+                "wall_ms": 0.01,
+                "thread_ms": 0.01
+              },
+              "callback": {
+                "wall_ms": 6.666,
+                "thread_ms": 6.604
+              },
+              "runtime_post": {
+                "wall_ms": 0.049,
+                "thread_ms": 0.049
+              },
+              "present": {
+                "wall_ms": 23.944,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 9.144
+        },
+        {
+          "frame": 686,
+          "elapsed_s": 15.209899,
+          "interval_ms": 26.356952,
+          "present_ms": 22.138474,
+          "callback_wall_ms": 4.140604,
+          "callback_thread_ms": 4.104378,
+          "return_trace": {
+            "line": "return stages: frame 686 interval 26.357 prior 0.005 poll 0.014/0.013 resize 0.003/0.003 runtime_pre 0.007/0.007 callback 4.141/4.104 runtime_post 0.047/0.047 present 22.138",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.005,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.014,
+                "thread_ms": 0.013
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.007,
+                "thread_ms": 0.007
+              },
+              "callback": {
+                "wall_ms": 4.141,
+                "thread_ms": 4.104
+              },
+              "runtime_post": {
+                "wall_ms": 0.047,
+                "thread_ms": 0.047
+              },
+              "present": {
+                "wall_ms": 22.138,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 9.171
+        },
+        {
+          "frame": 1349,
+          "elapsed_s": 26.325292,
+          "interval_ms": 26.237416,
+          "present_ms": 17.155313,
+          "callback_wall_ms": 8.921201,
+          "callback_thread_ms": 8.816214,
+          "return_trace": {
+            "line": "return stages: frame 1349 interval 26.237 prior 0.014 poll 0.046/0.033 resize 0.011/0.009 runtime_pre 0.019/0.021 callback 8.921/8.816 runtime_post 0.066/0.057 present 17.155",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.014,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.046,
+                "thread_ms": 0.033
+              },
+              "resize": {
+                "wall_ms": 0.011,
+                "thread_ms": 0.009
+              },
+              "runtime_pre": {
+                "wall_ms": 0.019,
+                "thread_ms": 0.021
+              },
+              "callback": {
+                "wall_ms": 8.921,
+                "thread_ms": 8.816
+              },
+              "runtime_post": {
+                "wall_ms": 0.066,
+                "thread_ms": 0.057
+              },
+              "present": {
+                "wall_ms": 17.155,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 1.056,
+              "thread_ms": 1.047
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 0.548,
+              "thread_ms": 0.537
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.481,
+              "thread_ms": 0.469
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.459,
+              "thread_ms": 0.446
+            },
+            {
+              "name": "enemies_update",
+              "wall_ms": 0.421,
+              "thread_ms": 0.423
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.354,
+              "thread_ms": 0.354
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.339,
+              "thread_ms": 0.34
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.317,
+              "thread_ms": 0.286
+            }
+          ],
+          "gpu_same_frame_ms": 7.844
+        },
+        {
+          "frame": 685,
+          "elapsed_s": 15.183542,
+          "interval_ms": 23.389111,
+          "present_ms": 18.564034,
+          "callback_wall_ms": 4.755677,
+          "callback_thread_ms": 4.734374,
+          "return_trace": null,
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 7.852
+        },
+        {
+          "frame": 1412,
+          "elapsed_s": 27.382222,
+          "interval_ms": 21.298133,
+          "present_ms": 0.829919,
+          "callback_wall_ms": 19.964038,
+          "callback_thread_ms": 19.557437,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 3.581,
+              "thread_ms": 3.503
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.921,
+              "thread_ms": 0.905
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.832,
+              "thread_ms": 0.82
+            },
+            {
+              "name": "enemies_update",
+              "wall_ms": 0.776,
+              "thread_ms": 0.759
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.651,
+              "thread_ms": 0.631
+            },
+            {
+              "name": "enemies_update",
+              "wall_ms": 0.638,
+              "thread_ms": 0.62
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.632,
+              "thread_ms": 0.617
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.608,
+              "thread_ms": 0.597
+            }
+          ],
+          "gpu_same_frame_ms": 10.974
+        },
+        {
+          "frame": 1348,
+          "elapsed_s": 26.299054,
+          "interval_ms": 20.294716,
+          "present_ms": 0.415278,
+          "callback_wall_ms": 19.489081,
+          "callback_thread_ms": 19.132238,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 3.842,
+              "thread_ms": 3.767
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.934,
+              "thread_ms": 0.918
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.858,
+              "thread_ms": 0.842
+            },
+            {
+              "name": "shadow1",
+              "wall_ms": 0.807,
+              "thread_ms": 0.79
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.759,
+              "thread_ms": 0.744
+            },
+            {
+              "name": "enemies_update",
+              "wall_ms": 0.672,
+              "thread_ms": 0.651
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.633,
+              "thread_ms": 0.617
+            },
+            {
+              "name": "elements_items",
+              "wall_ms": 0.618,
+              "thread_ms": 0.595
+            }
+          ],
+          "gpu_same_frame_ms": 12.081
+        },
+        {
+          "frame": 1347,
+          "elapsed_s": 26.27876,
+          "interval_ms": 19.202979,
+          "present_ms": 15.100471,
+          "callback_wall_ms": 4.03502,
+          "callback_thread_ms": 4.011088,
+          "return_trace": null,
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 7.819
+        },
+        {
+          "frame": 1077,
+          "elapsed_s": 21.748721,
+          "interval_ms": 19.188025,
+          "present_ms": 0.602216,
+          "callback_wall_ms": 18.202102,
+          "callback_thread_ms": 17.875037,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 2.162,
+              "thread_ms": 2.135
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 1.408,
+              "thread_ms": 1.37
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.887,
+              "thread_ms": 0.873
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.855,
+              "thread_ms": 0.837
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.812,
+              "thread_ms": 0.795
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.732,
+              "thread_ms": 0.717
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.672,
+              "thread_ms": 0.657
+            },
+            {
+              "name": "enemies_update",
+              "wall_ms": 0.668,
+              "thread_ms": 0.669
+            }
+          ],
+          "gpu_same_frame_ms": 9.926
+        },
+        {
+          "frame": 1353,
+          "elapsed_s": 26.396661,
+          "interval_ms": 19.166978,
+          "present_ms": 0.412666,
+          "callback_wall_ms": 18.367949,
+          "callback_thread_ms": 18.031791,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 3.031,
+              "thread_ms": 2.982
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 1.089,
+              "thread_ms": 1.065
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 1.027,
+              "thread_ms": 1.01
+            },
+            {
+              "name": "enemies_update",
+              "wall_ms": 0.778,
+              "thread_ms": 0.762
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.741,
+              "thread_ms": 0.724
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.722,
+              "thread_ms": 0.706
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.685,
+              "thread_ms": 0.686
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.627,
+              "thread_ms": 0.608
+            }
+          ],
+          "gpu_same_frame_ms": 10.563
+        },
+        {
+          "frame": 1076,
+          "elapsed_s": 21.729533,
+          "interval_ms": 19.118092,
+          "present_ms": 15.159785,
+          "callback_wall_ms": 3.872706,
+          "callback_thread_ms": 3.847642,
+          "return_trace": null,
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 9.1
+        }
+      ]
+    },
+    "forest-mailbox": {
+      "log": "build/music-tails/forest-mailbox.log",
+      "log_sha256": "786353a0fc717ad3a7b03e8f2eea1da107543f6bd7735b37241ad85d8d303fde",
+      "samples_after_frame_240": 1200,
+      "intervals_over_25ms": 1,
+      "dominant_tail_stages": {
+        "present": 1
+      },
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 9.624543,
+          "p99": 12.017015,
+          "worst": 49.438832
+        },
+        "present_call": {
+          "p50": 0.139429,
+          "p99": 0.225936,
+          "worst": 40.004735
+        },
+        "callback_wall": {
+          "p50": 9.372035,
+          "p99": 11.625082,
+          "worst": 14.298612
+        },
+        "callback_thread": {
+          "p50": 4.161407,
+          "p99": 6.907509,
+          "worst": 10.093347
+        }
+      },
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/music-tails/forest-mailbox.png",
+        "PROBE_FRAMES": "1440",
+        "BOTW_CPU": "1",
+        "BOTW_CPU_TRACE_MS": "8",
+        "BOTW_GPU": "1",
+        "BOTW_GPU_FRAME_LOG": "1",
+        "PROBE_STAGES": "1",
+        "BOTW_AT": "-1000,1620,3.14",
+        "SLOPPY_PRESENT": "mailbox"
+      },
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "steady_shader_request_frames": [],
+      "worst_intervals": [
+        {
+          "frame": 367,
+          "elapsed_s": 3.99323,
+          "interval_ms": 49.438832,
+          "present_ms": 40.004735,
+          "callback_wall_ms": 9.266793,
+          "callback_thread_ms": 7.632794,
+          "return_trace": {
+            "line": "return stages: frame 367 interval 49.439 prior 0.013 poll 0.054/0.036 resize 0.005/0.005 runtime_pre 0.008/0.008 callback 9.267/7.633 runtime_post 0.083/0.084 present 40.005",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.013,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.054,
+                "thread_ms": 0.036
+              },
+              "resize": {
+                "wall_ms": 0.005,
+                "thread_ms": 0.005
+              },
+              "runtime_pre": {
+                "wall_ms": 0.008,
+                "thread_ms": 0.008
+              },
+              "callback": {
+                "wall_ms": 9.267,
+                "thread_ms": 7.633
+              },
+              "runtime_post": {
+                "wall_ms": 0.083,
+                "thread_ms": 0.084
+              },
+              "present": {
+                "wall_ms": 40.005,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 1.623,
+              "thread_ms": 0.079
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 1.174,
+              "thread_ms": 1.17
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 0.688,
+              "thread_ms": 0.684
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.474,
+              "thread_ms": 0.475
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.44,
+              "thread_ms": 0.437
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.417,
+              "thread_ms": 0.392
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.278,
+              "thread_ms": 0.275
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.276,
+              "thread_ms": 0.24
+            }
+          ],
+          "gpu_same_frame_ms": 7.878
+        },
+        {
+          "frame": 1029,
+          "elapsed_s": 10.281328,
+          "interval_ms": 14.639501,
+          "present_ms": 0.242585,
+          "callback_wall_ms": 14.298612,
+          "callback_thread_ms": 10.093347,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 4.358,
+              "thread_ms": 0.232
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 1.885,
+              "thread_ms": 1.87
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 0.985,
+              "thread_ms": 0.978
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.707,
+              "thread_ms": 0.696
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.608,
+              "thread_ms": 0.601
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.605,
+              "thread_ms": 0.606
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.418,
+              "thread_ms": 0.418
+            },
+            {
+              "name": "sh-chars0",
+              "wall_ms": 0.323,
+              "thread_ms": 0.315
+            }
+          ],
+          "gpu_same_frame_ms": 7.903
+        },
+        {
+          "frame": 843,
+          "elapsed_s": 8.523866,
+          "interval_ms": 13.194166,
+          "present_ms": 0.142878,
+          "callback_wall_ms": 12.956545,
+          "callback_thread_ms": 4.223506,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 5.766,
+              "thread_ms": 0.164
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 3.457,
+              "thread_ms": 0.35
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.496,
+              "thread_ms": 0.491
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.233,
+              "thread_ms": 0.234
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.174,
+              "thread_ms": 0.174
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.17,
+              "thread_ms": 0.17
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.163,
+              "thread_ms": 0.163
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.153,
+              "thread_ms": 0.153
+            }
+          ],
+          "gpu_same_frame_ms": 8.157
+        },
+        {
+          "frame": 733,
+          "elapsed_s": 7.480459,
+          "interval_ms": 13.163349,
+          "present_ms": 0.129831,
+          "callback_wall_ms": 12.909376,
+          "callback_thread_ms": 4.152918,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 6.031,
+              "thread_ms": 0.137
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 3.154,
+              "thread_ms": 0.315
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.57,
+              "thread_ms": 0.571
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.233,
+              "thread_ms": 0.234
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.194,
+              "thread_ms": 0.19
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.154,
+              "thread_ms": 0.149
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.139,
+              "thread_ms": 0.139
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.135,
+              "thread_ms": 0.135
+            }
+          ],
+          "gpu_same_frame_ms": 7.949
+        },
+        {
+          "frame": 1097,
+          "elapsed_s": 10.931145,
+          "interval_ms": 13.012549,
+          "present_ms": 0.144954,
+          "callback_wall_ms": 12.795837,
+          "callback_thread_ms": 5.871252,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 5.958,
+              "thread_ms": 0.202
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 2.058,
+              "thread_ms": 2.018
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 1.361,
+              "thread_ms": 0.327
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.272,
+              "thread_ms": 0.264
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.228,
+              "thread_ms": 0.228
+            },
+            {
+              "name": "sh-chars0",
+              "wall_ms": 0.184,
+              "thread_ms": 0.139
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.177,
+              "thread_ms": 0.172
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.165,
+              "thread_ms": 0.165
+            }
+          ],
+          "gpu_same_frame_ms": 8.108
+        },
+        {
+          "frame": 1389,
+          "elapsed_s": 13.693946,
+          "interval_ms": 12.5418,
+          "present_ms": 0.163393,
+          "callback_wall_ms": 12.286711,
+          "callback_thread_ms": 6.156033,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 6.326,
+              "thread_ms": 0.235
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 1.933,
+              "thread_ms": 1.913
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.508,
+              "thread_ms": 0.504
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.231,
+              "thread_ms": 0.232
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.23,
+              "thread_ms": 0.23
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.188,
+              "thread_ms": 0.188
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.176,
+              "thread_ms": 0.171
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.173,
+              "thread_ms": 0.173
+            }
+          ],
+          "gpu_same_frame_ms": 9.202
+        },
+        {
+          "frame": 273,
+          "elapsed_s": 3.049023,
+          "interval_ms": 12.480008,
+          "present_ms": 0.151393,
+          "callback_wall_ms": 12.22357,
+          "callback_thread_ms": 6.606311,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 5.757,
+              "thread_ms": 0.195
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 1.174,
+              "thread_ms": 1.167
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 0.564,
+              "thread_ms": 0.557
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.389,
+              "thread_ms": 0.39
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.364,
+              "thread_ms": 0.365
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.318,
+              "thread_ms": 0.31
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.269,
+              "thread_ms": 0.27
+            },
+            {
+              "name": "sh-chars0",
+              "wall_ms": 0.184,
+              "thread_ms": 0.184
+            }
+          ],
+          "gpu_same_frame_ms": 8.134
+        },
+        {
+          "frame": 513,
+          "elapsed_s": 5.391938,
+          "interval_ms": 12.363101,
+          "present_ms": 0.179341,
+          "callback_wall_ms": 12.071192,
+          "callback_thread_ms": 6.805598,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 5.447,
+              "thread_ms": 0.226
+            },
+            {
+              "name": "story_hud",
+              "wall_ms": 1.662,
+              "thread_ms": 1.656
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.587,
+              "thread_ms": 0.58
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 0.363,
+              "thread_ms": 0.364
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.265,
+              "thread_ms": 0.265
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.214,
+              "thread_ms": 0.21
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.2,
+              "thread_ms": 0.2
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.196,
+              "thread_ms": 0.196
+            }
+          ],
+          "gpu_same_frame_ms": 8.132
+        },
+        {
+          "frame": 1151,
+          "elapsed_s": 11.442176,
+          "interval_ms": 12.248597,
+          "present_ms": 0.12691,
+          "callback_wall_ms": 12.051849,
+          "callback_thread_ms": 3.905538,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 6.188,
+              "thread_ms": 0.17
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 2.466,
+              "thread_ms": 0.356
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.444,
+              "thread_ms": 0.444
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.212,
+              "thread_ms": 0.212
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.156,
+              "thread_ms": 0.156
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.151,
+              "thread_ms": 0.151
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.143,
+              "thread_ms": 0.143
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.137,
+              "thread_ms": 0.137
+            }
+          ],
+          "gpu_same_frame_ms": 7.935
+        },
+        {
+          "frame": 521,
+          "elapsed_s": 5.469019,
+          "interval_ms": 12.172173,
+          "present_ms": 0.161435,
+          "callback_wall_ms": 11.887649,
+          "callback_thread_ms": 6.435995,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 5.612,
+              "thread_ms": 0.198
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.949,
+              "thread_ms": 0.942
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 0.702,
+              "thread_ms": 0.696
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.43,
+              "thread_ms": 0.43
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.406,
+              "thread_ms": 0.397
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.393,
+              "thread_ms": 0.386
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.227,
+              "thread_ms": 0.224
+            },
+            {
+              "name": "sh-chars0",
+              "wall_ms": 0.201,
+              "thread_ms": 0.202
+            }
+          ],
+          "gpu_same_frame_ms": 7.933
+        },
+        {
+          "frame": 362,
+          "elapsed_s": 3.903345,
+          "interval_ms": 12.137197,
+          "present_ms": 0.140574,
+          "callback_wall_ms": 11.873828,
+          "callback_thread_ms": 6.091364,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 4.285,
+              "thread_ms": 0.146
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 1.764,
+              "thread_ms": 0.257
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 1.325,
+              "thread_ms": 1.245
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.272,
+              "thread_ms": 0.272
+            },
+            {
+              "name": "shadow1",
+              "wall_ms": 0.27,
+              "thread_ms": 0.265
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.225,
+              "thread_ms": 0.225
+            },
+            {
+              "name": "sh-chars0",
+              "wall_ms": 0.212,
+              "thread_ms": 0.213
+            },
+            {
+              "name": "sh-chars1",
+              "wall_ms": 0.211,
+              "thread_ms": 0.211
+            }
+          ],
+          "gpu_same_frame_ms": 9.329
+        },
+        {
+          "frame": 727,
+          "elapsed_s": 7.421504,
+          "interval_ms": 12.093855,
+          "present_ms": 0.129049,
+          "callback_wall_ms": 11.879025,
+          "callback_thread_ms": 3.860025,
+          "return_trace": null,
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 6.122,
+              "thread_ms": 0.158
+            },
+            {
+              "name": "shadow2",
+              "wall_ms": 2.364,
+              "thread_ms": 0.328
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.429,
+              "thread_ms": 0.429
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.203,
+              "thread_ms": 0.203
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.161,
+              "thread_ms": 0.161
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.156,
+              "thread_ms": 0.157
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.152,
+              "thread_ms": 0.152
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.148,
+              "thread_ms": 0.149
+            }
+          ],
+          "gpu_same_frame_ms": 8.088
+        }
+      ]
+    },
+    "route-mailbox": {
+      "log": "build/music-tails/route-mailbox.log",
+      "log_sha256": "3381911238956b0f84efa5269124343e43f6d642d95a17d47368416e8761a03f",
+      "samples_after_frame_240": 29085,
+      "intervals_over_25ms": 38,
+      "dominant_tail_stages": {
+        "poll": 1,
+        "present": 21,
+        "callback": 16
+      },
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 9.796326,
+          "p99": 18.203275,
+          "worst": 89.540841
+        },
+        "present_call": {
+          "p50": 0.152904,
+          "p99": 0.85587,
+          "worst": 80.972338
+        },
+        "callback_wall": {
+          "p50": 9.50725,
+          "p99": 16.792414,
+          "worst": 40.796473
+        },
+        "callback_thread": {
+          "p50": 6.000546,
+          "p99": 10.464956,
+          "worst": 14.488501
+        }
+      },
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/music-tails/route-mailbox.png",
+        "PROBE_FRAMES": "2400",
+        "BOTW_CPU": "1",
+        "BOTW_CPU_TRACE_MS": "8",
+        "BOTW_GPU": "1",
+        "BOTW_GPU_FRAME_LOG": "1",
+        "PROBE_STAGES": "1",
+        "BOTW_AT": "-1000,1620,3.14",
+        "SLOPPY_PRESENT": "mailbox",
+        "BOTW_GIVE": "travelers_sword,travelers_shield,warm_doublet",
+        "PROBE_SECONDS": "300"
+      },
+      "presentation": "wayland+libdecor dma-buf, mailbox, scale 1.667",
+      "steady_shader_request_frames": [
+        5559
+      ],
+      "worst_intervals": [
+        {
+          "frame": 23528,
+          "elapsed_s": 244.527349,
+          "interval_ms": 89.540841,
+          "present_ms": 80.972338,
+          "callback_wall_ms": 8.510928,
+          "callback_thread_ms": 5.451515,
+          "return_trace": {
+            "line": "return stages: frame 23528 interval 89.541 prior 0.003 poll 0.012/0.011 resize 0.003/0.003 runtime_pre 0.006/0.006 callback 8.511/5.452 runtime_post 0.032/0.032 present 80.972",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.003,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.012,
+                "thread_ms": 0.011
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.006,
+                "thread_ms": 0.006
+              },
+              "callback": {
+                "wall_ms": 8.511,
+                "thread_ms": 5.452
+              },
+              "runtime_post": {
+                "wall_ms": 0.032,
+                "thread_ms": 0.032
+              },
+              "present": {
+                "wall_ms": 80.972,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 3.099,
+              "thread_ms": 0.082
+            },
+            {
+              "name": "hud",
+              "wall_ms": 1.263,
+              "thread_ms": 1.259
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.764,
+              "thread_ms": 0.759
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.408,
+              "thread_ms": 0.408
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.236,
+              "thread_ms": 0.237
+            },
+            {
+              "name": "monsters_draw",
+              "wall_ms": 0.208,
+              "thread_ms": 0.2
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.194,
+              "thread_ms": 0.19
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.192,
+              "thread_ms": 0.173
+            }
+          ],
+          "gpu_same_frame_ms": 7.693
+        },
+        {
+          "frame": 8612,
+          "elapsed_s": 85.487974,
+          "interval_ms": 47.004784,
+          "present_ms": 39.163232,
+          "callback_wall_ms": 7.757556,
+          "callback_thread_ms": 5.769675,
+          "return_trace": {
+            "line": "return stages: frame 8612 interval 47.005 prior 0.017 poll 0.026/0.026 resize 0.003/0.003 runtime_pre 0.007/0.007 callback 7.758/5.770 runtime_post 0.030/0.030 present 39.163",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.017,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.026,
+                "thread_ms": 0.026
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.007,
+                "thread_ms": 0.007
+              },
+              "callback": {
+                "wall_ms": 7.758,
+                "thread_ms": 5.77
+              },
+              "runtime_post": {
+                "wall_ms": 0.03,
+                "thread_ms": 0.03
+              },
+              "present": {
+                "wall_ms": 39.163,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 6.661
+        },
+        {
+          "frame": 14049,
+          "elapsed_s": 138.037399,
+          "interval_ms": 41.529173,
+          "present_ms": 0.417841,
+          "callback_wall_ms": 40.796473,
+          "callback_thread_ms": 14.174702,
+          "return_trace": {
+            "line": "return stages: frame 14049 interval 41.529 prior 0.042 poll 0.026/0.026 resize 0.003/0.003 runtime_pre 0.009/0.009 callback 40.796/14.175 runtime_post 0.233/0.233 present 0.418",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.042,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.026,
+                "thread_ms": 0.026
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.009,
+                "thread_ms": 0.009
+              },
+              "callback": {
+                "wall_ms": 40.796,
+                "thread_ms": 14.175
+              },
+              "runtime_post": {
+                "wall_ms": 0.233,
+                "thread_ms": 0.233
+              },
+              "present": {
+                "wall_ms": 0.418,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "callback"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "elements_brands",
+              "wall_ms": 6.746,
+              "thread_ms": 0.01
+            },
+            {
+              "name": "player_update",
+              "wall_ms": 4.683,
+              "thread_ms": 0.017
+            },
+            {
+              "name": "shadow_actors0",
+              "wall_ms": 4.671,
+              "thread_ms": 0.008
+            },
+            {
+              "name": "hud",
+              "wall_ms": 4.63,
+              "thread_ms": 1.968
+            },
+            {
+              "name": "elements_brands",
+              "wall_ms": 2.823,
+              "thread_ms": 0.011
+            },
+            {
+              "name": "bonfires",
+              "wall_ms": 2.337,
+              "thread_ms": 0.005
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 2.147,
+              "thread_ms": 0.725
+            },
+            {
+              "name": "fx_update",
+              "wall_ms": 0.958,
+              "thread_ms": 0.164
+            }
+          ],
+          "gpu_same_frame_ms": 14.097
+        },
+        {
+          "frame": 14048,
+          "elapsed_s": 137.995869,
+          "interval_ms": 38.1498,
+          "present_ms": 0.962748,
+          "callback_wall_ms": 36.866523,
+          "callback_thread_ms": 12.731065,
+          "return_trace": {
+            "line": "return stages: frame 14048 interval 38.150 prior 0.045 poll 0.027/0.027 resize 0.003/0.003 runtime_pre 0.010/0.010 callback 36.867/12.731 runtime_post 0.233/0.229 present 0.963",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.045,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.027,
+                "thread_ms": 0.027
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.01,
+                "thread_ms": 0.01
+              },
+              "callback": {
+                "wall_ms": 36.867,
+                "thread_ms": 12.731
+              },
+              "runtime_post": {
+                "wall_ms": 0.233,
+                "thread_ms": 0.229
+              },
+              "present": {
+                "wall_ms": 0.963,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "callback"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "elements_contact",
+              "wall_ms": 6.426,
+              "thread_ms": 0.017
+            },
+            {
+              "name": "sky_draw",
+              "wall_ms": 6.165,
+              "thread_ms": 0.007
+            },
+            {
+              "name": "hud",
+              "wall_ms": 5.358,
+              "thread_ms": 1.873
+            },
+            {
+              "name": "elements_tree_active",
+              "wall_ms": 4.065,
+              "thread_ms": 0.027
+            },
+            {
+              "name": "post",
+              "wall_ms": 3.087,
+              "thread_ms": 0.136
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.832,
+              "thread_ms": 0.744
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.709,
+              "thread_ms": 0.705
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.449,
+              "thread_ms": 0.444
+            }
+          ],
+          "gpu_same_frame_ms": 19.065
+        },
+        {
+          "frame": 14053,
+          "elapsed_s": 138.135314,
+          "interval_ms": 36.065284,
+          "present_ms": 0.22058,
+          "callback_wall_ms": 35.615137,
+          "callback_thread_ms": 11.987429,
+          "return_trace": {
+            "line": "return stages: frame 14053 interval 36.065 prior 0.005 poll 0.030/0.030 resize 0.004/0.003 runtime_pre 0.009/0.009 callback 35.615/11.987 runtime_post 0.180/0.180 present 0.221",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.005,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.03,
+                "thread_ms": 0.03
+              },
+              "resize": {
+                "wall_ms": 0.004,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.009,
+                "thread_ms": 0.009
+              },
+              "callback": {
+                "wall_ms": 35.615,
+                "thread_ms": 11.987
+              },
+              "runtime_post": {
+                "wall_ms": 0.18,
+                "thread_ms": 0.18
+              },
+              "present": {
+                "wall_ms": 0.221,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "callback"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "shrines_props",
+              "wall_ms": 9.366,
+              "thread_ms": 0.013
+            },
+            {
+              "name": "shrine_hud",
+              "wall_ms": 5.272,
+              "thread_ms": 0.004
+            },
+            {
+              "name": "wildlife_update",
+              "wall_ms": 4.567,
+              "thread_ms": 0.088
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 3.866,
+              "thread_ms": 0.457
+            },
+            {
+              "name": "hud",
+              "wall_ms": 1.974,
+              "thread_ms": 1.973
+            },
+            {
+              "name": "sh-veg0",
+              "wall_ms": 0.938,
+              "thread_ms": 0.011
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.825,
+              "thread_ms": 0.825
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.653,
+              "thread_ms": 0.627
+            }
+          ],
+          "gpu_same_frame_ms": 26.206
+        },
+        {
+          "frame": 20704,
+          "elapsed_s": 214.378341,
+          "interval_ms": 34.014665,
+          "present_ms": 24.746671,
+          "callback_wall_ms": 9.227566,
+          "callback_thread_ms": 6.145144,
+          "return_trace": {
+            "line": "return stages: frame 20704 interval 34.015 prior 0.004 poll 0.016/0.015 resize 0.003/0.003 runtime_pre 0.007/0.007 callback 9.228/6.145 runtime_post 0.009/0.009 present 24.747",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.004,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.016,
+                "thread_ms": 0.015
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.007,
+                "thread_ms": 0.007
+              },
+              "callback": {
+                "wall_ms": 9.228,
+                "thread_ms": 6.145
+              },
+              "runtime_post": {
+                "wall_ms": 0.009,
+                "thread_ms": 0.009
+              },
+              "present": {
+                "wall_ms": 24.747,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 3.139,
+              "thread_ms": 0.126
+            },
+            {
+              "name": "hud",
+              "wall_ms": 1.372,
+              "thread_ms": 1.368
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.953,
+              "thread_ms": 0.949
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.311,
+              "thread_ms": 0.292
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.288,
+              "thread_ms": 0.289
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.173,
+              "thread_ms": 0.173
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.16,
+              "thread_ms": 0.16
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.143,
+              "thread_ms": 0.143
+            }
+          ],
+          "gpu_same_frame_ms": 18.122
+        },
+        {
+          "frame": 14047,
+          "elapsed_s": 137.95772,
+          "interval_ms": 32.772062,
+          "present_ms": 1.192093,
+          "callback_wall_ms": 31.362908,
+          "callback_thread_ms": 12.992332,
+          "return_trace": {
+            "line": "return stages: frame 14047 interval 32.772 prior 0.014 poll 0.027/0.026 resize 0.003/0.003 runtime_pre 0.008/0.009 callback 31.363/12.992 runtime_post 0.163/0.163 present 1.192",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.014,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.027,
+                "thread_ms": 0.026
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.008,
+                "thread_ms": 0.009
+              },
+              "callback": {
+                "wall_ms": 31.363,
+                "thread_ms": 12.992
+              },
+              "runtime_post": {
+                "wall_ms": 0.163,
+                "thread_ms": 0.163
+              },
+              "present": {
+                "wall_ms": 1.192,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "callback"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "hud",
+              "wall_ms": 8.118,
+              "thread_ms": 2.015
+            },
+            {
+              "name": "elements_felled_trees",
+              "wall_ms": 4.28,
+              "thread_ms": 0.008
+            },
+            {
+              "name": "terrain_draw",
+              "wall_ms": 3.11,
+              "thread_ms": 0.008
+            },
+            {
+              "name": "critters_update",
+              "wall_ms": 2.672,
+              "thread_ms": 0.019
+            },
+            {
+              "name": "elements_felled_trees",
+              "wall_ms": 1.485,
+              "thread_ms": 0.012
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.661,
+              "thread_ms": 0.661
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.66,
+              "thread_ms": 0.66
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.565,
+              "thread_ms": 0.468
+            }
+          ],
+          "gpu_same_frame_ms": 17.114
+        },
+        {
+          "frame": 11132,
+          "elapsed_s": 107.493122,
+          "interval_ms": 32.601315,
+          "present_ms": 22.881989,
+          "callback_wall_ms": 9.631867,
+          "callback_thread_ms": 5.496021,
+          "return_trace": {
+            "line": "return stages: frame 11132 interval 32.601 prior 0.004 poll 0.013/0.013 resize 0.003/0.003 runtime_pre 0.006/0.006 callback 9.632/5.496 runtime_post 0.060/0.039 present 22.882",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.004,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.013,
+                "thread_ms": 0.013
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.006,
+                "thread_ms": 0.006
+              },
+              "callback": {
+                "wall_ms": 9.632,
+                "thread_ms": 5.496
+              },
+              "runtime_post": {
+                "wall_ms": 0.06,
+                "thread_ms": 0.039
+              },
+              "present": {
+                "wall_ms": 22.882,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 3.907,
+              "thread_ms": 0.113
+            },
+            {
+              "name": "hud",
+              "wall_ms": 1.525,
+              "thread_ms": 1.416
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.484,
+              "thread_ms": 0.469
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.292,
+              "thread_ms": 0.211
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.25,
+              "thread_ms": 0.25
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.2,
+              "thread_ms": 0.2
+            },
+            {
+              "name": "enemies_update",
+              "wall_ms": 0.183,
+              "thread_ms": 0.164
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.16,
+              "thread_ms": 0.16
+            }
+          ],
+          "gpu_same_frame_ms": 8.362
+        },
+        {
+          "frame": 3590,
+          "elapsed_s": 39.028566,
+          "interval_ms": 31.93912,
+          "present_ms": 17.457827,
+          "callback_wall_ms": 14.387912,
+          "callback_thread_ms": 9.279571,
+          "return_trace": {
+            "line": "return stages: frame 3590 interval 31.939 prior 0.005 poll 0.021/0.021 resize 0.004/0.004 runtime_pre 0.009/0.009 callback 14.388/9.280 runtime_post 0.053/0.053 present 17.458",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.005,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.021,
+                "thread_ms": 0.021
+              },
+              "resize": {
+                "wall_ms": 0.004,
+                "thread_ms": 0.004
+              },
+              "runtime_pre": {
+                "wall_ms": 0.009,
+                "thread_ms": 0.009
+              },
+              "callback": {
+                "wall_ms": 14.388,
+                "thread_ms": 9.28
+              },
+              "runtime_post": {
+                "wall_ms": 0.053,
+                "thread_ms": 0.053
+              },
+              "present": {
+                "wall_ms": 17.458,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 5.338,
+              "thread_ms": 0.285
+            },
+            {
+              "name": "hud",
+              "wall_ms": 1.932,
+              "thread_ms": 1.922
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.739,
+              "thread_ms": 0.73
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.4,
+              "thread_ms": 0.4
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.343,
+              "thread_ms": 0.343
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.34,
+              "thread_ms": 0.341
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.339,
+              "thread_ms": 0.34
+            },
+            {
+              "name": "enemy_anim_update",
+              "wall_ms": 0.284,
+              "thread_ms": 0.28
+            }
+          ],
+          "gpu_same_frame_ms": 16.889
+        },
+        {
+          "frame": 27995,
+          "elapsed_s": 287.47439,
+          "interval_ms": 31.667021,
+          "present_ms": 24.059189,
+          "callback_wall_ms": 7.512112,
+          "callback_thread_ms": 4.993847,
+          "return_trace": {
+            "line": "return stages: frame 27995 interval 31.667 prior 0.005 poll 0.018/0.018 resize 0.003/0.003 runtime_pre 0.007/0.007 callback 7.512/4.994 runtime_post 0.060/0.060 present 24.059",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.005,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.018,
+                "thread_ms": 0.018
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.007,
+                "thread_ms": 0.007
+              },
+              "callback": {
+                "wall_ms": 7.512,
+                "thread_ms": 4.994
+              },
+              "runtime_post": {
+                "wall_ms": 0.06,
+                "thread_ms": 0.06
+              },
+              "present": {
+                "wall_ms": 24.059,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [],
+          "gpu_same_frame_ms": 6.941
+        },
+        {
+          "frame": 14055,
+          "elapsed_s": 138.189469,
+          "interval_ms": 31.599426,
+          "present_ms": 0.218311,
+          "callback_wall_ms": 31.168459,
+          "callback_thread_ms": 11.167914,
+          "return_trace": {
+            "line": "return stages: frame 14055 interval 31.599 prior 0.005 poll 0.026/0.025 resize 0.003/0.003 runtime_pre 0.008/0.008 callback 31.168/11.168 runtime_post 0.168/0.164 present 0.218",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.005,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.026,
+                "thread_ms": 0.025
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.008,
+                "thread_ms": 0.008
+              },
+              "callback": {
+                "wall_ms": 31.168,
+                "thread_ms": 11.168
+              },
+              "runtime_post": {
+                "wall_ms": 0.168,
+                "thread_ms": 0.164
+              },
+              "present": {
+                "wall_ms": 0.218,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "callback"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "hud",
+              "wall_ms": 13.49,
+              "thread_ms": 2.04
+            },
+            {
+              "name": "shrine_hud",
+              "wall_ms": 4.641,
+              "thread_ms": 0.007
+            },
+            {
+              "name": "electric",
+              "wall_ms": 2.533,
+              "thread_ms": 0.03
+            },
+            {
+              "name": "wildlife_draw",
+              "wall_ms": 0.683,
+              "thread_ms": 0.663
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.604,
+              "thread_ms": 0.593
+            },
+            {
+              "name": "wildlife_animate",
+              "wall_ms": 0.435,
+              "thread_ms": 0.044
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.431,
+              "thread_ms": 0.431
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.411,
+              "thread_ms": 0.407
+            }
+          ],
+          "gpu_same_frame_ms": 26.165
+        },
+        {
+          "frame": 20010,
+          "elapsed_s": 206.475378,
+          "interval_ms": 31.028343,
+          "present_ms": 20.783917,
+          "callback_wall_ms": 10.167405,
+          "callback_thread_ms": 6.588137,
+          "return_trace": {
+            "line": "return stages: frame 20010 interval 31.028 prior 0.003 poll 0.014/0.014 resize 0.003/0.003 runtime_pre 0.007/0.007 callback 10.167/6.588 runtime_post 0.048/0.048 present 20.784",
+            "stages": {
+              "prior": {
+                "wall_ms": 0.003,
+                "thread_ms": null
+              },
+              "poll": {
+                "wall_ms": 0.014,
+                "thread_ms": 0.014
+              },
+              "resize": {
+                "wall_ms": 0.003,
+                "thread_ms": 0.003
+              },
+              "runtime_pre": {
+                "wall_ms": 0.007,
+                "thread_ms": 0.007
+              },
+              "callback": {
+                "wall_ms": 10.167,
+                "thread_ms": 6.588
+              },
+              "runtime_post": {
+                "wall_ms": 0.048,
+                "thread_ms": 0.048
+              },
+              "present": {
+                "wall_ms": 20.784,
+                "thread_ms": null
+              }
+            },
+            "dominant_stage": "present"
+          },
+          "largest_cpu_stages": [
+            {
+              "name": "gpu_queue_wait",
+              "wall_ms": 3.637,
+              "thread_ms": 0.119
+            },
+            {
+              "name": "hud",
+              "wall_ms": 1.455,
+              "thread_ms": 1.453
+            },
+            {
+              "name": "fx",
+              "wall_ms": 0.843,
+              "thread_ms": 0.839
+            },
+            {
+              "name": "veg_select0",
+              "wall_ms": 0.326,
+              "thread_ms": 0.327
+            },
+            {
+              "name": "wildlife_update",
+              "wall_ms": 0.301,
+              "thread_ms": 0.302
+            },
+            {
+              "name": "shadow0",
+              "wall_ms": 0.267,
+              "thread_ms": 0.268
+            },
+            {
+              "name": "veg_draw_view",
+              "wall_ms": 0.206,
+              "thread_ms": 0.206
+            },
+            {
+              "name": "buildings",
+              "wall_ms": 0.163,
+              "thread_ms": 0.156
+            }
+          ],
+          "gpu_same_frame_ms": 10.748
+        }
+      ]
+    }
+  },
+  "blade_trail_validation": {
+    "before_shader_requests_after_startup": [
+      90
+    ],
+    "after_shader_requests_after_startup": [],
+    "after_frames": 720,
+    "before_log": "build/music-trail-before-final/combat-gpu-0.8-1.log",
+    "after_log": "build/trail-after-final.log",
+    "before_log_sha256": "26e0b74cca434a12f2b03c65b0612445d307d0a2368a6c8fa40346c7f19275ac",
+    "after_log_sha256": "50b3971f1a1f0ae0ea920a95dd36f83f79815f1c6ccd8f5030f0940b25a9df6c",
+    "scope": "Shader/first-use boundary validation; before was uncapped, after was paced. These captures do not establish a pacing percentile improvement."
+  }
+}

@@ -1,0 +1,119 @@
+# Production title approach/crane/control at 60 Hz, including held-input release.
+# No graphics context; rendered companions use BOTW_TITLE and SLOPPY_INPUT.
+use '../game/story.jo'
+use '../game/gfx.jo'
+use '../game/interiors.jo'
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/items.jo'
+use '../game/audio_cache.jo'
+
+const DT = 1.0 / 60.0
+__audio_state = 2
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+measure = env("HANDOFF_MEASURE_ONLY") != none
+loop case in [0..6):
+    story = Story(beat = .explore, door1 = 1.0, door2 = 1.0)
+    pl = Player(pos = v3(-1040.0, height_at(-1040.0, 1812.0), 1812.0), face = 1.0)
+    cam = Cam(yaw = if case == 3: 0.70 else if case == 4: 1.30 else: 1.0, pitch = if case == 3: 0.02 else if case == 4: 0.4 else: 0.22)
+    cam_open_ground = false
+    cave_mouth = SOR_MOUTH_IN
+    cave_in = normalize(v3(-1128.0, 0.0, 1884.0) - vec3(SOR_MOUTH_IN.x, 0, SOR_MOUTH_IN.z))
+    use_terrain = true
+    camera_snap()
+    act = Actions()
+    camera_update(DT)
+    previous = pl.pos
+    lens = view_pos()
+    gaze = normalize(view_target() - lens)
+    face = pl.face
+    camera_step = 0.0
+    angle_step = 0.0
+    player_step = 0.0
+    face_step = 0.0
+    release_step = 0.0
+    release_angle = 0.0
+    release_link = 0.0
+    horizontal_step = 0.0
+    entry = -1
+    release = -1
+    moved = 0.0
+    input_alignment = 0.0
+    fov_step = 0.0
+    fov = view_fov()
+    loop frame in [0..2400):
+        act = Actions(move = vec2(0, if case == 0: 0.4 else: 1.0), sprint = case == 2)
+        # Exact render route requested for the opening crane, with released W.
+        if case == 5: act.move = vec2(0, if frame >= 10 and frame < 300: 1.0 else: 0.0)
+        # Exercise interruption as well as the complete scenic crane.
+        if case == 4 and story.beat == .title and story.t > TITLE_CREST_SECONDS + TITLE_LETTERING_START + 2.1: act.interact = true
+        was_title = story.beat == .title
+        # Match main.jo: the chase boom clears the cave as the title walk ends.
+        cam_open_ground = f64(length(pl.pos - SOR_MOUTH_IN)) > 60.0
+        story_update(DT)
+        player_update(DT)
+        camera_update(DT)
+        if story.beat == .title and not was_title: entry = frame
+        returning = was_title and story.title_done
+        if returning: release = frame
+        pos_step = f64(length(pl.pos - previous))
+        cam_step = f64(length(view_pos() - lens))
+        dir = normalize(view_target() - view_pos())
+        if story.beat == .title and story.t <= TITLE_CREST_SECONDS + TITLE_LETTERING_START:
+            assert(story.title_alpha == 0.0, "lettering stays absent until crane settles")
+        if story.beat == .title and story.t > TITLE_CREST_SECONDS:
+            # The orbit must keep the arriving hero in the visible picture,
+            # including the wider catchment used by the cave's natural bearing.
+            delta = pl.pos + vec3(0, 1.0, 0) - view_pos()
+            right = normalize(cross(dir, vec3(0, 1, 0)))
+            up = cross(right, dir)
+            depth = f64(dot(delta, dir))
+            half = tan(view_fov() * PI / 360.0)
+            if depth <= 0.0 or abs(f64(dot(delta, right))) >= depth * half * 16.0 / 9.0 or abs(f64(dot(delta, up))) >= depth * half * 0.8:
+                print("title framing {case} frame {frame}, t={story.t:.3}, Link {pl.pos}, lens {view_pos()}, depth {depth:.3}, horizontal {f64(dot(delta,right)):.3}, vertical {f64(dot(delta,up)):.3}, half {half:.3}")
+            assert(depth > 0.0 and abs(f64(dot(delta, right))) < depth * half * 16.0 / 9.0, "approaching Link stays inside the orbit's horizontal frame")
+            assert(abs(f64(dot(delta, up))) < depth * half * 0.8, "approaching Link stays inside the letterbox")
+            if story.t >= TITLE_CREST_SECONDS + 5.0:
+                loop point in [pl.pos, pl.pos+vec3(0,1.8,0)]:
+                    d = point-view_pos()
+                    z = f64(dot(d,dir))
+                    assert(z > 0.0 and abs(f64(dot(d,right))) < z*half*16.0/9.0 and abs(f64(dot(d,up))) < z*half*0.8, "entire Link silhouette remains inside crane letterbox")
+        # atan2 preserves precision for the small steps near blend endpoints.
+        degrees = atan2(f64(length(cross(gaze, dir))), f64(dot(gaze, dir))) * 180.0 / PI
+        if entry >= 0 and (release < 0 or frame <= release + 120):
+            camera_step = max(camera_step, cam_step)
+            angle_step = max(angle_step, degrees)
+            player_step = max(player_step, pos_step)
+            horizontal_step = max(horizontal_step, f64(length((pl.pos - previous).xz)))
+            face_step = max(face_step, abs(wrap_angle(pl.face - face)))
+            fov_step = max(fov_step, abs(view_fov() - fov))
+        if returning:
+            release_step = cam_step
+            release_angle = degrees
+            release_link = pos_step
+            input_alignment = f64(dot(normalize((pl.pos - previous).xz), normalize(gaze.xz)))
+            if case != 5: assert(pos_step > 0.0)  # held input moves on the first control frame
+        if release >= 0 and frame <= release + 30: moved += pos_step
+        previous = pl.pos
+        lens = view_pos()
+        gaze = dir
+        face = pl.face
+        fov = view_fov()
+        if release >= 0 and frame > release + 120: break
+    names = ["walk", "run", "sprint", "left-angle", "right-angle-interrupted", "released-frame-300"]
+    print("title {names[case]}: entry {entry}, release {release}, camera step {camera_step:.5} m, orientation {angle_step:.4} deg, Link step {player_step:.5} m (horizontal {horizontal_step:.5}), turn {face_step:.5} rad; release camera {release_step:.5} m/{release_angle:.5} deg, Link {release_link:.5} m, held-input travel {moved:.4} m, view/movement alignment {input_alignment:.5}, FOV step {fov_step:.4} deg")
+    assert(entry >= 0 and release > entry)
+    if case != 5: assert(moved > 0.3)
+    if case < 4: assert(release - entry >= 1206, "complete title retains the longer fade and control hold")
+    if not measure:
+        assert(camera_step < 0.50 and angle_step < 4.0)
+        assert(player_step < 0.30 and horizontal_step < 0.20 and face_step <= 16.0 * DT + 0.001)
+        assert(release_step < 0.02 and release_angle < 0.20 and release_link < 0.012)
+        if case != 5: assert(input_alignment > 0.999)
+        assert(fov_step < 0.3)
+print("PASS title: six production approaches including frame-300 released input, complete/interrupted crane, continuity and immediate held input")

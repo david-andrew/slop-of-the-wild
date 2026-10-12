@@ -1,0 +1,322 @@
+build:
+    opt = release
+
+# Model viewer: the baked characters side by side on a meadow, lit like the game (the same
+# light model, shadows, sky and watercolor post pass), playing selectable clips.
+#
+#   sloppy/bin/sloppy tools/model_viewer.jo
+#
+# keys: left/right  previous/next humanoid clip      up/down  previous/next animal clip
+#       1..9        focus a character (0: all)        F        face close-up of the focus
+#       space       pause                             B        upper-body layer demo on/off
+#       right mouse drag: orbit, wheel: zoom
+# env (for screenshots: SLOPPY_SCREENSHOT=/tmp/x.png SLOPPY_FRAMES=n):
+#   VIEW_CLIP=walk  VIEW_ANIMAL_CLIP=Gallop  VIEW_FOCUS=1  VIEW_FACE=1  VIEW_YAW=0.4  VIEW_DIST=4
+#   VIEW_T=0.5 (seconds added to the clock)  VIEW_HOUR=9.5  VIEW_LAYER=slash1  VIEW_PERF=1
+
+use '../game/gfx.jo'
+use '../game/shade.jo'
+use '../game/env.jo'
+use '../game/sky.jo'
+use '../game/post.jo'
+use '../game/shadows.jo'
+use '../game/charshade.jo'
+use '../game/skel.jo'
+
+window("Model viewer", 1280, 720)
+
+# ---------------- ground ----------------
+struct GroundV:
+    pos: vec3
+
+struct GroundU:
+    vp: mat4
+    cam: vec3
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    falloff: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+
+struct GroundO:
+    pos: vec4
+    world: vec3
+
+mv_ground_vs = (v: GroundV, u: GroundU) -> GroundO: GroundO(u.vp * vec4(v.pos, 1), v.pos)
+
+mv_ground_fs = (i: GroundO, u: GroundU) -> vec4:
+    w = i.world
+    big = fbm3(w.xz * 0.05)
+    fine = vnoise(w.xz * 1.7)
+    c = mix(vec3(0.3, 0.5, 0.14), vec3(0.55, 0.58, 0.24), smoothstep(0.4, 0.75, big))
+    c = c * (0.88 + 0.24 * fine)
+    # a worn dirt patch where the cast stands
+    d = length(w.xz * vec2(0.22, 0.5))
+    c = mix(vec3(0.56, 0.47, 0.34), c, smoothstep(0.7, 1.4, d + (fine - 0.5) * 0.3))
+    n = vec3(0, 1, 0)
+    l = normalize(u.sun_dir)
+    sh = cascade_shadow(w, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2)
+    v = normalize(u.cam - w)
+    c = paint_light(c, n, l, v, u.sun_color, u.sky, u.ground, sh, 0.15)
+    c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
+    vec4(c, 1)
+
+ground_sh = make_sh(shader(mv_ground_vs, mv_ground_fs))
+gv: GroundV[]
+gi: u32[]
+const GN = 64
+const GS = 120.0
+loop z in [0..GN + 1):
+    loop x in [0..GN + 1): gv.push(GroundV(v3((f64(x) / f64(GN) - 0.5) * GS, 0, (f64(z) / f64(GN) - 0.5) * GS)))
+loop z in [0..GN):
+    loop x in [0..GN):
+        a = u32(z * (GN + 1) + x)
+        b = a + u32(GN + 1)
+        gi.extend([a, b, a + 1, a + 1, b, b + 1])
+ground_mesh = mesh(gv, gi)
+
+# ---------------- the cast ----------------
+struct Actor:
+    name = ""
+    model = Model()
+    lib = 0                     # index into libs
+    pos = vec3(0, 0, 0)
+    yaw = 0.0
+    variant = 0
+    clip = 0
+    fly = false
+    skin = Skin()
+
+t_load = time()
+libs: AnimLib[]
+libs.push(load_anims("assets/models/humanoid.anim"))
+lib_names = ["humanoid"]
+lib_of = (name: str) -> int:
+    loop i in [0..lib_names.len()):
+        if lib_names[i] == name: return i
+    libs.push(load_anims("assets/models/{name}.anim"))
+    lib_names.push(name)
+    libs.len() - 1
+
+actors: Actor[]
+add_actor = (name: str, file: str, pos: vec3, yaw: f64 = 0.0, variant: int = 0, fly: bool = false):
+    m = load_model("assets/models/{file}.mdl")
+    if not m.ok: return
+    a = Actor(name = name, model = m, lib = lib_of(m.skeleton), pos = pos, yaw = yaw, variant = variant, fly = fly)
+    actors.push(a)
+
+add_actor("hero", "hero", v3(0, 0, 0))
+add_actor("bokoblin red", "bokoblin", v3(-1.4, 0, -0.4), 0.25, 0)
+add_actor("bokoblin blue", "bokoblin", v3(1.4, 0, -0.4), -0.25, 1)
+add_actor("fox", "fox", v3(-2.6, 0, 0.6), 0.5)
+add_actor("wolf", "wolf", v3(2.8, 0, 0.5), -0.5)
+add_actor("stag", "stag", v3(-4.6, 0, -1.8), 0.6)
+add_actor("horse", "horse", v3(5.0, 0, -2.2), -0.7)
+add_actor("bull", "bull", v3(-7.2, 0, -3.8), 0.5)
+add_actor("deer", "deer", v3(7.6, 0, -4.4), -0.4)
+add_actor("bokoblin black", "bokoblin", v3(0.2, 0, -2.6), 0.0, 2)
+add_actor("eagle", "eagle", v3(-1.5, 3.4, -3.0), 0.9, 0, true)
+add_actor("seagull", "seagull", v3(2.2, 2.8, -2.0), -1.2, 0, true)
+add_actor("fish", "fish1", v3(-0.9, 0.25, 1.6), 1.2, 0, true)
+# a crowd for performance tests: VIEW_CROWD=n more characters, each blending two clips
+crowd = to_int(env("VIEW_CROWD") ?? "0") ?? 0
+crowd_files = ["hero", "bokoblin", "bokoblin", "fox", "wolf", "horse", "deer", "bull"]
+loop k in [0..crowd):
+    f = crowd_files[k % crowd_files.len()]
+    add_actor("crowd{k}", f, v3(f64(k % 8) * 2.2 - 7.7, 0, -6.0 - f64(k / 8) * 3.0), 0.0, k % 3)
+eprint("loaded {actors.len()} actors in {time() - t_load:.2}s")
+
+# props on the hero: a sword in the right hand, a shield on the left arm
+steel = vec4(0.62, 0.66, 0.72, 1)
+sword = prop_boxes([PropBox(vec3(0, 0.52, 0), vec3(0.045, 0.8, 0.01), steel),
+    PropBox(vec3(0, 0.95, 0), vec3(0.03, 0.07, 0.008), steel),
+    PropBox(vec3(0, 0.1, 0), vec3(0.2, 0.03, 0.04), vec4(0.2, 0.25, 0.45, 1)),
+    PropBox(vec3(0, -0.01, 0), vec3(0.032, 0.19, 0.032), vec4(0.25, 0.12, 0.05, 1)),
+    PropBox(vec3(0, -0.12, 0), vec3(0.05, 0.04, 0.05), vec4(0.55, 0.45, 0.2, 1))], "sword")
+shield = prop_boxes([PropBox(vec3(0, 0, 0), vec3(0.42, 0.52, 0.03), vec4(0.1, 0.18, 0.42, 1)),
+    PropBox(vec3(0, 0, 0.012), vec3(0.46, 0.56, 0.02), vec4(0.55, 0.57, 0.6, 1)),
+    PropBox(vec3(0, 0.04, 0.02), vec3(0.16, 0.12, 0.02), vec4(0.6, 0.08, 0.06, 1))], "shield")
+props_on = env("VIEW_NOPROPS") == none
+
+hum = libs[0]
+hclip = max(clip_index(hum, env("VIEW_CLIP") ?? "idle"), 0)
+aclip_name = env("VIEW_ANIMAL_CLIP") ?? "Idle"
+layer_clip = clip_index(hum, env("VIEW_LAYER") ?? "")
+upper = bone_mask(hum, "spine_01")
+focus = to_int(env("VIEW_FOCUS") ?? "0") ?? 0
+face = env("VIEW_FACE") != none
+paused = false
+clock = to_float(env("VIEW_T") ?? "0") ?? 0.0
+perf = env("VIEW_PERF") != none
+cpu_ms = 0.0
+perf_sum = 0.0
+perf_max = 0.0
+perf_n = 0
+draw_sum = 0.0
+perf_t0 = 0.0
+run_clip = clip_index(hum, "run")
+slash_clip = clip_index(hum, "slash1")
+
+digit_keys = [Key.n0, Key.n1, Key.n2, Key.n3, Key.n4, Key.n5, Key.n6, Key.n7, Key.n8, Key.n9]
+
+set_animal_clips = ():
+    loop mut a in actors:
+        if a.lib == 0: continue
+        l = libs[a.lib]
+        c = clip_index(l, aclip_name)
+        if c < 0 and l.clips.len() > 0:
+            # birds fly, fish swim, others idle
+            c = clip_index(l, "Flap")
+            if c < 0: c = clip_index(l, "Swim")
+            if c < 0: c = clip_index(l, "Idle")
+            if c < 0: c = 0
+        a.clip = c
+set_animal_clips()
+
+cam_yaw = to_float(env("VIEW_YAW") ?? "0") ?? 0.0
+cam_pitch = 0.12
+cam_dist = to_float(env("VIEW_DIST") ?? "9") ?? 9.0
+env.weather_t = 1e9
+env.weather = .clear
+env.clouds = 0.3
+env.hour = to_float(env("VIEW_HOUR") ?? "10.0") ?? 10.0
+env.time_scale = 0.0
+
+update = (dt: f64):
+    if key_pressed(.escape): quit()
+    if key_pressed(.space): paused = not paused
+    if not paused: clock += dt
+    n = hum.clips.len()
+    if key_pressed(.right): hclip = (hclip + 1) % n
+    if key_pressed(.left): hclip = (hclip + n - 1) % n
+    if key_pressed(.up) or key_pressed(.down):
+        # cycle the animal clips by the fox's list
+        loop a in actors:
+            if a.lib != 0:
+                l = libs[a.lib]
+                k = clip_index(l, aclip_name)
+                if key_pressed(.up): k = (k + 1) % l.clips.len()
+                else: k = (k + l.clips.len() - 1) % l.clips.len()
+                aclip_name = l.clips[max(k, 0)].name
+                break
+        set_animal_clips()
+    if key_pressed(.f): face = not face
+    if key_pressed(.b):
+        if layer_clip >= 0: layer_clip = -1
+        else: layer_clip = clip_index(hum, "slash1")
+    loop k in [0..10):
+        if key_pressed(digit_keys[k]): focus = k
+    md = mouse_delta()
+    if mouse_down(.right):
+        cam_yaw -= f64(md.x) * 0.006
+        cam_pitch = clamp(cam_pitch + f64(md.y) * 0.004, -0.4, 1.3)
+    cam_dist = clamp(cam_dist * pow(0.9, mouse_wheel()), 0.4, 60.0)
+    env_update(0.0, false)
+    # animate
+    t0 = time()
+    loop mut a in actors:
+        l = libs[a.lib]
+        if a.lib == 0:
+            p = sample_clip(l, hclip, clock, true)
+            if crowd > 0:
+                # what a game character costs: a locomotion blend and an upper-body layer
+                b = sample_clip(l, run_clip, clock, true)
+                blend_into(p, b, 0.5)
+                top = sample_clip(l, slash_clip, clock, true)
+                layer_into(p, top, upper, 0.7)
+            if layer_clip >= 0:
+                top = sample_clip(l, layer_clip, clock, true)
+                layer_into(p, top, upper, 1.0)
+            a.skin = skin(a.model, p)
+        else:
+            p = sample_clip(l, a.clip, clock + f64(a.pos.x) * 0.37, true)
+            if crowd > 0:
+                b = sample_clip(l, 0, clock, true)
+                blend_into(p, b, 0.3)
+            a.skin = skin(a.model, p)
+    dt_ms = (time() - t0) * 1000.0
+    cpu_ms = cpu_ms * 0.9 + dt_ms * 0.1
+    if perf:
+        nf = frame_number()
+        if nf >= 30:
+            perf_sum += dt_ms
+            perf_n += 1
+            if dt_ms > perf_max: perf_max = dt_ms
+        if nf == 299 or nf == 1199:
+            eprint("anim+skin for {actors.len()} actors: avg {perf_sum / f64(max(perf_n, 1)):.3} ms, max {perf_max:.3} ms; draw submit avg {draw_sum / f64(max(perf_n, 1)):.3} ms; frame avg {(time() - perf_t0) * 1000.0 / f64(max(nf - 29, 1)):.2} ms")
+
+world_of = (a: Actor) -> mat4: translation(a.pos) * rotation_y(a.yaw)
+
+focus_point = () -> vec3:
+    if focus <= 0 or focus > actors.len(): return v3(0, 1.0, -1.0)
+    a = actors[focus - 1]
+    h = f32(model_height(a.model))
+    if let bn = env("VIEW_BONE"):
+        b = bone_index(a.model, bn)
+        if b >= 0: return transform_point(world_of(a) * bone_world(a.model, a.skin, b), vec3(0, 0, 0))
+    if face:
+        hb = bone_index(a.model, "Head")
+        if hb < 0: hb = bone_index(a.model, "head")
+        if hb >= 0: return transform_point(world_of(a) * bone_world(a.model, a.skin, hb), vec3(0, 0.08, 0.02))
+    a.pos + vec3(0, h * 0.55, 0)
+
+const NEAR = 0.05
+const FAR = 2000.0
+
+draw = ():
+    flush()
+    target_ = focus_point()
+    dist = cam_dist
+    if face or env("VIEW_BONE") != none: dist = min(cam_dist, 0.75)
+    else if focus > 0: dist = min(cam_dist, 3.6)
+    fwd = v3(-sin(cam_yaw) * cos(cam_pitch), -sin(cam_pitch), -cos(cam_yaw) * cos(cam_pitch))
+    cam = target_ - fwd * f32(dist)
+    proj = perspective(radians((if face: 30.0 else: 45.0)), aspect_ratio(), NEAR, FAR)
+    view = look_at(cam, target_, vec3(0, 1, 0))
+    vp = proj * view
+    shadow_matrices(cam, fwd, env.light_dir)
+    scene = char_scene(vp, cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, env.density, 0.004,
+        cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), elapsed())
+    loop k in [0..3):
+        shadow_begin(k)
+        loop a in actors: draw_character_shadow(a.model, world_of(a), a.skin, cascades.vps[k], CharParams(variant = a.variant))
+        if props_on and actors.len() > 0:
+            h = actors[0]
+            draw_prop_shadow(sword, socket_world(h.model, world_of(h), h.skin, SOCKET_HAND_R), cascades.vps[k])
+            draw_prop_shadow(shield, socket_world(h.model, world_of(h), h.skin, SOCKET_SHIELD), cascades.vps[k])
+        shadow_end()
+    tgt = post_begin()
+    bind_target(tgt)
+    glClearColor(0, 0, 0, 1)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    gl_opaque_state()
+    gu = GroundU(vp, cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), 0.004,
+        cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2))
+    draw_fast(ground_sh, ground_mesh, gu)
+    t0 = time()
+    loop k in [0..actors.len()):
+        a = actors[k]
+        cp = CharParams(variant = a.variant)
+        if k == 1: cp.dissolve = to_float(env("VIEW_DISSOLVE") ?? "0") ?? 0.0
+        if k == 2 and env("VIEW_FLASH") != none: cp.flash = vec4(1, 1, 1, 0.55)
+        draw_character(a.model, world_of(a), a.skin, scene, cp)
+    if props_on and actors.len() > 0:
+        h = actors[0]
+        draw_prop(sword, socket_world(h.model, world_of(h), h.skin, SOCKET_HAND_R), scene)
+        draw_prop(shield, socket_world(h.model, world_of(h), h.skin, SOCKET_SHIELD), scene)
+    draw_ms = (time() - t0) * 1000.0
+    if frame_number() == 29: perf_t0 = time()
+    if frame_number() >= 30: draw_sum += draw_ms
+    draw_sky(inverse(vp), cam)
+    post_end(NEAR, FAR)
+    gl_restore_2d()
+    text("{hum.clips[hclip].name}  [{hclip + 1}/{hum.clips.len()}]   animals: {aclip_name}   {fps():.0} fps", vec2(16, 14), 20, rgba(1, 1, 1, 0.9))
+    if perf: text("anim+skin {cpu_ms:.2} ms   draw calls {draw_ms:.2} ms", vec2(16, 40), 18, rgba(1, 1, 0.8, 0.9))

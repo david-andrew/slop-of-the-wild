@@ -1,0 +1,7 @@
+use 'tree_checks.jo'
+use '../game/items.jo'
+use '../game/gfx.jo'
+main = ():
+    __audio_state=2
+    items_init()
+    trees_test_suite()

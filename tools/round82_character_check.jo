@@ -1,0 +1,90 @@
+# CPU-only geometry/contact continuity for the continuous bird flap and camp props.
+use '../game/wildlife.jo'
+use '../game/enemy_camp.jo'
+use '../game/enemies.jo'
+use '../game/elements.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+
+loop kind in [WKind.sparrow,WKind.pigeon,WKind.crow]:
+    bird=Animal(kind,vec3(0,0,0),vec3(0,0,0),state=.fly)
+    previous_flap=bird_pose(bird).flap
+    maximum=0.0
+    loop frame in [1..1201):
+        bird.t=f64(frame)/240.0
+        bird.idle=bird.t
+        p=bird_pose(bird)
+        maximum=max(maximum,abs(p.flap-previous_flap))
+        previous_flap=p.flap
+    assert(maximum<0.18,"continuous flap including takeoff tempo change")
+    bird.idle=2.731
+    airborne=bird_pose(bird).flap
+    bird.state=.land
+    bird.t=0.0
+    assert(abs(bird_pose(bird).flap-airborne)<0.000001,"landing preserves the flight clock")
+    print("PASS {kind}: maximum 240 Hz wing rotation {maximum:.5} rad")
+
+m=load_model("assets/models/bokoblin.mdl")
+lib=load_humanoid_anims()
+# Independent anatomical anchor: the contact belongs on the painted muzzle,
+# above the head pivot, not below it on the chest (the former local-space bug).
+bind_mouth=camp_mouth(m,Pose())
+assert(abs(bind_mouth.y-1.055)<0.001 and abs(bind_mouth.z-0.51)<0.001,"bite target on baked lower snout")
+# Exercise real independent sitter windows; meat must dwell at the snout then
+# withdraw visibly, with a finite pose throughout. Nothing changes the feet.
+e=Enemy(.bokoblin,vec3(-957.69,238.56,1955.3),vec3(-957.69,238.56,1955.3),camp=1,camp_role=.sitter)
+close=0
+lowered=0
+worst_step=0.0
+previous=vec3(0,0,0)
+was_eating=false
+loop frame in [0..7200):
+    e.anim_t=f64(frame)/60.0
+    p=sample_clip(lib,clip_index(lib,"sit"),e.anim_t,true)
+    foot=bone_world(m,p,bone_index(m,"foot_l"))[3].xyz
+    camp_idle_pose(m,lib,p,e)
+    assert(length(bone_world(m,p,bone_index(m,"foot_l"))[3].xyz-foot)<0.00001,"camp contacts retain planted leg pose")
+    eating=camp_day_activity(e)==1
+    meat=transform_point(bone_world(m,p,bone_index(m,"hand_l"))*SOCKET_HAND_L.offset,vec3(0,0.18,0))
+    if eating and camp_day_window(e).z>0.99:
+        mouth=camp_mouth(m,p)
+        gap=length(meat-mouth)
+        if gap<0.115: close+=1
+        if gap>0.21: lowered+=1
+    if eating and was_eating: worst_step=max(worst_step,f64(length(meat-previous)))
+    previous=meat
+    was_eating=eating
+assert(close>40 and lowered>40,"food reaches mouth, dwells and lowers over independent cycles")
+assert(worst_step<0.10,"food follows continuous grip motion")
+print("PASS food: {close} bite frames, {lowered} lowered frames; maximum step {worst_step:.5} m")
+
+bonfires.clear()
+bonfires.push(Bonfire(vec3(0,0,0)))
+e=Enemy(.bokoblin,vec3(0,0,3.75),vec3(0,0,3.75),camp=1,camp_role=.club,face=0.0,weapon="boko_club")
+worst=0.0
+settled_worst=0.0
+loop frame in [0..1800):
+    e.anim_t=f64(frame)/60.0
+    p=sample_clip(lib,clip_index(lib,"sword_idle"),e.anim_t,true)
+    camp_idle_pose(m,lib,p,e)
+    tip=transform_point(bone_world(m,p,bone_index(m,"hand_r"))*SOCKET_HAND_R.offset,vec3(0,f32(CAMP_POKER_REACH),0.03))
+    if camp_has_poker(e): worst=max(worst,f64(length(tip-camp_poker_tip(e))))
+    if camp_has_poker(e):
+        # A planted pelvis correction must not carry the long tip off the coals.
+        pelvis=bone_index(m,"pelvis")
+        p.t[m.canon[pelvis]]+=vec3(0,0.06,0)/f32(m.tscale)
+        foot=bone_world(m,p,bone_index(m,"foot_l"))[3].xyz
+        camp_settle_poker(m,lib,p,e)
+        tip=transform_point(bone_world(m,p,bone_index(m,"hand_r"))*SOCKET_HAND_R.offset,vec3(0,f32(CAMP_POKER_REACH),0.03))
+        settled_worst=max(settled_worst,f64(length(tip-camp_poker_tip(e))))
+        assert(length(bone_world(m,p,bone_index(m,"foot_l"))[3].xyz-foot)<0.00001,"settled poker preserves the planted legs")
+    assert(e.weapon=="boko_club" and e.state==.idle,"poker never changes combat ownership")
+assert(worst<0.08,"grasped poker reaches near coals")
+assert(settled_worst<0.02,"poker settles after a pelvis correction")
+loop state in [EState.notice,EState.chase,EState.attack,EState.sleep,EState.dead]:
+    e.state=state
+    assert(not camp_has_poker(e),"combat and sleep release the ambient tool")
+e.state=.idle
+e.pos=vec3(0,0,4.5)
+assert(not camp_has_poker(e),"distant camp places never stretch an arm or poker to the hearth")
+print("PASS poker: maximum tip contact error {worst:.5} m, settled {settled_worst:.5} m; interrupts preserve weapon")

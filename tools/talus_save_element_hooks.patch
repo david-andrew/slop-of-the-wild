@@ -1,0 +1,105 @@
+--- a/game/save.jo
++++ b/game/save.jo
+@@ -12,6 +12,7 @@
+ use 'shrines.jo'
+ use 'items.jo'
+ use 'enemies.jo'
++use 'talus.jo'
+ use 'slate_map.jo'
+
+ # Versioned records, written to a sibling file before replacing the last save.
+@@ -36,6 +37,7 @@
+     used: int[]
+     opened: int[]
+     pins: vec2[]
++    talus: TalusRecord[]
+
+ save_enabled = false
+ __save_age = 0.0
+@@ -75,6 +77,13 @@
+         if u.once and u.used: s.used.push(i)
+     loop i in 0.. and c in chests:
+         if c.opened: s.opened.push(i)
++    s.talus = talus_records()
++    loop e in enemies:
++        if e.kind != .talus: continue
++        if pl.state == .ground and talus_owns(e,pl.ground.collider): s.pos = pl.pos
++        if (pl.state == .climb or pl.state == .mantle) and talus_owns(e,pl.climb_col):
++            s.pos = talus_local(e,vec3(0,0,6))
++            s.pos.y = f32(height_at(f64(s.pos.x),f64(s.pos.z)))
+     s
+
+ save_encode = (s: PlateauSave) -> str:
+@@ -97,6 +106,8 @@
+     loop i in s.used: out += "used={i}\n"
+     loop i in s.opened: out += "chest={i}\n"
+     loop pin in s.pins: out += "pin={pin.x:.6},{pin.y:.6}\n"
++    loop r in s.talus:
++        out += "talus={r.home.x:.6},{r.home.y:.6},{r.home.z:.6},{r.pos.x:.6},{r.pos.y:.6},{r.pos.z:.6},{r.face:.6},{r.hp:.6},{r.phase},{r.time_:.6},{r.shake:.6},{r.attacks},{r.move},{__bit(r.contact)},{r.loot}\n"
+     out + "END\n"
+
+ __numbers = (s: str, n: int) -> f64[]?:
+@@ -222,6 +233,16 @@
+                 s.activated[i] = a[1] == 1.0
+                 s.completed[i] = a[2] == 1.0
+             else: return none
++        else if key == "talus":
++            if s.talus.len() >= 1: return none
++            if let a = __numbers(value,15):
++                loop i in [8,11,12,13,14]:
++                    if a[i] != floor(a[i]): return none
++                if a[13] != 0.0 and a[13] != 1.0: return none
++                r = TalusRecord(v3(a[0],a[1],a[2]),v3(a[3],a[4],a[5]),a[6],a[7],int(a[8]),a[9],a[10],int(a[11]),int(a[12]),a[13]==1.0,int(a[14]))
++                if not talus_record_valid(r): return none
++                s.talus.push(r)
++            else: return none
+         else if key == "pin":
+             if s.pins.len() >= MAP_PIN_LIMIT: return none
+             if let a = __numbers(value, 2):
+@@ -282,6 +303,9 @@
+         chests[i].opened = true
+         chests[i].lid = 1.0
+         if chests[i].usable >= 0: usables[chests[i].usable].used = true
++    talus_restore(s.talus)
++    pl.ground = ground_at(f64(pl.pos.x),f64(pl.pos.z),f64(pl.pos.y),0.4,RADIUS)
++    push_out(pl.pos,RADIUS,HEIGHT)
+     story_resume(s.awake)
+     __save_anchor = pl.pos
+     __save_face = pl.face
+--- a/game/elements.jo
++++ b/game/elements.jo
+@@ -9,6 +9,7 @@
+ use 'combat.jo'
+ use 'items.jo'
+ use 'enemies.jo'
++use 'talus.jo'
+ use 'wildlife.jo'
+ use 'fx.jo'
+ use 'scene.jo'
+@@ -384,6 +385,9 @@
+     if d < 5.0 and __fire_reaches(source, pl.pos + vec3(0, 0.8, 0), 6.0): hit_player(int(lerp(16.0, 4.0, d / 5.0)), p, 7.0)
+     loop mut e in enemies:
+         if e.state == .gone or e.state == .dead or e.state == .buried: continue
++        if e.kind == .talus:
++            talus_blast(e,source)
++            continue
+         de = f64(length(e.pos - p))
+         if de < 6.0 and __fire_reaches(source, e.pos + vec3(0, 0.8, 0), 7.0):
+             if enemy_damage(e, lerp(40.0, 10.0, de / 6.0), p, 5.0): continue
+@@ -504,7 +508,7 @@
+     # the grass fire burns monsters standing in it
+     loop mut e in enemies:
+         if not enemy_alive(e) or e.burning > 0.0: continue
+-        if grass_fire_near(e.pos, 1.4) and e.kind != .guardian: e.burning = 4.0
++        if grass_fire_near(e.pos, 1.4) and e.kind != .guardian and e.kind != .talus: e.burning = 4.0
+     # updrafts over fires: the paraglider rises
+     if pl.state == .glide:
+         c = __cell_of(f64(pl.pos.x), f64(pl.pos.z))
+@@ -603,6 +607,7 @@
+         m = match e.kind:
+             ice_chuchu: ICE_FLESH
+             guardian: METAL
++            talus: STONE
+             _: FLESH
+         wet = __in_water(e.pos, 0.6)
+         r = react(m, e.el, __exposure(e.pos + vec3(0, 0.6, 0), wet), dt)

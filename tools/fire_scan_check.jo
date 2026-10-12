@@ -1,0 +1,34 @@
+# Production ignition discovery must cover every candidate within six callbacks,
+# bound additions on each callback, and preserve solid cover rejection.
+use 'tree_checks.jo'
+use '../game/vegetation.jo'
+use '../game/physics.jo'
+use '../game/elements.jo'
+use '../game/gfx.jo'
+use '../game/player.jo'
+use '../game/items.jo'
+from 'tree_checks.jo' import __tree_course
+from '../game/elements.jo' import __trees_update, __tree_scan
+
+check_scan = ():
+    __audio_state=2
+    items_init()
+    __tree_course()
+    __tree_scan=0
+    leaf=VPart(1,Texture(),Mesh(),vec3(0,0,0),vec3(0,0,0))
+    vmodels[0].parts=[leaf]
+    loop i in [0..37):
+        root=vec3((if i==36:2.5 else:0.5),0,0.5)
+        places.push(VPlace(0,translation(root),vec4(1,1,1,0),root,4.0,8.0,false))
+    add_box(vec3(1.5,0,0.5),vec3(0.1,2,2))
+    assert(ignite_at(vec3(0.5,0.1,0.5)))
+    loop k in [0..6):
+        before=tree_fire.len()
+        __trees_update(1.0/60.0,pl.pos)
+        assert(tree_fire.len()-before<=7,"bounded discovery work each callback")
+        if k==0: assert(tree_fire.len()>0 and tree_fire.len()<36,"discovery is staggered")
+    assert(tree_fire.len()==36,"all exposed candidates discovered within six callbacks")
+    assert(not tree_fire.has(36),"staggering still respects solid cover")
+    print("fire scan PASS: 36 exposed trees discovered in six bounded callbacks; covered tree rejected")
+
+check_scan()

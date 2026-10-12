@@ -1,0 +1,79 @@
+# Rays against the authored mesh: most of the nave opens directly to sky,
+# while the surviving roof skins bear on masonry and the bell-tower meeting
+# deck remains physically supported.
+use '../game/gfx.jo'
+use '../game/structures.jo'
+use '../game/worldgen.jo'
+use '../game/physics.jo'
+from '../game/build.jo' import __bchunks
+worldgen_load()
+structures_pads()
+worldgen_finish()
+temple()
+mesh_distance = (o: vec3, d: vec3) -> f64:
+    nearest = 1000.0
+    loop key,b in __bchunks:
+        loop k in [0..b.idx.len()/3):
+            a=b.verts[int(b.idx[k*3])].pos
+            c=b.verts[int(b.idx[k*3+1])].pos
+            e=b.verts[int(b.idx[k*3+2])].pos
+            e1=c-a
+            e2=e-a
+            h=cross(d,e2)
+            det=f64(dot(e1,h))
+            if abs(det)<0.000001: continue
+            s=o-a
+            u=f64(dot(s,h))/det
+            if u<0.0 or u>1.0: continue
+            q=cross(s,e1)
+            v=f64(dot(d,q))/det
+            if v<0.0 or u+v>1.0: continue
+            t=f64(dot(e2,q))/det
+            if t>0.001: nearest=min(nearest,t)
+    nearest
+covered = (o: vec3) -> bool: mesh_distance(o,vec3(0,1,0))<60.0
+open=0
+loop z in [-14.0,-7.0,0.0,7.0,14.0]:
+    loop x in [-6.0,0.0,6.0]:
+        p=lp(TEMPLE,TEMPLE_ROT,x,10.0,z)
+        if not covered(p): open+=1
+assert(open>=13,"most of the nave is open to the sky")
+# Probe both faces of each surviving pitch away from the trusses. The former
+# gable had no soffit, so these rays hit the same paper-thin surface.
+loop z in [-23.0,27.0]:
+    loop x in [-7.0,-4.0,4.0,7.0]:
+        y=34.0-abs(x)
+        up=mesh_distance(lp(TEMPLE,TEMPLE_ROT,x,y-1.0,z),vec3(0,1,0))
+        down=mesh_distance(lp(TEMPLE,TEMPLE_ROT,x,y+1.0,z),vec3(0,-1,0))
+        assert(abs((2.0-up-down)-0.45)<0.025,"roof has a continuous 45 cm skin/soffit")
+    loop side in [-1.0,1.0]:
+        # The inner eave lies directly over a wall plate and clerestory wall,
+        # not over daylight. Probe through the joint at several heights.
+        loop y in [22.95,23.2,23.45]:
+            origin=lp(TEMPLE,TEMPLE_ROT,side*9.0,y,z)
+            inward=transform_dir(rotation_y(TEMPLE_ROT),v3(side,0.0,0.0))
+            assert(mesh_distance(origin,inward)<0.5,"eave plate fills the wall/roof joint")
+# Nothing projects from the missing wall heads, and the unsupported full apse
+# cone is gone. These rays exercise the actual mesh, independently of collision.
+loop z in [-6.0,2.0]:
+    loop x in [-9.0,-8.0,8.0,9.0]:
+        assert(not covered(lp(TEMPLE,TEMPLE_ROT,x,21.0,z)),"no rafters over collapsed wall heads")
+assert(not covered(lp(TEMPLE,TEMPLE_ROT,0.0,10.0,-31.0)),"apse opens to sky")
+# A vertical slate triangle closing a pitched end is the floating-pyramid
+# regression. All slate faces within the nave must follow the roof pitch.
+roof_triangles=0
+loop key,b in __bchunks:
+    loop k in [0..b.idx.len()/3):
+        a=b.verts[int(b.idx[k*3])]
+        c=b.verts[int(b.idx[k*3+1])]
+        e=b.verts[int(b.idx[k*3+2])]
+        mid=transform_dir(rotation_y(-TEMPLE_ROT),(a.pos+c.pos+e.pos)/3.0-TEMPLE)
+        if abs(mid.x)>10.8 or mid.z< -27.0 or mid.z>30.0 or mid.y<22.0 or mid.y>35.0: continue
+        if length(a.color.xyz-ROOF_SLATE.xyz)>0.001: continue
+        roof_triangles+=1
+        assert(abs(a.normal.y)>0.6,"no solid vertical slate end caps")
+assert(roof_triangles>40,"surviving pitched roof remains present")
+deck=lp(TEMPLE,TEMPLE_ROT,4.0,43.0,32.0)
+hit=raycast(deck+vec3(0,2,0),vec3(0,-1,0),4,true,false)
+assert(hit.hit and abs(hit.pos.y-deck.y)<0.02,"old man's roof meeting stays supported")
+print("PASS Temple roof: {open}/15 nave rays reach sky; thick supported pitches, open broken ends, attached rafters and meeting deck retained")

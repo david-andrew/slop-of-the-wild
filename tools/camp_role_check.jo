@@ -1,0 +1,59 @@
+# CPU-only role/prop and perception checks; no fixture disables the combat AI.
+use '../game/gfx.jo'
+use '../game/enemies.jo'
+use '../game/enemy_camp.jo'
+use '../game/structures.jo'
+use '../game/elements.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/physics.jo'
+use '../game/skel.jo'
+
+items_init()
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+enemies.clear()
+bonfires.clear()
+fire = v3(-955.87, height_at(-955.87, 1948.86), 1948.86)
+bonfires.push(Bonfire(fire))
+loop k in [0..3):
+    p = fire + v3(f64(k - 1) * 4.0, 0.0, 4.0)
+    p.y = f32(height_at(f64(p.x), f64(p.z)))
+    i = spawn_enemy(.bokoblin, p, "branch")
+    enemies[i].camp = 1
+    enemies[i].patrol = true
+    # Production seed gives the middle ground actor a random bow.
+    if k == 1: enemies[i].archer = true
+    if k == 1: enemies[i].camp = -1
+enemy_camp_roles()
+assert(enemies.len() == 4)
+assert(enemies[0].camp_role == .sitter and enemies[0].weapon == "boko_club")
+assert(enemies[1].camp_role == .club and enemies[1].weapon == "boko_club")
+assert(enemies[2].camp_role == .spear and enemies[2].weapon == "boko_spear")
+assert(enemies[3].camp_role == .lookout and enemies[3].archer and enemies[3].lookout)
+assert(abs(f64(enemies[3].pos.y) - height_at(f64(enemies[3].pos.x), f64(enemies[3].pos.z)) - CAMP_LOOKOUT_HEIGHT) < 0.001)
+loop e in enemies: assert(not e.patrol)
+assert(camp_idle_clip(enemies[0], "idle") == "sit")
+assert(camp_idle_clip(enemies[1], "idle") == "sword_idle")
+assert(camp_idle_clip(enemies[2], "idle_alt") == "idle")
+assert(camp_idle_clip(enemies[3], "idle") == "bow_hold")
+# A tower/rock lookout must remain in its scanning idle through the AI's four-
+# second ambient decision. A nearby player still rouses every role normally.
+pl.pos = fire + vec3(45, 0, 45)
+lookout_face = enemies[3].face
+loop frame in [0..480):
+    enemies_update(1.0 / 60.0, false)
+assert(enemies[3].state == .idle and abs(enemies[3].face - lookout_face) > 0.1)
+loop mut e in enemies:
+    e.alert = 0.0
+    e.state = .idle
+    e.t = 0.0
+pl.pos = fire + vec3(0, 0, 4)
+pl.noise = 10.0
+pl.invuln = 1000.0
+loop frame in [0..180): enemies_update(1.0 / 60.0, false)
+loop e in enemies: assert(e.alert >= 1.0 and e.state != .idle and e.state != .sleep)
+assert(enemies[3].state == .shoot)
+print("PASS camp roles: seated club, shoulder club, upright spear, elevated scanning bow; ambient lookout stays idle and all four respond to player noise")

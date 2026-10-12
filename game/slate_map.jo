@@ -1,0 +1,361 @@
+from 'input.jo' import __input_pressed, __input_pad_pressed
+use 'gfx.jo'
+use 'terrain.jo'
+use 'worldgen.jo'
+use 'water.jo'
+use 'structures.jo'
+use 'input.jo'
+use 'ui.jo'
+use 'camera.jo'
+use 'player.jo'
+use 'story.jo'
+
+# The map on the slate: nothing on it until the tower is raised; then the plateau as a pale
+# relief map (contours every 10 m, woods, water, snow), the shrines (a faint ring until reached,
+# then orange until their trial is done, then blue), the tower, and where he stands.
+
+const MAP_X0 = -1630.0
+const MAP_X1 = -320.0
+const MAP_Z0 = 1380.0
+const MAP_Z1 = 2450.0
+const MAP_W = 1024
+const MAP_H = 836
+
+map_known = false          # set by the game: the tower has been raised
+map_player = vec3(0, 0, 0)
+map_face = 0.0
+
+
+__map_tex = Texture(0, 1, 1)
+
+# A cursor, shown only once the mouse, keyboard or the right stick moves it over the map; resting on a
+# place it names it, as the slate does. (u, v across the map, 0..1)
+map_cursor = vec2(0.5, 0.5)
+map_cursor_on = false
+
+# View transforms never change normalized world coordinates (including saved pins).
+map_zoom = 1.0
+map_center = vec2(0.5, 0.5)
+map_sighted = fill(false, 4)
+map_ping = fill(0.0, 4)
+map_sight_ping = fill(0.0, 4)
+
+map_uv = (p: vec3) -> vec2:
+    vec2(f32((f64(p.x) - MAP_X0) / (MAP_X1 - MAP_X0)), f32((f64(p.z) - MAP_Z0) / (MAP_Z1 - MAP_Z0)))
+map_view_origin = () -> vec2: map_center - vec2(0.5, 0.5) / f32(map_zoom)
+map_screen_uv = (uv: vec2) -> vec2: (uv - map_view_origin()) * f32(map_zoom)
+map_screen_pos = (uv: vec2) -> vec2:
+    __map_box.xy + map_screen_uv(uv) * __map_box.zw
+map_in_view = (uv: vec2, margin: f64 = 12.0) -> bool:
+    q = map_screen_uv(uv) * __map_box.zw
+    q.x >= f32(margin) and q.y >= f32(margin) and q.x <= __map_box.z - f32(margin) and q.y <= __map_box.w - f32(margin)
+
+map_pan_to_cursor = ():
+    half = vec2(0.5, 0.5) / f32(map_zoom)
+    edge = half * 0.92
+    map_center = clamp(map_center, map_cursor - edge, map_cursor + edge)
+    map_center = clamp(map_center, half, vec2(1, 1) - half)
+
+map_zoom_by = (steps: f64):
+    if not map_known or steps == 0.0: return
+    anchor = if map_cursor_on: map_cursor else: map_center
+    q = map_screen_uv(anchor)
+    map_zoom = clamp(map_zoom * pow(1.4, steps), 1.0, 4.0)
+    half = vec2(0.5, 0.5) / f32(map_zoom)
+    map_center = clamp(anchor - (q - vec2(0.5, 0.5)) / f32(map_zoom), half, vec2(1, 1) - half)
+
+# Zoom is a normal binding: conflicts swap just like every other action.
+map_zoom_key = (in_: bool) -> Key: input_key(if in_: 23 else: 24)
+
+map_zoom_input = ():
+    steps = mouse_wheel()
+    if __input_pad_pressed(.rb): steps += 1.0
+    if __input_pad_pressed(.lb): steps -= 1.0
+    if __input_pressed(23): steps += 1.0
+    if __input_pressed(24): steps -= 1.0
+    map_zoom_by(steps)
+
+# A sighting is one bearing from the tower crown, with terrain between the slate and
+# the shrine's roof checked. A faint unvisited ring becomes an amber glow ping.
+map_survey = (eye: vec3, direction: vec3):
+    if not story.tower_risen or length((pl.pos - TOWER).xz) > 22.0 or pl.pos.y < TOWER.y + 60.0: return
+    if length(direction.xz) < 0.01: return
+    bearing = normalize(direction.xz)
+    loop i in [0..min(shrines.len(), 4)):
+        s = shrines[i]
+        if map_sighted[i] or s.activated or s.done: continue
+        roof = s.pos + vec3(0, 8, 0)
+        delta = roof - eye
+        if dot(normalize(delta.xz), bearing) < 0.985: continue
+        visible = true
+        loop k in [1..48):
+            q = eye + delta * f32(f64(k) / 48.0)
+            if in_bounds(f64(q.x), f64(q.z)) and height_at(f64(q.x), f64(q.z)) > f64(q.y) + 0.5: visible = false
+        if not visible: continue
+        map_sighted[i] = true
+        map_ping[i] = 2.2
+        map_sight_ping[i] = 1.6
+
+map_survey_update = (dt: f64):
+    loop i in [0..4):
+        map_sight_ping[i] = max(0.0, map_sight_ping[i] - dt)
+        if not story.tower_risen:
+            map_sighted[i] = false
+            map_ping[i] = 0.0
+            map_sight_ping[i] = 0.0
+    if not story.tower_risen or length((pl.pos - TOWER).xz) > 22.0 or pl.pos.y < TOWER.y + 60.0: return
+    eye = if cam.override: cam.o_pos else: cam.pos
+    direction = if cam.override: cam.o_target - cam.o_pos else: cam.target - cam.pos
+    map_survey(eye, direction)
+
+map_survey_draw = ():
+    loop i in [0..min(shrines.len(), 4)):
+        if map_sight_ping[i] <= 0.0: continue
+        if let q = world_to_screen(shrines[i].pos + vec3(0, 8, 0)):
+            t = 1.0 - map_sight_ping[i] / 1.6
+            ring(q, 9.0 + t * 22.0, 1.7, rgba(1.0, 0.65, 0.2, f32(1.0 - t)))
+            ring(q, 6.0, 1.2, rgba(1.0, 0.78, 0.4, f32(1.0 - t)))
+
+# Personal pins live only on the slate, in normalized map coordinates.
+const MAP_PIN_LIMIT = 64
+map_pins: vec2[]
+map_hint_used = false
+map_hint_active = false
+map_hint_visit = false
+
+# Teach the controls on the first visit, then retire the strip on closing or
+# switching away after an update of the visible tab.
+map_hint_update = (open: bool, dt: f64):
+    if not open:
+        if map_hint_visit: map_hint_used = true
+        map_hint_visit = false
+        map_hint_active = false
+        return
+    map_hint_active = map_known and not map_hint_used
+    if map_known and dt > 0.0: map_hint_visit = true
+__map_box = vec4(0, 0, 1, 1)
+
+map_cursor_update = (dt: f64):
+    if not map_known: return
+    loop i in [0..4): map_ping[i] = max(0.0, map_ping[i] - dt)
+    # (the menu frees the pointer: mouse-look is off while it is open, so read the pointer itself)
+    if length(mouse_delta()) > 0.0 or mouse_pressed(.left):
+        mp = mouse_pos()
+        u = (f64(mp.x) - f64(__map_box.x)) / f64(__map_box.z)
+        v = (f64(mp.y) - f64(__map_box.y)) / f64(__map_box.w)
+        map_cursor_on = u >= 0.0 and v >= 0.0 and u <= 1.0 and v <= 1.0
+        if map_cursor_on: map_cursor = map_view_origin() + vec2(f32(u), f32(v)) / f32(map_zoom)
+    else if length(act.nav) > 0.0:
+        map_cursor_on = true
+        map_cursor = clamp(map_cursor + act.nav * f32(0.025 / map_zoom), vec2(0, 0), vec2(1, 1))
+    else if act.using_pad and length(act.look) > 0.0:
+        map_cursor_on = true
+        map_cursor = clamp(map_cursor + act.look * f32(0.35 / map_zoom), vec2(0, 0), vec2(1, 1))
+
+    if map_cursor_on: map_pan_to_cursor()
+    map_zoom_input()
+
+map_pin_toggle = () -> bool:
+    if not map_known or not map_cursor_on: return false
+    # Hit test in screen pixels, so clicking the visible pin removes it at any map size.
+    loop i in [0..map_pins.len()):
+        if not map_in_view(map_pins[i], 0.0): continue
+        d = (map_pins[i] - map_cursor) * __map_box.zw * f32(map_zoom)
+        if length(d) <= 6.0 or length(d - vec2(0, 9)) <= 7.0:
+            map_pins.remove(i)
+            return true
+    if map_pins.len() >= MAP_PIN_LIMIT: return false
+    map_pins.push(map_cursor)
+    true
+
+__map_places = () -> str[]:
+    out = ["Temple of Thyme", "Eastern Abbey", "Grate Plateau Tower", "Forest of Sprites", "Mount Jolia", "River of the Dread", "Hopper Pond", "Shrine of Reheating", "Woodcutter's House"]
+    loop s in shrines: out.push(if s.done or s.activated: "{s.name} Shrine" else: "")
+    out
+
+__map_place_pos = () -> vec3[]:
+    out = [v3(-818.0, 0.0, 1950.0), v3(-495.0, 0.0, 1990.0), TOWER, v3(-1010.0, 0.0, 1615.0), v3(-1240.0, 0.0, 2250.0), v3(-1350.0, 0.0, 1940.0), v3(-1201.0, 0.0, 1656.0), SOR_MOUTH, CABIN]
+    loop s in shrines: out.push(s.pos)
+    out
+
+map_cursor_place = () -> int:
+    if not map_known or not map_cursor_on: return -1
+    names = __map_places()
+    best = -1
+    bd = 14.0
+    loop i in 0.. and p in __map_place_pos():
+        uv = map_uv(p)
+        d = f64(length((uv - map_cursor) * __map_box.zw * f32(map_zoom)))
+        if names[i] != "" and d < bd:
+            best = i
+            bd = d
+    best
+
+map_cursor_name = () -> str:
+    i = map_cursor_place()
+    if i >= 0: return __map_places()[i]
+    ""
+
+# Stored water cells extend underneath banks and hills. Only exposed water colors the map.
+map_water_at = (x: f64, z: f64) -> bool: water_depth(x, z) > 0.01
+
+__map_build = ():
+    px = fill(u8(0), MAP_W * MAP_H * 4)
+    rows = parallel_map([loop j0 in [0..MAP_H): j0], (j: int) -> u8[]:
+        row = fill(u8(0), MAP_W * 4)
+        loop i in [0..MAP_W):
+            x = MAP_X0 + (f64(i) + 0.5) / f64(MAP_W) * (MAP_X1 - MAP_X0)
+            z = MAP_Z0 + (f64(j) + 0.5) / f64(MAP_H) * (MAP_Z1 - MAP_Z0)
+            paper = v3(0.86, 0.83, 0.72)
+            c = paper
+            if in_bounds(x, z) and edge_at(x, z) < 2.0:
+                h = height_at(x, z)
+                n = normal_at(x, z)
+                # land: pale green, deeper where the woods are, grey on rock, white in the snow
+                c = v3(0.74, 0.78, 0.6)
+                ci = int((x - hf.x0) / (hf.cell * f64(hf.n)) * f64(CANOPY_N))
+                cj = int((z - hf.z0) / (hf.cell * f64(hf.n)) * f64(CANOPY_N))
+                if canopy_cov.len() > 0 and ci >= 0 and cj >= 0 and ci < CANOPY_N and cj < CANOPY_N:
+                    c = mix(c, v3(0.46, 0.58, 0.4), canopy_cov[cj * CANOPY_N + ci] * 0.8)
+                c = mix(c, v3(0.7, 0.68, 0.62), f32(smoothstep(0.78, 0.6, f64(n.y))))
+                if is_snow_area(x, z): c = mix(c, v3(0.93, 0.94, 0.96), 0.8)
+                if map_water_at(x, z): c = v3(0.52, 0.66, 0.72)
+                # hill shading from the north-west, and the contours
+                shade = clamp(f64(dot(n, normalize(v3(-0.6, 0.8, -0.4)))), 0.0, 1.0)
+                c = c * f32(0.72 + 0.36 * shade)
+                step_ = (MAP_X1 - MAP_X0) / f64(MAP_W)
+                if floor(h / 10.0) != floor(height_at(x + step_, z) / 10.0) or floor(h / 10.0) != floor(height_at(x, z + step_) / 10.0):
+                    c = c * f32(if int(floor(h / 10.0)) % 5 == 0: 0.72 else: 0.86)
+                # the plateau's edge fades into the paper
+                c = mix(c, paper, f32(smoothstep(-6.0, 2.0, edge_at(x, z))))
+            k = i * 4
+            row[k] = u8(clamp(f64(c.x) * 255.0, 0.0, 255.0))
+            row[k + 1] = u8(clamp(f64(c.y) * 255.0, 0.0, 255.0))
+            row[k + 2] = u8(clamp(f64(c.z) * 255.0, 0.0, 255.0))
+            row[k + 3] = 255
+        row
+    )
+    loop j in [0..MAP_H): mem_copy(data(px) + j * MAP_W * 4, data(rows[j]), MAP_W * 4)
+    __map_tex = texture(Image(MAP_W, MAP_H, px), true)
+
+# draw the map into the box x, y, w, h (its aspect kept)
+map_label = (name: str, p: vec2, size: f64):
+    width = text_width(name, size)
+    # A narrow parchment knockout quiets contours behind the survey lettering.
+    rect(f64(p.x) - width * 0.5 - 4.0, f64(p.y) - size * 0.55, width + 8.0, size * 1.15, rgba(0.94, 0.92, 0.82, 0.94))
+    text_centered(name, p, size, rgba(0.075, 0.12, 0.10, 1.0))
+
+map_draw = (x: f64, y: f64, w: f64, h: f64):
+    k = min(w / f64(MAP_W), h / f64(MAP_H))
+    mw = f64(MAP_W) * k
+    mh = f64(MAP_H) * k
+    mx = x + (w - mw) / 2.0
+    my = y + (h - mh) / 2.0
+    __map_box = vec4(f32(mx), f32(my), f32(mw), f32(mh))
+    to_map = (p: vec3) -> vec2: map_screen_pos(map_uv(p))
+    rect(mx - 3.0, my - 3.0, mw + 6.0, mh + 6.0, rgba(0.1, 0.12, 0.13, 0.9))
+    if not map_known:
+        # no map data: the slate's blank grid
+        rect(mx, my, mw, mh, rgba(0.1, 0.16, 0.2, 0.95))
+        loop gi in [1..8):
+            rect(mx + mw * f64(gi) / 8.0, my, 1.0, mh, rgba(0.3, 0.6, 0.8, 0.25))
+            rect(mx, my + mh * f64(gi) / 8.0, mw, 1.0, rgba(0.3, 0.6, 0.8, 0.25))
+    else:
+        if __map_tex.width <= 1: __map_build()
+        origin = map_view_origin()
+        sprite_region(__map_tex, vec4(origin.x * f32(MAP_W), origin.y * f32(MAP_H), f32(f64(MAP_W) / map_zoom), f32(f64(MAP_H) / map_zoom)), vec2(f32(mx + mw * 0.5), f32(my + mh * 0.5)), vec2(f32(mw), f32(mh)))
+        # the tower, and the shrines found
+        # Landmark symbols and the Plateau's own small survey labels.
+        loop lm in [v3(-818.0, 0.0, 1950.0), v3(-495.0, 0.0, 1990.0)]:
+            if not map_in_view(map_uv(lm)): continue
+            q = to_map(lm)
+            rect(f64(q.x) - 5.0, f64(q.y) - 4.0, 10.0, 8.0, rgba(0.4, 0.37, 0.33, 0.9))
+            triangle(q + vec2(-6, -4), q + vec2(6, -4), q + vec2(0, -10), rgba(0.4, 0.37, 0.33, 0.9))
+        if map_in_view(map_uv(CABIN)):
+            cq = to_map(CABIN)
+            rect(f64(cq.x) - 3.5, f64(cq.y) - 2.0, 7.0, 5.0, rgba(0.5, 0.35, 0.2, 0.9))
+            triangle(cq + vec2(-4.5, -2), cq + vec2(4.5, -2), cq + vec2(0, -6), rgba(0.5, 0.35, 0.2, 0.9))
+        if map_in_view(map_uv(TOWER)):
+            tp = to_map(TOWER)
+            triangle(tp + vec2(0, -11), tp + vec2(7, 6), tp + vec2(-7, 6), rgba(0.25, 0.55, 0.85, 1))
+        names = __map_places()
+        positions = __map_place_pos()
+        offsets = [vec2(0, 16), vec2(-18, -18), vec2(-42, 14), vec2(0, -10), vec2(0, 0), vec2(0, 0), vec2(-6, 15), vec2(0, 16)]
+        loop i in [0..8):
+            uv = map_uv(positions[i])
+            if not map_in_view(uv): continue
+            q = to_map(positions[i]) + offsets[i]
+            size = 14.0
+            width = text_width(names[i], size)
+            if f64(q.x) - width * 0.5 < mx + 4.0 or f64(q.x) + width * 0.5 > mx + mw - 4.0 or f64(q.y) < my + 10.0 or f64(q.y) > my + mh - 10.0: continue
+            map_label(names[i], q, size)
+        loop i in 0.. and s in shrines:
+            if not map_in_view(map_uv(s.pos)): continue
+            sp = to_map(s.pos)
+            # (seen rising with the tower: marked faintly until reached)
+            if not s.activated and not s.done:
+                seen = i < map_sighted.len() and map_sighted[i]
+                if seen:
+                    circle(sp, 9.0, rgba(1.0, 0.55, 0.15, 0.16))
+                    circle(sp, 6.5, rgba(1.0, 0.65, 0.2, 0.22))
+                ring(sp, 5.0, 1.5, rgba(1.0, 0.55, 0.15, (if seen: 0.95 else: 0.55)))
+                if i < map_ping.len() and map_ping[i] > 0.0:
+                    t = 1.0 - map_ping[i] / 2.2
+                    if map_in_view(map_uv(s.pos), 30.0): ring(sp, 8.0 + t * 20.0, 1.8, rgba(1.0, 0.6, 0.15, f32(1.0 - t)))
+                continue
+            col = if s.done: rgba(0.35, 0.75, 1.0, 1) else: rgba(1.0, 0.55, 0.15, 1)
+            circle(sp, 8.0, rgba(0.08, 0.1, 0.12, 0.9))
+            ring(sp, 6.5, 2.0, col)
+            circle(sp, 2.5, col)
+        loop pin in map_pins:
+            if not map_in_view(pin, 0.0): continue
+            q = map_screen_pos(pin)
+            triangle(q, q + vec2(-4, -8), q + vec2(4, -8), rgba(0.12, 0.25, 0.34, 1))
+            circle(q + vec2(0, -9), 5.0, rgba(0.12, 0.25, 0.34, 1))
+            circle(q + vec2(0, -9), 3.0, rgba(0.3, 0.8, 1, 1))
+        if map_cursor_on:
+            cp = map_screen_pos(map_cursor)
+            cp = clamp(cp, __map_box.xy + vec2(8, 8), __map_box.xy + __map_box.zw - vec2(8, 8))
+            best = map_cursor_place()
+            ring(cp, 7.0, 1.5, rgba(1, 1, 1, 0.85))
+            if best >= 0:
+                q = to_map(__map_place_pos()[best])
+                ring(q, 11.0, 1.5, rgba(1, 1, 1, 0.7))
+                width = text_width(map_cursor_name(), 15.0)
+                label = vec2(f32(clamp(f64(q.x), mx + width * 0.5 + 4.0, mx + mw - width * 0.5 - 4.0)), f32(max(my + 12.0, f64(q.y) - 22.0)))
+                map_label(map_cursor_name(), label, 15.0)
+    # The slate keeps its earned Spirit Orb tally even before map data arrives.
+    # A small pearl and numeral occupy the upper-right corner, above the labels.
+    tally = "{story.orbs}"
+    tally_width = text_width(tally, 19.0)
+    tx = mx + mw - 18.0 - tally_width
+    rect(tx - 34.0, my + 10.0, tally_width + 44.0, 31.0, rgba(0.035, 0.05, 0.055, 0.86))
+    orb = vec2(f32(tx - 17.0), f32(my + 25.0))
+    ring(orb, 7.0, 1.25, rgba(0.91, 0.9, 0.80, 0.95))
+    circle(orb, 4.0, rgba(0.91, 0.9, 0.80, 0.75))
+    circle(orb + vec2(-1.2, -1.4), 1.5, rgba(1, 1, 0.94, 0.95))
+    text(tally, vec2(f32(tx), f32(my + 16.0)), 19.0, rgba(0.96, 0.95, 0.89, 1))
+    if map_hint_active:
+        # One compact dark strip keeps the prompts separate from world/map detail.
+        rect(x - 6.0, y + h + 4.0, w + 12.0, 32.0, rgba(0.035, 0.05, 0.055, 0.9))
+        nx = x
+        nx = button_hint((if act.using_pad: "Rstick" else: "WASD / arrows"), "Move", nx, y + h + 20.0, 0.96)
+        nx = button_hint(input_action_label(3), "Pin / remove", nx, y + h + 20.0, 0.96)
+        zoom_keys = "Wheel"
+        ki = map_zoom_key(true)
+        ko = map_zoom_key(false)
+        if ki != .unknown and ko != .unknown: zoom_keys = "{input_key_label(ko)} {input_key_label(ki)} / Wheel"
+        if act.using_pad:
+            nx = button_hint("LB", "", nx, y + h + 20.0, 0.96)
+            nx = button_hint("RB", "Zoom", nx, y + h + 20.0, 0.96)
+            nx = button_hint("Left", "", nx, y + h + 20.0, 0.96)
+            nx = button_hint("Right", "Tabs", nx, y + h + 20.0, 0.96)
+        else:
+            nx = button_hint(zoom_keys, "Zoom", nx, y + h + 20.0, 0.96)
+            nx = button_hint("Q C", "Tabs", nx, y + h + 20.0, 0.96)
+    # where he stands, and which way he faces
+    if not map_in_view(map_uv(map_player)): return
+    pp = to_map(map_player)
+    f = vec2(f32(sin(map_face)), f32(-cos(map_face)))
+    s_ = vec2(-f.y, f.x)
+    triangle(pp + f * 10.0, pp - f * 6.0 + s_ * 6.0, pp - f * 6.0 - s_ * 6.0, rgba(1.0, 0.85, 0.2, 1))

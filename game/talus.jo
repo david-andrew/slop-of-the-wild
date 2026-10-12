@@ -1,0 +1,786 @@
+use 'matter.jo'
+use 'gfx.jo'
+use 'shade.jo'
+use 'enemies.jo'
+use 'physics.jo'
+use 'player.jo'
+use 'combat.jo'
+use 'items.jo'
+use 'terrain.jo'
+use 'scene.jo'
+use 'fx.jo'
+use 'build.jo'
+use 'render.jo'
+use 'shadows.jo'
+from 'physics.jo' import __ray_collider
+
+# One articulated pose supplies the rock draw transforms, solid climbing surfaces,
+# ore target and swept fists. Local +z is the back (the hero's yaw convention).
+# Metres: 6.28 m shoulder, roughly 7 m including ore, against the 1.6 m hero capsule.
+# Scale at the shared pose boundary, before both rendering and contact queries.
+const TALUS_SCALE = 1.35
+const TALUS_REVEAL = 2.4
+const TALUS_BOULDERS = 11
+const TALUS_SLICES = 24
+const TALUS_PARTS = TALUS_BOULDERS * (TALUS_SLICES + 1)
+const TALUS_LEASH = 12.0
+const TALUS_FIST_R = 1.32
+const TALUS_LOOT = ["flint", "amber", "flint", "opal", "amber", "amber"]
+
+struct TalusPart:
+    pos: vec3
+    half: vec3
+    yaw: f64
+
+talus_rise = (e: Enemy) -> f64:
+    if e.state == .sleep: return 0.0
+    if e.state == .notice: return smooth01(e.t / TALUS_REVEAL)
+    if e.state == .dead or e.state == .gone: return 1.0 - smooth01(e.t / 1.5)
+    1.0
+
+talus_local = (e: Enemy, p: vec3) -> vec3:
+    e.pos + transform_dir(rotation_y(-e.face), p * f32(TALUS_SCALE))
+
+talus_fist_local = (e: Enemy, side: int) -> vec3:
+    sx = if side == 0: -1.0 else: 1.0
+    p = v3(sx * 2.95, 0.04, -0.55)
+    if e.state == .windup and side == e.move % 2:
+        p = mix(p, v3(sx * 2.35, 5.35, 0.30), f32(smooth01(e.t / 0.65)))
+    if e.state == .attack and side == e.move % 2:
+        # Return to the original swept contact track before the fist can hit.
+        a = mix(v3(sx * 2.35, 5.35, 0.30), v3(sx * 2.1, 4.6, -0.5), f32(smooth01(e.t / 0.12)))
+        b = if e.move < 2: v3(sx * 0.6, 0.85, -3.6) else: v3(sx * 0.7, 1.1, -6.8)
+        p = if e.t < 0.48: mix(a, b, f32(smooth01(e.t / 0.48))) else: mix(b, p, f32(smooth01((e.t - 0.65) / 0.65)))
+    if e.state == .attack and side == e.move % 2:
+        p += v3(-sx * 0.55, 0.0, -0.80) * f32(smoothstep(0.98, 1.3, e.t))
+    if e.state == .recover and side == e.move % 2:
+        p += v3(-sx * 0.55, 0.0, -0.80) * f32(1.0 - smoothstep(0.25, 1.1, e.t))
+    p
+
+talus_boulder = (e: Enemy, part: int) -> TalusPart:
+    rise = talus_rise(e)
+    p = vec3(0, 0, 0)
+    half = vec3(1.6, 0.5, 1.05)
+    if part < 3:
+        # Overlapping waist and broad upper boulder form one hulking torso.
+        # Aligned rear faces preserve the continuous climb and shoulder landing.
+        p = v3(0.0, lerp([0.0, 0.20, 0.25][part], [0.10, 0.42, 1.65][part], rise), [0.25, -0.3, 0.0][part] * rise)
+        half.x = f32(lerp(1.6, [1.65, 1.90, 2.4][part], rise))
+        half.z = f32(lerp(1.05, [0.98, 1.35, 1.05][part], rise))
+        half.y = f32(lerp([0.60, 0.62, 1.04][part], [0.68, 1.70, 1.50][part], rise))
+    else if part < 5:
+        p = v3((if part == 3: -1.0 else: 1.0), 0.0, -0.05)
+        half = vec3(0.55, 0.4, 0.8)
+    else if part >= 7:
+        side = (part-7)/2
+        shoulder = v3((if side==0:-2.95 else:2.95),lerp(0.7,3.55,rise),-0.18*rise)
+        fist = talus_fist_local(e,side)+vec3(0,f32(TALUS_FIST_R),0)
+        fist.y = f32(lerp(0.6,f64(fist.y),rise))
+        # Three unequal rocks: a wide shoulder, a longer wrist rock and
+        # the broad knuckle below. Their broken ends overlap, never meet at tips.
+        wrist = (part-7)%2==1
+        half = v3(lerp(0.66,(if wrist:1.08 else:1.48),rise),lerp(0.35,(if wrist:0.86 else:0.92),rise),lerp(0.70,(if wrist:1.0 else:1.03),rise))
+        p = mix(shoulder,fist,f32(0.20+0.43*f64((part-7)%2)))-vec3(0,half.y,0)
+        if e.state==.attack and e.move>=2 and side==e.move%2 and e.t>0.15:
+            p = shoulder-vec3(0,half.y,0)
+    else:
+        p = talus_fist_local(e, part - 5)
+        p.y = f32(lerp((if part==5:-0.18 else:-0.32), f64(p.y), rise))
+        half = v3(TALUS_FIST_R, TALUS_FIST_R * (0.74 + 0.26 * rise), TALUS_FIST_R)
+    # The right fist is squat; its forearm is longer. The buried resting pieces
+    # meet the uneven central outcrop instead of presenting three matching pots.
+    if part==6: half.y *= 0.81
+    if part==9: half.y *= 0.90
+    if part==10: half.y *= 1.12
+    # Shared draw/contact motion: broad masses breathe even with a climber attached.
+    # Keep the three rear seams aligned; the arms settle on a slower opposite beat.
+    if e.state == .chase:
+        if part < 3:
+            p += v3(sin(e.anim_t * 0.9) * 0.065, sin(e.anim_t * 1.6) * 0.060, 0.0)
+        else if part >= 5:
+            p.y += f32(sin(e.anim_t * 1.6 + f64(part % 2) * PI) * 0.085)
+    if e.state == .celebrate:
+        pulse = sin(clamp(e.t / 1.6, 0.0, 1.0) * PI)
+        p.x += f32(sin(e.t * 25.0) * 0.13 * pulse)
+        p.y += f32(sin(e.t * 18.0) * 0.085 * pulse)
+    if e.state == .dead:
+        p.x += f32((f64(part) - 3.0) * smooth01(e.t / 1.5) * 0.7)
+    TalusPart(talus_local(e, p), half * f32(TALUS_SCALE), -e.face)
+
+# Sample the drawn boulder skin into narrow solid sections. The rear climbing
+# seam and crown retain their continuous central support; the other sections
+# follow the rendered radius and displacement rather than enclosing boxes.
+talus_group = (part: int) -> int: if part < TALUS_BOULDERS: part else: (part-TALUS_BOULDERS)/TALUS_SLICES
+
+# Only the pose changes each frame. Cache the normalized section samples from
+# the same skin helper once, avoiding hundreds of repeated trigonometric queries.
+talus_section_cache: vec3[]
+talus_sections_init = ():
+    if talus_section_cache.len()>0: return
+    loop g in [0..TALUS_BOULDERS):
+        loop slice in [0..TALUS_SLICES):
+            y = f32((f64(slice)+0.5)*2.0/f64(TALUS_SLICES))
+            sample_y = y
+            shape = vec3(f32(g),0,0)
+            center = talus_skin_point(vec3(0,sample_y,0),shape)
+            edge = talus_skin_point(vec3(0,sample_y,1),shape)
+            # Fracture sectors rotate per rock; sample radius, not the z projection.
+            talus_section_cache.push(vec3(length(vec3(edge.x-center.x,0,edge.z-center.z)),center.x,1.0))
+
+talus_part = (e: Enemy, part: int) -> TalusPart:
+    group = talus_group(part)
+    b = talus_boulder(e,group)
+    wide = max(f64(b.half.x),f64(b.half.z))
+    rear = f64(b.half.z)
+    r = if group<5:rear else:wide*0.38
+    if group==1: r=rear*0.78
+    if group==2: r=rear*0.81
+    if part>=TALUS_BOULDERS:
+        slice = (part-TALUS_BOULDERS)%TALUS_SLICES
+        talus_sections_init()
+        section = talus_section_cache[group*TALUS_SLICES+slice]
+        outer = max(r,f64(section.x)*wide)
+        # A circle midway between the nine-sided face and its corners keeps
+        # contact within a hand's breadth of the broad planes. Its centre uses
+        # the envelope radius, preserving the authored rear grip seam.
+        r = max(r,outer*0.96985)
+        wobble = f64(section.y)*wide
+        b.pos.y += b.half.y*f32(f64(slice)*2.0/f64(TALUS_SLICES))
+        b.half.y /= f32(TALUS_SLICES)
+        # Leave the exact crown plane to the central rider-support collider.
+        if slice == TALUS_SLICES-1: b.half.y -= 0.002
+        b.pos += transform_dir(rotation_y(b.yaw),v3(wobble,0.0,(if group<3:rear-outer else:wobble*0.7)))
+    else if group<3:
+        b.pos+=transform_dir(rotation_y(b.yaw),v3(0.0,0.0,rear-r))
+    b.half.x=f32(r)
+    b.half.z=f32(r)
+    b
+
+# Cylinder side query plus its honest horizontal rock ledges. The engine's
+# trunk side-ray alone intentionally omits caps; weapons must see the Talus caps.
+talus_ray = (c: Collider, from: vec3, dir: vec3, maxd: f64) -> Hit:
+    if not c.active: return Hit()
+    h = __ray_collider(c,from,dir,maxd)
+    if abs(dir.y)<0.000001: return h
+    loop y in [c.pos.y,c.pos.y+c.half.y*2]:
+        d = f64((y-from.y)/dir.y)
+        if d<0.0 or d>maxd or (h.hit and d>=h.dist): continue
+        p = from+dir*f32(d)
+        if hypot(f64(p.x-c.pos.x),f64(p.z-c.pos.z))>f64(c.half.x): continue
+        h=Hit(hit=true,dist=d,pos=p,normal=vec3(0,(if dir.y>0.0:-1 else:1),0))
+    h
+
+talus_cover = (e: Enemy, source: vec3, target: vec3) -> bool:
+    delta=target-source
+    d=f64(length(delta))
+    if d<0.001: return false
+    loop part in [0..TALUS_PARTS):
+        if talus_ray(colliders[e.talus_col+part],source,delta/f32(d),max(0.001,d-0.05)).hit: return true
+    false
+
+talus_ore = (e: Enemy) -> vec3:
+    # Keep the ore itself at its existing weapon/arrow target size on the larger body.
+    part = talus_boulder(e, 2)
+    part.pos + transform_dir(rotation_y(part.yaw),v3(0.0,2.0*f64(part.half.y)+0.40,0.68*TALUS_SCALE))
+
+talus_owns = (e: Enemy, col: int) -> bool:
+    col >= e.talus_col and col < e.talus_col + TALUS_PARTS and e.talus_col >= 0
+
+talus_attach = (e: mut Enemy):
+    e.state = .sleep
+    e.face = 0.0
+    e.talus_col = colliders.len()
+    loop part in [0..TALUS_PARTS):
+        # Register the entire bounded arena once. Updating a static grid entry's
+        # shape alone would lose a moving body as soon as it crossed a cell boundary.
+        # Include the scaled thrown fist even at the far edge of the leash.
+        id = add_box(e.home, v3(TALUS_LEASH + 9.0*TALUS_SCALE + 1.0, 4.5, 1.0), climbable = true, surf = .rock)
+        p = talus_part(e, part)
+        colliders[id].kind = 0
+        colliders[id].pos = p.pos
+        colliders[id].half = p.half
+        colliders[id].yaw = p.yaw
+        colliders[id].tag = -5600
+
+talus_sync = (e: Enemy, carry: bool = true):
+    loop part in [0..TALUS_PARTS):
+        id = e.talus_col + part
+        if id < 0 or id >= colliders.len(): continue
+        old = colliders[id]
+        p = talus_part(e, part)
+        active = e.state != .gone and e.state != .dead
+        if carry and old.active and active: player_body_carry(id, old.pos, old.yaw, p.pos, p.yaw, 2.0*f64(p.half.y-old.half.y))
+        colliders[id].kind = 0
+        colliders[id].pos = p.pos
+        colliders[id].half = p.half
+        colliders[id].yaw = p.yaw
+        colliders[id].active = active
+
+# Temporarily omit only this body's surfaces from weapon cover rays; other solid
+# cover stays live. Ore accepts its own surface, never attacks through the torso.
+talus_solids = (e: Enemy, active: bool):
+    loop part in [0..TALUS_PARTS): colliders[e.talus_col + part].active = active and e.state != .dead and e.state != .gone
+
+talus_melee_hit = (e: mut Enemy, h: PHit):
+    ore = talus_ore(e)
+    near = blade_nearest(h, ore)
+    weak = length(near - ore) <= 0.65 and blade_clear(h, near) and blade_clear(h, ore) and not talus_cover(e,h.grip,ore)
+    contact = vec3(0, -10000, 0)
+    if weak: contact = near
+    else:
+        loop part in [0..TALUS_PARTS):
+            c = colliders[e.talus_col + part]
+            path = h.tip - h.grip
+            if length(path) < 0.001: continue
+            hit = talus_ray(c, h.grip, normalize(path), f64(length(path)))
+            if hit.hit and blade_clear(h, hit.pos, e.talus_col + part):
+                contact = hit.pos
+                break
+    if contact.y < -9000.0: return
+    e.last_swing = h.id
+    talus_hit(e, h.damage, h.from, weak, contact, h.stop)
+
+talus_hit = (e: mut Enemy, damage: f64, from: vec3, weak: bool, contact: vec3, stop: f64 = 0.065):
+    if e.state == .dead or e.state == .gone: return
+    if e.state == .sleep:
+        e.state = .notice
+        e.t = 0.0
+        enemy_events.push(EEvent("rise", e.pos))
+    e.alert = 1.0
+    # Any weapon can mine the ore. Rock chips take one tenth damage, capped at 1.
+    lethal = enemy_damage(e, (if weak: damage else: min(1.0, damage * 0.1)), from)
+    e.flash = if weak: 0.20 else: 0.04
+    enemy_events.push(EEvent((if weak: "enemy_hit_big" else: "deflect"), contact, stop = (if weak: stop else: 0.02)))
+    if weak and not lethal and e.state != .notice:
+        e.state = .stagger
+        e.t = 0.0
+        e.speed = 0.0
+        e.talus_contact = false
+
+talus_projectile_distance = (e: Enemy, from: vec3, to: vec3) -> f64:
+    if e.state == .dead or e.state == .gone: return -1.0
+    # Must win the existing projectile query just before its own rock cover hit.
+    # External cover still wins in combat.jo's shared nearest-target resolver.
+    path = to - from
+    if length(path) < 0.000001: return -1.0
+    best = swept_actor_distance(from, to, talus_ore(e), 0.6)
+    loop part in [0..TALUS_PARTS):
+        h = talus_ray(colliders[e.talus_col + part], from, normalize(path), f64(length(path)))
+        if h.hit and (best < 0.0 or h.dist < best): best = max(0.0, h.dist - 0.002)
+    best
+
+talus_fist_contact = (e: Enemy, dt: f64) -> bool:
+    start = max(0.12, e.t - dt)
+    end = min(0.65, e.t)
+    if end < start: return false
+    steps = max(1, int(ceil((end - start) * 240.0)))
+    sample = e
+    loop k in [0..steps + 1):
+        sample.t = lerp(start, end, f64(k) / f64(steps))
+        loop part in [0..TALUS_PARTS):
+            if talus_group(part) != 5 + e.move % 2: continue
+            rock = talus_part(sample, part)
+            delta = pl.pos-rock.pos
+            distance = hypot(f64(delta.x),f64(delta.z))
+            horizontal = max(0.0,distance-f64(rock.half.x))
+            vertical = max(0.0,max(f64(rock.pos.y-pl.pos.y)-HEIGHT,f64(pl.pos.y-rock.pos.y)-2.0*f64(rock.half.y)))
+            if hypot(horizontal,vertical)>RADIUS: continue
+            ratio = if distance>0.0001:min(1.0,f64(rock.half.x)/distance) else:1.0
+            fist=rock.pos+v3(f64(delta.x)*ratio,f64(clamp(delta.y+f32(HEIGHT*0.5),0.0,rock.half.y*2)),f64(delta.z)*ratio)
+            nearest = pl.pos + v3(0.0,clamp(f64(fist.y-pl.pos.y),0.20,HEIGHT-0.2),0.0)
+            h = PHit(fist, talus_local(e, vec3(0, 3.8, -1.06)), forward_of(e.face), 0.0, 0.0, false, 0, fist, nearest)
+            if blade_clear(h, nearest): return true
+    false
+
+talus_drop = (e: mut Enemy):
+    if e.talus_drops.len() > 0: return
+    loop k in [0..TALUS_LOOT.len()):
+        angle = TAU * f64(k) / f64(TALUS_LOOT.len())
+        p = e.pos + v3(sin(angle) * 1.5, 0.3, cos(angle) * 1.5)
+        e.talus_drops.push(spawn_item(TALUS_LOOT[k], p, v3(sin(angle) * 1.5, 3.0, cos(angle) * 1.5)))
+
+talus_update = (e: mut Enemy, dt: f64, dist: f64):
+    e.burning = 0.0
+    e.el.burning = 0.0
+    e.frozen = 0.0
+    if e.state != .sleep and e.state != .notice and e.state != .gone and e.state != .dead: e.talus_shake += dt
+    match e.state:
+        sleep:
+            # A dormant heap warns at twice the reveal distance: short stone
+            # rumbles, dust at its seams and an ore glint, with no HUD prompt.
+            approaching = dist < 16.0 and pl.state != .dead
+            if approaching:
+                previous = e.talus_shake
+                e.talus_shake += dt
+                pulse = pow(max(0.0, sin(e.talus_shake * TAU / 1.6)), 4.0)
+                strength = clamp((16.0 - dist) / 5.0, 0.2, 1.0)
+                e.face = sin(e.talus_shake * 28.0) * 0.018 * pulse * strength
+                e.pos.y = e.home.y + f32(0.018 * pulse * strength)
+                e.alert = strength
+                if previous == 0.0 or int(previous / 1.6) != int(e.talus_shake / 1.6):
+                    enemy_events.push(EEvent("rise", e.pos))
+                    seam = talus_boulder(e, 2)
+                    loop side in [-1.0, 1.0]:
+                        dust = seam.pos + transform_dir(rotation_y(seam.yaw), v3(side * f64(seam.half.x) * 0.75, 2.0 * f64(seam.half.y) + 0.15, 0.0))
+                        # Larger stone puffs remain readable at the approach
+                        # distance; footstep dust disappears against the heap.
+                        loop puff in [0..8):
+                            emit(.dust, dust + rv(0.18), v3(side * random(0.2, 0.6), random(0.45, 0.95), random(-0.3, 0.3)), random(0.8, 1.1), random(0.55, 0.75), rgba(0.72, 0.66, 0.54, 0.65), 0.0, 1.0)
+                    emit(.glow, talus_ore(e), vec3(0, 0, 0), 0.55, 0.10, rgba(0.95, 0.85, 0.62, 0.75))
+            else:
+                e.talus_shake = 0.0
+                e.alert = 0.0
+                e.face = 0.0
+                e.pos.y = e.home.y
+            if dist < 8.0 and pl.state != .dead:
+                e.state = .notice
+                e.t = 0.0
+                e.talus_shake = 0.0
+                e.alert = 1.0
+                enemy_events.push(EEvent("rise", e.pos))
+        notice:
+            if e.t >= TALUS_REVEAL:
+                e.talus_shake = 0.0
+                e.state = .chase
+                e.t = 0.0
+                enemy_events.push(EEvent("slam", e.pos))
+        chase:
+            attached = talus_owns(e, pl.ground.collider) and pl.state == .ground
+            attached = attached or (talus_owns(e, pl.climb_col) and (pl.state == .climb or pl.state == .mantle))
+            if attached and e.talus_shake > 4.2:
+                e.state = .celebrate
+                e.t = 0.0
+                e.speed = 0.0
+                enemy_events.push(EEvent("windup", e.pos))
+            else if attached:
+                e.speed = 0.0
+                # A restrained search turn around the last approach bearing, rather
+                # than chasing the climber's own position around its back.
+                e.face += sin(e.anim_t * 0.65) * dt * 0.055
+            else if pl.state != .dead and dist < 28.0:
+                e.talus_shake = 0.0
+                dv = pl.pos - e.pos
+                dv.y = 0
+                e.face = turn_toward(e.face, yaw_of(dv + vec3(0.001, 0, 0)), dt * 0.55)
+                e.speed = if dist > 5.5: 0.8 else: 0.0
+                next = e.pos + forward_of(e.face) * f32(e.speed * dt)
+                if f64(length(vec2(next.x - e.home.x, next.z - e.home.z))) < TALUS_LEASH:
+                    g = height_at(f64(next.x), f64(next.z))
+                    if abs(g - f64(e.pos.y)) < 0.25 and normal_at(f64(next.x), f64(next.z)).y > 0.7:
+                        next.y = f32(g)
+                        talus_solids(e, false)
+                        blocked = raycast(e.pos + vec3(0, 1, 0), next - e.pos + forward_of(e.face) * 1.7, 1.8).hit
+                        talus_solids(e, true)
+                        if not blocked: e.pos = next
+                if dist < 10.0 and e.t > 1.2:
+                    e.move = e.talus_attacks % 4
+                    e.talus_attacks += 1
+                    e.state = .windup
+                    e.t = 0.0
+                    e.talus_contact = false
+                    enemy_events.push(EEvent("windup", e.pos))
+            else: e.speed = 0.0
+        windup:
+            if e.t > 1.1:
+                e.state = .attack
+                e.t = 0.0
+        attack:
+            if not e.talus_contact:
+                talus_solids(e, false)
+                contact = talus_fist_contact(e, dt)
+                talus_solids(e, true)
+                if contact:
+                    e.talus_contact = true
+                    if hit_player(8, talus_part(e, 5 + e.move % 2).pos, 7.0, .vertical): enemy_events.push(EEvent("player_hit", pl.pos))
+            if e.t >= 0.48 and e.t - dt < 0.48: enemy_events.push(EEvent("slam", talus_part(e, 5 + e.move % 2).pos))
+            if e.t > 1.3:
+                e.state = .recover
+                e.t = 0.0
+        recover, stagger:
+            if e.t > 2.0:
+                e.state = .chase
+                e.t = 0.0
+        celebrate:
+            if e.t >= 1.1 and e.t - dt < 1.1:
+                if talus_owns(e, pl.climb_col) or talus_owns(e, pl.ground.collider):
+                    # Grip through the heave using the real stamina wheel. An
+                    # exhausted grip releases; a rider braces at a larger cost.
+                    use_stamina(if pl.state == .ground: 200.0 else: 120.0)
+                    pl.events.push("talus_shake")
+                    if pl.exhausted:
+                        pl.vel = normalize(pl.pos - e.pos + vec3(0.01, 1, 0)) * 5.0 + vec3(0, 4, 0)
+                        pl.air_peak = f64(pl.pos.y)
+                        pl.climb_col = -1
+                        pl.ground.collider = -1
+                        set_state(.air)
+                enemy_events.push(EEvent("slam", e.pos))
+            if e.t > 1.6:
+                e.talus_shake = 0.0
+                e.state = .chase
+                e.t = 0.0
+        dead:
+            talus_drop(e)
+            if e.t > 1.5:
+                e.state = .gone
+                enemy_events.push(EEvent("smoke", e.pos))
+        _: pass
+    talus_sync(e)
+
+# Object-space mineral pigment and planar normals give every chunk a broken
+# stone surface. Instancing keeps the whole body to one rock draw per pass.
+struct TalusRockI:
+    model: mat4
+    pigment: vec4
+    material: vec4
+    center = vec3(0,0,0)
+    radius = vec3(0,0,0)
+
+# Broad fracture planes replace the old eight-course spherical profile. The
+# contact sampler and vertex deformation share this envelope; the mesh below
+# uses staggered fracture junctions and flat normals, never a latitude grid.
+talus_fracture_tilt = (group: f32) -> f32:
+    if group<5.0: return 0.0
+    if mod(group,2.0)<1.0: 0.04 else: -0.04
+
+talus_skin_point = (v: vec3, shape: vec3) -> vec3:
+    let v=v
+    y = clamp(v.y,0.0,2.0)
+    group = shape.x
+    cut_y = y-v.x*talus_fracture_tilt(group)
+    r = max(shape.z,min(0.40+cut_y*0.58,0.42+(2.0-cut_y)*0.52))
+    # The torso's shallow bevels keep broad waist/shoulder junctions. This is
+    # one low boulder mass rather than three pointed rocks balanced vertically.
+    if group<3.0:
+        r=max(shape.z,min(min(0.73+cut_y*0.62,1.0),0.72+(2.0-cut_y)*0.65))
+    # The limbs have short bevels around broad fractured ends and a long,
+    # slightly tapered side plane. A double cone reads as a cut gemstone.
+    if group>=5.0:
+        bottom=0.53+0.055*mod(group,3.0)
+        top=0.52+0.04*mod(group+1.0,3.0)
+        r=max(shape.z,min(min(bottom+cut_y*0.92,1.0-cut_y*0.035),top+(2.0-cut_y)*0.93))
+    wobble = sin(group*1.9+0.8)*min(y,2.0-y)*0.22
+    if group==3.0 or group==4.0: wobble*=0.12
+    rear = if group<3.0:shape.y-r else:wobble*0.7
+    # A small object-space fracture offset stays inside the contact tolerance.
+    chip = (v.x*0.014+v.z*0.009)*sin(group*3.1+0.7)
+    chip *= smoothstep(0.0,0.2,min(y,2.0-y))*(1.0-smoothstep(0.65,0.95,v.z))
+    polygon: f32 = 1.0
+    # The centre vertices of the caps have no angular coordinate.
+    if abs(v.x)+abs(v.z)>0.0001:
+        angle = atan2(v.x,v.z)
+        sector=TAU/9.0
+        start=floor(angle/sector)*sector
+        end=start+sector
+        if group>=5.0:
+            turn=group*0.41
+            a=start+sin(start*2.0+group)*0.045+turn
+            b=end+sin(end*2.0+group)*0.045+turn
+            angle=mix(a,b,mod(angle,sector)/sector)
+            radial=sqrt(v.x*v.x+v.z*v.z)
+            v.x=sin(angle)*radial
+            v.z=cos(angle)*radial
+            start=a
+            end=b
+        face=angle-(start+end)*0.5
+        polygon=cos((end-start)*0.5)/cos(face)
+    vec3(v.x*(r+chip)*polygon+wobble,y,v.z*(r+chip)*polygon+rear)
+
+struct TalusRockO:
+    pos: vec4
+    world: vec3
+    local: vec3
+    color: vec4
+    material: vec4
+
+talus_rock_vs = (v: BVert, i: TalusRockI, u: BuildU) -> TalusRockO:
+    # Fracture junctions track the envelope's bevel changes, including the
+    # wider rider support at the ends. Small off-level breaks have no shared
+    # horizontal course. Each mass bulges away from its own centre line.
+    junction = v.pos
+    core = max(i.center.z,0.40)
+    tilt = junction.x*talus_fracture_tilt(i.center.x)
+    peak = 1.06/1.10+tilt
+    low = clamp((core-0.40)/0.58+tilt,0.0,peak)
+    high = clamp(2.0-(max(i.center.z,0.42)-0.42)/0.52+tilt,peak,2.0)
+    if i.center.x<3.0:
+        low=clamp((1.0-0.73)/0.62+tilt,0.0,2.0)
+        high=clamp(2.0-(1.0-0.72)/0.65+tilt,low,2.0)
+        peak=(low+high)*0.5
+    if i.center.x>=5.0:
+        bottom=0.53+0.055*mod(i.center.x,3.0)
+        top=0.52+0.04*mod(i.center.x+1.0,3.0)
+        low=clamp((1.0-bottom)/0.955+tilt,0.0,2.0)
+        high=clamp((top+0.86)/0.895+tilt,low,2.0)
+        peak=(low+high)*0.5
+    row = v.pos.y
+    y = 0.0
+    if row==1.0: y=low
+    if row==2.0: y=peak
+    if row==3.0: y=clamp(max(1.0,peak+0.015),low,high)
+    if row==4.0: y=high
+    if row==5.0: y=2.0
+    # The broad vertical fracture planes use only their corner vertices.
+    if row==2.0:
+        y += sin(junction.x*2.3+junction.z*3.1+i.center.x*1.9)*0.012
+    if row==2.0: y=clamp(y,low,high)
+    junction.y = f32(y)
+    p = talus_skin_point(junction,i.center)
+    w = transform_point(i.model,p)
+    TalusRockO(u.vp*vec4(w,1),w,p*i.radius+vec3(i.center.x*7.1,0,0),v.color*i.pigment,i.material)
+
+# Linear interpolation over irregular cell triangles makes angular fissures,
+# rather than the curved crackle of a smooth ceramic noise field.
+talus_fracture_noise = (q: vec2) -> f32:
+    c=floor(q)
+    f=fract(q)
+    a=hash12(c)
+    b=hash12(c+vec2(1,0))
+    d=hash12(c+vec2(0,1))
+    e=hash12(c+vec2(1,1))
+    if f.x+f.y<1.0: return a+(b-a)*f.x+(d-a)*f.y
+    e+(d-e)*(1.0-f.x)+(b-e)*(1.0-f.y)
+
+talus_rock_fs = (i: TalusRockO, u: BuildU) -> vec4:
+    if u.shadow_pass>0.5: return vec4(1,1,1,1)
+    n = glsl_facet(i.world)
+    if dot(n,u.cam-i.world)<0.0: n *= -1.0
+    p = i.local
+    # Triplanar, object-space mineral pigment moves with each boulder. No
+    # cylindrical UVs, y-only waves, circumferential strata or glossy highlights.
+    weights = abs(n)/max(abs(n.x)+abs(n.y)+abs(n.z),0.001)
+    mineral = vnoise(p.yz*1.7)*weights.x+vnoise(p.xz*1.7)*weights.y+vnoise(p.xy*1.7)*weights.z
+    wash = vnoise(p.xz*0.61+vec2(p.y*0.43,-p.y*0.31))
+    seam = abs(sin(dot(p,vec3(2.3,1.7,-2.8))+talus_fracture_noise(p.xy*2.0)*1.8))
+    branch = abs(sin(dot(p,vec3(-1.5,2.9,1.1))+talus_fracture_noise(p.yz*1.3)*2.1))
+    crack = (1.0-smoothstep(0.015,0.055,min(seam,branch)))*smoothstep(0.40,0.65,wash)
+    # Broad translucent ochre/blue-grey washes retain value within each
+    # fracture plane; the planes themselves carry warm light and cool shade.
+    light = smoothstep(-0.35,0.8,dot(n,normalize(u.sun_dir)))
+    pigment = mix(vec3(0.76,0.82,0.93),vec3(1.07,1.02,0.94),light)
+    pigment *= mix(vec3(0.78,0.85,0.93),vec3(1.08,1.03,0.93),smoothstep(0.25,0.76,wash))
+    col = i.color.xyz*pigment*(0.66+mineral*0.47+wash*0.24)
+    col *= (0.80+0.20*smoothstep(-0.6,0.35,n.y))*(1.0-crack*0.72)
+    # Broken islands cross the top bevels. The same patch field continues down
+    # sloping facets, with exposed rock on the crown and ragged lichen edges.
+    # Project onto the broad face, avoiding stretched moss/lichen on upright
+    # facets. The small seed offset separates these islands from the wash.
+    face_normal=abs(glsl_facet(i.local))
+    patch_uv=p.xz
+    if face_normal.x>face_normal.y and face_normal.x>face_normal.z: patch_uv=p.yz
+    else if face_normal.z>face_normal.y: patch_uv=p.xy
+    fleck = vnoise(patch_uv*13.0+vec2(7.3,11.1))
+    islands = vnoise(patch_uv*2.4+vec2(4.7,8.2))
+    patch = wash*0.30+mineral*0.25+islands*0.45+(fleck-0.5)*0.13
+    moss = smoothstep(0.49,0.63,patch)*smoothstep(-0.12,0.60,n.y)*i.material.y
+    col = mix(col,vec3(0.115,0.19,0.055)*(0.65+mineral*0.65+fleck*0.20),moss)
+    # Sparse ragged pigment follows warped mineral seams, rather than round dots.
+    lich_uv = patch_uv + vec2(islands - 0.5, mineral - 0.5) * 0.19
+    lich_grain = vnoise(lich_uv * vec2(9.0, 17.0) + vec2(7.3, 11.1))
+    lichen = smoothstep(0.68, 0.84, islands) * smoothstep(0.48, 0.76, lich_grain) * (1.0-moss) * 0.22
+    col = mix(col, col * vec3(1.12, 1.10, 0.94) + vec3(0.012, 0.014, 0.004), lichen)
+    # The upper mass has a broken brow over two dark fracture hollows. Paint
+    # into its existing front planes so the drawn skin and climb collision agree.
+    if i.material.z > 0.0:
+        face_x = p.x - 14.2
+        front = smoothstep(-0.75,-1.15,p.z) * i.material.z
+        eye = 1.0-smoothstep(0.75,1.1,max(abs(abs(face_x)-1.02)/0.43,abs(p.y-3.0+face_x*0.045)/0.17))
+        brow = (1.0-smoothstep(0.08,0.17,abs(p.y-3.32+abs(face_x)*0.09))) * (1.0-smoothstep(1.45,1.9,abs(face_x)))
+        col = mix(col,col*1.30,brow*front*0.8)
+        col = mix(col,vec3(0.040,0.044,0.038),eye*front*0.90)
+    build_fs(BuildO(i.pos,i.world,n,vec4(col,i.color.w),vec4(0,0,0,0)),u)
+
+talus_rock: Mesh
+talus_crystal: Mesh
+talus_grass: Mesh
+talus_rock_sh: Shader
+talus_rock_buf: InstBuf
+talus_ready = false
+
+talus_triangle = (b: mut MeshB, a: vec3, c: vec3, d: vec3, color: vec4):
+    n = normalize(cross(c-a,d-a))
+    base = u32(b.vs.len())
+    loop p in [a,c,d]: b.vs.push(Vertex3D(p,n,vec2(0,0),color))
+    loop i in [base,base+1,base+2]: b.idx.push(i)
+
+talus_course_mesh = () -> MeshB:
+    course = MeshB()
+    # Nine broad fracture sectors follow a crooked centre line. Off-level
+    # bevel junctions and alternating diagonals break the old smooth belts.
+    ys = [0.0,1.0,2.0,3.0,4.0,5.0]
+    loop row in [0..6):
+        loop j in [0..9]:
+            a = f64(j)*TAU/9.0
+            p = v3(sin(a),ys[row],cos(a))
+            course.vs.push(Vertex3D(p,vec3(p.x,0,p.z),vec2(0,0),vec4(1,1,1,1)))
+    loop row in [0..5):
+        loop j in [0..9):
+            p = u32(row*10+j)
+            if (row+j)%2==0:
+                loop k in [p,p+1,p+11,p,p+11,p+10]: course.idx.push(k)
+            else:
+                loop k in [p,p+1,p+10,p+1,p+11,p+10]: course.idx.push(k)
+    loop j in [0..9):
+        a = course.vs[j].pos
+        b = course.vs[j+1].pos
+        talus_triangle(course,vec3(0,0,0),b,a,vec4(1,1,1,1))
+        talus_triangle(course,vec3(0,5,0),a+vec3(0,5,0),b+vec3(0,5,0),vec4(1,1,1,1))
+    course
+
+talus_model_init = ():
+    if talus_ready: return
+    talus_ready = true
+    course = talus_course_mesh()
+    vs: BVert[]
+    loop v in course.vs: vs.push(BVert(v.pos,v.normal,v.color,vec4(0,0,0,5)))
+    talus_rock = mesh(vs,course.idx)
+    talus_rock_sh = make_sh(shader(talus_rock_vs,talus_rock_fs))
+    empty: TalusRockI[]
+    talus_rock_buf = inst_buffer(empty)
+    crystal = MeshB()
+    loop k in [0..5):
+        center = v3((f64(k)-2.0)*0.20,0.0,(if k%2==0:0.12 else:-0.08))
+        loop j in [0..6):
+            angle = f64(j)*TAU/6.0
+            next = f64(j+1)*TAU/6.0
+            a = center+v3(sin(angle)*0.20,0.0,cos(angle)*0.20)
+            c = center+v3(sin(next)*0.20,0.0,cos(next)*0.20)
+            tip = center+v3((f64(k)-2.0)*0.09,(if k==2:1.0 else:0.50+0.15*f64(k%2)),0.0)
+            talus_triangle(crystal,a,c,tip,rgb(0.72+0.08*f64(j%2),0.18+0.08*f64(j%3),0.56+0.05*f64(k)))
+    talus_crystal = mesh(crystal.vs,crystal.idx)
+    grass = MeshB()
+    loop k in [0..16):
+        x = sin(f64(k)*12.7)*0.76
+        z = cos(f64(k)*7.3)*0.56
+        a = v3(x-0.025,0.0,z)
+        c = v3(x+0.025,0.0,z)
+        d = v3(x+0.08,0.16+0.11*f64(k%3),z+0.04)
+        talus_triangle(grass,a,d,c,rgb(0.20,0.29,0.10))
+        talus_triangle(grass,c,d,a,rgb(0.20,0.29,0.10))
+    talus_grass = mesh(grass.vs,grass.idx)
+
+talus_draw_rocks = (rocks: TalusRockI[]):
+    talus_model_init()
+    inst_update(talus_rock_buf,rocks)
+    u = build_u((if sc.shadow:cascades.vps[sc.shadow_k] else:sc.vp),sc.shadow)
+    u.player = vec3(0,-1000,0)
+    draw_static(talus_rock_sh,talus_rock,talus_rock_buf,u)
+
+talus_draw = (e: Enemy):
+    talus_model_init()
+    rocks: TalusRockI[]
+    loop g in [0..TALUS_BOULDERS):
+        b = talus_boulder(e,g)
+        wide = max(f64(b.half.x),f64(b.half.z))
+        spine = talus_part(e,g)
+        tone = 0.90+0.025*f64((g*7)%5)
+        col = rgb(0.29*tone,0.285*tone,0.25*tone)*(1.0+f32(e.flash)*2.0)
+        size = v3(wide,f64(b.half.y),wide)
+        rocks.push(TalusRockI(translation(b.pos)*rotation_y(b.yaw)*scaling(size),col,vec4(0,(if g<5:0.88 else:0.33),(if g==2:f32(talus_rise(e)) else:0),3.5),center=v3(f64(g),f64(b.half.z)/wide,f64(spine.half.x)/wide),radius=size))
+    talus_draw_rocks(rocks)
+    deck = talus_boulder(e,2)
+    draw_prop(talus_grass,translation(deck.pos+vec3(0,deck.half.y*2,0))*rotation_y(deck.yaw)*scaling(v3(TALUS_SCALE,TALUS_SCALE,TALUS_SCALE)),vec4(1,1,1,1),0.0,0.0)
+    if e.state != .dead and e.state != .gone:
+        ore = talus_ore(e)-vec3(0,0.4,0)
+        glow = (0.45+0.12*sin(e.anim_t*2.0))*talus_rise(e)
+        color = if e.state==.sleep:vec4(0.13,0.50,0.18,1) else:vec4(1,1,1,1)
+        draw_prop(talus_crystal,translation(ore)*rotation_y(-e.face)*scaling(v3(lerp(0.7,1.0,talus_rise(e)),lerp(0.45,1.0,talus_rise(e)),lerp(0.7,1.0,talus_rise(e)))),color,glow,0.0)
+
+# Save integration is a single optional, validated record for this forest actor.
+# Keeping the record here separates encounter serialization from the save format.
+const TALUS_STATES = [EState.sleep,EState.notice,EState.chase,EState.windup,EState.attack,EState.recover,EState.stagger,EState.celebrate,EState.dead,EState.gone]
+struct TalusRecord:
+    home: vec3
+    pos: vec3
+    face: f64
+    hp: f64
+    phase: int
+    time_: f64
+    shake: f64
+    attacks: int
+    move: int
+    contact: bool
+    loot: int
+
+talus_records = () -> TalusRecord[]:
+    out: TalusRecord[]
+    loop e in enemies:
+        if e.kind != .talus: continue
+        phase = 0
+        loop i in [0..TALUS_STATES.len()):
+            if e.state == TALUS_STATES[i]: phase = i
+        loot = 0
+        loop k in [0..e.talus_drops.len()):
+            id = e.talus_drops[k]
+            if id >= 0 and id < witems.len() and witems[id].alive: loot = loot | (1 << k)
+        out.push(TalusRecord(e.home,e.pos,e.face,e.hp,phase,e.t,e.talus_shake,e.talus_attacks,e.move,e.talus_contact,loot))
+    out
+
+talus_record_valid = (r: TalusRecord) -> bool:
+    if abs(f64(r.home.x)) >= 10000.0 or abs(f64(r.home.y)) >= 10000.0 or abs(f64(r.home.z)) >= 10000.0: return false
+    if length(r.pos-r.home) >= 15.0 or r.hp < 0.0 or r.hp > 300.0: return false
+    if r.phase < 0 or r.phase >= TALUS_STATES.len() or r.time_ < 0.0 or r.time_ > 1e6: return false
+    if r.shake < 0.0 or r.shake > 1e6 or r.attacks < 0 or r.attacks > 1000000: return false
+    if r.move < 0 or r.move >= 4 or r.loot < 0 or r.loot >= 64 or abs(r.face) > 1e6: return false
+    ((r.phase >= 8) == (r.hp == 0.0)) and (r.phase >= 8 or r.loot == 0)
+
+talus_restore = (records: TalusRecord[]):
+    loop r in records:
+        if not talus_record_valid(r): continue
+        loop mut e in enemies:
+            if e.kind != .talus or length(e.home-r.home) > 0.1: continue
+            # Applying twice is safe: replace only this encounter's old loose reward piles.
+            loop id in e.talus_drops:
+                if id >= 0 and id < witems.len(): witems[id].alive = false
+            e.talus_drops.clear()
+            e.pos = r.pos
+            e.face = r.face
+            e.hp = r.hp
+            e.state = TALUS_STATES[r.phase]
+            e.t = r.time_
+            e.talus_shake = r.shake
+            e.talus_attacks = r.attacks
+            e.move = r.move
+            e.talus_contact = r.contact
+            e.last_swing = -1
+            e.flash = 0.0
+            e.alert = if r.phase == 0: 0.0 else: 1.0
+            e.burning = 0.0
+            e.el = Elem()
+            e.vel = vec3(0,0,0)
+            e.speed = 0.0
+            if r.phase >= 8:
+                loop k in [0..TALUS_LOOT.len()):
+                    id = -1
+                    if r.loot & (1 << k) != 0:
+                        angle = TAU*f64(k)/f64(TALUS_LOOT.len())
+                        pos = r.pos+v3(sin(angle)*1.5,0.15,cos(angle)*1.5)
+                        id = spawn_item(TALUS_LOOT[k],pos,resting=true)
+                    e.talus_drops.push(id)
+            talus_sync(e,false)
+
+# Blast rays accept the body's first exposed surface while retaining external
+# cover. Bombs loosen an arm / give a climbing opening; only exposed ore takes
+# full blast damage. Fire itself never enters this nonflammable rock hit path.
+talus_blast = (e: mut Enemy, source: vec3):
+    if e.state == .dead or e.state == .gone: return
+    ore = talus_ore(e)
+    to = ore-source
+    distance = f64(length(to))
+    if distance < 6.0 and not raycast(source,to,max(0.001,distance-0.05)).hit and not talus_cover(e,source,ore):
+        talus_hit(e,lerp(40.0,10.0,distance/6.0),source,true,ore)
+        return
+    to = e.pos+vec3(0,2,0)-source
+    if length(to) < 0.001: return
+    hit = raycast(source,to,6.0)
+    loop part in [0..TALUS_PARTS):
+        id=e.talus_col+part
+        cap=talus_ray(colliders[id],source,normalize(to),6.0)
+        if cap.hit and (not hit.hit or cap.dist<hit.dist):
+            cap.collider=id
+            hit=cap
+    if hit.hit and talus_owns(e,hit.collider):
+        talus_hit(e,1.0,source,false,hit.pos)
+        if e.state != .dead and e.state != .notice:
+            e.state = .stagger
+            e.t = 0.0
+            enemy_events.push(EEvent("slam",hit.pos))

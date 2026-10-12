@@ -1,0 +1,893 @@
+use 'gfx.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'water.jo'
+use 'input.jo'
+use 'env.jo'
+
+# The player: walking, running, sprinting, jumping, falling, climbing, mantling, gliding,
+# swimming and sneaking, with stamina and hearts. Sourced parameters and unverified response
+# values are distinguished in docs/MOVEMENT_REFERENCE.md; speeds in m/s, ticks at any rate.
+
+const RADIUS = 0.35
+const HEIGHT = 1.6
+const WALK_SPEED = 1.575
+const RUN_SPEED = 5.556
+const SPRINT_SPEED = 8.1
+const SNEAK_SPEED = 2.1
+const SWIM_SPEED = 1.56
+const SWIM_DASH = 2.27
+const MANTLE_TIME = 0.8             # Nintendo run.mp4 frames 1402..1426: 0.8008 s (ref/footage)
+const CLIMB_SPEED = 1.2             # peak of the hand-over-hand surge (averages ~0.8 m/s; footage 0.73, docs/MOVEMENT_REFERENCE.md)
+const CLIMB_LUNGE_TIME = 0.467      # a climb jump's lunge, frame-timed from footage (it was 0.55 s)
+const GRAVITY = 29.0                # measured from long falls (El Duende 05): ~29 m/s2, ~60 m/s terminal
+const MAX_FALL = 60.0
+const STAMINA_WHEEL = 1000.0
+const SPRINT_DRAIN = 300.0
+const SPRINT_TRIG = 20.0
+const CLIMB_DRAIN = 36.5
+const CLIMB_JUMP_COST = 310.0
+const GLIDE_DRAIN = 28.0
+const SWIM_DRAIN = 30.0
+const SWIM_DASH_COST = 125.0
+const SPRINT_JUMP_COST = 300.0
+const RECOVER_RATE = 300.0
+const GLIDE_SPEED = 7.8             # unsourced forward-speed target; excluded from reference agreement
+const GLIDE_SINK = 2.6              # unsourced forward-input sink; no identified native equation
+const SAFE_FALL = 8.5                # a heavy landing from here; damage from 20 m (the game's FallDamageStartHeight)
+
+enum PState: ground, air, climb, mantle, glide, swim, hurt, dead, cutscene, slide, surf
+
+struct Player:
+    pos = vec3(0, 0, 0)            # feet
+    vel = vec3(0, 0, 0)
+    face = 0.0                     # yaw: forward = (sin, 0, -cos)
+    can_surf = false               # a shield is equipped (set by the game)
+    surfing = false                # riding the shield (also through the air between bumps)
+    state = PState.ground
+    st_t = 0.0                     # time in the current state
+    speed = 0.0                    # ground speed along the facing
+    move_dir = vec3(0, 0, 0)       # wished direction (world)
+    stick = 0.0
+    sprinting = false
+    sneaking = false
+    stamina = 1000.0
+    stamina_max = 1000.0
+    stamina_shown = 0.0            # the wheel fades in when used
+    exhausted = false
+    rest_t = 0.0                   # time since stamina was last used
+    hp = 12                        # quarter hearts
+    hp_max = 12
+    invuln = 0.0
+    ground = Ground()
+    grounded = true
+    air_peak = 0.0                 # highest point of the current fall
+    land_t = 0.0                   # landing recovery
+    land_hard = false
+    jump_t = 0.0
+    skid_t = 0.0                   # quick turn
+    skid_face = 0.0
+    body_delta = mat4()          # carry after hero animation, consumed by chars.jo
+    climb_col = -1              # held moving surface, also retained through a mantle
+    climb_n = vec3(0, 0, 1)        # the wall's normal
+    climb_phase = 0.0
+    climb_jump_t = 0.0
+    climb_jump_dir = vec2(0, 0)
+    climb_slip_t = 0.0
+    climb_grip_t = 0.0
+    mantle_from = vec3(0, 0, 0)
+    mantle_to = vec3(0, 0, 0)
+    mantle_hands: vec3[2]
+    has_glider = false
+    glide_lean = 0.0
+    updraft = 0.0                  # fire column sampled by the element step
+    swim_dash_t = 0.0
+    water_y = 0.0
+    hurt_t = 0.0
+    hurt_dir = vec3(0, 0, 0)
+    drown_t = 0.0
+    cold = 0.0                     # cold damage timer
+    frozen = 0.0                   # encased in ice (an Ice Chuchu's touch): no moving until it breaks
+    warm = false                   # warm clothes
+    last_safe = vec3(0, 0, 0)      # where to return after drowning
+    step_t = 0.0                   # footstep cadence
+    step_events = 0
+    anim_t = 0.0
+    lean = 0.0
+    upd_count = 0
+    noise = 0.0                    # how much noise the player makes (enemies hear)
+    landed = false                 # landed this frame
+    land_speed = 0.0
+    jumped = false
+    events: str[]                  # sound/fx cues this frame
+    step_remaining = 0.0
+    pending_jump = false
+    pending_interact = false
+    pending_crouch = false
+
+# set by combat: locked on to a target, so jump means a hop (combat.jo)
+lock_hops = false
+combat_moving = false
+pl = Player()
+warm_t = 0.0               # warmth from spicy food (seconds)
+
+wrap_angle = (a: f64) -> f64:
+    x = a
+    loop x > PI: x -= TAU
+    loop x < -PI: x += TAU
+    x
+
+forward_of = (yaw: f64) -> vec3: v3(sin(yaw), 0.0, -cos(yaw))
+yaw_of = (d: vec3) -> f64: atan2(f64(d.x), -f64(d.z))
+
+turn_toward = (a: f64, b: f64, rate: f64) -> f64:
+    d = wrap_angle(b - a)
+    if abs(d) <= rate: return b
+    a + sign(d) * rate
+
+set_state = (s: PState):
+    # Landing and drowning finish their movement transaction after damage.
+    # A lethal hit must retain death and its respawn timer through that cleanup.
+    if pl.hp <= 0 and s != .dead: return
+    if pl.state == s: return
+    pl.state = s
+    if s == .ground: pl.grounded = true
+    if s == .air or s == .climb or s == .mantle or s == .glide or s == .swim: pl.grounded = false
+    pl.st_t = 0.0
+
+use_stamina = (amount: f64):
+    pl.stamina -= amount
+    pl.rest_t = 0.0
+    if pl.stamina <= 0.0:
+        pl.stamina = 0.0
+        pl.exhausted = true
+        pl.events.push("exhausted")
+
+damage_player = (quarters: int, from: vec3, knock: f64 = 4.0):
+    if pl.invuln > 0.0 or pl.state == .dead or quarters <= 0: return
+    pl.hp -= quarters
+    pl.invuln = 1.0
+    pl.events.push("hurt")
+    d = pl.pos - from
+    d.y = 0
+    pl.hurt_dir = if length(d) > 0.01: normalize(d) else: forward_of(pl.face) * -1.0
+    if pl.hp <= 0:
+        pl.hp = 0
+        set_state(.dead)
+        pl.events.push("dead")
+        return
+    if pl.state == .climb or pl.state == .glide:
+        set_state(.air)
+    else if knock > 0.0:
+        set_state(.hurt)
+        pl.hurt_t = 0.45 + knock * 0.05
+        pl.vel = pl.hurt_dir * f32(knock) + vec3(0, f32(knock * 0.6), 0)
+        pl.grounded = false
+
+heal_player = (quarters: int):
+    pl.hp = min(pl.hp + quarters, pl.hp_max)
+
+# ---------------- per state ----------------
+cam_yaw_global = 0.0
+
+__wish = () -> vec3:
+    m = act.move
+    f = forward_of(cam_yaw_global)
+    r = v3(cos(cam_yaw_global), 0.0, sin(cam_yaw_global))
+    w = f * m.y + r * m.x
+    w
+
+__ground_speed_for = (stick: f64) -> f64:
+    if stick < 0.12: return 0.0
+    # (a light tilt is already a full walk: BotW walks at one pace across the walk band)
+    if stick < 0.55: return lerp(0.9, WALK_SPEED, clamp((stick - 0.12) / 0.3, 0.0, 1.0))
+    lerp(WALK_SPEED, RUN_SPEED, smooth01((stick - 0.55) / 0.35))
+
+__try_climb = (dir: vec3) -> bool:
+    if pl.exhausted: return false
+    chest = pl.pos + vec3(0, 1.0, 0)
+    # (a slope leans away: at chest height its face is further off the less steep it is)
+    w = wall_probe(chest, dir, RADIUS + 1.6)
+    if not w.hit or not w.climbable: return false
+    hn = f64(length(vec3(w.normal.x, 0, w.normal.z)))
+    lean = if hn > 0.05: max(f64(w.normal.y), 0.0) / hn else: 0.0
+    reach = if pl.state == .air and pl.vel.y < 0.0: 1.2 else: 0.45
+    if f64(length(vec3(w.pos.x - chest.x, 0, w.pos.z - chest.z))) > RADIUS + reach + lean * 1.05: return false
+    # needs a wall at the feet too (not just a lip)
+    w2 = wall_probe(pl.pos + vec3(0, 0.35, 0), dir, RADIUS + max(0.8, reach) + lean * 0.4)
+    if not w2.hit: return false
+    n = w.normal
+    n.y = 0
+    if length(n) < 0.2: return false
+    pl.climb_col = w.collider
+    pl.climb_n = normalize(w.normal)
+    pl.pos = w.pos + pl.climb_n * f32(RADIUS + 0.05) - vec3(0, 1.0, 0)
+    pl.vel = vec3(0, 0, 0)
+    pl.face = yaw_of(vec3(0, 0, 0) - n)
+    set_state(.climb)
+    pl.climb_grip_t = 1.0 / 30.0
+    pl.events.push("grab")
+    true
+
+__start_jump = ():
+    hs = f64(length(vec3(pl.vel.x, 0, pl.vel.z)))
+    h = 0.58 + 2.0 * hs / 30.0
+    pl.vel.y = f32(sqrt(2.0 * GRAVITY * h))
+    if pl.sprinting:
+        use_stamina(SPRINT_JUMP_COST)
+    pl.grounded = false
+    pl.jump_t = 0.0
+    pl.jumped = true
+    pl.air_peak = f64(pl.pos.y)
+    pl.events.push("jump")
+    set_state(.air)
+
+__ground = (dt: f64):
+    # (a hop, backflip or flurry moves him itself)
+    if combat_moving:
+        pl.speed = 0.0
+        pl.vel = vec3(0, 0, 0)
+        return
+    wish = __wish()
+    stick = f64(length(act.move))
+    pl.stick = stick
+    if act.crouch_pressed: pl.sneaking = not pl.sneaking
+    # sprint: needs stamina, not while sneaking
+    want_sprint = act.sprint and stick > 0.3 and not pl.exhausted
+    if want_sprint and not pl.sprinting:
+        pl.sneaking = false
+        use_stamina(SPRINT_TRIG)
+    pl.sprinting = want_sprint
+    target = __ground_speed_for(stick)
+    if pl.sneaking: target = min(target, SNEAK_SPEED)
+    if pl.sprinting: target = SPRINT_SPEED
+    if pl.exhausted: target = min(target * 0.85, 3.76)
+    if pl.land_t > 0.0:
+        pl.land_t -= dt
+        if pl.land_hard: target = 0.0
+    # uphill is slower; steep ground slides
+    gn = pl.ground.normal
+    slope = acos(clamp(f64(gn.y), -1.0, 1.0))
+    if stick > 0.1:
+        updot = -f64(dot(normalize(wish), vec3(gn.x, 0, gn.z)))
+        if updot > 0.0: target *= 1.0 - clamp((slope - 0.35) / 0.5, 0.0, 0.45) * updot
+        pl.move_dir = normalize(wish)
+    if slope > 0.78 and pl.ground.collider < 0:
+        set_state(.slide)
+        return
+    # facing: turn toward the wish; a hard reversal at speed skids (quick turn)
+    if pl.skid_t > 0.0:
+        pl.skid_t -= dt
+        pl.speed = max(0.0, pl.speed - 30.0 * dt)
+        if pl.skid_t <= 0.0:
+            pl.face = pl.skid_face
+            pl.speed = 1.5
+    else if stick > 0.12:
+        want = yaw_of(wish)
+        diff = abs(wrap_angle(want - pl.face))
+        if diff > 2.1 and pl.speed > 4.0 and not pl.sneaking:
+            pl.skid_t = 0.22 + PLAYER_STEP
+            pl.skid_face = want
+            pl.events.push("skid")
+        else:
+            rate = lerp(16.0, 7.5, clamp(pl.speed / RUN_SPEED, 0.0, 1.0))
+            if pl.sprinting: rate = 5.5
+            pl.face = turn_toward(pl.face, want, rate * dt)
+            # turning hard costs speed
+            if diff > 1.2: target *= 0.6
+    # speed: quick to start, a short slide to stop (response constants not BotW measurements)
+    if pl.skid_t <= 0.0:
+        acc = if target > pl.speed: 22.0 else: 26.0
+        if target < 0.1 and pl.speed < 2.0: acc = 40.0
+        pl.speed = approach_linear(pl.speed, target, acc * dt)
+    f = forward_of(pl.face)
+    pl.vel = vec3(f.x * f32(pl.speed), 0, f.z * f32(pl.speed))
+    # stamina while sprinting
+    if pl.sprinting: use_stamina(SPRINT_DRAIN * dt)
+    # noise for enemies and wildlife
+    pl.noise = if pl.sneaking: pl.speed * 0.15 else: pl.speed * (if pl.sprinting: 1.6 else: 1.0)
+    # jump
+    if act.jump and pl.land_t <= 0.05 and not lock_hops:
+        __start_jump()
+        return
+    # walking into a climbable wall
+    if stick > 0.5 and pl.speed > 0.5 and pl.st_t > 0.15:
+        if __try_climb(normalize(wish)): return
+    __move_ground(dt)
+
+approach_linear = (a: f64, b: f64, step: f64) -> f64:
+    if a < b: return min(a + step, b)
+    max(a - step, b)
+
+__move_ground = (dt: f64):
+    old = pl.pos
+    pl.pos += pl.vel * f32(dt)
+    pushed = push_out(pl.pos, RADIUS, HEIGHT)
+    # pushed back by a block in front: a ledge to pull up onto?
+    if length(pushed) > 0.001 and pl.stick > 0.5 and f64(dot(normalize(pushed), forward_of(pl.face))) < -0.5:
+        if __try_mantle(): return
+    g = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.55, RADIUS)
+    # walking off a ledge: fall; small steps down: snap
+    if g.y < f64(pl.pos.y) - 0.6:
+        pl.grounded = false
+        pl.air_peak = f64(pl.pos.y)
+        set_state(.air)
+        return
+    # a step too tall (or a wall of terrain too steep to walk): blocked
+    if g.y > f64(old.y) + 0.6:
+        pl.pos.x = old.x
+        pl.pos.z = old.z
+        # a ledge up to chest height: pull up onto it
+        if pl.stick > 0.5 and g.y < f64(old.y) + 2.1 and __try_mantle(): return
+        pl.speed *= 0.5
+        g = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.55, RADIUS)
+    pl.pos.y = f32(g.y)
+    pl.ground = g
+    pl.grounded = true
+    if water_depth(f64(pl.pos.x), f64(pl.pos.z)) < 0.3: pl.last_safe = pl.pos
+    # Measure immersion above the supporting surface, including a floating log.
+    wl = water_level(f64(pl.pos.x), f64(pl.pos.z)) ?? -1e9
+    d = wl - f64(pl.pos.y)
+    if d > 1.25:
+        pl.water_y = wl
+        set_state(.swim)
+        pl.events.push("splash")
+    # footsteps
+    if pl.speed > 0.3:
+        pl.step_t += dt * pl.speed / (if pl.speed > 6.0: 1.55 else: 1.2)
+        if pl.step_t >= 1.0:
+            pl.step_t -= 1.0
+            pl.events.push("step")
+
+__on_face = 0.0          # just now falling down a steep face (the glider may open off it)
+__air = (dt: f64):
+    pl.jump_t += dt
+    __on_face = max(0.0, __on_face - dt)
+    wish = __wish()
+    stick = f64(length(act.move))
+    # air control: steer a little, keep momentum
+    hv = vec3(pl.vel.x, 0, pl.vel.z)
+    if stick > 0.1:
+        w = normalize(wish)
+        pl.face = turn_toward(pl.face, yaw_of(w), 4.0 * dt)
+        target = w * f32(max(f64(length(hv)), 2.5 * stick))
+        hv = hv + (target - hv) * f32(min(1.0, 2.2 * dt))
+    pl.vel.x = hv.x
+    pl.vel.z = hv.z
+    # in the air with the shield raised, jump again: drop onto it and ride (the original's ZL, X, A)
+    if act.jump and act.lock and pl.can_surf and not pl.surfing and pl.jump_t > 0.08:
+        pl.surfing = true
+        pl.events.push("surf")
+    # releasing jump early cuts the rise a little (a lighter hop)
+    grav = GRAVITY
+    if pl.vel.y > 0.0 and not act.jump_held and pl.jump_t < 0.2: grav *= 1.4
+    vy0 = f64(pl.vel.y)
+    pl.vel.y = f32(max(vy0 - grav * dt, -MAX_FALL))
+    pl.air_peak = max(pl.air_peak, f64(pl.pos.y))
+    # open the glider
+    if act.jump and pl.has_glider and pl.st_t > 0.1 and not pl.exhausted:
+        gy = height_at(f64(pl.pos.x), f64(pl.pos.z))
+        if f64(pl.pos.y) - gy > 1.2 or (pl.updraft > 0.0 and f64(pl.pos.y) - gy > 0.2) or __on_face > 0.0 or f64(pl.vel.y) < -4.0:
+            set_state(.glide)
+            pl.events.push("glider_open")
+            return
+    old = pl.pos
+    # (vertical: the average of the velocities over the step, so arcs are exact)
+    pl.pos += vec3(pl.vel.x, f32((vy0 + f64(pl.vel.y)) * 0.5), pl.vel.z) * f32(dt)
+    push_out(pl.pos, RADIUS, HEIGHT)
+    # grab walls when moving into them
+    if stick > 0.3 and pl.vel.y < 4.0 and pl.st_t > 0.12:
+        # Grab the wall the stick is pressing into while the airborne facing catches up.
+        # Using the delayed turn let a player fall past the tower rim despite holding back.
+        if __try_climb(normalize(wish)): return
+    # ledge: catch edges in reach while falling past them
+    if pl.vel.y < 0.0 and stick > 0.3 and __try_mantle(): return
+    g = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.3, RADIUS)
+    d = water_depth(f64(pl.pos.x), f64(pl.pos.z))
+    wl = water_level(f64(pl.pos.x), f64(pl.pos.z)) ?? -1e9
+    if d > 1.0:
+        if f64(pl.pos.y) < wl - 0.6:
+            pl.water_y = wl
+            pl.vel.y = max(pl.vel.y, -2.0)
+            set_state(.swim)
+            pl.events.push("splash")
+            return
+    if f64(pl.pos.y) <= g.y and pl.vel.y <= 0.0:
+        # a face too steep to stand or slide on (past 60 degrees): fall on down past it
+        if f64(g.normal.y) < 0.5 and not pl.surfing:
+            pl.pos.y = f32(g.y)
+            # (off a near-vertical face he is thrown clear into a free fall; a lesser one he
+            # rubs down)
+            out = vec3(g.normal.x, 0, g.normal.z)
+            if f64(length(out)) > 0.01:
+                on = normalize(out)
+                away = f64(dot(vec3(pl.vel.x, 0, pl.vel.z), on))
+                if away < 6.0: pl.vel = pl.vel + on * f32(6.0 - away)
+                pl.pos += on * f32(9.0 * dt)
+            pl.vel = pl.vel + out * f32(6.0 * dt)
+            __on_face = 0.3
+            # (rubbing down the rock holds him back a little)
+            pl.vel.y = max(pl.vel.y, f32(-14.0))
+            return
+        if pl.surfing and act.lock:
+            pl.pos.y = f32(g.y)
+            pl.ground = g
+            pl.vel.y = 0
+            set_state(.surf)
+            pl.events.push("land")
+            return
+        pl.surfing = false
+        __land(g)
+
+# shield surfing: the slope pulls him along (to 12 m/s), friction slows him on the flat, the
+# stick leans the line; let go of the shield to step off, jump to hop (0.98 m)
+const SURF_MAX = 12.0
+__surf = (dt: f64):
+    g = pl.ground
+    n = g.normal
+    downhill = vec3(n.x, 0, n.z)
+    slope = f64(length(downhill))
+    hv = vec3(pl.vel.x, 0, pl.vel.z)
+    hv = hv + downhill * f32(GRAVITY * slope * 0.9 * dt)
+    sp = f64(length(hv))
+    sp = max(0.0, sp - (1.2 + sp * 0.05) * dt)
+    dir = if f64(length(hv)) > 0.01: normalize(hv) else: forward_of(pl.face)
+    stick = f64(length(act.move))
+    if stick > 0.1:
+        want = yaw_of(__wish())
+        cur = yaw_of(dir)
+        dir = forward_of(turn_toward(cur, want, 1.4 * dt))
+    sp = min(sp, SURF_MAX)
+    hv = dir * f32(sp)
+    pl.vel = vec3(hv.x, 0, hv.z)
+    pl.speed = sp
+    if sp > 0.3: pl.face = turn_toward(pl.face, yaw_of(dir), 6.0 * dt)
+    pl.pos += pl.vel * f32(dt)
+    push_out(pl.pos, RADIUS, HEIGHT)
+    if act.jump:
+        pl.vel.y = f32(sqrt(2.0 * GRAVITY * 0.98))
+        pl.grounded = false
+        pl.jump_t = 0.0
+        pl.air_peak = f64(pl.pos.y)
+        pl.events.push("jump")
+        set_state(.air)
+        return
+    g2 = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.8, RADIUS)
+    if g2.y < f64(pl.pos.y) - 0.6:
+        pl.air_peak = f64(pl.pos.y)
+        set_state(.air)
+        return
+    pl.pos.y = f32(g2.y)
+    pl.ground = g2
+    if not act.lock or (sp < 0.6 and slope < 0.15 and pl.st_t > 0.5):
+        pl.surfing = false
+        set_state(.ground)
+
+__land = (g: Ground):
+    fall = pl.air_peak - g.y
+    pl.air_peak = g.y
+    pl.pos.y = f32(g.y)
+    pl.ground = g
+    pl.grounded = true
+    pl.landed = true
+    pl.land_speed = -f64(pl.vel.y)
+    pl.vel.y = 0
+    pl.speed = f64(length(vec3(pl.vel.x, 0, pl.vel.z)))
+    pl.land_hard = false
+    pl.land_t = 0.08
+    if fall > 4.0:
+        pl.land_t = 0.25
+        pl.speed *= 0.5
+    if fall > SAFE_FALL:
+        pl.land_hard = true
+        pl.land_t = 0.65
+        # quarter hearts: 4 at 20 m and 0.6 a meter, 2 a meter past 50; 100 m kills
+        if fall >= 100.0: damage_player(pl.hp, pl.pos, 0.0)
+        else if fall >= 20.0:
+            dmg = 4.0 + 0.6 * (min(fall, 50.0) - 20.0) + 2.0 * max(fall - 50.0, 0.0)
+            damage_player(int(round(dmg)), pl.pos, 0.0)
+        pl.events.push("hard_land")
+    else: pl.events.push("land")
+    if pl.state == .dead: return
+    set_state(.ground)
+
+# mantle up a ledge whose top is within reach above the hands
+__try_mantle = () -> bool:
+    f = forward_of(pl.face)
+    chest = pl.pos + vec3(0, 1.1, 0)
+    w = wall_probe(chest, f, RADIUS + 0.5)
+    if not w.hit: return false
+    head = pl.pos + vec3(0, 2.0, 0)
+    w2 = wall_probe(head, f, RADIUS + 0.6)
+    if w2.hit: return false
+    top = pl.pos + f * f32(RADIUS + 0.6) + vec3(0, 2.2, 0)
+    g = ground_at(f64(top.x), f64(top.z), f64(top.y), 0.0, RADIUS)
+    if g.y < f64(pl.pos.y) + 0.4 or g.y > f64(pl.pos.y) + 2.1: return false
+    if g.normal.y < 0.7: return false
+    pl.climb_col = w.collider
+    pl.climb_n = w.normal
+    pl.mantle_from = pl.pos
+    pl.mantle_to = v3(f64(top.x), g.y, f64(top.z))
+    mantle_grips(w.pos)
+    pl.vel = vec3(0, 0, 0)
+    set_state(.mantle)
+    pl.events.push("mantle")
+    true
+
+# Fixed world-space grips at the rim, shared by jump-up and climb-over mantles.
+mantle_grips = (rim: vec3):
+    right = v3(cos(pl.face), 0.0, sin(pl.face))
+    center = rim + forward_of(pl.face) * 0.035
+    center.y = pl.mantle_to.y + 0.035
+    pl.mantle_hands = [center - right * 0.24, center + right * 0.24]
+
+__mantle = (dt: f64):
+    # A pull still depends on the held grip. Use the existing climb drain;
+    # releasing or exhausting must fall from the current point, not finish the arc.
+    release = act.interact or (act.jump and length(act.move) < 0.2 and act.sprint)
+    if not release and not pl.exhausted: use_stamina(CLIMB_DRAIN * dt)
+    if release or pl.exhausted:
+        pl.vel = pl.climb_n * (if release: 2.0 else: 1.0)
+        pl.air_peak = f64(pl.pos.y)
+        pl.jump_t = 0.0
+        set_state(.air)
+        pl.events.push("let_go")
+        return
+    t = clamp(pl.st_t / MANTLE_TIME, 0.0, 1.0)
+    up = smooth01(t / 0.65)
+    fw = smooth01((t - 0.45) / 0.55)
+    a = pl.mantle_from
+    b = pl.mantle_to
+    pl.pos = v3(lerp(f64(a.x), f64(b.x), fw), lerp(f64(a.y), f64(b.y) + 0.05, up), lerp(f64(a.z), f64(b.z), fw))
+    if t >= 1.0:
+        pl.pos = b
+        pl.speed = 0.0
+        pl.grounded = true
+        pl.ground = ground_at(f64(b.x), f64(b.z), f64(b.y), 0.3, RADIUS)
+        set_state(.ground)
+
+__climb = (dt: f64):
+    # Ground/air movement is world-relative; climbing is wall-relative. Stabilize
+    # a newly caught grip for a fixed 33 ms so one input sample is not interpreted
+    # in two coordinate systems when a display frame contains several ticks.
+    m = if pl.climb_grip_t > 1e-9: vec2(0, 0) else: act.move
+    pl.climb_grip_t = max(0.0, pl.climb_grip_t - dt)
+    n = pl.climb_n
+    nh = normalize(vec3(n.x, 0, n.z))
+    right = normalize(cross(vec3(0, 1, 0), nh))       # along the wall, to the climber's right
+    up = normalize(cross(nh, right) * -1.0)
+    if f64(dot(up, vec3(0, 1, 0))) < 0.0: up = up * -1.0
+    # let go
+    if act.interact or (act.jump and length(act.move) < 0.2 and act.sprint):
+        pl.vel = n * 2.0
+        pl.air_peak = f64(pl.pos.y)
+        set_state(.air)
+        pl.events.push("let_go")
+        return
+    if pl.exhausted:
+        pl.vel = n * 1.0
+        pl.air_peak = f64(pl.pos.y)
+        set_state(.air)
+        pl.events.push("let_go")
+        return
+    # climb jump: a lunge in the held direction
+    if pl.climb_jump_t > 0.0:
+        pl.climb_jump_t -= dt
+        d = right * pl.climb_jump_dir.x + up * pl.climb_jump_dir.y
+        k = smooth01(pl.climb_jump_t / CLIMB_LUNGE_TIME)
+        # (as high as before in the shorter time)
+        pl.pos += d * f32(dt * 4.6 * (0.55 / CLIMB_LUNGE_TIME) * (0.3 + k))
+    else if act.jump:
+        dir = if length(m) > 0.2: normalize(m) else: vec2(0, 1)
+        pl.climb_jump_dir = dir
+        pl.climb_jump_t = CLIMB_LUNGE_TIME
+        use_stamina(CLIMB_JUMP_COST)
+        pl.events.push("climb_jump")
+    else:
+        if length(m) > 0.15:
+            # hand over hand: the body surges with each reach
+            # (the reach cadence with the speed: each reach covers the same height of wall)
+            pl.climb_phase += dt * 1.9 * CLIMB_SPEED / 1.4
+            surge = 0.35 + 0.65 * pow(sin(pl.climb_phase * PI), 2.0)
+            k = if m.y < -0.2: 1.25 else: 1.0
+            mv = right * m.x + up * m.y
+            pl.pos += mv * f32(CLIMB_SPEED * k * surge * dt)
+            drain = CLIMB_DRAIN * (if m.y > 0.3: 1.0 else: 0.5)
+            if env.rain > 0.3: drain *= 1.2
+            use_stamina(drain * dt)
+            if fract(pl.climb_phase) < dt * 1.9 * CLIMB_SPEED / 1.4: pl.events.push("climb_step")
+        # rain: hands slip now and then
+        if env.rain > 0.3 and length(m) > 0.15:
+            pl.climb_slip_t -= dt
+            if pl.climb_slip_t <= 0.0:
+                pl.climb_slip_t = random(2.0, 4.0)
+                pl.pos -= up * 0.9
+                use_stamina(150.0 * 0.1)
+                pl.events.push("slip")
+    # stay on the wall: re-probe from the body toward the wall
+    chest = pl.pos + vec3(0, 1.0, 0) + nh * 0.4
+    w = wall_probe(chest, nh * -1.0, RADIUS + 1.2)
+    if not w.hit or not w.climbable:
+        # the wall ended above: climb over the top
+        if m.y > 0.1 or pl.climb_jump_t > 0.0:
+            top = pl.pos + nh * f32(-(RADIUS + 0.5)) + vec3(0, 1.9, 0)
+            g = ground_at(f64(top.x), f64(top.z), f64(top.y), 0.0, RADIUS)
+            if g.y > f64(pl.pos.y) + 0.2 and g.normal.y > 0.6:
+                pl.climb_col = g.collider
+                pl.mantle_from = pl.pos
+                pl.mantle_to = v3(f64(top.x), g.y, f64(top.z))
+                rim = wall_probe(pl.pos + vec3(0, 0.1, 0) + nh * 0.4, nh * -1.0, RADIUS + 1.2)
+                mantle_grips(if rim.hit: rim.pos else: pl.pos - nh * f32(RADIUS))
+                pl.climb_jump_t = 0.0
+                set_state(.mantle)
+                pl.events.push("mantle")
+                return
+        pl.air_peak = f64(pl.pos.y)
+        pl.vel = nh * 0.5
+        set_state(.air)
+        return
+    pl.climb_col = w.collider
+    pl.climb_n = normalize(w.normal)
+    target = w.pos + pl.climb_n * f32(RADIUS + 0.05) - vec3(0, 1.0, 0)
+    # The horizontal probe already sits at chest height. Its normal's vertical offset
+    # must not add an upward drift every frame, overpowering held-down on terrain cliffs.
+    target.y = pl.pos.y
+    pl.pos = pl.pos + (target - pl.pos) * f32(min(1.0, dt * 12.0))
+    pl.face = turn_toward(pl.face, yaw_of(vec3(0, 0, 0) - pl.climb_n), 8.0 * dt)
+    # reached flat ground at the feet (climbing down)
+    g = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.2, RADIUS)
+    if f64(pl.pos.y) <= g.y + 0.05 and m.y < -0.1 and g.normal.y > 0.7:
+        pl.pos.y = f32(g.y)
+        set_state(.ground)
+        pl.speed = 0.0
+    pl.vel = vec3(0, 0, 0)
+
+__glide = (dt: f64):
+    wish = __wish()
+    stick = f64(length(act.move))
+    if stick > 0.1: pl.face = turn_toward(pl.face, yaw_of(wish), 1.9 * dt)
+    f = forward_of(pl.face)
+    sp = GLIDE_SPEED * (if stick > 0.1: 1.0 else: 0.75)
+    hv = vec3(pl.vel.x, 0, pl.vel.z)
+    hv = hv + (f * f32(sp) - hv) * f32(min(1.0, 1.6 * dt))
+    pl.vel.x = hv.x
+    pl.vel.z = hv.z
+    # Leicester 2019 estimates ~3.2 m/s for a VERTICAL-ONLY drop. Our neutral stick
+    # retains horizontal motion, so matching this sink is not a controlled BotW comparison.
+    sink = if stick > 0.1: GLIDE_SINK else: 3.2
+    # A fire column replaces the sink target; competing late impulses used to
+    # cancel it before the next movement step, so the canopy never gained height.
+    pl.vel.y = f32(approach(f64(pl.vel.y), (if pl.updraft > 0.0: pl.updraft else: -sink), (if pl.updraft > 0.0: 3.0 else: 12.0), dt))
+    crosswind = f64(dot(env.wind, vec2(f32(cos(pl.face)), f32(sin(pl.face))))) * env.gust
+    pl.glide_lean = approach(pl.glide_lean, clamp(crosswind * 0.07, -0.22, 0.22), 3.0, dt)
+    pl.lean = approach(pl.lean, -wrap_angle(yaw_of(wish) - pl.face) * stick, 4.0, dt)
+    use_stamina(GLIDE_DRAIN * dt)
+    if act.jump or pl.exhausted:
+        pl.air_peak = f64(pl.pos.y)
+        set_state(.air)
+        pl.events.push("glider_close")
+        return
+    pl.pos += pl.vel * f32(dt)
+    push_out(pl.pos, RADIUS, HEIGHT)
+    if __try_climb(f): return
+    g = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.3, RADIUS)
+    if f64(pl.pos.y) <= g.y:
+        pl.air_peak = g.y
+        __land(g)
+        pl.events.push("glider_close")
+    if let wl = water_level(f64(pl.pos.x), f64(pl.pos.z)):
+        if f64(pl.pos.y) < wl - 0.6:
+            pl.water_y = wl
+            set_state(.swim)
+            pl.events.push("splash")
+
+__swim = (dt: f64):
+    wish = __wish()
+    stick = f64(length(act.move))
+    if let wl = water_level(f64(pl.pos.x), f64(pl.pos.z)): pl.water_y = wl
+    if stick > 0.1: pl.face = turn_toward(pl.face, yaw_of(wish), 4.0 * dt)
+    sp = SWIM_SPEED * min(stick * 1.4, 1.0)
+    if pl.swim_dash_t > 0.0:
+        pl.swim_dash_t -= dt
+        sp = lerp(SWIM_SPEED, SWIM_DASH, pl.swim_dash_t / 0.6)
+    else if act.sprint_pressed and not pl.exhausted:
+        pl.swim_dash_t = 0.6
+        use_stamina(SWIM_DASH_COST)
+        pl.events.push("swim_dash")
+    f = forward_of(pl.face)
+    pl.speed = approach(pl.speed, sp, 5.0, dt)
+    pl.vel = vec3(f.x * f32(pl.speed), 0, f.z * f32(pl.speed))
+    if stick > 0.1: use_stamina(SWIM_DRAIN * dt)
+    # float at the surface (shoulders under water)
+    pl.pos += pl.vel * f32(dt)
+    pl.pos.y = f32(approach(f64(pl.pos.y), pl.water_y - 1.25, 6.0, dt))
+    push_out(pl.pos, RADIUS, HEIGHT)
+    # out of stamina: sink and come back to the shore with a heart lost
+    if pl.exhausted:
+        pl.drown_t += dt
+        pl.pos.y -= f32(dt * 0.8)
+        if pl.drown_t > 1.6:
+            pl.drown_t = 0.0
+            damage_player(4, pl.pos, 0.0)
+            pl.pos = pl.last_safe
+            pl.stamina = pl.stamina_max
+            pl.exhausted = false
+            set_state(.ground)
+        return
+    # shallow: stand up; a bank in front: climb out
+    d = water_depth(f64(pl.pos.x), f64(pl.pos.z))
+    if d < 1.1:
+        g = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y) + 1.5, 1.5, RADIUS)
+        pl.pos.y = f32(g.y)
+        set_state(.ground)
+        return
+    if stick > 0.3 and pl.st_t > 0.3:
+        if __try_mantle(): return
+        if __try_climb(f): return
+    if act.jump and pl.st_t > 0.2: pl.vel.y = 0.0
+
+__slide = (dt: f64):
+    g = pl.ground
+    n = g.normal
+    down = normalize(vec3(n.x, 0, n.z) + vec3(0.0001, 0, 0))
+    slope = acos(clamp(f64(n.y), -1.0, 1.0))
+    # (the speed along the surface: on a steep face most of it is downward)
+    sp = clamp((slope - 0.6) * 18.0, 2.0, 12.0) * max(cos(slope), 0.25)
+    pl.vel = pl.vel + (down * f32(sp) - vec3(pl.vel.x, 0, pl.vel.z)) * f32(min(1.0, 3.0 * dt))
+    pl.vel.y = 0
+    pl.face = turn_toward(pl.face, yaw_of(down), 3.0 * dt)
+    pl.speed = f64(length(pl.vel))
+    # steer and try to climb out of it
+    if f64(length(act.move)) > 0.5 and pl.st_t > 0.25:
+        if __try_climb(normalize(__wish())): return
+    # sliding with the shield raised: jump onto it
+    if act.jump and act.lock and pl.can_surf:
+        pl.surfing = true
+        pl.events.push("surf")
+        set_state(.surf)
+        return
+    # (careering down a steep face, jump opens the glider straight away, as off a ledge)
+    if act.jump and pl.has_glider and not pl.exhausted and slope > 0.85:
+        pl.vel = pl.vel + vec3(n.x, 0, n.z) * 3.0
+        set_state(.glide)
+        pl.events.push("glider_open")
+        return
+    if act.jump:
+        __start_jump()
+        return
+    pl.pos += pl.vel * f32(dt)
+    push_out(pl.pos, RADIUS, HEIGHT)
+    g2 = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.8, RADIUS)
+    if g2.y < f64(pl.pos.y) - 0.8:
+        pl.air_peak = f64(pl.pos.y)
+        set_state(.air)
+        return
+    pl.pos.y = f32(g2.y)
+    pl.ground = g2
+    if f64(g2.normal.y) < 0.5:
+        pl.air_peak = f64(pl.pos.y)
+        set_state(.air)
+        return
+    if acos(clamp(f64(g2.normal.y), -1.0, 1.0)) < 0.7: set_state(.ground)
+
+__hurt = (dt: f64):
+    pl.hurt_t -= dt
+    pl.vel.y = f32(f64(pl.vel.y) - GRAVITY * dt)
+    hv = vec3(pl.vel.x, 0, pl.vel.z) * f32(max(0.0, 1.0 - 4.0 * dt))
+    pl.vel.x = hv.x
+    pl.vel.z = hv.z
+    pl.pos += pl.vel * f32(dt)
+    push_out(pl.pos, RADIUS, HEIGHT)
+    g = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.4, RADIUS)
+    if f64(pl.pos.y) <= g.y:
+        pl.pos.y = f32(g.y)
+        pl.vel.y = 0
+        pl.ground = g
+    if pl.hurt_t <= 0.0:
+        pl.speed = 0.0
+        set_state(if f64(pl.pos.y) > g.y + 0.3: PState.air else: PState.ground)
+
+__player_step = (dt: f64):
+    pl.st_t += dt
+    pl.anim_t += dt
+    pl.invuln = max(0.0, pl.invuln - dt)
+    pl.rest_t += dt
+    if pl.frozen > 0.0:
+        # mashing the stick breaks the ice sooner
+        pl.frozen -= dt * (1.0 + f64(length(act.move)) * 1.5 + (if act.jump or act.attack: 4.0 else: 0.0))
+        pl.vel = vec3(0, 0, 0)
+        pl.speed = 0.0
+        if pl.frozen <= 0.0:
+            pl.events.push("thaw")
+            damage_player(1, pl.pos, 0.0)
+            # Leave time to move after the thaw flinch before another ice contact.
+            if pl.state != .dead: pl.invuln = max(pl.invuln, 1.2)
+        return
+    match pl.state:
+        ground: __ground(dt)
+        air: __air(dt)
+        climb: __climb(dt)
+        mantle: __mantle(dt)
+        glide: __glide(dt)
+        swim: __swim(dt)
+        slide: __slide(dt)
+        surf: __surf(dt)
+        hurt: __hurt(dt)
+        dead: pl.vel = vec3(0, 0, 0)
+        cutscene: pass
+    if pl.state != .ground: pl.sprinting = false
+    # stamina recovers on the ground (and standing still in water or on a wall: no)
+    resting = (pl.state == .ground and not pl.sprinting) or pl.state == .hurt
+    if resting and pl.rest_t > (if pl.exhausted: 1.0 else: 0.33):
+        pl.stamina = min(pl.stamina_max, pl.stamina + RECOVER_RATE * dt)
+        if pl.stamina >= pl.stamina_max: pl.exhausted = false
+    # the wheel shows while it is not full
+    vis = pl.stamina < pl.stamina_max - 0.5 or pl.state == .climb or pl.state == .glide or pl.sprinting
+    pl.stamina_shown = approach(pl.stamina_shown, (if vis: 1.0 else: 0.0), (if vis: 10.0 else: 2.0), dt)
+    if pl.pos.y < -200.0:
+        pl.pos = pl.last_safe
+        damage_player(4, pl.pos, 0.0)
+
+
+# Camera replays the actual physics samples instead of interpolating through a slip
+# or a collider corner. This small buffer lives for one displayed frame only.
+struct PlayerViewStep:
+    pos: vec3
+    vel: vec3
+    face: f64
+    speed: f64
+    state: PState
+    sprinting: bool
+    sneaking: bool
+player_view_steps: PlayerViewStep[]
+
+# Fixed integration keeps wall probes, mantle completion and rain slips on the same
+# simulation clock at 20 through 240 Hz, including hitches up to 500 ms.
+# Remainders stay with the player so resets/loads start a fresh clock; retain pressed edges until a tick and consume each only once.
+# Optional camera orientation predictor, installed by camera.jo. Headless player
+# consumers retain their explicitly supplied movement yaw.
+player_view_begin: (f64) -> void = (dt: f64): pass
+player_view_turn: (f64) -> void = (dt: f64): pass
+const PLAYER_STEP = 1.0 / 120.0
+player_update = (dt: f64):
+    pl.events.clear()
+    player_view_steps.clear()
+    pl.landed = false
+    pl.jumped = false
+    pl.pending_jump = pl.pending_jump or act.jump
+    pl.pending_interact = pl.pending_interact or act.interact
+    pl.pending_crouch = pl.pending_crouch or act.crouch_pressed
+    pl.step_remaining += clamp(dt, 0.0, 0.5)
+    saved = act
+    saved_yaw = cam_yaw_global
+    player_view_begin(dt)
+    loop pl.step_remaining >= PLAYER_STEP - 1e-9:
+        act.jump = pl.pending_jump
+        act.interact = pl.pending_interact
+        act.crouch_pressed = pl.pending_crouch
+        pl.pending_jump = false
+        pl.pending_interact = false
+        pl.pending_crouch = false
+        __player_step(PLAYER_STEP)
+        player_view_steps.push(PlayerViewStep(pl.pos, pl.vel, pl.face, pl.speed, pl.state, pl.sprinting, pl.sneaking))
+        player_view_turn(PLAYER_STEP)
+        pl.step_remaining = max(0.0, pl.step_remaining - PLAYER_STEP)
+    act = saved
+    cam_yaw_global = saved_yaw
+
+# Called by a moving enemy after its collider pose advances. Ground, wall and rim
+# anchors follow the same rigid transform; air/jump/release never stay attached.
+player_body_carry = (id: int, old_pos: vec3, old_yaw: f64, pos: vec3, yaw: f64, top_delta: f64 = 0.0):
+    standing = pl.state == .ground and pl.grounded and pl.ground.collider == id
+    gripping = (pl.state == .climb or pl.state == .mantle) and pl.climb_col == id
+    if not standing and not gripping: return
+    delta = translation(pos + (if standing: v3(0.0,top_delta,0.0) else: vec3(0,0,0))) * rotation_y(yaw - old_yaw) * translation(old_pos * -1.0)
+    pl.body_delta = delta * pl.body_delta
+    pl.pos = transform_point(delta, pl.pos)
+    pl.face -= wrap_angle(yaw - old_yaw)
+    if standing: pl.ground.y = f64(pl.pos.y)
+    if gripping: pl.climb_n = transform_dir(delta, pl.climb_n)
+    if pl.state == .mantle:
+        pl.mantle_from = transform_point(delta, pl.mantle_from)
+        pl.mantle_to = transform_point(delta, pl.mantle_to) + v3(0.0,top_delta,0.0)
+        loop k in [0..2): pl.mantle_hands[k] = transform_point(delta, pl.mantle_hands[k]) + v3(0.0,top_delta,0.0)

@@ -1,0 +1,85 @@
+use 'asset_stream.jo'
+
+# Versioned, bounded lossless records. POD buffers go straight to their final arrays;
+# no string conversion or payload hashing is performed on the launch path.
+pack_count = (s: mut AssetStream, n: mut int, writing: bool):
+    if writing: asset_put_int(s, n)
+    else: n = asset_int(s)
+    if n < 0 or n > 134217728: s.ok = false
+
+pack_value[T] = (s: mut AssetStream, x: mut T, writing: bool):
+    if writing: asset_write(s, (&x) as *u8, size_of(T))
+    else: asset_read(s, (&x) as *u8, size_of(T))
+
+pack_array[T] = (s: mut AssetStream, xs: mut T[], writing: bool):
+    n = xs.len()
+    pack_count(s, n, writing)
+    if not s.ok: return
+    if not writing:
+        if n > s.left / size_of(T):
+            s.ok = false
+            return
+        xs.resize(n)
+    if writing: asset_write(s, data(xs) as *u8, n * size_of(T))
+    else: asset_read(s, data(xs) as *u8, n * size_of(T))
+
+pack_value = (s: mut AssetStream, x: mut str, writing: bool):
+    bytes: u8[]
+    if writing:
+        bytes = fill(u8(0), x.len())
+        mem_copy(data(bytes), data(x), x.len())
+    pack_array(s, bytes, writing)
+    if not writing: x = str_from_bytes(bytes)
+
+pack_array = (s: mut AssetStream, xs: mut str[], writing: bool):
+    n = xs.len()
+    pack_count(s, n, writing)
+    if not s.ok or n > 65536:
+        s.ok = false
+        return
+    if not writing: xs = fill("", n)
+    loop mut x in xs: pack_value(s, x, writing)
+
+pack_map[K, V] = (s: mut AssetStream, xs: mut {K: V}, writing: bool):
+    keys: K[]
+    if writing:
+        loop k, v in xs: keys.push(k)
+        keys = sorted(keys)
+    pack_array(s, keys, writing)
+    if not s.ok or keys.len() > 1000000:
+        s.ok = false
+        return
+    if not writing: xs = {}
+    loop key in keys:
+        value: V
+        if writing: value = xs[key]
+        pack_value(s, value, writing)
+        if not s.ok: return
+        if not writing: xs[key] = value
+
+pack_value[T] = (s: mut AssetStream, xs: mut T[], writing: bool): pack_array(s, xs, writing)
+
+# Header includes dependency version, ABI version and exact total byte length.
+# Dependencies use size/mtime stamps, including large world/audio inputs (see
+# asset_key). A stale/truncated pack is rejected before mutating live world state.
+const MESH_PACK_MAGIC = 0x42574D4553483031
+pack_open = (path: str, key: int) -> AssetStream:
+    s = asset_open(path)
+    total = s.left
+    if not s.ok or asset_int(s) != MESH_PACK_MAGIC or asset_int(s) != key or asset_int(s) != total: s.ok = false
+    s
+pack_create = (path: str, key: int) -> AssetStream:
+    s = asset_create(path + ".tmp")
+    asset_put_int(s, MESH_PACK_MAGIC)
+    asset_put_int(s, key)
+    asset_put_int(s, 0)
+    s
+pack_publish = (s: mut AssetStream, path: str) -> bool:
+    when TARGET == "linux":
+        total = syscall(8, s.fd, 0, 1)
+        syscall(8, s.fd, 16, 0)
+        asset_put_int(s, total)
+    asset_close(s)
+    if not s.ok: return false
+    when TARGET == "linux": return syscall(82, data(path + ".tmp\0"), data(path + "\0")) == 0
+    else: return false

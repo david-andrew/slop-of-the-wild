@@ -1,0 +1,150 @@
+# Hash map {K: V}: insertion ordered, open addressing over a dense entry list.
+# The first two fields must stay `keys` and `vals` (the compiler iterates them in for loops).
+
+struct Map[K, V]:
+    keys: K[]
+    vals: V[]
+    slots: i32[]      # 0 = empty, otherwise entry index + 1
+    hashes: u64[]
+
+# full 64-bit avalanche (murmur3 finalizer): every key bit affects the low bits used for slots,
+# so keys like multiples of 4096 or float bit patterns spread out
+hash = (x: int) -> u64: hash(u64(x))
+
+hash = (x: u64) -> u64:
+    h = (x xor (x >> 33))
+    h = h * 0xFF51AFD7ED558CCD
+    h = (h xor (h >> 33))
+    h = h * 0xC4CEB9FE1A85EC53
+    (h xor (h >> 33))
+
+hash = (x: bool) -> u64:
+    if x: return 1
+    0
+
+hash = (x): __hash_value(x)
+
+# xs[i] where the library knows i is in bounds (the compiler leaves out the check; the C
+# bootstrap compiler calls this)
+__at[T] = (xs: T[], i: int) -> T: xs[i]
+
+# (slots has a power-of-two length when not empty, its entries are 0 or an entry index + 1,
+# and keys, vals and hashes have an element per entry: every index here is in bounds)
+__map_find[K, V] = (m: Map[K, V], k: K, h: u64) -> int:
+    ns = m.slots.len()
+    if ns == 0: return -1
+    mask = ns - 1
+    i = int(h) & mask
+    loop true:
+        s = int(__at(m.slots, i))
+        if s == 0: return -1
+        e = s - 1
+        if __at(m.hashes, e) == h and __at(m.keys, e) == k: return e
+        i = (i + 1) & mask
+
+__map_rehash[K, V] = (m: mut Map[K, V], ns: int):
+    m.slots.clear()
+    m.slots.resize(ns)
+    mask = ns - 1
+    loop e in 0.. and h in m.hashes:
+        i = int(h) & mask
+        loop m.slots[i] != 0: i = (i + 1) & mask
+        m.slots[i] = i32(e + 1)
+
+([]=)[K, V] = (m: mut Map[K, V], k: K, v: V):
+    h = hash(k)
+    e = __map_find(m, k, h)
+    if e >= 0:
+        m.vals[e] = v
+        return
+    __map_add(m, k, v, h)
+
+# the entry of k, for changing m[k] in place (m[k] += 1, m[k].push(x), m[k].hp -= 5): a missing
+# key is added, its value starting as V's zero value (or the default d, for a struct with
+# default field values)
+__map_entry[K, V] = (m: mut Map[K, V], k: K) -> int:
+    h = hash(k)
+    e = __map_find(m, k, h)
+    if e >= 0: return e
+    z: V
+    __map_add(m, k, z, h)
+    m.keys.len() - 1
+
+__map_entry[K, V] = (m: mut Map[K, V], k: K, d: V) -> int:
+    h = hash(k)
+    e = __map_find(m, k, h)
+    if e >= 0: return e
+    __map_add(m, k, d, h)
+    m.keys.len() - 1
+
+# a new entry (k is not in m)
+__map_add[K, V] = (m: mut Map[K, V], k: K, v: V, h: u64):
+    n = m.keys.len()
+    if (n + 1) * 4 > m.slots.len() * 3:
+        ns = m.slots.len() * 2
+        if ns < 8: ns = 8
+        m.keys.push(k)
+        m.vals.push(v)
+        m.hashes.push(h)
+        __map_rehash(m, ns)
+        return
+    m.keys.push(k)
+    m.vals.push(v)
+    m.hashes.push(h)
+    mask = m.slots.len() - 1
+    i = int(h) & mask
+    loop m.slots[i] != 0: i = (i + 1) & mask
+    m.slots[i] = i32(n + 1)
+
+([])[K, V] = (m: Map[K, V], k: K) -> V:
+    e = __map_find(m, k, hash(k))
+    if e < 0: panic("key not found in map: {k}")
+    __at(m.vals, e)
+
+get[K, V] = (m: Map[K, V], k: K) -> V?:
+    e = __map_find(m, k, hash(k))
+    if e < 0: return none
+    __at(m.vals, e)
+
+get[K, V] = (m: Map[K, V], k: K, default: V) -> V:
+    e = __map_find(m, k, hash(k))
+    if e < 0: return default
+    __at(m.vals, e)
+
+contains[K, V] = (m: Map[K, V], k: K) -> bool: __map_find(m, k, hash(k)) >= 0
+has[K, V] = (m: Map[K, V], k: K) -> bool: __map_find(m, k, hash(k)) >= 0
+len[K, V] = (m: Map[K, V]) -> int: m.keys.len()
+is_empty[K, V] = (m: Map[K, V]) -> bool: m.keys.len() == 0
+keys[K, V] = (m: Map[K, V]) -> K[]: m.keys
+values[K, V] = (m: Map[K, V]) -> V[]: m.vals
+
+clear[K, V] = (m: mut Map[K, V]):
+    m.keys.clear()
+    m.vals.clear()
+    m.slots.clear()
+    m.hashes.clear()
+
+# remove a key; returns true if it was present. The last entry moves into the hole.
+remove[K, V] = (m: mut Map[K, V], k: K) -> bool:
+    h = hash(k)
+    e = __map_find(m, k, h)
+    if e < 0: return false
+    last = m.keys.len() - 1
+    if e != last:
+        m.keys[e] = m.keys[last]
+        m.vals[e] = m.vals[last]
+        m.hashes[e] = m.hashes[last]
+    m.keys.pop()
+    m.vals.pop()
+    m.hashes.pop()
+    __map_rehash(m, m.slots.len())
+    true
+
+__fmt[K, V] = (buf: mut u8[], m: Map[K, V]):
+    __buf_byte(buf, '{{')
+    loop i in 0.. and k in m.keys:
+        if i > 0: __buf_append_str(buf, ", ")
+        __fmt_elem(buf, k)
+        __buf_append_str(buf, ": ")
+        __fmt_elem(buf, m.vals[i])
+    __buf_byte(buf, '}}')

@@ -1,0 +1,65 @@
+# GPU precision check for cached vnoise, including lattice edges and ALU fallback.
+# Run with flock /tmp/botw-render.lock sloppy/bin/sloppy tools/terrain_noise_check.jo.
+use '../game/terrain.jo'
+use '../game/gfx.jo'
+use '../game/shade.jo'
+
+struct NoiseCheckU:
+    noise: Texture
+    offset: vec2
+struct NoiseCheckO:
+    pos: vec4
+    uv: vec2
+noise_check_vs = (v: FsVert, u: NoiseCheckU) -> NoiseCheckO:
+    NoiseCheckO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+noise_reference = (p: vec2) -> f32:
+    i = floor(p)
+    f = p - i
+    k = f * f * (vec2(3, 3) - f * 2.0)
+    lerp(lerp(hash12(i), hash12(i + vec2(1, 0)), k.x), lerp(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), k.x), k.y)
+noise_check_fs = (i: NoiseCheckO, u: NoiseCheckU) -> vec4:
+    p = floor(i.uv * 128.0) * vec2(32.17, 16.13) + u.offset
+    error_ = abs(vnoise(p) - noise_reference(p))
+    ci = floor(p)
+    cached = ci.x >= -1024.0 and ci.x < 1024.0 and ci.y >= 0.0 and ci.y < 4096.0
+    vec4(error_, (if cached: 0.0 else: error_), (if cached: 1.0 else: 0.0), 1)
+
+window("Terrain noise equality", 128, 128)
+terrain_noise_bake()
+assert(terrain_noise_tex.id != 0)
+source = terrain_noise_shader(shader(noise_check_vs, noise_check_fs))
+assert(find(source.fs, "texelFetch(u.noise_") >= 0)
+check = make_sh(source)
+target = make_target(128, 128, false, false)
+# Read errors at full precision instead of hiding them in an 8-bit target.
+gl_delete_texture(target.color.id)
+target.color = color_texture(128, 128, GL_RGBA32F, GL_RGBA, GL_FLOAT, GL_NEAREST)
+glBindFramebuffer(GL_FRAMEBUFFER, u32(target.fbo))
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(target.color.id), 0)
+assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+max_error = 0.0
+fallback_error = 0.0
+cached_samples = 0
+samples = 0
+loop offset in [vec2(-2048.03, -512.11), vec2(-1024.01, -256.01), vec2(1023.99, 1791.99), vec2(1023.99, 3839.99), vec2(-1024.01, 3840.01), vec2(-1024.01, -0.01), vec2(1023.99, 4095.99), vec2(-16.0, -8.0)]:
+    bind_target(target)
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    glDisable(GL_BLEND)
+    glClearColor(1, 0, 0, 0)
+    glClear(GL_COLOR_BUFFER_BIT)
+    draw_fast(check, fullscreen_mesh(), NoiseCheckU(terrain_noise_tex, offset))
+    errors = fill(f32(1), 128 * 128 * 4)
+    gl_read_pixels_f32(0, 0, 128, 128, data(errors) as *u8)
+    loop k in [0..128 * 128):
+        assert(errors[k * 4 + 3] > 0.99)
+        max_error = max(max_error, f64(errors[k * 4]))
+        fallback_error = max(fallback_error, f64(errors[k * 4 + 1]))
+        if errors[k * 4 + 2] > 0.5: cached_samples += 1
+        samples += 1
+assert(max_error <= 1.0 / 4096.0 + 0.000001)
+assert(fallback_error < 0.000001)
+assert(cached_samples > 0 and cached_samples < samples)
+print("terrain noise: {samples} GPU samples; {cached_samples} cached; max error {max_error:.9}; exact fallback max {fallback_error:.9} PASS")
+glBindFramebuffer(GL_FRAMEBUFFER, 0)
+free_target(target)

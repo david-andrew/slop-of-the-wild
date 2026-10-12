@@ -1,0 +1,142 @@
+# Actual view lens, not just the scripted endpoint: every reveal and handoff frame.
+use '../game/shrines.jo'
+use '../game/gfx.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/physics.jo'
+use '../game/input.jo'
+use '../game/interact.jo'
+use '../game/story.jo'
+use '../game/camera.jo'
+use '../game/env.jo'
+use '../game/post.jo'
+use '../game/audio_cache.jo'
+from '../game/shrines.jo' import __start_trans, __trans, __entrance_spot, __shrine_roof_height
+
+__audio_state = 2
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+find_shrines()
+shrines_build()
+shrines_setup()
+story.tower_risen = true
+story.title_done = true
+story.beat = .explore
+checks = 0
+loop hz in [30, 60, 120]:
+    dt = 1.0 / f64(hz)
+    loop id in [0..4):
+        cam = Cam()
+        pl.pos = __entrance_spot(id)
+        pl.state = .ground
+        pl.grounded = true
+        pl.face = 0.0
+        use_terrain = true
+        env.indoor = 0.0
+        post.fade = 0.0
+        camera_snap()
+        camera_update(dt)
+        __start_trans(1, id)
+        revealed = 0
+        previous = view_pos()
+        peak = 0.0
+        paired = 0
+        loop frame in [0..hz * 6):
+            old_fade = post.fade
+            shrines_update(dt)
+            camera_update(dt)
+            if __trans.moved and post.fade < 1.0:
+                p = view_pos() - srec[id].o
+                # Entry-room ceiling profiles are generated from these same tops.
+                roof = __shrine_roof_height(id, SHR_ENTRY_TOP[id], (f64(p.x) - SHR_ENTRY_LEFT[id]) / (SHR_ENTRY_RIGHT[id] - SHR_ENTRY_LEFT[id]))
+                assert(zone_at(view_pos()) == srec[id].key, "revealed arrival lens must be inside shrine zone")
+                assert(f64(p.x) > SHR_ENTRY_LEFT[id] + 0.2 and f64(p.x) < SHR_ENTRY_RIGHT[id] - 0.2 and p.z < 3.9 and p.z > -5.0, "arrival lens must stay inside chamber walls")
+                safe = p.y > 0.4 and f64(p.y) < roof - 0.3
+                if not safe: print("FAIL arrival id={id} frame={frame} fade={post.fade:.4} p={p} override={cam.override} blend={cam.blend}")
+                assert(safe, "arrival lens must stay under ceiling")
+                if old_fade < 1.0: peak = max(peak, f64(length(view_pos() - previous)))
+                revealed += 1
+                checks += 3
+                if id == OMAN and post.fade < 0.05 and __trans.t < 3.9:
+                    vp = perspective(view_fov() * PI / 180.0, 16.0 / 9.0, 0.1, 120.0) * look_at(view_pos(), view_target(), vec3(0, 1, 0))
+                    # All corners of the weight and plate, plus the destination
+                    # bridge mouth, must share the fully revealed arrival lens.
+                    points = [vec3(0, 0.3, -8)]
+                    # The framed destination is the real doorway across the pit,
+                    # including its complete goal arch above the next landing.
+                    loop x in [-2.35,2.35]:
+                        loop y in [0.4,4.3]: points.push(v3(x,y,-23.12))
+                    loop x in [3.9, 6.1]:
+                        loop y in [0.1, 2.1]:
+                            loop z in [-2.1, 0.1]: points.push(v3(x, y, z))
+                    loop x in [-6.1, -3.9]:
+                        loop z in [-6.1, -3.9]: points.push(v3(x, 0.15, z))
+                    loop q in points:
+                        clip = vp * vec4(srec[id].o + q, 1)
+                        ndc = clip.xyz / clip.w
+                        if clip.w <= 0.0 or abs(ndc.x) >= 0.96 or abs(ndc.y) >= 0.96: print("composition {hz}Hz frame={frame} t={__trans.t} point={q} ndc={ndc} fov={view_fov()}")
+                        assert(clip.w > 0.0 and abs(ndc.x) < 0.96 and abs(ndc.y) < 0.96, "Oman arrival must frame weight, plate and intended bridge together")
+                    paired += 1
+                if id == KEH and post.fade < 0.05 and __trans.t < 3.9:
+                    vp = perspective(view_fov() * PI / 180.0, 16.0 / 9.0, 0.1, 120.0) * look_at(view_pos(), view_target(), vec3(0, 1, 0))
+                    # Reachable activating crystal, floating crate and receiving plate.
+                    points = [vec3(6, 1.0, -1), vec3(6, 2.1, -1), vec3(9, -1.85, -21)]
+                    # The closed sluice blocks the monk; show the actual gate's
+                    # destination arch rather than aiming through its solid leaf.
+                    loop x in [-2.35,2.35]:
+                        loop y in [0.4,4.1]: points.push(v3(x,y,-29.08))
+                    loop x in [-4.8, -3.2]:
+                        loop y in [-3.6, -2.0]:
+                            loop z in [-14.8, -13.2]: points.push(v3(x,y,z))
+                    loop q in points:
+                        clip = vp * vec4(srec[id].o + q, 1)
+                        ndc = clip.xyz / clip.w
+                        if clip.w <= 0.0 or abs(ndc.x) >= 0.96 or abs(ndc.y) >= 0.96: print("Keh composition {hz}Hz t={__trans.t} point={q} ndc={ndc}")
+                        assert(clip.w > 0.0 and abs(ndc.x) < 0.96 and abs(ndc.y) < 0.96, "Keh arrival frames activating crystal, crate and plate")
+                    paired += 1
+            previous = view_pos()
+        print("arrival movement id={id} {hz}Hz: peak={peak}")
+        assert(revealed > hz * 3 and peak < 0.15)
+        if id == OMAN or id == KEH:
+            assert(paired > hz * 2, "paired mechanism tableau lasts at least two fully revealed seconds")
+            print("PASS {srec[id].name} arrival composition {hz}Hz: {paired} fully revealed frames with all three mechanisms in view")
+        assert(not __trans.active and pl.state == .ground and not cam.override)
+        # Only a grounded foot on the lift can offer Leave, including spawn.
+        pl.pos = srec[id].o + vec3(0, 0.1, 0)
+        pl.state = .ground
+        pl.grounded = true
+        shrines_update(dt)
+        assert(shrine_on_lift(id))
+        # Leaving the pad or moving resets the stillness, even on revisit.
+        pl.pos = srec[id].o + vec3(0, 0.1, -3)
+        shrines_update(dt)
+        pl.pos = srec[id].o + vec3(0, 0.1, 0)
+        pl.speed = 0.0
+        pl.vel = vec3(0, 0, 0)
+        act = Actions()
+        shrines_update(dt)
+        assert(not usables[srec[id].leave_u].enabled, "Leave stays quiet on arrival")
+        loop frame in [0..int(0.5*f64(hz))): shrines_update(dt)
+        assert(not usables[srec[id].leave_u].enabled, "Leave waits through a short pause")
+        loop frame in [0..int(0.2*f64(hz))+1): shrines_update(dt)
+        assert(usables[srec[id].leave_u].enabled, "Leave appears after 0.65 seconds still on the lift")
+        act.move = vec2(0, 1)
+        shrines_update(dt)
+        assert(not usables[srec[id].leave_u].enabled, "Movement immediately retires Leave")
+        act = Actions()
+        loop spot in [vec3(1.7, 0.1, 0), vec3(0, 2.0, 0), vec3(0, -1.0, 0), vec3(0, 0.1, -3)]:
+            pl.pos = srec[id].o + spot
+            shrines_update(dt)
+            assert(not usables[srec[id].leave_u].enabled, "Leave cannot float above or beside lift")
+        pl.pos = srec[id].o + vec3(0, 0.1, 0)
+        pl.state = .air
+        pl.grounded = false
+        shrines_update(dt)
+        assert(not usables[srec[id].leave_u].enabled)
+        print("PASS arrival {srec[id].name} {hz}Hz: {revealed} revealed frames inside shell; max view step {peak:.5}m; Leave only on grounded lift")
+print("PASS shrine arrival: {checks} camera containment assertions across four shrines at 30/60/120Hz")

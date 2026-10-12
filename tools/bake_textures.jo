@@ -1,0 +1,11 @@
+build:
+    opt = release
+use '../game/texture_assets.jo'
+from '../game/texture_assets.jo' import __texture_paths
+assert(env("BOTW_BAKE_ASSETS") != none, "run through tools/prepare_assets.sh")
+assert(mkdir("assets/prepared"))
+t = time()
+images = texture_assets_generate()
+assert(images.len() == __texture_paths.len(), "missing startup texture inputs; install assets/src/nature/Textures before preparation")
+assert(texture_asset_write(images))
+print("baked {images.len()} RGBA startup textures {time() - t:.3}s")

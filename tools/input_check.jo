@@ -1,0 +1,1110 @@
+# Production controller -> Actions -> paused inventory; no window or joystick device.
+# sloppy/bin/sloppy tools/input_check.jo
+use '../game/gfx.jo'
+use '../game/input.jo'
+use '../game/inventory.jo'
+use '../game/items.jo'
+use '../game/combat.jo'
+use '../game/slate_map.jo'
+use '../game/options.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/water.jo'
+use '../game/ui.jo'
+use '../game/player.jo'
+from '../game/input.jo' import __nav_t, __nav_dir, __input_pad_on, __pad_prev_lt, __pad_prev_rt
+from '../game/slate_map.jo' import __map_box
+from '../game/inventory.jo' import __tab_items
+
+checks = 0
+failures = 0
+check = (name: str, ok: bool, numbers: str = ""):
+    checks += 1
+    if not ok: failures += 1
+    print("{(if ok: "PASS" else: "FAIL")} {name}: {numbers}")
+
+reset_keys = ():
+    __key_down = fill(false, 128)
+    __key_pressed = fill(false, 128)
+    __key_released = fill(false, 128)
+    __key_typed = fill(false, 128)
+    __mouse_btn = fill(false, 8)
+    __mouse_pressed = fill(false, 8)
+    __mouse_dx = 0.0
+    __mouse_dy = 0.0
+    __mouse_wheel = 0.0
+
+reset_pad = ():
+    reset_keys()
+    __pad_on = true
+    __pad_axes = fill(0.0, 6)
+    __pad_down = fill(false, 15)
+    __pad_prev = fill(false, 15)
+    __nav_t = 0.0
+    __nav_dir = vec2(0, 0)
+    act = Actions()
+    __input_pad_on = false
+    input_pad_lost = false
+    __pad_prev_lt = false
+    __pad_prev_rt = false
+    inv = Inventory()
+    inv_add("travelers_sword")
+    inv_add("branch")
+    invui = InvUI(open = true, tab = 0, sel = 0, t = 1.0)
+    invui_open_hint = true
+
+# Small flat course, one climb wall and deep water. These checks feed physical
+# buttons through production input, player and combat code rather than constructing Actions.
+controls_course = ():
+    hf.n = 128
+    hf.cell = 2.0
+    hf.x0 = -128.0
+    hf.z0 = -128.0
+    hf.h = fill(f32(100), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    hf.hmin = fill(f32(96), 64)
+    hf.hmax = fill(f32(100), 64)
+    wl = fill(f32(-10000), hf.n * hf.n)
+    loop z in [0..hf.n):
+        loop x in [0..hf.n):
+            if hf.x0 + f64(x) * hf.cell > 20.0:
+                hf.h[z * hf.n + x] = 96.0
+                wl[z * hf.n + x] = 100.0
+    water_grid_set(wl, hf.n, hf.x0, hf.z0, hf.cell)
+    add_box(vec3(0, 105, -10), vec3(10, 5, 1), 0.0, true, .rock)
+reset_player = ():
+    reset_pad()
+    invui.open = false
+    invui_open_hint = false
+    pl = Player()
+    pl.pos = vec3(0, 100, 0)
+    pl.last_safe = pl.pos
+    pl.ground = ground_at(0.0, 0.0, 100.0, 0.5, RADIUS)
+    pl.st_t = 0.3
+    fight = Fight()
+    combat_moving = false
+    lock_hops = false
+    cam_yaw_global = 0.0
+press_pad = (b: PadButton):
+    __pad_down[int(b)] = true
+    input_update(1.0 / 60.0, false)
+controls_checks = ():
+    controls_course()
+    input_scripted = false
+    loop swapped in [false, true]:
+        input_swap_jump_sprint = swapped
+        jump = if swapped: PadButton.a else: PadButton.y
+        sprint = if swapped: PadButton.y else: PadButton.a
+        tag = if swapped: "swapped" else: "default"
+        reset_player()
+        press_pad(jump)
+        check("{tag}_jump_and_glyph", act.jump and act.jump_held and not act.sprint and input_action_label(0) == input_pad_label(jump))
+        player_update(1.0 / 60.0)
+        check("{tag}_ground_jump", pl.state == .air and pl.jumped)
+        reset_player()
+        pl.state = .air
+        pl.pos.y = 110
+        pl.has_glider = true
+        press_pad(jump)
+        player_update(1.0 / 60.0)
+        check("{tag}_glider_open", pl.state == .glide and pl.events.contains("glider_open"))
+        __pad_down[int(jump)] = false
+        __pad_prev[int(jump)] = false
+        press_pad(jump)
+        player_update(1.0 / 60.0)
+        check("{tag}_glider_close", pl.state == .air)
+        reset_player()
+        pl.state = .air
+        pl.pos.y = 110
+        pl.jump_t = 0.12
+        pl.can_surf = true
+        __pad_axes[4] = 1.0
+        press_pad(jump)
+        player_update(1.0 / 60.0)
+        check("{tag}_shield_surf", pl.surfing and pl.events.contains("surf"))
+        reset_player()
+        pl.state = .climb
+        pl.pos = vec3(0, 105, -8.55)
+        pl.climb_n = vec3(0, 0, 1)
+        __pad_axes[1] = -1.0
+        press_pad(jump)
+        player_update(1.0 / 60.0)
+        check("{tag}_climb_jump", pl.events.contains("climb_jump") and pl.climb_jump_t > 0.0)
+        reset_player()
+        __pad_axes[1] = -1.0
+        press_pad(sprint)
+        check("{tag}_sprint_and_glyph", act.sprint and act.sprint_pressed and not act.jump and input_action_label(1) == input_pad_label(sprint))
+        player_update(1.0 / 60.0)
+        check("{tag}_ground_sprint", pl.sprinting)
+        reset_player()
+        pl.state = .swim
+        pl.pos = vec3(40, 98.75, 0)
+        pl.water_y = 100.0
+        __pad_axes[1] = -1.0
+        press_pad(sprint)
+        player_update(1.0 / 60.0)
+        check("{tag}_swim_dash", pl.swim_dash_t > 0.0 and pl.events.contains("swim_dash"))
+        loop side in [false, true]:
+            reset_player()
+            __pad_axes[4] = 1.0
+            if side: __pad_axes[0] = 1.0
+            press_pad(jump)
+            combat_update(1.0 / 60.0, (i: int) -> vec3: vec3(0, 100, -4), 1)
+            check("{tag}_lock_{(if side: "side_hop" else: "backflip")}", fight.act == (if side: Act.hop else: Act.backflip) and lock_hops)
+        reset_pad()
+        press_pad(sprint)
+        inventory_update(1.0 / 60.0)
+        check("{tag}_menu_back", act.back and not invui.open)
+        reset_pad()
+        press_pad(jump)
+        inventory_update(1.0 / 60.0)
+        check("{tag}_menu_drop", invui.open and inv.weapons.len() == 1)
+        reset_pad()
+        inv.weapon = 1
+        press_pad(.b)
+        inventory_update(1.0 / 60.0)
+        check("{tag}_menu_confirm", inv.weapon == 0 and invui.open)
+    input_controls_defaults()
+    input_swap_jump_sprint = true
+    input_scripted = true
+    reset_player()
+    press_pad(.y)
+    check("scripted_pad_uses_default_jump", act.jump and not act.sprint)
+    input_scripted = false
+    input_controls_defaults()
+    # Every primary binding drives its action; glyph text comes from the same lookup.
+    loop i in [0..input_action_ids.len()):
+        input_controls_defaults()
+        check("rebind_{input_action_ids[i]}_accepted", input_rebind(i, .f))
+        reset_pad()
+        __pad_on = false
+        __key_pressed[int(Key.f)] = true
+        __key_down[int(Key.f)] = true
+        if i == 21: __key_down[int(Key.w)] = true
+        input_update(1.0 / 60.0, false)
+        map_known = true
+        map_zoom = 2.0
+        map_zoom_input()
+        fired = match i:
+            0: act.jump and act.jump_held
+            1: act.sprint and act.sprint_pressed
+            2: act.attack and act.attack_held
+            3: act.interact and act.confirm
+            4: act.lock and act.lock_pressed
+            5: act.bow and act.bow_pressed
+            6: act.crouch_pressed
+            7: act.throw_
+            8, 9, 10: act.slot == i - 8
+            11: act.inventory and act.back
+            12: act.pause
+            13: act.move.x < -0.99
+            14: act.move.x > 0.99
+            15: act.move.y > 0.99
+            16: act.move.y < -0.99
+            17: act.look.x < 0.0
+            18: act.look.x > 0.0
+            19: act.look.y < 0.0
+            20: act.look.y > 0.0
+            21: abs(f64(length(act.move)) - 0.35) < 0.001
+            22: act.drop
+            23: map_zoom > 2.0
+            _: map_zoom < 2.0
+        check("rebind_{input_action_ids[i]}_action_and_glyph", fired and input_action_label(i) == "F" and not act.using_pad)
+        reset_keys()
+        __key_pressed[int(input_defaults[i])] = true
+        __key_down[int(input_defaults[i])] = true
+        if i == 21: __key_down[int(Key.w)] = true
+        input_update(1.0 / 60.0, false)
+        map_zoom = 2.0
+        map_zoom_input()
+        stale = match i:
+            0: act.jump
+            1: act.sprint
+            2: act.attack
+            3: act.interact
+            4: act.lock
+            5: act.bow
+            6: act.crouch_pressed
+            7: act.throw_
+            8, 9, 10: act.slot == i - 8
+            11: act.inventory
+            12: act.pause
+            13, 14, 15, 16: length(act.move) > 0.0
+            17, 18, 19, 20: length(act.look) > 0.0
+            21: length(act.move) < 0.99
+            22: act.drop
+            23, 24: map_zoom != 2.0
+            _: false
+        check("rebind_{input_action_ids[i]}_old_key_quiet", not stale)
+    loop k in input_keys:
+        if not input_key_allowed(k): continue
+        input_controls_defaults()
+        input_rebind(0, k)
+        reset_pad()
+        __pad_on = false
+        invui_open_hint = false
+        __key_pressed[int(k)] = true
+        __key_down[int(k)] = true
+        input_update(1.0 / 60.0, false)
+        check("capture_key_{k}_drives_jump", act.jump and act.jump_held and input_key_name(0) == input_key_label(k))
+    input_controls_defaults()
+    input_rebind(0, .shift)
+    check("binding_conflict_swaps", input_bindings[0] == .shift and input_bindings[1] == .space)
+    input_rebind(2, .l)
+    reset_keys()
+    __key_pressed[int(Key.l)] = true
+    __key_down[int(Key.l)] = true
+    input_update(1.0 / 60.0, false)
+    check("binding_displaces_legacy_alias", act.attack and not act.bow)
+    input_rebind(3, .f)
+    act.using_pad = false
+    check("usable_prompt_uses_bound_key", input_action_label(3) == "F")
+    reset_keys()
+    __key_released[int(Key.r)] = true
+    input_update(1.0 / 60.0, false)
+    check("bow_release_uses_binding", act.bow_released)
+    input_rebind(5, .f)
+    reset_keys()
+    __key_released[int(Key.f)] = true
+    input_update(1.0 / 60.0, false)
+    check("rebound_bow_release", act.bow_released)
+    input_controls_defaults()
+    input_rebind(3, .f)
+    reset_pad()
+    inv.weapon = 1
+    __pad_on = false
+    __key_pressed[int(Key.f)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("rebound_action_equips_in_inventory", inv.weapon == 0 and invui.open)
+    input_rebind(11, .p)
+    reset_keys()
+    invui = InvUI()
+    __key_pressed[int(Key.p)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("rebound_inventory_opens", invui.open)
+    reset_keys()
+    invui.t = 1.0
+    __key_pressed[int(Key.p)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("rebound_inventory_closes", not invui.open)
+    check("reserved_keys_rejected", not input_rebind(0, .escape) and not input_rebind(0, .enter) and not input_rebind(0, .q))
+    # The capture gate runs before inventory close and tabs, and Escape leaves the tab open.
+    reset_pad()
+    invui.tab = OPTIONS_TAB
+    opt_binding = 0
+    input_capture = true
+    __key_pressed[int(Key.escape)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("capture_escape_cancels_without_closing", opt_binding < 0 and not input_capture and invui.open and invui.tab == OPTIONS_TAB)
+    opt_binding = 0
+    input_capture = true
+    reset_keys()
+    __key_pressed[int(Key.q)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("capture_reserved_key_keeps_listening", opt_binding == 0 and input_capture and invui.open)
+    # Prevent UI fixture writes to the user's file; capture still updates the binding table.
+    input_scripted = true
+    reset_keys()
+    __key_pressed[int(Key.tab)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("capture_tab_binds_without_closing", opt_binding < 0 and not input_capture and invui.open and input_bindings[0] == .tab)
+    options_controls_defaults()
+    reset_pad()
+    invui.tab = OPTIONS_TAB
+    opt_sel = 6
+    __mouse_x = 240.0
+    __mouse_y = 34.0 + 6.0 * 42.0 + 6.0
+    __mouse_pressed[int(Mouse.left)] = true
+    input_update(1.0 / 60.0, false)
+    options_update(0.0, 0.0)
+    check("options_mouse_toggle_activates_once", opts.swap_jump_sprint)
+    reset_keys()
+    opt_sel = 7
+    act = Actions(confirm = true)
+    options_update(0.0, 0.0)
+    check("defaults_restore_all_controls", input_bindings == input_defaults and not opts.swap_jump_sprint and not input_swap_jump_sprint)
+    input_scripted = false
+    opts.swap_jump_sprint = true
+    opts.mouse = 1.6
+    opts.invert_x = true
+    options_apply()
+    input_rebind(0, .shift)
+    input_rebind(3, .f)
+    input_rebind(15, .v)
+    input_rebind(17, .h)
+    input_rebind(21, .b)
+    input_rebind(22, .n)
+    input_rebind(23, .o)
+    options_save("build/input-options-roundtrip.txt")
+    encoded = options_encode()
+    options_decode("")
+    options_load("build/input-options-roundtrip.txt")
+    check("options_file_round_trip", options_encode() == encoded and input_bindings[0] == .shift and input_bindings[1] == .space and input_bindings[3] == .f and input_swap_jump_sprint and invert_x and input_bindings[15] == .v and input_bindings[17] == .h and input_bindings[21] == .b and input_bindings[22] == .n and input_bindings[23] == .o)
+    input_scripted = true
+    opts.mouse = 2.0
+    options_save("build/input-options-roundtrip.txt")
+    check("scripted_options_do_not_write", (read_file("build/input-options-roundtrip.txt") ?? "") == encoded)
+    input_scripted = false
+    options_decode("mouse=bad\nkey_jump=unknown\nkey_bow=obsolete\nkey_attack=escape\nfuture_option=1\n")
+    check("unknown_and_invalid_options_default", opts.mouse == 1.0 and input_bindings == input_defaults and not input_swap_jump_sprint)
+    options_decode("key_jump=f\nkey_sprint=f\nkey_interact=j\n")
+    check("malformed_duplicate_bindings_default", input_bindings == input_defaults)
+    options_decode("mouse=1.4\ninvert_x=1\nvolume=0.6\n")
+    check("old_options_preserve_settings_default_controls", opts.mouse == 1.4 and invert_x and opts.volume == 0.6 and input_bindings == input_defaults)
+    input_rebind(3, .f)
+    input_scripted = true
+    reset_pad()
+    __pad_on = false
+    __key_pressed[int(Key.e)] = true
+    input_update(1.0 / 60.0, false)
+    check("scripted_keyboard_uses_default_action_and_glyph", act.interact and input_key_name(3) == "E" and invert_x)
+    reset_keys()
+    __key_pressed[int(Key.f)] = true
+    input_update(1.0 / 60.0, false)
+    check("scripted_keyboard_ignores_rebinding", not act.interact)
+    input_scripted = false
+    options_decode("")
+
+# Round 56: all input sources choose one inventory action with the same priority.
+inventory_transaction_checks = ():
+    loop source in ["keyboard", "enter", "mouse", "pad", "mixed"]:
+        loop conflict in ["use_drop", "use_bind", "all", "bind_drop", "drop", "bind"]:
+            reset_pad()
+            inv = Inventory()
+            inv_add("apple")
+            inv.slots = ["apple", "", ""]
+            invui = InvUI(open = true, tab = 3, t = 1.0)
+            pl = Player(hp = 4)
+            fight = Fight()
+            witems.clear()
+            use_ = conflict == "use_drop" or conflict == "use_bind" or conflict == "all"
+            bind = conflict == "use_bind" or conflict == "bind_drop" or conflict == "all" or conflict == "bind"
+            drop = conflict == "use_drop" or conflict == "bind_drop" or conflict == "all" or conflict == "drop"
+            if use_:
+                match source:
+                    "keyboard": __key_pressed[int(Key.e)] = true
+                    "enter": __key_pressed[int(Key.enter)] = true
+                    "mouse":
+                        __mouse_x = 360.0
+                        __mouse_y = 220.0
+                        __mouse_pressed[int(Mouse.left)] = true
+                    "pad": __pad_down[int(PadButton.b)] = true
+                    _:
+                        __mouse_x = 360.0
+                        __mouse_y = 220.0
+                        __mouse_pressed[int(Mouse.left)] = true
+                        __key_pressed[int(Key.e)] = true
+            if bind:
+                if source == "pad" or source == "mixed": __pad_down[int(PadButton.right)] = true
+                else: __key_pressed[int(Key.n3)] = true
+            if drop:
+                if source == "pad": __pad_down[int(PadButton.y)] = true
+                else if source == "enter": __key_pressed[int(Key.delete)] = true
+                else: __key_pressed[int(Key.x)] = true
+            input_update(1.0 / 60.0, false)
+            inventory_update(1.0 / 60.0)
+            if use_:
+                check("transaction_{source}_{conflict}_eat_only", pl.hp == 6 and count_of("apple") == 0 and witems.len() == 0 and inv.slots == ["", "", ""], "hp={pl.hp} owned={count_of("apple")} world={witems.len()} slots={inv.slots}")
+            else if bind:
+                check("transaction_{source}_{conflict}_bind_only", pl.hp == 4 and count_of("apple") == 1 and witems.len() == 0 and inv.slots[2] == "apple")
+            else:
+                check("transaction_{source}_drop_only", pl.hp == 4 and count_of("apple") == 0 and witems.len() == 1 and witems[0].id == "apple" and inv.slots[0] == "")
+    loop id in ["travelers_sword", "travelers_shield", "travelers_bow"]:
+        loop conflict in ["equip_drop", "equip_bind_drop", "bind_drop", "throw_drop"]:
+            reset_pad()
+            inv = Inventory()
+            inv_add(id)
+            inv.slots = [id, "", ""]
+            inv.weapon = -1
+            inv.shield = -1
+            inv.bow = -1
+            tab = if item(id).kind == .weapon: 0 else: (if item(id).kind == .shield: 1 else: 2)
+            invui = InvUI(open = true, tab = tab, t = 1.0)
+            witems.clear()
+            fight = Fight()
+            __key_pressed[int(Key.x)] = true
+            if conflict == "equip_drop" or conflict == "equip_bind_drop": __key_pressed[int(Key.e)] = true
+            if conflict == "bind_drop" or conflict == "equip_bind_drop": __key_pressed[int(Key.n3)] = true
+            if conflict == "throw_drop": __key_pressed[int(Key.g)] = true
+            input_update(1.0 / 60.0, false)
+            inventory_update(1.0 / 60.0)
+            if conflict == "throw_drop":
+                check("gear_{id}_{conflict}_one_drop", not inv_owns(id) and witems.len() == 1 and not witems[0].thrown_by_player and inv.slots[0] == "" and fight.act == .idle)
+            else if conflict == "bind_drop": check("gear_{id}_{conflict}_bind_only", inv_owns(id) and witems.len() == 0 and inv.slots[2] == id)
+            else:
+                equipped = if tab == 0: equipped_weapon() else: (if tab == 1: equipped_shield() else: equipped_bow())
+                check("gear_{id}_{conflict}_equip_only", equipped == id and witems.len() == 0 and inv.slots == [id, "", ""])
+    loop id in ["travelers_sword", "travelers_shield", "travelers_bow"]:
+        reset_pad()
+        inv = Inventory()
+        inv_add(id)
+        tab = if item(id).kind == .weapon: 0 else: (if item(id).kind == .shield: 1 else: 2)
+        invui = InvUI(open = true, tab = tab, t = 1.0)
+        witems.clear()
+        __pad_down[int(PadButton.b)] = true
+        __key_pressed[int(Key.x)] = true
+        __key_pressed[int(Key.n3)] = true
+        input_update(1.0 / 60.0, false)
+        inventory_update(1.0 / 60.0)
+        check("gear_{id}_unequip_wins_over_bind_and_drop", not inventory_cell_equipped(tab, 0) and inv_owns(id) and witems.len() == 0 and inv.slots[2] == "")
+        reset_keys()
+        __pad_down = fill(false, 15)
+        __pad_prev = fill(false, 15)
+        __key_pressed[int(Key.e)] = true
+        input_update(1.0 / 60.0, false)
+        inventory_update(1.0 / 60.0)
+        check("gear_{id}_equip_again_positive", inventory_cell_equipped(tab, 0) and inv_owns(id) and witems.len() == 0)
+        inv_add(id)
+        reset_keys()
+        __key_pressed[int(Key.e)] = true
+        input_update(1.0 / 60.0, false)
+        inventory_update(1.0 / 60.0)
+        invui.sel = 1
+        reset_keys()
+        __key_pressed[int(Key.x)] = true
+        input_update(1.0 / 60.0, false)
+        inventory_update(1.0 / 60.0)
+        check("gear_{id}_unrelated_drop_preserves_unequipped_state", not inventory_cell_equipped(tab, 0) and inv_owns(id) and witems.len() == 1)
+    reset_keys()
+    inv = Inventory()
+    inv_add("apple", 2)
+    invui = InvUI(open = true, tab = 3, t = 1.0)
+    pl = Player(hp = 4)
+    witems.clear()
+    __key_pressed[int(Key.e)] = true
+    __key_pressed[int(Key.x)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("transaction_two_apples_consumes_one_without_drop", pl.hp == 6 and count_of("apple") == 1 and witems.len() == 0 and inv.slots[0] == "apple")
+    reset_keys()
+    inv = Inventory()
+    invui = InvUI(open = true, tab = 3, t = 1.0)
+    __key_pressed[int(Key.e)] = true
+    __key_pressed[int(Key.x)] = true
+    __key_pressed[int(Key.n3)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("transaction_empty_inventory_no_effect", witems.len() == 0 and pl.hp == 6 and inv.slots == ["", "", ""])
+    reset_keys()
+
+main = ():
+    __audio_state = 2
+    __input_init()
+    items_init()
+    loop b in [PadButton.left, PadButton.down, PadButton.right]:
+        reset_pad()
+        __pad_down[int(b)] = true
+        input_update(1.0 / 60.0, false)
+        slot = act.slot
+        check("inventory_dpad_{b}_only_binds", slot >= 0 and length(act.nav) == 0.0, "nav={act.nav} slot={slot}")
+        inventory_update(1.0 / 60.0)
+        check("inventory_dpad_{b}_binds_original_selection", invui.sel == 0 and inv.slots[slot] == "travelers_sword", "selected={inv.weapons[invui.sel]} binding={inv.slots[slot]}")
+        __pad_prev[int(b)] = true
+        quiet = true
+        loop k in [1..65):
+            input_update(1.0 / 60.0, false)
+            inventory_update(1.0 / 60.0)
+            if act.slot >= 0 or length(act.nav) > 0.0: quiet = false
+        check("inventory_held_dpad_{b}_does_not_navigate", quiet and invui.sel == 0)
+    # The first frame after opening must also bind safely if a navigation pulse
+    # was computed before the inventory-open hint was synchronized.
+    reset_pad()
+    invui_open_hint = false
+    __pad_down[int(PadButton.right)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("inventory_binding_suppresses_stale_navigation", invui.sel == 0 and inv.slots[2] == "travelers_sword")
+    reset_pad()
+    __pad_axes[0] = 1.0
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("inventory_left_stick_navigates", act.nav.x == 1.0 and act.slot < 0 and invui.sel == 1)
+    loop hz in [30, 60, 120]:
+        reset_pad()
+        __pad_axes[0] = 1.0
+        dt = 1.0 / f64(hz)
+        repeats: int[]
+        loop k in [0..hz):
+            input_update(dt, false)
+            if act.nav.x != 0.0: repeats.push(k)
+        check("stick_repeat_initial_{hz}hz", repeats.len() > 2 and repeats[0] == 0 and repeats[1] == int(0.3 * f64(hz)), "frames={repeats}")
+        cadence = true
+        loop k in [1..repeats.len()):
+            expected = 0.3 + f64(k - 1) * 0.12
+            actual = f64(repeats[k]) / f64(hz)
+            if actual + 0.000001 < expected or actual >= expected + dt + 0.000001: cadence = false
+        check("stick_repeat_fast_cadence_{hz}hz", cadence, "frames={repeats}")
+        __pad_axes[0] = -1.0
+        input_update(dt, false)
+        check("stick_reverse_immediate_{hz}hz", act.nav.x == -1.0)
+        __pad_axes[0] = 0.0
+        input_update(dt, false)
+        __pad_axes[0] = 1.0
+        input_update(dt, false)
+        check("stick_release_repress_immediate_{hz}hz", act.nav.x == 1.0)
+        __pad_on = false
+        input_update(dt, false)
+        __pad_on = true
+        input_update(dt, false)
+        check("stick_reconnect_immediate_{hz}hz", act.nav.x == 1.0)
+    # A key after the pad: prompts go back to the keyboard's glyphs at once.
+    reset_pad()
+    __pad_down[int(PadButton.a)] = true
+    input_update(1.0 / 60.0, false)
+    on_pad = act.using_pad
+    __pad_prev[int(PadButton.a)] = true
+    __pad_down[int(PadButton.a)] = false
+    __key_pressed[int(Key.j)] = true
+    __key_down[int(Key.j)] = true
+    input_update(1.0 / 60.0, false)
+    check("keyboard_attack_after_pad_switches_prompts", on_pad and not act.using_pad, "pad={on_pad} after={act.using_pad}")
+    __key_pressed[int(Key.j)] = false
+    __key_down[int(Key.j)] = false
+    # Stick clicks and triggers switch immediately, persist at rest, and yield to
+    # keyboard/mouse activity even if the pad is still held off-center.
+    loop b in [PadButton.lstick, PadButton.rstick]:
+        reset_pad()
+        press_pad(b)
+        check("stick_click_{b}_selects_pad", act.using_pad)
+    loop axis in [4, 5]:
+        reset_pad()
+        __pad_axes[axis] = 1.0
+        input_update(1.0 / 60.0, false)
+        check("trigger_{axis}_selects_pad", act.using_pad)
+        __pad_axes[axis] = 0.0
+        input_update(1.0 / 60.0, false)
+        check("pad_glyphs_persist_at_rest_{axis}", act.using_pad)
+    loop source in ["key", "mouse_button", "mouse_motion", "mouse_wheel"]:
+        reset_pad()
+        __pad_axes[0] = 0.7
+        input_update(1.0 / 60.0, false)
+        if source == "key": __key_pressed[int(Key.j)] = true
+        else if source == "mouse_button": __mouse_pressed[int(Mouse.left)] = true
+        else if source == "mouse_motion": __mouse_dx = 3.0
+        else: __mouse_wheel = 1.0
+        input_update(1.0 / 60.0, false)
+        check("{source}_overrides_held_pad_glyphs", not act.using_pad)
+    reset_pad()
+    act.using_pad = true
+    __pad_on = false
+    input_update(1.0 / 60.0, false)
+    check("pad_disconnect_restores_keys", not act.using_pad)
+    # The map's cursor follows the free pointer while the menu is open (mouse-look is off then).
+    reset_pad()
+    __pad_on = false
+    map_known = true
+    map_cursor_on = false
+    __map_box = vec4(100, 250, 400, 300)
+    __mouse_x = 300.0
+    __mouse_y = 325.0
+    __mouse_dx = 4.0
+    __mouse_dy = 0.0
+    input_update(1.0 / 60.0, false)
+    map_cursor_update(1.0 / 60.0)
+    check("map_cursor_follows_menu_pointer", map_cursor_on and abs(f64(map_cursor.x) - 0.5) < 0.001 and abs(f64(map_cursor.y) - 0.25) < 0.001, "on={map_cursor_on} at={map_cursor}")
+    __mouse_x = 20.0
+    __mouse_dx = -4.0
+    map_cursor_update(1.0 / 60.0)
+    check("map_cursor_hides_off_the_map", not map_cursor_on)
+    __mouse_dx = 0.0
+    # Click without a motion event still uses the pointer's current map location.
+    invui.tab = MAP_TAB
+    map_pins.clear()
+    __mouse_x = 300.0
+    __mouse_y = 325.0
+    __mouse_pressed[int(Mouse.left)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_click_places_pin_without_motion", map_pins.len() == 1 and map_pins[0] == vec2(0.5, 0.25))
+    __mouse_pressed[int(Mouse.left)] = false
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_held_click_does_not_repeat", map_pins.len() == 1)
+    __mouse_y -= 9.0
+    __mouse_pressed[int(Mouse.left)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_click_existing_pin_head_removes", map_pins.len() == 0)
+    __mouse_x = 20.0
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_click_outside_does_not_place", map_pins.len() == 0)
+    __mouse_pressed[int(Mouse.left)] = false
+    __pad_on = true
+    __pad_axes[2] = 1.0
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_right_stick_moves_cursor", map_cursor_on and map_cursor.x > 0.5)
+    __pad_axes[2] = 0.0
+    __pad_down[int(PadButton.b)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_action_places_pin", map_pins.len() == 1 and map_pins[0] == map_cursor)
+    __pad_prev[int(PadButton.b)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_held_action_does_not_repeat", map_pins.len() == 1)
+    __pad_prev[int(PadButton.b)] = false
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_action_existing_pin_removes", map_pins.len() == 0)
+    map_pins.push(vec2(0.5, 0.25))
+    map_known = false
+    check("unknown_map_rejects_pin", not map_pin_toggle() and map_pins.len() == 1)
+    map_known = true
+    map_pins = fill(vec2(0, 0), MAP_PIN_LIMIT)
+    map_cursor = vec2(1, 1)
+    check("map_pin_limit", not map_pin_toggle() and map_pins.len() == MAP_PIN_LIMIT)
+    # Arrow/WASD navigation is handled by the map before the empty item grid.
+    loop key in [Key.right, Key.left, Key.up, Key.down, Key.d, Key.a, Key.w, Key.s]:
+        reset_pad()
+        __pad_on = false
+        invui.tab = MAP_TAB
+        map_cursor = vec2(0.5, 0.5)
+        map_cursor_on = false
+        __key_down[int(key)] = true
+        __key_pressed[int(key)] = true
+        __key_typed[int(key)] = true
+        input_update(1.0 / 60.0, false)
+        inventory_update(1.0 / 60.0)
+        check("map_keyboard_{key}_moves_without_switching_tabs", invui.tab == MAP_TAB and map_cursor_on and length(map_cursor - vec2(0.5, 0.5)) > 0.01)
+    reset_keys()
+    # Move onto a landmark, then use the same hit test that draws its name.
+    map_cursor = vec2(f32((-818.0 - MAP_X0) / (MAP_X1 - MAP_X0) - 0.025), f32((1950.0 - MAP_Z0) / (MAP_Z1 - MAP_Z0)))
+    __key_typed[int(Key.right)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_keyboard_names_temple", map_cursor_name() == "Temple of Thyme")
+    reset_keys()
+    input_rebind(3, .f)
+    map_pins.clear()
+    __key_pressed[int(Key.f)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_rebound_action_pins", map_pins.len() == 1 and map_pins[0] == map_cursor)
+    reset_keys()
+    __key_pressed[int(Key.e)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_old_action_does_not_pin", map_pins.len() == 1)
+    input_controls_defaults()
+    reset_keys()
+    __key_pressed[int(Key.e)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_default_e_toggles_pin", map_pins.len() == 0)
+    map_cursor = vec2(1, 0)
+    act = Actions(nav = vec2(1, -1))
+    inventory_update(1.0 / 60.0)
+    check("map_keyboard_cursor_clamped", map_cursor == vec2(1, 0) and invui.tab == MAP_TAB)
+    reset_keys()
+    __key_pressed[int(Key.c)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_c_changes_tab", invui.tab == OPTIONS_TAB)
+    reset_keys()
+    __key_pressed[int(Key.q)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_q_returns_tab", invui.tab == MAP_TAB)
+    # Production zoom inputs keep tabs, rebinding and world-space pins consistent.
+    reset_pad()
+    invui.tab = MAP_TAB
+    map_known = true
+    map_zoom = 1.0
+    map_center = vec2(0.5, 0.5)
+    map_cursor = vec2(0.63, 0.45)
+    map_cursor_on = true
+    map_pins = [map_cursor]
+    anchor = map_screen_uv(map_cursor)
+    __pad_down[int(PadButton.rb)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_right_bumper_zooms_without_switching_tab", invui.tab == MAP_TAB and abs(map_zoom - 1.4) < 0.001)
+    check("map_zoom_preserves_cursor_anchor_and_pin", length(map_screen_uv(map_cursor) - anchor) < 0.001 and map_pins[0] == map_cursor)
+    __pad_prev[int(PadButton.rb)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_held_bumper_does_not_repeat_zoom", abs(map_zoom - 1.4) < 0.001)
+    reset_keys()
+    __pad_down = fill(false, 15)
+    __pad_prev = fill(false, 15)
+    __pad_down[int(PadButton.lb)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_left_bumper_zooms_out_without_switching_tab", invui.tab == MAP_TAB and map_zoom == 1.0)
+    reset_pad()
+    invui.tab = MAP_TAB
+    __pad_down[int(PadButton.right)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_dpad_right_still_reaches_options", invui.tab == OPTIONS_TAB and map_zoom == 1.0)
+    reset_pad()
+    invui.tab = MAP_TAB
+    __pad_down[int(PadButton.left)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_dpad_left_still_reaches_key_items", invui.tab == MAP_TAB - 1 and map_zoom == 1.0)
+    reset_pad()
+    __pad_on = false
+    invui.tab = MAP_TAB
+    map_cursor_on = true
+    input_controls_defaults()
+    __key_pressed[int(Key.equals)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_equals_zooms", abs(map_zoom - 1.4) < 0.001)
+    reset_keys()
+    __mouse_wheel = 1.0
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_wheel_zooms", abs(map_zoom - 1.96) < 0.001)
+    __mouse_wheel = 0.0
+    input_rebind(3, .equals)
+    map_cursor = vec2(0.57, 0.44)
+    map_pins.clear()
+    reset_keys()
+    __key_pressed[int(Key.equals)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_rebound_equals_confirms_without_zoom", map_pins.len() == 1 and map_pins[0] == map_cursor and abs(map_zoom - 1.96) < 0.001)
+    check("map_zoom_conflict_swaps_binding", map_zoom_key(true) == .e)
+    reset_keys()
+    __key_pressed[int(Key.e)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_swapped_key_zooms", abs(map_zoom - 2.744) < 0.001)
+    input_controls_defaults()
+    reset_keys()
+    map_zoom_by(10.0)
+    check("map_zoom_has_four_times_limit", map_zoom == 4.0)
+    map_cursor = vec2(0.97, 0.92)
+    map_pan_to_cursor()
+    q = map_screen_uv(map_cursor)
+    check("map_cursor_pans_view_and_remains_inside", q.x >= 0.0 and q.y >= 0.0 and q.x <= 1.0 and q.y <= 1.0 and map_center.x > 0.7)
+    # Click a saved pin's head at 4x, then put it back using the transformed pointer.
+    map_pins = [vec2(0.9, 0.9)]
+    pin = map_screen_pos(map_pins[0])
+    __mouse_x = f64(pin.x)
+    __mouse_y = f64(pin.y) - 9.0
+    __mouse_pressed[int(Mouse.left)] = true
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_zoomed_pin_head_hit_test_removes", map_pins.len() == 0)
+    __mouse_y += 9.0
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("map_zoomed_click_records_world_coordinate", map_pins.len() == 1 and length(map_pins[0] - vec2(0.9, 0.9)) < 0.001)
+    reset_keys()
+    map_zoom_by(-10.0)
+    check("map_zoom_out_restores_full_extent", map_zoom == 1.0 and map_center == vec2(0.5, 0.5) and map_pins[0].x > 0.89)
+    map_known = false
+    map_zoom_by(1.0)
+    check("map_unknown_rejects_zoom", map_zoom == 1.0)
+    map_known = true
+    # Every item together, including all cooked food, critters, gear and key items.
+    reset_keys()
+    inv = Inventory(max_weapons = 32, max_shields = 32, max_bows = 32)
+    loop d in idefs: inv_add(d.id, 4)
+    tested = 0
+    loop tab in [0..5):
+        invui = InvUI(open = true, tab = tab, t = 1.0)
+        entries = __tab_items(tab)
+        loop i in [0..entries.len()):
+            act = Actions(nav = (if i > 0: vec2(1, 0) else: vec2(0, 0)))
+            inventory_update(1.0 / 60.0)
+            check("full_inventory_{tab}_{entries[i]}_visible", invui.sel == i and i / inventory_cols(tab) >= invui.first_row and i / inventory_cols(tab) < invui.first_row + INV_ROWS)
+            tested += 1
+        loop i in [0..max(0, entries.len() - 1)):
+            act = Actions(nav = vec2(-1, 0))
+            inventory_update(1.0 / 60.0)
+        check("full_inventory_{tab}_scrolls_back_to_first", invui.sel == 0 and invui.first_row == 0)
+    check("full_inventory_every_definition_present", tested == idefs.len(), "entries={tested} definitions={idefs.len()}")
+    invui = InvUI(open = true, tab = 3, t = 1.0)
+    act = Actions(nav = vec2(0, 1))
+    loop i in [0..3): inventory_update(1.0 / 60.0)
+    check("inventory_down_scrolls", invui.sel == 18 and invui.first_row == 1)
+    act = Actions(nav = vec2(0, -1))
+    loop i in [0..3): inventory_update(1.0 / 60.0)
+    check("inventory_up_scrolls_back", invui.sel == 0 and invui.first_row == 0)
+    check("keys_never_in_materials", not __tab_items(3).contains("spirit_orb") and __tab_items(4).contains("spirit_orb") and count_of("spirit_orb") == 4)
+    invui.tab = 4
+    __key_pressed[int(Key.x)] = true
+    world_n = witems.len()
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check("keys_never_dropped", witems.len() == world_n and count_of("spirit_orb") == 4)
+    reset_keys()
+    before_slots = inv.slots
+    invui.tab = 3
+    invui.sel = __tab_items(3).index_of("hot_footed_frog")
+    act = Actions(slot = 2)
+    inventory_update(1.0 / 60.0)
+    check("material_cannot_bind", inv.slots == before_slots)
+    invui.tab = 4
+    act = Actions(slot = 2)
+    inventory_update(1.0 / 60.0)
+    check("key_cannot_bind", inv.slots == before_slots)
+    invui.tab = 2
+    invui.sel = inv.bows.len()
+    act = Actions(slot = 2, interact = true)
+    bow_before = inv.bow
+    inventory_update(1.0 / 60.0)
+    check("arrows_cannot_bind_or_equip", inv.slots == before_slots and inv.bow == bow_before)
+    loop d in idefs:
+        check("item_{d.id}_action_hints", inventory_can_use(d) == (d.kind == .weapon or d.kind == .shield or d.kind == .bow or d.kind == .food) and inventory_can_bind(d) == inventory_can_use(d) and inventory_can_drop(d) == (d.kind != .key and d.kind != .arrows))
+    # Notice timing needs no graphics context; real field/chest acceptance is in slot_check.
+    loop id in ["travelers_sword", "travelers_shield", "travelers_bow"]:
+        inv = Inventory(max_weapons = 0, max_shields = 0, max_bows = 0)
+        ui = UIState()
+        act = Actions()
+        check("full_{id}_rejected", not inv_add(id))
+        ui_update(1.0 / 60.0)
+        check("full_{id}_contextual_notice", ui.pickup_name == "Can't carry any more: {item(id).name}" and ui.pickup_count == 1 and ui.pickup_t > 2.0)
+        inv_add(id)
+        ui_update(1.0 / 60.0)
+        check("full_{id}_notice_refreshes_without_quantity", ui.pickup_count == 1 and ui.pickup_t > 2.0)
+        loop i in [0..180): ui_update(1.0 / 60.0)
+        check("full_{id}_notice_fades", ui.pickup_t == 0.0 and inv_full_name == "")
+    pad_response_checks()
+    controls_checks()
+    binding_recovery_checks()
+    equipment_copy_checks()
+    inventory_transaction_checks()
+    map_hint_tests()
+    print("input: {checks - failures}/{checks} passed")
+    if failures > 0: exit(1)
+
+map_hint_tests = ():
+    map_hint_used = false
+    map_hint_visit = false
+    map_known = false
+    map_hint_update(true, 1.0)
+    map_hint_update(false, 0.0)
+    assert(not map_hint_used and not map_hint_active, "An unsurveyed slate does not consume the map hint")
+    map_known = true
+    map_hint_update(false, 1.0)
+    assert(not map_hint_used)
+    map_hint_update(true, 1.0/60.0)
+    assert(map_hint_active and not map_hint_used)
+    map_hint_update(true, 1.0)
+    assert(map_hint_active)
+    map_hint_update(false, 0.0)
+    assert(map_hint_used and not map_hint_active)
+    map_hint_update(true, 1.0/60.0)
+    assert(not map_hint_active)
+    print("PASS map hint: first visit visible; close/tab departure retires it on revisit")
+
+# Raw runtime axes exercise the actual Actions path, with no joystick device.
+pad_response_checks = ():
+    controls_course()
+    input_controls_defaults()
+    input_scripted = false
+    loop hz in [30, 60, 120]:
+        dt = 1.0 / f64(hz)
+        loop right in [false, true]:
+            dz = if right: 0.14 else: 0.16
+            axis = if right: 2 else: 0
+            tag = if right: "camera" else: "move"
+            previous = -1.0
+            loop raw in [0.0, dz - 0.001, dz, dz + 0.01, 0.4, 0.7, 1.0]:
+                reset_pad()
+                invui_open_hint = false
+                __pad_axes[axis] = raw
+                input_update(dt, false)
+                scaled = max(0.0, (raw - dz) / (1.0 - dz))
+                expected = if right: scaled * scaled * pad_sens * dt else: scaled
+                actual = if right: f64(act.look.x) else: f64(act.move.x)
+                check("raw_{tag}_{raw:.3}_{hz}hz", abs(actual - expected) < 0.00001 and actual >= previous, "actual={actual:.6} expected={expected:.6}")
+                previous = actual
+            reset_pad()
+            __pad_axes[axis] = -0.7
+            input_update(dt, false)
+            negative = if right: f64(act.look.x) else: f64(act.move.x)
+            check("raw_{tag}_signed_{hz}hz", negative < 0.0)
+            reset_pad()
+            __pad_axes[axis] = 1.0
+            __pad_axes[axis + 1] = 1.0
+            input_update(dt, false)
+            magnitude = if right: f64(length(act.look / vec2(f32(pad_sens * dt), f32(pad_sens * 0.6 * dt)))) else: f64(length(act.move))
+            check("raw_{tag}_diagonal_caps_at_one_{hz}hz", abs(magnitude - 1.0) < 0.00001)
+    loop mode in ["bow", "charge", "paused_bow", "paused_charge"]:
+        reset_player()
+        inv_add("travelers_bow")
+        inv.arrows = 5
+        is_bow = mode == "bow" or mode == "paused_bow"
+        paused = mode == "paused_bow" or mode == "paused_charge"
+        if is_bow: __pad_axes[5] = 1.0
+        else: __pad_down[int(PadButton.x)] = true
+        __pad_axes[0] = 0.7
+        __pad_axes[2] = 0.7
+        __pad_axes[4] = 1.0
+        loop button in [PadButton.a, PadButton.y, PadButton.b, PadButton.rb, PadButton.lb, PadButton.start, PadButton.back, PadButton.right]: __pad_down[int(button)] = true
+        input_update(1.0 / 60.0, false)
+        fight.act = if is_bow: .aim else: .charge
+        fight.t = 1.0
+        invui.open = paused
+        invui_open_hint = paused
+        # Deliberately leave backend arrays stale; disconnected input must be inert.
+        __pad_on = false
+        input_update(1.0 / 60.0, false)
+        check("disconnect_{mode}_clears_actions_and_glyphs", act.pad_lost and not act.using_pad and not act.attack_held and not act.bow and not act.bow_released and not act.lock and not act.sprint and not act.jump and not act.jump_held and not act.interact and not act.throw_ and not act.inventory and not act.pause and not act.confirm and not act.back and not act.drop and length(act.move) == 0.0 and length(act.look) == 0.0 and act.slot < 0 and act.tab == 0 and length(act.nav) == 0.0)
+        if paused:
+            loop frame in [0..10): input_update(1.0 / 60.0, false)
+            check("disconnect_{mode}_retained_while_paused", act.pad_lost)
+            invui.open = false
+            invui_open_hint = false
+        arrow_count = inv.arrows
+        combat_update(1.0 / 60.0, (i: int) -> vec3: vec3(0, 100, -4), 0)
+        check("disconnect_{mode}_cancels_without_attack", fight.act == .idle and inv.arrows == arrow_count and not pl.events.contains("shoot") and not input_pad_lost)
+        input_update(1.0 / 60.0, false)
+        check("disconnect_{mode}_consumed_after_gameplay", not act.pad_lost)
+        __pad_axes = fill(0.0, 6)
+        __pad_down = fill(false, 15)
+        __pad_prev = fill(false, 15)
+        __pad_on = true
+        input_update(1.0 / 60.0, false)
+        check("reconnect_{mode}_restores_idle_pad_glyphs", act.using_pad and input_action_label(3) == "B" and length(act.move) == 0.0 and length(act.look) == 0.0 and not act.bow and not act.attack)
+        __pad_axes[5] = 1.0
+        input_update(1.0 / 60.0, false)
+        check("reconnect_{mode}_trigger_has_fresh_edge", act.bow and act.bow_pressed)
+        reset_keys()
+        __key_down[int(Key.left)] = true
+        input_update(1.0 / 60.0, false)
+        check("held_keyboard_camera_restores_keyboard_glyphs_{mode}", not act.using_pad and act.look.x < 0.0)
+    reset_pad()
+    __pad_on = false
+    input_update(1.0 / 60.0, false)
+
+binding_recovery_checks = ():
+    input_controls_defaults()
+    input_scripted = true # Save gate for UI capture/defaults; test bindings below use non-scripted input.
+    reset_pad()
+    invui.tab = OPTIONS_TAB
+    opt_sel = 0
+    opt_first = 0
+    loop row in [1..OPT_KEY_ROW + input_action_ids.len()):
+        act = Actions(nav = vec2(0, 1))
+        options_update(0.0, 0.0)
+        check("options_keyboard_row_{row}_visible", opt_sel == row and options_row_visible(row))
+    check("options_all_bindings_scroll_inside_panel", opt_first > 0)
+    listed = fill(false, input_action_ids.len())
+    loop row in [0..opt_key_order.len()):
+        action = opt_key_order[row]
+        check("grouped_binding_{row}_unique", not listed[action])
+        listed[action] = true
+        opt_sel = OPT_KEY_ROW + row
+        act = Actions(confirm = true)
+        options_update(0.0, 0.0)
+        check("grouped_binding_{row}_captures_actual_action", opt_binding == action)
+        opt_binding = -1
+        input_capture = false
+    loop present in listed: check("grouped_bindings_complete", present)
+    opt_sel = OPT_KEY_ROW + input_action_ids.len() - 1
+    opt_first = input_action_ids.len() - OPT_KEY_ROWS
+
+    reset_keys()
+    __mouse_x = 700.0
+    __mouse_wheel = 1.0
+    act = Actions()
+    options_update(0.0, 0.0)
+    check("options_mouse_wheel_scrolls_and_keeps_selection_visible", opt_first == 9 and options_row_visible(opt_sel))
+    __mouse_wheel = 0.0
+    opt_sel = OPT_KEY_ROW + input_action_ids.len() - 1
+    loop row in [0..OPT_KEY_ROW + input_action_ids.len() - 1):
+        act = Actions(nav = vec2(0, -1))
+        options_update(0.0, 0.0)
+    check("options_scroll_returns_to_first", opt_sel == 0 and opt_first == 0)
+    input_scripted = false
+    loop key in [Key.w, Key.a, Key.s, Key.d, Key.left, Key.right, Key.up, Key.down, Key.alt, Key.x]:
+        input_controls_defaults()
+        accepted = input_rebind(3, key)
+        displaced = false
+        loop bound in input_bindings:
+            if bound == .e: displaced = true
+        check("formerly_reserved_{key}_swaps", accepted and input_bindings[3] == key and displaced)
+        reset_keys()
+        invui_open_hint = true
+        __key_pressed[int(key)] = true
+        __key_typed[int(key)] = true
+        input_update(1.0 / 60.0, false)
+        if key == .left or key == .right or key == .up or key == .down:
+            check("menu_arrow_{key}_always_navigates", length(act.nav) > 0.0 and not act.interact and not act.confirm)
+        else if key == .w or key == .a or key == .s or key == .d:
+            check("menu_rebound_{key}_acts_without_navigation", act.interact and length(act.nav) == 0.0)
+        reset_keys()
+        __key_pressed[int(Key.escape)] = true
+        input_update(1.0 / 60.0, false)
+        check("menu_escape_recovers_after_{key}", act.back)
+    input_rebind(15, .f)
+    input_rebind(17, .h)
+    input_rebind(21, .v)
+    input_rebind(22, .b)
+    input_rebind(23, .n)
+    encoded = options_encode()
+    options_decode("")
+    options_decode(encoded)
+    check("expanded_bindings_settings_round_trip", options_encode() == encoded and input_bindings[15] == .f and input_bindings[17] == .h and input_bindings[21] == .v and input_bindings[22] == .b and input_bindings[23] == .n)
+    input_scripted = true
+    reset_pad()
+    invui.tab = OPTIONS_TAB
+    opt_sel = 7
+    act = Actions(confirm = true)
+    options_update(0.0, 0.0)
+    check("expanded_defaults_restore_every_binding", input_bindings == input_defaults)
+    loop pair in [(15, Key.left), (17, Key.w), (21, Key.x), (22, Key.alt)]:
+        reset_keys()
+        input_controls_defaults()
+        opt_binding = pair.0
+        input_capture = true
+        __key_pressed[int(pair.1)] = true
+        input_update(1.0 / 60.0, false)
+        inventory_update(1.0 / 60.0)
+        check("options_capture_expanded_{pair.0}_swaps_without_menu_action", opt_binding < 0 and not input_capture and invui.open and invui.tab == OPTIONS_TAB and input_bindings[pair.0] == pair.1)
+    input_scripted = false
+    options_decode("")
+    reset_keys()
+
+# Identical equipment is selected and bound by copy, through each input source.
+equipment_copy_checks = ():
+    input_controls_defaults()
+    loop tab in [0..3):
+        id = ["travelers_sword", "travelers_shield", "travelers_bow"][tab]
+        kind = [IKind.weapon, IKind.shield, IKind.bow][tab]
+        loop source in ["keyboard", "mouse", "pad"]:
+            reset_pad()
+            inv = Inventory()
+            loop i in [0..3): inv_add(id)
+            invui = InvUI(open = true, tab = tab, sel = 0, t = 1.0)
+            if source != "pad": __pad_on = false
+            if source == "keyboard": __key_typed[int(Key.right)] = true
+            else if source == "pad": __pad_axes[0] = 1.0
+            else:
+                __mouse_x = 446.0
+                __mouse_y = 214.0
+                __mouse_dx = 2.0
+            input_update(1.0 / 60.0, false)
+            inventory_update(1.0 / 60.0)
+            check("copy_{id}_{source}_selects_second", invui.sel == 1 and inventory_copy_label(tab, 0) == "1/3" and inventory_copy_label(tab, 1) == "2/3" and inventory_copy_label(tab, 2) == "3/3")
+            reset_keys()
+            __pad_axes = fill(0.0, 6)
+            if source == "keyboard": __key_pressed[int(Key.enter)] = true
+            else if source == "pad": __pad_down[int(PadButton.b)] = true
+            else: __mouse_pressed[int(Mouse.left)] = true
+            input_update(1.0 / 60.0, false)
+            inventory_update(1.0 / 60.0)
+            check("copy_{id}_{source}_equips_only_second", inventory_cell_equipped(tab, 1) and not inventory_cell_equipped(tab, 0) and not inventory_cell_equipped(tab, 2))
+            reset_keys()
+            __pad_down = fill(false, 15)
+            if source == "pad": __pad_down[int(PadButton.right)] = true
+            else: __key_pressed[int(Key.n3)] = true
+            input_update(1.0 / 60.0, false)
+            inventory_update(1.0 / 60.0)
+            check("copy_{id}_{source}_binds_second_uid", inv.slot_instances[2] == gear_instance(kind, 1) and inventory_cell_bound(2, tab, 1, id) and not inventory_cell_bound(2, tab, 0, id))
+    reset_keys()

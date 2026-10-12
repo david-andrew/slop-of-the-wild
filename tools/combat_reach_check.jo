@@ -1,0 +1,59 @@
+# Posed player contacts must still reach opponents kept on the body-clearance ring.
+use 'enemy_spacing_checks.jo'
+use '../game/terrain.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/combat.jo'
+use '../game/enemies.jo'
+use '../game/gfx.jo'
+use '../game/physics.jo'
+use '../game/chars.jo'
+use '../game/camera.jo'
+use '../game/scene.jo'
+use '../game/weapon_tracks.jo'
+
+main = ():
+    chars_init()
+    failures = 0
+    loop slope in [0.0, 0.22]:
+        loop weapon in ["branch", "travelers_sword", "travelers_claymore", "boko_spear"]:
+            spacing_course()
+            loop z in [0..hf.n):
+                loop x in [0..hf.n): hf.h[z*hf.n+x] = f32(slope*(hf.z0+f64(z)*hf.cell))
+            pl = Player(pos=vec3(0,0,0), hp=120, hp_max=120, grounded=true)
+            inv_add(weapon)
+            inv_add("pot_lid")
+            cam = Cam()
+            camera_snap()
+            sc.cam = cam.pos
+            target = spawn_enemy(.blue_bokoblin,v3(0.0,-1.9*slope,-1.9),"boko_club")
+            enemies[target].state = .chase
+            enemies[target].alert = 1.0
+            enemies[target].hp = 1000.0
+            enemies[target].hp_max = 1000.0
+            minimum = 100.0
+            closest = 1000.0
+            samples = 0
+            loop frame in [0..480):
+                act = Actions(lock=true, attack=(frame >= 90 and frame % 55 == 35), attack_held=false)
+                pl.invuln = 1000.0
+                player_update(1.0/60.0)
+                combat_update(1.0/60.0,enemy_pos,enemies.len())
+                hero_animate(1.0/60.0,0.0)
+                hero_blade_hits()
+                loop h in player_hits:
+                    samples += 1
+                    loop k in [0..5):
+                        q = enemies[target].pos + v3(0.0,0.4+f64(k)*0.27,0.0)
+                        closest = min(closest,f64(length(q-blade_nearest(h,q))))
+                enemies_update(1.0/60.0,false)
+                camera_update(1.0/60.0)
+                sc.cam = cam.pos
+                enemy_anim_update(1.0/60.0)
+                minimum = min(minimum,f64(length((enemies[target].pos-pl.pos).xz)))
+            damage = 1000.0-enemies[target].hp
+            print("combat reach {weapon} slope={slope:.2}: damage={damage:.1} minimum_root_gap={minimum:.3}m closest={closest:.3} samples={samples} weapon={equipped_weapon()} action={fight.act}")
+            if damage <= 0.0: failures += 1
+    assert(failures == 0,"body spacing must permit drawn player weapon contacts")
+    print("PASS combat reach: four weapon classes connect through the production pose/controller paths on flat ground and a slope")

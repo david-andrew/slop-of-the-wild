@@ -1,0 +1,29 @@
+# CPU production geometry: the west camp's procedural cliff crown must stay
+# near its terrain crest, rather than masking the mountains with a tall slab.
+use '../game/structures.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/water_render.jo'
+use '../game/gfx.jo'
+from '../game/build.jo' import __bchunks
+worldgen_load()
+structures_pads()
+worldgen_finish()
+water_generate()
+structures_generate()
+count = 0
+low = 1000.0
+high = -1000.0
+loop vertex in __bchunks[-11988].verts:
+    if vertex.mat.w != 4.0: continue
+    p = vertex.pos
+    if abs(p.x + 1455.48) > 9.0 or abs(p.z - 1543.69) > 6.0: continue
+    count += 1
+    low = min(low, f64(p.y))
+    high = max(high, f64(p.y))
+assert(count >= 800, "retain the rooted camp cliff rib")
+assert(low < 205.0, "camp cliff root must stay buried")
+crest = height_at(-1455.6677644142692, 1541.5618809437874)
+print("camp cliff rib: {count} vertices, extent {low:.4}..{high:.4} m; terrain {crest:.4} m; crown {high-crest:.4} m above terrain")
+assert(high < crest + 2.5, "west camp cliff crown must not grow into the skyline slab")
+print("PASS camp outcrop: rooted cliff rib retained, oversized crown below terrain + 2.5 m")

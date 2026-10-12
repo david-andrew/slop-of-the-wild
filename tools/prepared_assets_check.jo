@@ -1,0 +1,107 @@
+build:
+    opt = release
+use '../game/sfx.jo'
+use '../game/music.jo'
+use '../game/audio_cache.jo'
+use '../game/audio_assets.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/water.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/texture_assets.jo'
+use '../game/mesh_assets.jo'
+use '../game/asset_stream.jo'
+from '../game/texture_assets.jo' import __texture_paths
+
+# Run twice (prepared / BOTW_NO_PREPARED_ASSETS=1) and compare complete bank/grid
+# bit hashes. This checks playback samples, alias graph, RNG and terrain physics.
+sample_hash = (s: Sound) -> u64:
+    bits = data(s.samples) as *u32
+    h = u64(14695981039346656037)
+    loop i in [0..s.samples.len()): h = (h xor u64(bits[i])) * u64(1099511628211)
+    h
+asset_report = (name: str, asset: AudioAsset):
+    samples: Sound[]
+    count = 0
+    loop i in 0.. and group in asset.groups:
+        loop j in 0.. and s in group:
+            id = -1
+            loop k in 0.. and old in samples:
+                if data(old.samples) == data(s.samples): id = k
+            if id < 0:
+                id = samples.len()
+                samples.push(s)
+            count += s.samples.len()
+            print("{name} {i} {j} alias {id} n {s.samples.len()} hash {sample_hash(s)}")
+    print("{name} flags {asset.flags} sample_refs {count}")
+seed_random(12345)
+saved = __global_rng
+sfx_init()
+piano_init()
+audio_cache_init()
+assert(__global_rng.s0 == saved.s0 and __global_rng.s1 == saved.s1 and __global_rng.s2 == saved.s2 and __global_rng.s3 == saved.s3, "prepared and generated audio preserve gameplay RNG")
+asset_report("sfx", sfx_asset())
+asset_report("piano", piano_asset())
+asset_report("chime", chime_asset())
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+print("world height {sample_hash(Sound(hf.h))} water {sample_hash(Sound(water_grid))}")
+h = u64(14695981039346656037)
+loop byte in hf.mat: h = (h xor u64(byte)) * u64(1099511628211)
+print("world material {h}")
+print("prepared assets complete samples/aliases/RNG/world: PASS")
+
+# Small roundtrip fixture exercises empty/nonempty sounds, shared aliases, stale
+# fingerprints and truncated records without copying the large production packs.
+if env("BOTW_NO_PREPARED_ASSETS") == none:
+    fixture = Sound([f32(0.125), f32(-0.25)])
+    small = AudioAsset([[fixture, fixture], [Sound()]], [17])
+    mkdir("build/prepared-check")
+    assert(audio_asset_write("build/prepared-check/small.bin", 123, small))
+    decoded = audio_asset_read("build/prepared-check/small.bin", 123)!
+    assert(decoded.flags == [17] and decoded.groups.len() == 2)
+    assert(decoded.groups[0][0].samples == fixture.samples)
+    assert(data(decoded.groups[0][0].samples) == data(decoded.groups[0][1].samples))
+    assert(audio_asset_read("build/prepared-check/small.bin", 124) == none)
+    raw = read_bytes("build/prepared-check/small.bin")!
+    assert(write_bytes("build/prepared-check/truncated.bin", raw[..raw.len() - 1)))
+    assert(audio_asset_read("build/prepared-check/truncated.bin", 123) == none)
+
+# Exact production RGBA bytes and a re-encoded pack must match decoded source
+# PNGs, including dimensions and the existing vegetation material alias.
+texture_manifest()
+texture_assets_init()
+images: {str: Image} = {}
+loop path in __texture_paths:
+    img = startup_image(path)!
+    h = u64(14695981039346656037)
+    loop byte in img.pixels: h = (h xor u64(byte)) * u64(1099511628211)
+    print("texture {path} {img.width}x{img.height} bytes {img.pixels.len()} hash {h}")
+    images[path] = img
+mode = if env("BOTW_NO_PREPARED_ASSETS") == none: "prepared" else: "generated"
+assert(texture_asset_write(images, "build/prepared-check/textures-{mode}.bin"))
+assert(texture_asset_read("assets/prepared/textures.bin", texture_asset_key() xor 1) == none, "stale texture key rejects")
+# Truncated headers reject before payload reads.
+assert(write_bytes("build/prepared-check/texture-truncated.bin", [u8(0)]))
+assert(texture_asset_read("build/prepared-check/texture-truncated.bin") == none)
+# A valid outer pack with an unexpected name list rejects before image allocation.
+s = pack_create("build/prepared-check/texture-names.bin", texture_asset_key())
+names = ["unrelated.png"]
+pack_array(s, names, true)
+assert(pack_publish(s, "build/prepared-check/texture-names.bin"))
+assert(texture_asset_read("build/prepared-check/texture-names.bin") == none)
+# A bounded malformed fixture exercises inner dimensions without allocating a
+# full production image or touching prepared assets.
+s = pack_create("build/prepared-check/texture-invalid.bin", 123)
+asset_put_int(s, 16385)
+asset_put_int(s, 1)
+assert(pack_publish(s, "build/prepared-check/texture-invalid.bin"))
+s = pack_open("build/prepared-check/texture-invalid.bin", 123)
+img = Image(0, 0, [])
+texture_record(s, img, false)
+assert(not s.ok, "oversized texture dimensions reject before pixel allocation")
+asset_close(s)
+print("prepared textures complete dimensions/RGBA/stale/bounds: PASS")

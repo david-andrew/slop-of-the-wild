@@ -1,0 +1,3821 @@
+use 'audio_cache.jo'
+use 'gfx.jo'
+use 'env.jo'
+use 'post.jo'
+use 'terrain.jo'
+use 'water.jo'
+use 'worldgen.jo'
+use 'physics.jo'
+use 'build.jo'
+from 'build.jo' import __begin, __end, __quad, cur, __named_b, __bchunks
+use 'interiors.jo'
+use 'structures.jo'
+use 'scene.jo'
+use 'render.jo'
+use 'input.jo'
+use 'player.jo'
+use 'camera.jo'
+use 'items.jo'
+use 'interact.jo'
+use 'ui.jo'
+use 'story.jo'
+use 'music.jo'
+use 'skel.jo'
+use 'charshade.jo'
+use 'chars.jo'
+use 'combat.jo'
+use 'elements.jo'
+use 'fx.jo'
+use 'sfx.jo'
+use 'dome.jo'
+use 'shrine_monk.jo'
+use 'slate_map.jo'
+
+# The four shrines of the plateau. Each entrance has a terminal (Activate) and a lift (Enter);
+# the lift takes the player down to the shrine's chambers, where a puzzle built from the game's
+# own verbs (push, carry and throw, strike, swim, climb, time a run) leads to a chest and to the
+# monk, who gives a Spirit Orb; then a light takes the player back up.
+#
+#   Oman Au   push a metal crate onto a plate to hold a bridge up; a Guardian
+#             Scout guards the bow; push the second crate under the monk's ledge
+#   Ja Baij   light barrels at the brazier, throw them at cracked walls; a chain
+#             of barrels across the chasm topples a pillar into a bridge
+#   Owa Daim  ride two turning bars across a pit; climb a stair while boulders
+#             roll down it, waiting in the niches
+#   Keh Namut crystals raise and lower the water; the current floats a heavy
+#             crate over a sunken plate, which opens the gate when it settles
+#
+# Three chambers lie 180 m below (near) their entrances. Keh Namut's (it needs water to swim in, and the
+# water physics is the map's water grid, which only works above the terrain) floats high over the
+# lowland east of the plateau, hidden (mesh and colliders) unless the player is inside it; while
+# the player is in it, its pool's cells of the water grid hold the pool's level.
+#
+# Testing: BOTW_SHRINE=1..4 starts in that shrine; BOTW_SHRINE_AT="x,y,z,face" (local to the
+# shrine's lift) places the player; BOTW_SHRINE_LOG=1 prints puzzle events.
+
+const OMAN = 0
+const JABAIJ = 1
+const OWA = 2
+const KEH = 3
+
+const GLOW_BLUE = vec4(0.25, 0.75, 1.6, 1)
+const GLOW_ORANGE = vec4(1.8, 0.65, 0.15, 1)
+
+# a shrine's chambers and progress
+struct SRec:
+    name: str
+    key: str                # zone and mesh names
+    o: vec3                 # the chambers' origin: the lift's floor
+    lo: vec3                # the zone (local)
+    hi: vec3
+    monk: vec3              # local
+    entry = -1              # index in shrines (structures.jo)
+    checkpoint = vec3(0, 0, 0)
+    check_face = 0.0
+    talk_u = -1
+    leave_u = -1
+    leave_still = 0.0
+    enter_u = -1
+    term_u = -1
+    orb_t = -1.0            # the orb's little ceremony (-1: not yet)
+    gone = false            # the monk has gone (orb given)
+
+srec = [
+    SRec("Ohman Ow", "oman_au", v3(-681.0, -8.0, 1501.0), v3(-69.0, -12.0, -51.0), v3(13.0, 18.0, 5.0), v3(0.0, 3.4, -47.0)),
+    SRec("Jaba Badge", "ja_baij", v3(-400.0, -1.0, 2002.0), v3(-15.0, -12.0, -57.0), v3(67.0, 18.0, 5.0), v3(0.0, 0.0, -51.5)),
+    SRec("Owa Dime", "owa_daim", v3(-925.0, 93.0, 2321.0), v3(-13.0, -12.0, -87.0), v3(57.0, 23.0, 5.0), v3(10.0, 9.0, -80.0)),
+    SRec("Kay Nomut", "keh_namut", v3(-365.0, 260.0, 1720.0), v3(-45.0, -8.0, -47.0), v3(13.0, 18.0, 5.0), v3(0.0, 4.0, -43.5)),
+]
+
+# Entry geometry and lens checks share the actual room dimensions.
+const SHR_ENTRY_TOP = [12.0, 6.6, 12.0, 10.0]
+const SHR_ENTRY_LEFT = [-8.0, -14.0, -12.0, -12.0]
+const SHR_ENTRY_RIGHT = [8.0, 10.0, 12.0, 12.0]
+const SHR_ENTRY_FOV = [94.0, 78.0, 62.0, 82.0]
+
+shr_cur = -1                # the shrine the player is in (-1: outside)
+__shr_ready = false
+__shr_log = false
+
+slog = (s: str):
+    if __shr_log: eprint("shrine: {s}")
+
+# a point local to a shrine's origin
+at = (o: vec3, x: f64, y: f64, z: f64) -> vec3: o + v3(x, y, z)
+
+# ---------------- building the chambers ----------------
+# the chambers' stone: a little lighter than the Shrine of Resurrection's (they are larger)
+SHR_STONE = stone(0.15, 0.17, 0.2)
+SHR_FLOOR = stone(0.21, 0.23, 0.26)
+
+# Background slate has dark engravings; bright circuits belong to mechanisms.
+const SHR_TILE = vec4(-1.0, 0.94, 0.0, 0.0)
+
+# Materials are construction-specific; fixtures retain the shared Sheikah language.
+__shrine_id = (o: vec3) -> int:
+    loop k in [0..4):
+        if length(o - srec[k].o) < 1.0: return k
+    0
+
+__floor_colour = (id: int) -> vec4:
+    # Forged warm-grey plates, scorched ochre stone, aged green clockwork slabs,
+    # and blue frost tiles retain distinct pigment under the shared cool light.
+    [stone(0.30, 0.29, 0.25), stone(0.32, 0.235, 0.18), stone(0.20, 0.28, 0.235), stone(0.20, 0.36, 0.40)][id]
+
+# Distinct reflected light temperatures.
+__shrine_accent = [vec3(2.2, 0.78, 0.22), vec3(1.9, 0.28, 0.24), vec3(1.65, 1.32, 0.38), vec3(0.22, 1.25, 1.45)]
+# Shared cool ambient: identity comes from fixture irradiance, never the air.
+const SHR_SKY = vec3(0.55, 0.61, 0.70)
+const SHR_GROUND = vec3(0.29, 0.33, 0.40)
+const SHR_HAZE = vec3(0.045, 0.070, 0.105)
+
+# Pendant centres and the floor beneath them, shared by the fixtures and their soft light.
+__pendants = [
+    [vec4(-5, 4.8, -6, 0), vec4(5, 4.8, -6, 0), vec4(-5, 4.5, -20, 0), vec4(5, 4.5, -20, 0), vec4(0, 8, -47, 3.4), vec4(-34, 5.2, -35, 0), vec4(-53, 7.8, -39, -9), vec4(-65, 7.8, -39, 3.4)],
+    [vec4(-5, 4.4, -7, 0), vec4(5, 4.4, -7, 0), vec4(-6, 4.7, -39, 0), vec4(6, 4.7, -39, 0), vec4(0, 5, -51.5, 0), vec4(26, 4.2, -10, 0), vec4(48, 4.2, -10, 0), vec4(64, 4.2, -10, 0)],
+    [vec4(-5, 3.9, -3.5, 0), vec4(5, 3.9, -3.5, 0), vec4(0, 5.8, -13.5, 0.1), vec4(0, 5.8, -28.5, 0.1), vec4(10, 14, -80, 9), vec4(24.5, 5.2, -28.5, 0), vec4(39.5, 5.2, -28.5, 0), vec4(53, 5.2, -28.5, 0)],
+    [vec4(-5, 5.6, -12, -6), vec4(5, 5.6, -12, -6), vec4(-6, 5.4, -26, 0), vec4(6, 5.4, -26, 0), vec4(0, 8, -43.5, 4), vec4(-20, 8.2, -19.5, 3.6), vec4(-35, 8.8, -14, 2.8), vec4(-42, 9.3, -14, 6)],
+]
+
+# Shallow stone-on-stone engraving: dark cut with one worn, pale lip, no emissive ink.
+# Flat quads join the existing architecture chunks and never add colliders.
+__shrine_engraving = (frame: mat4):
+    __begin(transform_point(frame, vec3(0, 0, 0)))
+    stroke = (a: vec3, b: vec3, width: f64):
+        d = normalize(b - a)
+        edge = vec3(-d.y, d.x, 0) * f32(width * 0.5)
+        n = transform_dir(frame, vec3(0, 0, 1))
+        __quad(cur, transform_point(frame, a - edge), transform_point(frame, b - edge), transform_point(frame, b + edge), transform_point(frame, a + edge), n, stone(0.17, 0.19, 0.21), PLAIN)
+        lip = vec3(0.028, -0.024, 0.006)
+        __quad(cur, transform_point(frame, a + edge), transform_point(frame, b + edge), transform_point(frame, b + edge + lip), transform_point(frame, a + edge + lip), n, stone(0.24, 0.265, 0.28), PLAIN)
+    # A coiled spoonful of slop, shared by wall panels and floor medallions.
+    loop k in [0..40):
+        a = TAU * 1.65 * f64(k) / 40.0
+        b = TAU * 1.65 * f64(k + 1) / 40.0
+        r = 0.06 + 0.85 * f64(k) / 40.0
+        rr = 0.06 + 0.85 * f64(k + 1) / 40.0
+        stroke(v3(cos(a) * r, sin(a) * r, 0.0), v3(cos(b) * rr, sin(b) * rr, 0.0), 0.07)
+    __end()
+
+# a floor slab whose top is at y
+__floor = (o: vec3, x0: f64, x1: f64, z0: f64, z1: f64, y: f64, th: f64 = 1.0):
+    id = __shrine_id(o)
+    tile_x = [1.25, 2.5, 1.0, 0.65][id]
+    tile_z = [1.65, 1.15, 2.5, 0.65][id]
+    nx = max(1, int(ceil((x1 - x0) / tile_x)))
+    nz = max(1, int(ceil((z1 - z0) / tile_z)))
+    col = __floor_colour(id)
+    __begin(o)
+    loop zi in [0..nz):
+        loop xi in [-1..nx):
+            offset = if id == JABAIJ and zi % 2 == 1: 0.5 else: 0.0
+            xa = max(x0, lerp(x0, x1, (f64(xi) + offset) / f64(nx)))
+            xb = min(x1, lerp(x0, x1, (f64(xi + 1) + offset) / f64(nx)))
+            if xb - xa < 0.01: continue
+            za = lerp(z0, z1, f64(zi) / f64(nz))
+            zb = lerp(z0, z1, f64(zi + 1) / f64(nz))
+            # Actual-sized plates/tiles replace the shader's shared oversized grid.
+            joint = if id == KEH: 0.012 else: 0.022
+            pts = [at(o, xa + joint, y + 0.003, za + joint), at(o, xa + joint, y + 0.003, zb - joint), at(o, xb - joint, y + 0.003, zb - joint), at(o, xb - joint, y + 0.003, za + joint)]
+            first = cur.verts.len()
+            __quad(cur, pts[0], pts[1], pts[2], pts[3], vec3(0, 1, 0), col, PLAIN)
+            wear = 0.84 + hash2(xa, za) * 0.16
+            loop k in [0..4): cur.verts[first + k].color = col * vec4(f32(wear), f32(wear), f32(wear), 1)
+            # The joints are dark stone, not holes into the slab or water below.
+            pt = (x: f64, z: f64) -> vec3: at(o, x, y + 0.002, z)
+            joint_col = stone(0.055, 0.065, 0.075)
+            if joint > 0.0:
+                loop edge in [(xa, xa + joint, za, zb), (xb - joint, xb, za, zb), (xa + joint, xb - joint, za, za + joint), (xa + joint, xb - joint, zb - joint, zb)]:
+                    __quad(cur, pt(edge.0, edge.2), pt(edge.0, edge.3), pt(edge.1, edge.3), pt(edge.1, edge.2), vec3(0, 1, 0), joint_col, PLAIN)
+            detail = (xa_: f64, xb_: f64, za_: f64, zb_: f64, c: vec4):
+                __quad(cur, pt(xa_, za_) + vec3(0, 0.004, 0), pt(xa_, zb_) + vec3(0, 0.004, 0), pt(xb_, zb_) + vec3(0, 0.004, 0), pt(xb_, za_) + vec3(0, 0.004, 0), vec3(0, 1, 0), c, PLAIN)
+            if id == OMAN:
+                # Four dull rivet heads per forged plate, no extra draw or collider.
+                loop x in [xa + 0.12, xb - 0.12]:
+                    loop z in [za + 0.12, zb - 0.12]: detail(x - 0.035, x + 0.035, z - 0.035, z + 0.035, stone(0.43, 0.40, 0.32))
+            else if id == OWA:
+                # Paired brass edges and a stepped inset give the clock floor a grain.
+                detail(xa + 0.05, xa + 0.075, za + 0.12, zb - 0.12, stone(0.53, 0.40, 0.19))
+                if (xi + zi) % 3 == 0: detail(xa + 0.15, xb - 0.15, za + 0.18, za + 0.215, stone(0.53, 0.40, 0.19))
+            else if id == JABAIJ and hash2(xa + 41.0, za) > 0.55:
+                # A charcoal scar cuts across individual slabs rather than a tiled motif.
+                detail(xa + 0.18, min(xb - 0.12, xa + 0.62), za + 0.12, za + 0.18, stone(0.08, 0.066, 0.06))
+    __end()
+    # Only the sides and underside remain from the slab. Keeping a second top
+    # under the lit grid shaded the entire floor twice across chunk boundaries.
+    corners = [at(o, x0, y - th, z0), at(o, x1, y - th, z0), at(o, x1, y, z0), at(o, x0, y, z0),
+               at(o, x0, y - th, z1), at(o, x1, y - th, z1), at(o, x1, y, z1), at(o, x0, y, z1)]
+    __begin(at(o, (x0 + x1) * 0.5, y - th * 0.5, (z0 + z1) * 0.5))
+    loop f in [(0, 3, 2, 1), (4, 5, 6, 7), (0, 4, 7, 3), (1, 2, 6, 5), (0, 1, 5, 4)]:
+        n = normalize(cross(corners[f.1] - corners[f.0], corners[f.3] - corners[f.0]))
+        side_col = vec4(col.xyz, (if n.y < -0.5: f32(0.6) else: f32(1)))
+        __quad(cur, corners[f.0], corners[f.1], corners[f.2], corners[f.3], n, side_col, PLAIN)
+    __end()
+    add_box(at(o, (x0 + x1) * 0.5, y - th, (z0 + z1) * 0.5), v3((x1 - x0) * 0.5, th * 0.5, (z1 - z0) * 0.5), 0.0, false, .stone)
+    if x1 - x0 > 7.0 and z1 - z0 > 5.0:
+        loop x in [x0 + 1.5, x1 - 1.5]:
+            __shrine_engraving(translation(at(o, x, y + 0.008, (z0 + z1) * 0.5)) * rotation_x(-PI / 2.0) * scaling(vec3(0.9, 0.9, 0.9)))
+
+# a solid block from y0 to y1
+__block = (o: vec3, x0: f64, x1: f64, z0: f64, z1: f64, y0: f64, y1: f64, climb: bool = false, col: vec4 = SHR_STONE, mat: vec4 = SHR_TILE):
+    box(at(o, (x0 + x1) / 2.0, y0, (z0 + z1) / 2.0), v3(x1 - x0, y1 - y0, z1 - z0), 0.0, col, mat, true, climb)
+
+# a glowing line (not solid)
+__line = (o: vec3, x0: f64, x1: f64, z0: f64, z1: f64, y: f64, h: f64 = 0.08, glow: f64 = 0.20):
+    box(at(o, (x0 + x1) / 2.0, y, (z0 + z1) / 2.0), v3(max(x1 - x0, 0.06), h, max(z1 - z0, 0.06)), 0.0, SHR_STONE, vec4(0.0, 0.0, f32(glow * 0.8), 0.0), false)
+
+# a pool of light on the floor (a glowing disc with a ring)
+__light_pool = (p: vec3, r: f64, glow: f64 = 0.5):
+    column(p + vec3(0, 0.01, 0), r, r, 0.02, 24, stone(0.35, 0.4, 0.45), vec4(0.0, 0.0, f32(glow * 0.06), 0.0), false)
+    column(p + vec3(0, 0.02, 0), r * 0.35, r * 0.35, 0.02, 16, stone(0.5, 0.5, 0.5), vec4(0.0, 0.0, f32(glow * 0.12), 0.0), false)
+
+# an opening in a room's wall
+struct Gap:
+    side: str               # n s w e
+    c: f64                  # center along the wall (x on n/s, z on w/e)
+    w: f64
+    h: f64
+    y = 0.0                 # the sill above the floor
+
+__wall_relief = (p: vec3, yaw: f64, w: f64, h: f64):
+    m = translation(p) * rotation_y(yaw)
+    col = SHR_STONE * vec4(1.5, 1.55, 1.6, 1)
+    # A dark back, projecting jambs, deep soffit and bevelled sill read as a recess.
+    box_m(m * translation(v3(0.0, h * 0.5, 0.02)) * scaling(v3(w, h, 0.04)), stone(0.018, 0.026, 0.04), PLAIN, false)
+    loop side in [-1.0, 1.0]:
+        box_m(m * translation(v3(side * (w * 0.5 + 0.07), h * 0.5, 0.22)) * scaling(v3(0.18, h + 0.3, 0.44)), col, SHEIKAH_M, false)
+    box_m(m * translation(v3(0.0, h + 0.1, 0.23)) * scaling(v3(w + 0.34, 0.22, 0.48)), darken(col, 0.25), PLAIN, false)
+    box_m(m * translation(v3(0.0, -0.1, 0.25)) * scaling(v3(w + 0.4, 0.2, 0.55)), col, PLAIN, false)
+    # Recesses and capitals are unlit carved stone; only working circuits emit light.
+    box_m(m * translation(v3(0.0, 0.07, 0.12)) * scaling(v3(w * 0.55, 0.035, 0.08)), col, PLAIN, false)
+    put = (x: f64, y: f64, width: f64, height: f64):
+        box_m(m * translation(v3(x, y, 0.06)) * scaling(v3(width, height, 0.035)), darken(col, 0.3), PLAIN, false)
+    loop side in [-1.0, 1.0]:
+        put(side * w * 0.43, h * 0.5, 0.07, h * 0.88)
+        put(side * w * 0.32, h * 0.89, w * 0.22, 0.07)
+    loop k in [0..3):
+        y = h * (0.2 + f64(k) * 0.19)
+        width = w * (0.44 - f64(k) * 0.08)
+        put(0.0, y, width, 0.065)
+        put(width * 0.5, y + h * 0.065, 0.065, h * 0.13)
+    glyph_scale = min(w * 0.35, h * 0.23)
+    __shrine_engraving(m * translation(v3(0.0, h * 0.70, 0.105)) * scaling(v3(glyph_scale, glyph_scale, glyph_scale)))
+
+# Baked pigment: broad mineral washes, broken pale arrises and dirt held in
+# inset corners. Scalar changes keep the four authored shrine palettes intact.
+# The irregular field is continuous within each panel, not a random tile colour.
+__wall_pigment = (x: f64, y: f64, w: f64, h: f64, seed: f64, recess: bool) -> f64:
+    wash = noise(x * 1.7 + seed, y * 1.2 + seed * 0.37)
+    grain = noise(x * 5.3 - y * 0.8 + seed, y * 4.7 + seed)
+    edge = min(min(x, w-x), min(y, h-y))
+    border = 1.0 - smoothstep(0.01, 0.085, edge)
+    foot = 1.0 - smoothstep(0.0, min(0.45, h * 0.4), y)
+    value = 0.78 + wash * 0.42 + (grain - 0.5) * 0.08
+    if recess: return value * (1.0 - border * 0.26) * (1.0 - foot * (0.08 + wash * 0.08))
+    value + border * (0.08 + smoothstep(0.35,0.72,grain) * 0.24) - foot * 0.08
+
+# The narrow first/last cells locate wear at the actual panel perimeter. All
+# pigment is vertex colour in the existing static chunk; no extra draw/material.
+__wall_painted_face = (frame: mat4, w: f64, h: f64, col: vec4, seed: f64, recess: bool, detailed: bool = true):
+    us = if detailed: [0.0, min(0.045/w,0.18), 0.26, 0.53, 0.78, 1.0-min(0.045/w,0.18), 1.0] else: [0.0,0.32,0.68,1.0]
+    vs = if detailed: [0.0, min(0.045/h,0.18), 0.24, 0.51, 0.77, 1.0-min(0.045/h,0.18), 1.0] else: [0.0,0.33,0.67,1.0]
+    normal = transform_dir(frame,vec3(0,0,1))
+    loop j in [0..vs.len()-1):
+        loop i in [0..us.len()-1):
+            points = [v3(us[i]*w,vs[j]*h,0.0),v3(us[i+1]*w,vs[j]*h,0.0),v3(us[i+1]*w,vs[j+1]*h,0.0),v3(us[i]*w,vs[j+1]*h,0.0)]
+            first = cur.verts.len()
+            __quad(cur,transform_point(frame,points[0]),transform_point(frame,points[1]),transform_point(frame,points[2]),transform_point(frame,points[3]),normal,col,PLAIN)
+            loop k in [0..4):
+                v = __wall_pigment(f64(points[k].x),f64(points[k].y),w,h,seed,recess)
+                cur.verts[first+k].color = col * vec4(f32(v),f32(v),f32(v),1)
+
+# Staggered masonry courses, forge panels, and glazed cistern lining. The dark
+# backing seals the joints; these front faces share the architecture's static chunks.
+__wall_courses = (frame: mat4, id: int, width: f64, height: f64):
+    tw = [1.5, 2.6, 1.8, 0.72][id]
+    th = [1.0, 0.85, 0.6, 0.48][id]
+    nx = max(1, int(ceil(width / tw)))
+    ny = max(1, int(ceil(height / th)))
+    normal = transform_dir(frame, vec3(0, 0, 1))
+    col = [stone(0.21, 0.215, 0.20), stone(0.255, 0.22, 0.20), stone(0.205, 0.235, 0.235), stone(0.18, 0.29, 0.30)][id]
+    __begin(transform_point(frame, vec3(0, 0, 0)))
+    face = (xa: f64, xb: f64, ya: f64, yb: f64, depth: f64, c: vec4):
+        pts = [v3(xa, ya, depth), v3(xb, ya, depth), v3(xb, yb, depth), v3(xa, yb, depth)]
+        __quad(cur, transform_point(frame, pts[0]), transform_point(frame, pts[1]), transform_point(frame, pts[2]), transform_point(frame, pts[3]), normal, c, PLAIN)
+    loop row in [0..ny):
+        ya = height * f64(row) / f64(ny)
+        yb = height * f64(row + 1) / f64(ny)
+        offset = if id == OMAN: 0.0 else: f64(row % 2) * 0.5
+        loop k in [-1..nx):
+            xa = max(0.0, width * (f64(k) + offset) / f64(nx))
+            xb = min(width, width * (f64(k + 1) + offset) / f64(nx))
+            if xb - xa < 0.06: continue
+            tone = hash2(xa + f64(id) * 12.0, ya)
+            wear = if id == JABAIJ: 0.65 + tone * 0.35 else: 0.84 + tone * 0.22
+            __wall_painted_face(frame * translation(v3(xa+0.014,ya+0.014,0.0)), xb-xa-0.028, yb-ya-0.028,
+                col * vec4(f32(wear), f32(wear), f32(wear), 1), tone*73.0, false, false)
+            # Small broken arrises on individual slabs; pigment and depth stay
+            # close to the masonry so circuits retain the strongest contrast.
+            if tone > 0.70 and xb - xa > 0.12:
+                chip = min((xb - xa) * 0.2, 0.06 + tone * 0.13)
+                xx = lerp(xa + 0.03, xb - chip - 0.03, hash2(ya, xa + 7.0))
+                face(xx, xx + chip, yb - 0.036, yb - 0.015, 0.005, col * vec4(1.08, 1.08, 1.08, 1))
+                face(xx + chip * 0.3, xx + chip, yb - 0.057, yb - 0.036, 0.005, col * vec4(0.74, 0.74, 0.74, 1))
+            # Shallow slop swirl relief in otherwise flat courses, including
+            # short walls without the tall pilaster/recess assembly. The groove
+            # and its narrow worn lip are baked into this same static chunk.
+            if width > 3.0 and height > 3.0 and row % max(4, int(4.0 / th)) == 1 and k % max(3, int(6.0 / tw)) == 1 and tone > 0.30 and xb - xa > 0.55:
+                cx = (xa + xb) * 0.5
+                cy = (ya + yb) * 0.5
+                r = min((xb - xa) * 0.31, 0.48)
+                ey = min((yb - ya) * 0.23, r * 0.42)
+                cut = (a: vec2, b: vec2):
+                    d = normalize(b - a) * 0.010
+                    n = vec2(-d.y, d.x)
+                    loop lip in [false, true]:
+                        shift = if lip: vec2(0, -0.015) else: vec2(0, 0)
+                        c = col * (if lip: vec4(1.12, 1.12, 1.12, 1) else: vec4(0.67, 0.67, 0.67, 1))
+                        points = [a - n + shift, b - n + shift, b + n + shift, a + n + shift]
+                        __quad(cur, transform_point(frame, v3(f64(points[0].x), f64(points[0].y), 0.009)), transform_point(frame, v3(f64(points[1].x), f64(points[1].y), 0.009)), transform_point(frame, v3(f64(points[2].x), f64(points[2].y), 0.009)), transform_point(frame, v3(f64(points[3].x), f64(points[3].y), 0.009)), normal, c, PLAIN)
+                loop j in [0..32):
+                    a = TAU * 1.65 * f64(j) / 32.0
+                    b = TAU * 1.65 * f64(j + 1) / 32.0
+                    ra = 0.08 + 0.92 * f64(j) / 32.0
+                    rb = 0.08 + 0.92 * f64(j + 1) / 32.0
+                    cut(vec2(f32(cx + cos(a) * r * ra), f32(cy + sin(a) * ey * 1.5 * ra)), vec2(f32(cx + cos(b) * r * rb), f32(cy + sin(b) * ey * 1.5 * rb)))
+            if id == OMAN:
+                loop x in [xa + 0.10, xb - 0.10]: face(x - 0.028, x + 0.028, ya + 0.09, ya + 0.145, 0.006, stone(0.40, 0.37, 0.30))
+            else if id == OWA and row % 3 == 0:
+                face(xa + 0.03, xb - 0.03, ya + 0.04, ya + 0.065, 0.006, stone(0.43, 0.32, 0.15))
+            else if id == JABAIJ and tone > 0.68:
+                face(xa + 0.08, min(xb - 0.04, xa + 0.45), ya + 0.15, ya + 0.20, 0.006, stone(0.065, 0.053, 0.047))
+    __end()
+
+# one stretch of wall on a side, from a0 to a1 along it
+__wseg = (o: vec3, side: str, a0: f64, a1: f64, x0: f64, x1: f64, z0: f64, z1: f64, y0: f64, y1: f64, climb: bool, lines: bool):
+    if a1 - a0 < 0.01 or y1 - y0 < 0.01: return
+    id = __shrine_id(o)
+    backing = stone(0.075, 0.082, 0.085)
+    frame = match side:
+        "n": translation(at(o, a0, y0, z0 + 0.015))
+        "s": translation(at(o, a1, y0, z1 - 0.015)) * rotation_y(PI)
+        "w": translation(at(o, x0 + 0.015, y0, a1)) * rotation_y(PI / 2.0)
+        _: translation(at(o, x1 - 0.015, y0, a0)) * rotation_y(-PI / 2.0)
+    match side:
+        "n": __block(o, a0, a1, z0 - 1.0, z0, y0, y1, climb, backing, PLAIN)
+        "s": __block(o, a0, a1, z1, z1 + 1.0, y0, y1, climb, backing, PLAIN)
+        "w": __block(o, x0 - 1.0, x0, a0, a1, y0, y1, climb, backing, PLAIN)
+        _: __block(o, x1, x1 + 1.0, a0, a1, y0, y1, climb, backing, PLAIN)
+    __wall_courses(frame, id, a1 - a0, y1 - y0)
+    # Wall relief is structural language in every hall, including the themed
+    # arrival rooms whose ceiling decoration is deliberately disabled.
+    __wall_bays(frame, id, a1 - a0, y1 - y0)
+
+# Half-metre deep jambs cast a readable silhouette at 15 m. Inlays are 6 cm
+# wide, within human-scale 2 m panels, never a luminous wall-sized texture.
+# All pieces stay at the shell edge; the original wall owns collision/climbing.
+__wall_bays = (frame: mat4, id: int, width: f64, height: f64, depth: f64 = 1.0):
+    if width < 1.4 or height < 2.0: return
+    col = [stone(0.31, 0.30, 0.26), stone(0.34, 0.27, 0.23), stone(0.32, 0.34, 0.32), stone(0.30, 0.43, 0.44)][id]
+    metal = [stone(0.42, 0.30, 0.16), stone(0.24, 0.18, 0.13), stone(0.48, 0.36, 0.17), stone(0.39, 0.55, 0.54)][id]
+    put = (x: f64, y: f64, z: f64, w: f64, h: f64, d: f64, c: vec4):
+        box_m(frame * translation(v3(x, y, z * depth)) * scaling(v3(w, h, d * depth)), c, PLAIN, false)
+        # Face wash and edge wear on the stone surround; leave narrow metal
+        # traces alone. Recess paint sits behind the inlays and carved swirl.
+        if d >= 0.18 or (d == 0.075 and w > 0.5):
+            surface = frame * translation(v3(x-w*0.5,y-h*0.5,(z+d*0.5)*depth+0.002))
+            __begin(transform_point(surface,vec3(0,0,0)))
+            __wall_painted_face(surface,w,h,c,hash2(x+f64(id)*17.0,y)*91.0,d==0.075)
+            __end()
+    put(width * 0.5, 0.23, 0.19, width, 0.46, 0.38, darken(col, 0.28))
+    put(width * 0.5, 0.52, 0.24, width, 0.12, 0.48, col)
+    # The lower cornice remains below the themed roof's descending edges.
+    top = max(1.8, height - 1.8)
+    put(width * 0.5, top, 0.26, width, 0.22, 0.52, col)
+    put(width * 0.5, top + 0.20, 0.19, width, 0.18, 0.38, darken(col, 0.20))
+    count = max(1, int(round(width / 3.6)))
+    bay = width / f64(count)
+    loop k in [0..count):
+        cx = (f64(k) + 0.5) * bay
+        pw = min(2.4, bay - 0.8)
+        ph = min(3.1, top - 1.2)
+        if pw > 0.5 and ph > 0.7:
+            # A dark inset surrounded by a wide, stepped frame.
+            put(cx, 0.82 + ph * 0.5, 0.055, pw, ph, 0.075, darken(col, 0.64))
+            loop side in [-1.0, 1.0]:
+                put(cx + side * (pw * 0.5 + 0.10), 0.82 + ph * 0.5, 0.23, 0.20, ph + 0.34, 0.46, col)
+                put(cx + side * (pw * 0.5 - 0.06), 0.82 + ph * 0.5, 0.12, 0.06, ph - 0.10, 0.09, metal)
+            loop y in [0.72, 0.92 + ph]: put(cx, y, 0.25, pw + 0.40, 0.20, 0.50, col)
+            # Small angular Sheikah line inlays, recessed inside the panel.
+            loop side in [-1.0, 1.0]:
+                put(cx + side * pw * 0.26, 1.10 + ph * 0.25, 0.105, 0.06, ph * 0.44, 0.025, metal)
+                put(cx + side * pw * 0.15, 1.10 + ph * 0.47, 0.105, pw * 0.27, 0.06, 0.025, metal)
+            glyph = min(0.62, ph * 0.22)
+            __shrine_engraving(frame * translation(v3(cx, 0.86 + ph * 0.70, 0.12 * depth)) * scaling(v3(glyph, glyph, glyph)))
+        if k == 0: continue
+        x = f64(k) * bay
+        # Forge I-ribs, blast buttresses, clockwork flutes, paired cistern reeds.
+        rib = [0.40, 0.62, 0.30, 0.24][id]
+        put(x, top * 0.5, 0.26, rib, top, 0.52, darken(col, 0.10))
+        if id == OWA or id == KEH:
+            loop side in [-1.0, 1.0]: put(x + side * 0.23, top * 0.5, 0.19, 0.10, top, 0.38, col)
+        loop y in [0.24, top - 0.26]: put(x, y, 0.30, rib + 0.34, 0.36, 0.60, col)
+        if id == OMAN or id == JABAIJ:
+            loop y in [1.1, 2.5, 3.9]:
+                if y < top - 0.5: put(x, y, 0.29, rib + 0.15, 0.12, 0.60, metal)
+
+__shrine_roof_height = (id: int, top: f64, u: f64) -> f64:
+    match id:
+        # A stepped furnace hood; chamfered blast shield; clockwork barrel
+        # vault; three linked cistern vaults. All stay above working machinery.
+        OMAN: top - (if u < 0.16 or u > 0.84: 1.5 else: (if u < 0.32 or u > 0.68: 0.8 else: 0.15))
+        JABAIJ: top - 1.8 + min(1.6, min(u, 1.0 - u) * 5.0)
+        OWA: top - 2.4 + sin(u * PI) * 2.25
+        _: top - 1.7 + abs(sin(u * PI * 3.0)) * 1.5
+
+__profile_roof = (o: vec3, x0: f64, x1: f64, z0: f64, z1: f64, top: f64, shaft: bool = false):
+    id = 0
+    loop k in [0..4):
+        if length(o - srec[k].o) < 1.0: id = k
+    __begin(o)
+    loop k in [0..24):
+        u = f64(k) / 24.0
+        v = f64(k + 1) / 24.0
+        xa = lerp(x0, x1, u)
+        xb = lerp(x0, x1, v)
+        ya = __shrine_roof_height(id, top, if id == OMAN: (u + v) * 0.5 else: u)
+        yb = if id == OMAN: ya else: __shrine_roof_height(id, top, v)
+        n = normalize(v3(yb - ya, xa - xb, 0.0))
+        col = darken(SHR_STONE * vec4(1.55, 1.5, 1.45, 1), hash2(f64(k), z0) * 0.15)
+        # Undersides face into the room; matching winding keeps them visible
+        # with the renderer's back-face culling.
+        panel = (aa: f64, bb: f64, zz0: f64, zz1: f64):
+            if bb-aa < 0.001 or zz1-zz0 < 0.001: return
+            ay = lerp(ya,yb,(aa-xa)/(xb-xa))
+            by = lerp(ya,yb,(bb-xa)/(xb-xa))
+            # The camera must stop at the visible soffit, not the old flat roof
+            # above it. Conservative narrow strips also cover the shallow bands.
+            underside = min(ay,by)-0.04
+            add_box(at(o,(aa+bb)*0.5,underside,(zz0+zz1)*0.5),v3((bb-aa)*0.5,(top+1.0-underside)*0.5,(zz1-zz0)*0.5),0.0,false,.stone)
+            __quad(cur,at(o,aa,ay,zz0),at(o,bb,by,zz0),at(o,bb,by,zz1),at(o,aa,ay,zz1),n,col,PLAIN)
+            loop j in [cur.verts.len()-4..cur.verts.len()): cur.verts[j].light += vec3(0.10,0.13,0.18)
+            # Shallow transverse stone bands describe the profile in upward views.
+            loop rib in [1..int((zz1-zz0)/3.5)+1):
+                z = zz0+f64(rib)*3.5
+                if z+0.16 >= zz1: continue
+                __quad(cur,at(o,aa,ay-0.035,z),at(o,bb,by-0.035,z),at(o,bb,by-0.035,z+0.16),at(o,aa,ay-0.035,z+0.16),n,col*vec4(1.3,1.3,1.3,1),PLAIN)
+        if shaft and xb > -2.6 and xa < 2.6:
+            panel(xa,min(xb,-2.6),z0,z1)
+            panel(max(xa,2.6),xb,z0,z1)
+            panel(max(xa,-2.6),min(xb,2.6),z0,-2.6)
+            panel(max(xa,-2.6),min(xb,2.6),2.6,z1)
+        else: panel(xa,xb,z0,z1)
+        prev = __shrine_roof_height(id, top, (u + v) * 0.5 - 1.0 / 24.0)
+        if id == OMAN and k > 0 and abs(ya - prev) > 0.2:
+            __quad(cur, at(o, xa, ya, z0), at(o, xa, ya, z1), at(o, xa, prev, z1), at(o, xa, prev, z0), v3((if u < 0.5: 1.0 else: -1.0), 0.0, 0.0), SHR_STONE, PLAIN)
+    __end()
+
+# a room's walls (with openings), ceiling and lamps; floors are separate (rooms have pits)
+__shell = (o: vec3, x0: f64, x1: f64, z0: f64, z1: f64, y0: f64, h: f64, gaps: Gap[], skip: str = "", climb: bool = false, decor: bool = true, coffers: bool = true, shaft: bool = false):
+    loop side in ["n", "s", "w", "e"]:
+        if contains(skip, side): continue
+        ns = side == "n" or side == "s"
+        a0 = if ns: x0 - 1.0 else: z0
+        a1 = if ns: x1 + 1.0 else: z1
+        p = a0
+        loop g in gaps:
+            if g.side != side: continue
+            g0 = g.c - g.w / 2.0
+            g1 = g.c + g.w / 2.0
+            __wseg(o, side, p, g0, x0, x1, z0, z1, y0, y0 + h, climb, decor)
+            __wseg(o, side, g0, g1, x0, x1, z0, z1, y0 + g.y + g.h, y0 + h, climb, false)
+            if g.y > 0.0: __wseg(o, side, g0, g1, x0, x1, z0, z1, y0, y0 + g.y, climb, false)
+            # Thick stone jambs frame the opening without a competing glow
+            loop e in [g0, g1]:
+                q = if ns: (if side == "n": at(o, e, y0 + g.y, z0 + 0.05) else: at(o, e, y0 + g.y, z1 - 0.05)) else: (if side == "w": at(o, x0 + 0.05, y0 + g.y, e) else: at(o, x1 - 0.05, y0 + g.y, e))
+                box(q, v3(0.26, g.h, 0.26), 0.0, SHR_STONE, SHEIKAH_M, false)
+            # Join the two wall faces above the passage; the profiled room roof
+            # starts at the inner face and cannot cover this one-metre reveal.
+            if ns:
+                box(at(o,g.c,y0+g.y+g.h,if side == "n": z0-0.5 else: z1+0.5),v3(g.w,0.18,1.0),0.0,SHR_STONE,PLAIN,false)
+            else:
+                box(at(o,if side == "w": x0-0.5 else: x1+0.5,y0+g.y+g.h,g.c),v3(1.0,0.18,g.w),0.0,SHR_STONE,PLAIN,false)
+            p = g1
+        __wseg(o, side, p, a1, x0, x1, z0, z1, y0, y0 + h, climb, decor)
+    # The visible soffit and its collision share the shrine's profile, including
+    # in annexes. The flat backing above it seals the exterior of the roof.
+    if x1 - x0 > 7.0 and h >= 6.0:
+        __profile_roof(o, x0, x1, z0, z1, y0 + h, shaft)
+        add_box(at(o, (x0 + x1) * 0.5, y0 + h, (z0 + z1) * 0.5), v3((x1 - x0 + 2.0) * 0.5, 0.5, (z1 - z0 + 2.0) * 0.5), 0.0, false, .stone)
+    else:
+        box(at(o, (x0 + x1) / 2.0, y0 + h, (z0 + z1) / 2.0), v3(x1 - x0 + 2.0, 1.0, z1 - z0 + 2.0), 0.0, SHR_STONE, PLAIN, true, false)
+    if not coffers: return
+    # the ceiling steps up from the walls in two tiers
+    loop t in [0..2):
+        th = 0.4
+        dd = 0.9 - f64(t) * 0.45
+        yy = y0 + h - 0.4 - f64(1 - t) * 0.4
+        col_ = darken(SHR_STONE, f32(0.35 - f64(t) * 0.1))
+        box(at(o, (x0 + x1) / 2.0, yy, z0 + dd / 2.0), v3(x1 - x0, th, dd), 0.0, col_, PLAIN, false)
+        box(at(o, (x0 + x1) / 2.0, yy, z1 - dd / 2.0), v3(x1 - x0, th, dd), 0.0, col_, PLAIN, false)
+        box(at(o, x0 + dd / 2.0, yy, (z0 + z1) / 2.0), v3(dd, th, z1 - z0), 0.0, col_, PLAIN, false)
+        box(at(o, x1 - dd / 2.0, yy, (z0 + z1) / 2.0), v3(dd, th, z1 - z0), 0.0, col_, PLAIN, false)
+    # a coffered ceiling: deep beams both ways
+    loop i in [1..int((x1 - x0) / 4.0)):
+        box(at(o, x0 + f64(i) * 4.0, y0 + h - 0.6, (z0 + z1) / 2.0), v3(0.45, 0.6, z1 - z0), 0.0, darken(SHR_STONE, 0.3), PLAIN, false)
+    loop k in [1..int((z1 - z0) / 4.0)):
+        box(at(o, (x0 + x1) / 2.0, y0 + h - 0.6, z0 + f64(k) * 4.0), v3(x1 - x0, 0.6, 0.45), 0.0, darken(SHR_STONE, 0.3), PLAIN, false)
+# Common functional lift disc; its surround, approach and shaft express each room.
+__lift_pad = (o: vec3):
+    id = __shrine_id(o)
+    iron = stone(0.23,0.25,0.26)
+    brass = stone(0.47,0.36,0.21)
+    pale = stone(0.36,0.43,0.45)
+    match id:
+        OMAN:
+            # Recessed square forge apron, wheel stops and straight crate tracks.
+            box(o+vec3(0,0.003,0),v3(5.6,0.035,5.6),0.0,iron,PLAIN,false)
+            loop side in [-1.0,1.0]:
+                box(at(o,side*2.75,0.01,0),v3(0.15,0.045,5.6),0.0,brass,PLAIN,false)
+                loop z in [-2.6,2.6]: box(at(o,side*2.65,0.05,z),v3(0.45,0.16,0.55),0.0,iron,PLAIN,false)
+            loop x in [-1.8,1.8]:
+                box(at(o,x,0.016,-4.7),v3(0.12,0.02,3.8),0.0,brass,PLAIN,false)
+            # The only blue route branches toward the actual pressure plate.
+            __line(o,-5.0,-2.8,-2.5,-2.5,0.035,0.06,0.18)
+            __line(o,-5.0,-5.0,-4.0,-2.5,0.035,0.06,0.18)
+        JABAIJ:
+            # Heavy octagonal blast collar and scorched radial drain grooves.
+            column(o+vec3(0,-0.02,0),2.9,2.9,0.075,8,stone(0.25,0.19,0.16),PLAIN,false)
+            __ring_stone(o+vec3(0,0.06,0),2.55,0.22,0.075,iron)
+            loop k in [0..8):
+                a = TAU*f64(k)/8.0
+                box(o+v3(cos(a)*2.6,0.08,sin(a)*2.6),v3(0.38,0.09,0.32),-a,brass,PLAIN,false)
+            # The fire and cracked masonry already explain the route; no guide lines.
+        OWA:
+            # A toothed bronze dial at the end of the long clockwork gallery.
+            __ring_stone(o+vec3(0,0.015,0),2.48,0.48,0.045,brass)
+            loop k in [0..24):
+                a = TAU*f64(k)/24.0
+                box(o+v3(cos(a)*2.78,0.02,sin(a)*2.78),v3(0.36,0.07,0.27),-a,iron,PLAIN,false)
+                box(o+v3(cos(a)*2.45,0.065,sin(a)*2.45),v3(0.26,0.016,0.035),-a,stone(0.65,0.50,0.25),PLAIN,false)
+            loop x in [-1.8,1.8]:
+                box(at(o,x,0.012,-4.2),v3(0.08,0.02,2.8),0.0,brass,PLAIN,false)
+        _:
+            # Pale raised quay; a central walkway and a crosswalk to the valve.
+            box(o+vec3(0,0.003,0),v3(5.2,0.055,5.2),0.0,pale,PLAIN,false)
+            loop side in [-1.0,1.0]:
+                box(at(o,side*2.68,0.0,-2.9),v3(0.18,0.18,1.8),0.0,pale,PLAIN,false)
+                loop z in [-2.0,-3.7]: column(at(o,side*2.68,0.0,z),0.10,0.08,0.75,6,pale,PLAIN,false)
+            # Cool inlaid walkway edges lead to water rather than a radial V.
+            loop x in [-2.3,2.3]: __line(o,x,x,-3.8,-2.4,0.04,0.05,0.12)
+    # Shared Sheikah lift: dark inset slate, a thick segmented stone rim,
+    # recessed circuit branches and a central slop swirl; themed aprons remain outside.
+    pad_stone = stone(0.25, 0.27, 0.255)
+    pad_slate = stone(0.10, 0.1675, 0.16)
+    circuit = vec4(0, 0, 0.34, 0)
+    column(o+vec3(0,0.04,0),2.15,2.15,0.07,32,iron,PLAIN,false)
+    column(o+vec3(0,0.11,0),1.92,1.92,0.045,32,pad_slate,PLAIN,false)
+    __ring_stone(o+vec3(0,0.135,0),2.0,0.24,0.06,pad_stone)
+    __ring_stone(o+vec3(0,0.167,0),1.78,0.045,0.014,SHR_STONE,circuit)
+    loop k in [0..8):
+        a = TAU*f64(k)/8.0
+        m = translation(o)*rotation_y(a)
+        box_m(m*translation(v3(1.4,0.167,0))*scaling(v3(0.57,0.014,0.04)),SHR_STONE,circuit,false)
+        box_m(m*translation(v3(1.12,0.167,0.15))*scaling(v3(0.04,0.014,0.34)),SHR_STONE,circuit,false)
+        box_m(m*translation(v3(0.94,0.167,0.30))*scaling(v3(0.37,0.014,0.04)),SHR_STONE,circuit,false)
+        column(transform_point(m,v3(0.76,0.167,0.3)),0.065,0.065,0.015,8,SHR_STONE,circuit,false)
+        # Separate stone sectors make the rim thickness read without tall obstacles.
+        box_m(m*translation(v3(2.0,0.196,0))*scaling(v3(0.26,0.012,0.045)),iron,PLAIN,false)
+    # The swirl stays in the original small emissive inlay batch.
+    loop k in [0..40):
+        a = TAU * 1.65 * f64(k) / 40.0
+        b = TAU * 1.65 * f64(k + 1) / 40.0
+        r = 0.05 + 0.65 * f64(k) / 40.0
+        rr = 0.05 + 0.65 * f64(k + 1) / 40.0
+        p0 = v3(cos(a) * r, 0.174, sin(a) * r)
+        p1 = v3(cos(b) * rr, 0.174, sin(b) * rr)
+        box_m(translation(o + (p0 + p1) * 0.5) * rotation_y(-atan2(f64(p1.z - p0.z), f64(p1.x - p0.x))) * scaling(v3(f64(length(p1 - p0)) + 0.01, 0.014, 0.045)), SHR_STONE, circuit, false)
+    __lift_shaft(o,id)
+
+# The open aperture leads into a lined lift well. Recessed courses and a dim
+# blue cap keep its depth legible even in the wide lens or looking straight up.
+__lift_shaft = (o: vec3, id: int):
+    bottom = [4.4,4.0,4.8,4.6][id]
+    col = [stone(0.28,0.28,0.25),stone(0.28,0.23,0.20),stone(0.45,0.35,0.21),stone(0.38,0.47,0.49)][id]
+    lining = stone(0.21,0.255,0.30)
+    __begin(o)
+    first = cur.verts.len()
+    loop side in [0..4):
+        a = [-2.6,2.6,2.6,-2.6][side]
+        b = [-2.6,-2.6,2.6,2.6][side]
+        c = [-2.6,2.6,2.6,-2.6][(side+1)%4]
+        d = [-2.6,-2.6,2.6,2.6][(side+1)%4]
+        aa=at(o,a,bottom,b)
+        bb=at(o,c,bottom,d)
+        nn=normalize(v3(-(a+c),0,-(b+d)))
+        # Continuous backing closes the joints; inward winding survives culling.
+        __quad(cur,aa,bb,bb+v3(0,16.0-bottom,0),aa+v3(0,16.0-bottom,0),nn,darken(lining,0.35),PLAIN)
+        loop row in [0..6):
+            y0 = lerp(bottom,16.0,f64(row)/6.0)+0.025
+            y1 = lerp(bottom,16.0,f64(row+1)/6.0)-0.025
+            loop tile in [0..3):
+                edge0 = lerp(aa,bb,f32(f64(tile)/3.0))+nn*0.012
+                edge1 = lerp(aa,bb,f32(f64(tile+1)/3.0))+nn*0.012
+                along = normalize(bb-aa)*0.025
+                edge0 += along
+                edge1 -= along
+                tint = darken(lining,hash2(f64(row+side*6),f64(tile))*0.16)
+                __quad(cur,edge0+v3(0,y0-bottom,0),edge1+v3(0,y0-bottom,0),edge1+v3(0,y1-bottom,0),edge0+v3(0,y1-bottom,0),nn,tint,PLAIN)
+        # The hanging collar has an outside too, seen from beyond the lift.
+        __quad(cur,bb,aa,aa+v3(0,16.0-bottom,0),bb+v3(0,16.0-bottom,0),-nn,lining,SHR_TILE)
+    # Coplanar inset panels keep the physical cap at 16 m. Their low blue emission
+    # reads as a distant fixture, quieter than the lift and active puzzle circuits.
+    loop ix in [0..4):
+        loop iz in [0..4):
+            xa = -2.6+f64(ix)*1.3
+            za = -2.6+f64(iz)*1.3
+            __quad(cur,at(o,xa,16,za),at(o,xa+1.3,16,za),at(o,xa+1.3,16,za+1.3),at(o,xa,16,za+1.3),vec3(0,-1,0),lining,vec4(0,0,0.045,0))
+    # Bounded cool bounce on this well only; it does not brighten the puzzle floor.
+    loop j in [first..cur.verts.len()):
+        y = f64(cur.verts[j].pos.y-o.y)
+        cur.verts[j].light += vec3(0.10,0.16,0.24) * f32(0.4+0.6*smoothstep(bottom,16.0,y))
+    __end()
+    loop side in [-1.0,1.0]:
+        box(at(o,side*2.7,bottom-0.14,0),v3(0.3,0.34,5.7),0.0,col,PLAIN,false)
+        box(at(o,0,bottom-0.14,side*2.7),v3(5.7,0.34,0.3),0.0,col,PLAIN,false)
+        # Rear guide rails stop outside the arrival lens and functional lift.
+        box(at(o,side*2.4,0.2,2.65),v3(0.13,bottom-0.2,0.16),0.0,col,PLAIN,false)
+        loop y in [bottom+0.6,bottom+2.5,13.2,15.7]:
+            box(at(o,side*2.56,y,0),v3(0.065,0.12,5.0),0.0,col,PLAIN,false)
+            box(at(o,0,y,side*2.56),v3(5.0,0.12,0.065),0.0,col,PLAIN,false)
+        # Recessed top rim and four guides give the cap a scale and a vanishing point.
+        box(at(o,side*2.42,15.86,0),v3(0.10,0.08,4.9),0.0,col,vec4(0,0,0.09,0),false)
+        box(at(o,0,15.86,side*2.42),v3(4.9,0.08,0.10),0.0,col,vec4(0,0,0.09,0),false)
+        loop z in [-2.43,2.43]:
+            box(at(o,side*2.43,bottom,z),v3(0.12,16.0-bottom,0.12),0.0,col,PLAIN,false)
+
+# an abyss: a dark floor far down with a faint glow
+__abyss = (o: vec3, x0: f64, x1: f64, z0: f64, z1: f64, y: f64):
+    __floor(o, x0, x1, z0, z1, y)
+    box(at(o, (x0 + x1) / 2.0, y + 0.02, (z0 + z1) / 2.0), v3(x1 - x0, 0.02, z1 - z0), 0.0, stone(0.03, 0.04, 0.05), vec4(0.0, 0.0, 0.05, 0.0), false)
+
+# the monk's seat: a dais, a seat, a ring of light (named: it glows orange until the orb is given)
+__monk_dais = (r: SRec):
+    p = r.o + r.monk
+    begin_named(r.key + "_dais")
+    column(p + vec3(0, -0.02, 0), 1.6, 1.6, 0.25, 24, SHR_STONE, PLAIN, false)
+    column(p + vec3(0, 0.23, 0), 1.45, 1.45, 0.025, 24, stone(0.4, 0.4, 0.42), vec4(0.0, 0.0, 0.6, 0.0), false)
+    column(p + vec3(0, 0.24, 0), 1.25, 1.25, 0.025, 24, SHR_STONE, PLAIN, false)
+    # a half ring of tall lamps behind the monk
+    loop k in [0..5):
+        a = PI + f64(k) / 4.0 * PI
+        q = p + v3(cos(a) * 2.8, 0.0, sin(a) * 2.8)
+        column(q, 0.16, 0.12, 2.6, 8, SHR_STONE, PLAIN, false)
+        # a stone cup at the top with a ring of light in it
+        column(q + vec3(0, 2.6, 0), 0.12, 0.24, 0.2, 8, SHR_STONE, PLAIN, false)
+        column(q + vec3(0, 2.8, 0), 0.2, 0.2, 0.05, 8, SHR_STONE, vec4(0.0, 0.0, 1.6, 0.0), false)
+    __arch(p + vec3(0, 1.5, -1.8), 2.15, 2.4, 0.5, stone(0.42, 0.37, 0.28), SHEIKAH_M)
+    loop side in [-1.0, 1.0]:
+        column(p + v3(side * 2.15, 0.0, -1.8), 0.3, 0.25, 1.5, 8, stone(0.42, 0.37, 0.28), PLAIN, false)
+    __ring_stone(p + vec3(0, 0.265, 0), 1.32, 0.04, 0.02, SHR_STONE, SH_GLOW)
+    end_named()
+    add_cyl(p - vec3(0, 0.02, 0), 1.0, 0.75, false, .stone)
+
+# All of this masonry is decorative; the trial's original shell owns collision.
+__arch = (p: vec3, rx: f64, ry: f64, depth: f64, col: vec4, mat: vec4 = PLAIN):
+    loop k in [0..20):
+        a = (f64(k) + 0.5) * PI / 20.0
+        tangent = atan2(ry * cos(a), -rx * sin(a))
+        len_ = length(v3(rx * sin(a), ry * cos(a), 0.0)) * f32(PI / 20.0)
+        box_m(translation(p + v3(rx * cos(a), ry * sin(a), 0.0)) * rotation_z(tangent) * scaling(v3(f64(len_) * 1.02, 0.42, depth)), col, mat, false)
+
+__vault = (o: vec3, half: f64, z0: f64, z1: f64, spring: f64, rise: f64, bays: int, col: vec4):
+    __arch(at(o, 0.0, spring, (z0 + z1) * 0.5), half, rise, z1 - z0, darken(col, 0.38))
+    loop k in [0..bays + 1):
+        z = lerp(z0, z1, f64(k) / f64(bays))
+        __arch(at(o, 0.0, spring - 0.18, z), half, rise, 0.65, col)
+        loop side in [-1.0, 1.0]:
+            box(at(o, side * (half - 0.2), spring - 0.8, z), v3(0.65, 0.9, 0.95), 0.0, col, SHEIKAH_M, false)
+    box(at(o, 0.0, spring + rise - 0.32, (z0 + z1) * 0.5), v3(0.65, 0.35, z1 - z0), 0.0, col, PLAIN, false)
+
+__ring_stone = (p: vec3, radius: f64, width: f64, height: f64, col: vec4, mat: vec4 = PLAIN):
+    loop k in [0..32):
+        a = (f64(k) + 0.5) * TAU / 32.0
+        box(p + v3(cos(a) * radius, 0.0, sin(a) * radius), v3(width, height, radius * TAU / 32.0 * 1.02), -a, col, mat, false)
+
+__portal = (o: vec3, z: f64, height: f64, col: vec4):
+    __arch(at(o, 0.0, height, z), 2.8, 1.8, 0.65, col, SHEIKAH_M)
+    loop side in [-1.0, 1.0]:
+        box(at(o, side * 2.65, 0.0, z), v3(0.6, height, 0.55), 0.0, col, SHEIKAH_M, false)
+        box(at(o, side * 2.65, height - 0.3, z), v3(1.0, 0.3, 0.8), 0.0, col, PLAIN, false)
+    box_m(translation(at(o, 0.0, height + 1.8, z + 0.38)) * rotation_z(PI / 4.0) * scaling(v3(0.62, 0.62, 0.18)), col, SHR_TILE, false)
+
+__gallery = (o: vec3, half: f64, z0: f64, z1: f64, y: f64, col: vec4):
+    loop side in [-1.0, 1.0]:
+        x = side * (half - 0.5)
+        box(at(o, x, y, (z0 + z1) * 0.5), v3(1.0, 0.35, z1 - z0), 0.0, col, PLAIN, false)
+        box(at(o, x, y + 1.0, (z0 + z1) * 0.5), v3(0.9, 0.2, z1 - z0), 0.0, col, PLAIN, false)
+        loop k in [0..int((z1 - z0) / 2.0) + 1):
+            z = z0 + f64(k) * 2.0
+            box(at(o, side * (half - 0.82), y + 0.35, z), v3(0.2, 0.65, 0.24), 0.0, col, PLAIN, false)
+            if k % 3 == 0:
+                box_m(translation(at(o, side * (half - 0.38), y - 0.5, z)) * rotation_z(side * 0.5) * scaling(v3(0.48, 1.2, 0.5)), col, PLAIN, false)
+
+__pit_depth = (o: vec3, half: f64, z0: f64, z1: f64):
+    loop side in [-1.0, 1.0]:
+        loop y in [-3.0, -6.0, -8.5]:
+            box(at(o, side * (half - 0.08), y, (z0 + z1) * 0.5), v3(0.16, 0.3, z1 - z0), 0.0, stone(0.12, 0.16, 0.18), PLAIN, false)
+        loop k in [0..int((z1 - z0) / 5.0)):
+            z = z0 + 2.5 + f64(k) * 5.0
+            column(at(o, side * (half - 0.35), -9.0, z), 0.5, 0.35, 9.0, 8, stone(0.13, 0.16, 0.18), PLAIN, false)
+
+__signal_sites = [
+    [v3(0.0, 4.6, -23.5), v3(0.0, 7.6, -49.6)],
+    [v3(0.0, 4.8, -19.5), v3(0.0, 4.8, -43.5)],
+    [v3(0.0, 5.2, -41.5), v3(0.0, 12.8, -81.6)],
+    [v3(11.7, 0.8, -21.0), v3(0.0, 4.8, -29.5)],
+]
+
+# Tiny slop swirl circuits at the actual controls, rather than another room-wide grid.
+# The first two groups are the main stages; the latter two belong to the annex.
+__rune_sites = [
+    [v3(-5, 0.03, -3.4), v3(4, 0.03, -33.5), v3(-34, 0.03, -33.5), v3(-42, 0.03, -37.5)],
+    [v3(6, 0.03, -2.7), v3(7, 0.03, -23.2), v3(26, 0.03, -8.7), v3(29, 0.03, -10.5)],
+    [v3(0, 0.14, -12.3), v3(0, 0.03, -39), v3(24.5, 0.14, -28.1), v3(39.5, 0.14, -28.1)],
+    [v3(6, 0.03, 0.2), v3(-6, 0.03, -25.8), v3(-20, 3.63, -18.3), v3(-35, 2.83, -12.8)],
+]
+
+__rune = (p: vec3, upright: bool = false, yaw: f64 = 0.0):
+    __begin(p)
+    stroke = (a: vec2, b: vec2, width: f64):
+        d = normalize(b - a)
+        edge = vec2(-d.y, d.x) * f32(width * 0.5)
+        pt = (q: vec2) -> vec3: p + transform_dir(rotation_y(yaw), (if upright: vec3(q.x, -q.y, 0) else: vec3(q.x, 0, q.y)))
+        n = transform_dir(rotation_y(yaw), (if upright: vec3(0, 0, 1) else: vec3(0, 1, 0)))
+        __quad(cur, pt(a - edge), pt(a + edge), pt(b + edge), pt(b - edge), n, SHR_STONE, SH_GLOW)
+    loop k in [0..40):
+        a = TAU * 1.65 * f64(k) / 40.0
+        b = TAU * 1.65 * f64(k + 1) / 40.0
+        r = 0.04 + 0.55 * f64(k) / 40.0
+        rr = 0.04 + 0.55 * f64(k + 1) / 40.0
+        stroke(vec2(f32(cos(a) * r), f32(sin(a) * r)), vec2(f32(cos(b) * rr), f32(sin(b) * rr)), 0.035)
+    __end()
+
+# Recessed circuits physically join inputs to their mechanisms. The dark socket
+# stays readable around the thin luminous core; all geometry is non-solid.
+__conduit = (o: vec3, points: vec3[]):
+    loop k in [1..points.len()):
+        a = o + points[k - 1]
+        b = o + points[k]
+        tube(a, b, 0.12, 0.12, 6, stone(0.055, 0.065, 0.072), PLAIN)
+        lip = if abs(f64(normalize(b - a).y)) > 0.9: vec3(0, 0, 0.075) else: vec3(0, 0.075, 0)
+        tube(a + lip, b + lip, 0.052, 0.052, 6, stone(0.4, 0.48, 0.54), SH_GLOW)
+
+__mechanism_channels = (r: SRec, id: int):
+    o = r.o
+    loop k in [0..3):
+        if k == 2 and id != KEH: continue
+        begin_named(r.key + "_circuit_{k}")
+        match id:
+            0:
+                if k == 0:
+                    __conduit(o, [v3(-5.0, 0.03, -6.1), v3(-5.0, 0.03, -7.0), v3(0.0, 0.03, -7.0), v3(0.0, 0.03, -7.8)])
+                    __conduit(o, [v3(-5, 0.03, -6.1), v3(-7.0, 0.03, -6.1), v3(-7.0, 1.2, -6.1), v3(-7.0, 1.2, -11.1), v3(-7.0, 4.7, -11.1), v3(-1.0, 4.7, -11.1)])
+                    loop x in [-1.8, 1.8]:
+                        __conduit(o, [v3(0.0, 0.03, -7.8), v3(x, 0.03, -7.8), v3(x, -5.8, -7.8)])
+                        __ring_stone(at(o, x, 0.05, -7.8), 0.24, 0.055, 0.06, SHR_STONE, SH_GLOW)
+                else:
+                    __conduit(o, [v3(-42, 0.05, -39), v3(-44.5, 0.05, -39), v3(-44.5, 0.05, -41.5), v3(-46, 0.05, -41.5), v3(-46, 6.6, -41.5), v3(-53, 6.6, -41.5)])
+            1:
+                if k == 0:
+                    # Rack -> ignition bowl -> cracked doorway, all on safe floor.
+                    __conduit(o, [v3(6, 0.04, -4), v3(6, 0.04, -6), v3(-6, 0.04, -6), v3(-6, 0.04, -7.2)])
+                    __conduit(o, [v3(-6.0, 0.04, -8.7), v3(-6.0, 0.04, -18.8), v3(0.0, 0.04, -18.8), v3(0.0, 0.04, -20.0)])
+                else:
+                    __conduit(o, [v3(-5.3, 0.04, -8.0), v3(-4.3, 0.04, -8.0), v3(-4.3, 0.04, -10.0), v3(10.0, 0.04, -10.0)])
+            2:
+                if k == 0:
+                    loop z in [OWA_PIV1, OWA_PIV2]:
+                        __conduit(o, [v3(0.0, -2.0, z), v3(0.0, 0.08, z)])
+                        __ring_stone(at(o, 0.0, -1.96, z), 1.72, 0.055, 0.06, SHR_STONE, SH_GLOW)
+                else:
+                    __conduit(o, [v3(-1.7, 0.04, -43.0), v3(-1.7, 0.04, -45.0)])
+            _:
+                if k == 0:
+                    __conduit(o, [v3(6, 0.05, -1), v3(11.5, 0.05, -1), v3(11.5, 1.3, -1), v3(11.5, 1.3, -21), v3(11.5, 2.7, -21)])
+                else if k == 1:
+                    __conduit(o, [v3(9, -1.94, -21), v3(11.5, -1.94, -21), v3(11.5, 1.3, -21), v3(11.5, 1.3, -28.3), v3(2.7, 1.3, -28.3), v3(2.7, 1.3, -29.4)])
+                    # The far valve drains the same reservoir onto the weight socket.
+                    __conduit(o, [v3(-6, 0.05, -27), v3(-6, 0.05, -28.3), v3(-2.7, 0.05, -28.3), v3(-2.7, 1.3, -28.3), v3(-2.7, 1.3, -29.4)])
+                else:
+                    # The floating crate's upper socket powers the two ice stairs.
+                    __conduit(o, [v3(-35, 2.86, -14), v3(-35, 2.86, -17.8), v3(-37.5, 2.86, -17.8), v3(-37.5, 3.64, -19), v3(-40.5, 3.64, -19), v3(-40.5, 4.84, -17)])
+        end_named()
+        hooks.named_hidden[r.key + "_circuit_{k}"] = true
+    __stage_channel_build(r, id)
+
+# Ivory threshold lighting is distinct from orange inputs and blue completed work.
+# Each first hall points to a real opening; the same light frames the monk's seat.
+__goal_lightwork = (r: SRec, id: int):
+    begin_named(r.key + "_goal")
+    z = [-23.12, -19.08, -41.08, -29.08][id]
+    top = [4.3, 4.1, 4.2, 4.1][id]
+    col = stone(0.52, 0.48, 0.37)
+    loop x in [-2.35, 2.35]:
+        box(at(r.o, x, 0.4, z), v3(0.10, top - 0.4, 0.08), 0.0, col, SH_GLOW, false)
+    if id == OWA or id == KEH:
+        __arch(at(r.o, 0, top, z), 2.35, 0.65, 0.08, col, SH_GLOW)
+    else:
+        box(at(r.o, 0, top, z), v3(4.8, 0.10, 0.08), 0.0, col, SH_GLOW, false)
+    if id == OWA:
+        # Low lamps and a landing ring remain below the suspended wheel's silhouette.
+        # The monk lies around a bend; this is the real stair doorway leading to him.
+        loop x in [-2.9, 2.9]:
+            column(at(r.o, x, 0, -40.8), 0.18, 0.15, 1.7, 8, col, PLAIN, false)
+            column(at(r.o, x, 1.7, -40.8), 0.28, 0.28, 0.45, 8, col, vec4(0, 0, 2.4, 0), false)
+        __ring_stone(at(r.o, 0, 0.035, -38.5), 2.0, 0.10, 0.04, col, SH_GLOW)
+    __arch(r.o + r.monk + vec3(0, 1.5, -1.51), 2.15, 2.4, 0.08, col, SH_GLOW)
+    end_named()
+    hooks.named_hidden[r.key + "_goal"] = true
+
+# Stage acknowledgement follows visible raised channels from the actual control
+# to its signal. These share __stage_feedback's latch/timer and chime.
+const SHR_STAGE_SECONDS = 3.4
+const SHR_STAGE_SEGMENTS = 24
+__stage_path = (id: int, stage: int) -> vec3[]:
+    match id:
+        OMAN:
+            if stage == 0: [v3(-5, 0.15, -6.1), v3(-7.2, 0.15, -6.1), v3(-7.2, 1.3, -6.1), v3(-7.2, 1.3, -22.9), v3(-7.2, 4.6, -22.9), v3(0, 4.6, -22.9)]
+            else: [v3(4, 0.14, -33.5), v3(11.2, 0.14, -33.5), v3(11.2, 4.7, -33.5), v3(11.2, 4.7, -49.3), v3(11.2, 7.6, -49.3), v3(0, 7.6, -49.3)]
+        JABAIJ:
+            if stage == 0: [v3(-6, 0.15, -8.7), v3(-13.2, 0.15, -8.7), v3(-13.2, 1.3, -8.7), v3(-13.2, 1.3, -19.3), v3(-13.2, 4.8, -19.3), v3(0, 4.8, -19.3)]
+            else: [v3(7, 0.15, -24.4), v3(9.2, 0.15, -24.4), v3(9.2, 1.3, -24.4), v3(9.2, 1.3, -43.3), v3(9.2, 4.8, -43.3), v3(0, 4.8, -43.3)]
+        OWA:
+            if stage == 0: [v3(-10.9, 1.1, -6), v3(-10.9, 1.1, -40.9), v3(-10.9, 5.2, -40.9), v3(0, 5.2, -40.9)]
+            else: [v3(-1.8, 1.4, -43), v3(-1.8, 10.5, -79.8), v3(-1.8, 12.8, -81.3), v3(0, 12.8, -81.3)]
+        _:
+            if stage == 0: [v3(6, 0.15, -1), v3(11.2, 0.15, -1), v3(11.2, 1.3, -1), v3(11.2, 1.3, -21), v3(11.55, 0.8, -21)]
+            else: [v3(9, -1.8, -21), v3(11.2, -1.8, -21), v3(11.2, 1.3, -21), v3(11.2, 1.3, -29.2), v3(11.2, 4.8, -29.2), v3(0, 4.8, -29.2)]
+
+__stage_channel_build = (r: SRec, id: int):
+    loop stage in [0..2):
+        pts = __stage_path(id, stage)
+        total = 0.0
+        loop k in [1..pts.len()): total += f64(length(pts[k] - pts[k - 1]))
+        distance = 0.0
+        loop k in [1..pts.len()):
+            a = pts[k - 1]
+            b = pts[k]
+            size = f64(length(b - a))
+            begin_named(r.key + "_architecture")
+            tube(r.o + a, r.o + b, 0.13, 0.13, 6, stone(0.065, 0.075, 0.08), PLAIN)
+            end_named()
+            loop n in [0..SHR_STAGE_SEGMENTS):
+                lo = max(distance, f64(n) / f64(SHR_STAGE_SEGMENTS) * total)
+                hi = min(distance + size, f64(n + 1) / f64(SHR_STAGE_SEGMENTS) * total)
+                if hi <= lo: continue
+                key = r.key + "_solve_{stage}_{n}"
+                begin_named(key)
+                # The pulse fills the whole socket, 28 cm across, with a bright
+                # core and bloom. A 15 m view sees several pixels of moving light.
+                tube(r.o + mix(a, b, f32((lo - distance) / size)), r.o + mix(a, b, f32((hi - distance) / size)), 0.145, 0.145, 6, stone(0.45, 0.55, 0.60), SH_GLOW)
+                end_named()
+                hooks.named_hidden[key] = true
+            distance += size
+
+__stage_front = (remaining: f64, section: int) -> f64:
+    if remaining <= 0.0: return 0.0
+    age = SHR_STAGE_SECONDS - remaining
+    centre = age / (SHR_STAGE_SECONDS - 0.65) * 1.24 - 0.08
+    position = (f64(section) + 0.5) / f64(SHR_STAGE_SEGMENTS)
+    d = centre - position
+    smoothstep(-0.065, 0.0, d) * (1.0 - smoothstep(0.05, 0.24, d))
+
+# Pale, unlit trace housings retain the control's relationship even before activation.
+# Their raised wall portions are visible above the water and against the pit walls.
+__sight_trace = (o: vec3, points: vec3[], col: vec4):
+    loop k in [1..points.len()):
+        a = o + points[k - 1]
+        b = o + points[k]
+        tube(a, b, 0.075, 0.075, 6, col, PLAIN)
+
+__control_sightlines = (o: vec3, id: int, col: vec4):
+    match id:
+        0:
+            __sight_trace(o, [v3(-5.0, 0.05, -6.2), v3(-8.8, 0.05, -6.2), v3(-8.8, 1.15, -6.2), v3(-8.8, 1.15, -12.0), v3(-8.8, 4.2, -12.0)], col)
+            # Two visible ferrules on the receiving bank terminate the bridge rails.
+            loop x in [-2.0, 2.0]:
+                box(at(o, x, 0.0, -16.2), v3(0.28, 1.2, 0.5), 0.0, col, PLAIN, false)
+        1:
+            __sight_trace(o, [v3(-6.0, 0.035, -9.0), v3(-6.0, 0.035, -17.8), v3(-2.2, 0.035, -17.8), v3(-2.2, 1.2, -19.3)], col)
+            # A pale blast-socket on each barrel pedestal makes the chain visible
+            # from its starting barrel without drawing a fictitious walkable bridge.
+            loop q in [v3(7.0, -0.12, -24.4), v3(3.0, -0.12, -30.5), v3(3.0, -0.12, -37.5)]:
+                __ring_stone(o + q, 0.72, 0.08, 0.10, col)
+        2:
+            # The main controls sit on the hubs: spindles expose their connected wheels.
+            __sight_trace(o, [v3(-10.9, 1.1, -6.0), v3(-10.9, 1.1, -35.8)], col)
+        _:
+            __sight_trace(o, [v3(6.0, 0.08, -1.0), v3(10.8, 0.08, -1.0), v3(11.72, 1.15, -1.0), v3(11.72, 1.15, -21.0), v3(11.72, 2.1, -21.0)], col)
+            __sight_trace(o, [v3(9.0, -1.9, -21.0), v3(11.72, -1.9, -21.0), v3(11.72, 1.15, -21.0), v3(11.72, 1.15, -27.4), v3(2.7, 1.15, -27.4), v3(2.7, 1.15, -29.4)], col)
+            __sight_trace(o, [v3(-6.0, 0.08, -27.0), v3(-6.0, 0.08, -28.3), v3(-2.7, 0.08, -28.3), v3(-2.7, 1.15, -29.4)], col)
+
+# Thin luminous inlays emphasize the existing entrance silhouettes, sharing the
+# lamp batch. They stay above every route and create no new player solids.
+__entrance_lightwork = (r: SRec, id: int):
+    o = r.o
+    begin_named(r.key + "_lamps")
+    col = stone(0.40, 0.48, 0.53)
+    mat = vec4(0, 0, 0.22, 0)
+    match id:
+        OMAN:
+            # Orange forge crosshead and the stepped gantry's underside.
+            loop z in [-4.0, -12.0, -21.0]:
+                box(at(o, 0.0, 6.79, z + 0.67), v3(17.8, 0.10, 0.06), 0.0, col, mat, false)
+            loop x in [-1.0, 1.0]:
+                tube(at(o, x - 0.24, 4.7, -12.0), at(o, x + 0.24, 4.7, -12.0), 0.69, 0.69, 12, col, mat)
+        JABAIJ:
+            # A red angular blast rib around the soot-black smoke hood.
+            loop z in [-3.0, -12.5, -18.5]:
+                loop side in [-1.0, 1.0]:
+                    box_m(translation(at(o, side * 7.1, 5.50, z + 0.74)) * rotation_z(side * 0.48) * scaling(v3(5.6, 0.10, 0.06)), col, mat, false)
+                box(at(o, 0.0, 6.58, z + 0.74), v3(9.8, 0.10, 0.06), 0.0, col, mat, false)
+        OWA:
+            # Front-facing brass wheel rim: readable even at the default pitch.
+            loop k in [0..32):
+                a = f64(k) * TAU / 32.0
+                p = at(o, cos(a) * 3.25, 6.2 + sin(a) * 3.25, OWA_PIV1 + 0.29)
+                box_m(translation(p) * rotation_z(a) * scaling(v3(0.075, 3.25 * TAU / 32.0, 0.035)), col, mat, false)
+        _:
+            # Aqua scallops over the reservoir, plus reflected caustic lace.
+            loop x in [-7.6, 0.0, 7.6]:
+                loop k in [0..20):
+                    a = f64(k) * PI / 20.0
+                    b = f64(k + 1) * PI / 20.0
+                    tube(at(o, x + cos(a) * 3.7, 4.5 + sin(a) * 2.3, -17.55), at(o, x + cos(b) * 3.7, 4.5 + sin(b) * 2.3, -17.55), 0.035, 0.035, 5, col, mat)
+            __cistern_caustics(o)
+    end_named()
+
+# Baked water reflections use flat, sparse ribbons in the existing architecture
+# batch. No texture lookup, extra render pass, depth sampling or light loop.
+__cistern_caustics = (o: vec3):
+    __begin(o)
+    caustic = vec4(0, 0, 0.30, 0)
+    col = stone(0.36, 0.62, 0.67)
+    loop side in [-1.0, 1.0]:
+        loop band in [0..5):
+            loop k in [0..20):
+                za = 1.0 - f64(k) * 1.4
+                zb = za - 1.4
+                y = (z: f64) -> f64: 2.0 + f64(band) * 1.23 + sin(z * 0.72 + f64(band) * 1.9) * 0.31 + sin(z * 1.51) * 0.12
+                # The west annex mouth has no wall to receive a reflection.
+                if side < 0.0 and za > -16.0 and zb < -12.0 and max(y(za), y(zb)) > 3.6: continue
+                x = side * 11.97
+                a = at(o, x, y(za), za)
+                b = at(o, x, y(zb), zb)
+                lip = vec3(0, 0.05, 0)
+                if side < 0.0: __quad(cur, a, b, b + lip, a + lip, v3(1, 0, 0), col, caustic)
+                else: __quad(cur, b, a, a + lip, b + lip, v3(-1, 0, 0), col, caustic)
+    loop band in [0..8):
+        loop k in [0..24):
+            xa = -12.0 + f64(k)
+            xb = xa + 1.0
+            z = (x: f64) -> f64: -1.0 - f64(band) * 3.4 + sin(x * 0.8 + f64(band)) * 0.4
+            ya = __shrine_roof_height(KEH, 10.0, (xa + 12.0) / 24.0) - 0.035
+            yb = __shrine_roof_height(KEH, 10.0, (xb + 12.0) / 24.0) - 0.035
+            a = at(o, xa, ya, z(xa))
+            b = at(o, xb, yb, z(xb))
+            lip = vec3(0, 0, 0.07)
+            __quad(cur, a, b, b + lip, a + lip, normalize(v3(yb - ya, -1, 0)), col, caustic)
+    __end()
+
+# Bake fixture irradiance into a separate channel. Stone, brass and soot retain
+# their pigment; the light adds only inside each pendant's bounded footprint.
+# Existing subdivided paving resolves the soft pools without a shader light loop.
+__shrine_fixture_light = (b: mut Builder):
+    loop mut v in b.verts:
+        loop id in [0..4):
+            q = v.pos - srec[id].o
+            r = srec[id]
+            if q.x < r.lo.x or q.x > r.hi.x or q.y < r.lo.y or q.y > r.hi.y or q.z < r.lo.z or q.z > r.hi.z: continue
+            if v.mat.z > 0.1: break
+            if v.normal.y < -0.5: v.color.w = max(v.color.w, 0.9)
+            loop lamp in __pendants[id]:
+                delta = lamp.xyz - q
+                d = f64(length(delta))
+                # Match the painted point-light wrap: nearby brass faces and
+                # masonry receive soft fixture bounce, bounded by the same radius.
+                ndl = max(0.0, f64(dot(v.normal, delta / f32(max(d, 0.01)))) * 0.6 + 0.4)
+                pool = (1.0 - smoothstep(0.6, 4.5, f64(length(delta.xz)))) * (1.0 - smoothstep(0.15, 1.2, abs(f64(q.y - lamp.w)))) * max(0.0, f64(v.normal.y))
+                direct = pow(max(0.0, 1.0 - d * d / 42.25), 3.0) * ndl
+                v.light += __shrine_accent[id] * f32(pool * 1.05 + direct * 1.35)
+            break
+
+__shrine_details = (r: SRec, id: int):
+    o = r.o
+    pale = [stone(0.31, 0.36, 0.4), stone(0.28, 0.3, 0.34), stone(0.35, 0.37, 0.39), stone(0.35, 0.39, 0.42)][id]
+    blue = [stone(0.21, 0.29, 0.35), stone(0.19, 0.23, 0.28), stone(0.24, 0.27, 0.29), stone(0.27, 0.31, 0.35)][id]
+    begin_named(r.key + "_architecture")
+    match id:
+        0:
+            # Foundry: square gantries, steel skins and paired counterweights.
+            # The central plate -> bridge -> portal axis stays completely open below 4 m.
+            steel = stone(0.46, 0.47, 0.44)
+            iron = stone(0.23, 0.25, 0.26)
+            bronze = stone(0.46, 0.35, 0.21)
+            loop z in [-4.0, -12.0, -21.0]:
+                loop x in [-7.4, 7.4]:
+                    box(at(o, x, 0.0, z), v3(0.9, 9.7, 1.2), 0.0, iron, PLAIN, false)
+                    box(at(o, x, 0.0, z), v3(1.2, 0.55, 1.5), 0.0, steel, SHR_TILE, false)
+                    box(at(o, x, 9.3, z), v3(1.6, 0.55, 1.6), 0.0, bronze, PLAIN, false)
+                box(at(o, 0.0, 9.8, z), v3(15.2, 0.8, 1.3), 0.0, steel, PLAIN, false)
+                loop x in [-4.2, 4.2]:
+                    box_m(translation(at(o, x, 10.75, z)) * rotation_z((if x < 0.0: 0.19 else: -0.19)) * scaling(v3(6.2, 0.35, 0.85)), iron, PLAIN, false)
+            loop x in [-6.8, 6.8]:
+                box(at(o, x, 1.1, -12.0), v3(1.2, 2.9, 1.5), 0.0, iron, SHR_TILE, false)
+                loop y in [1.3, 2.1, 2.9, 3.7]: box(at(o, x, y, -11.15), v3(1.35, 0.13, 0.2), 0.0, bronze, PLAIN, false)
+                loop dx in [-0.35, 0.35]: tube(at(o, x + dx, 4.0, -12.0), at(o, x + dx, 6.8, -12.0), 0.055, 0.055, 6, steel, PLAIN)
+            # A crosshead and winding drum silhouette the bridge at entry.
+            tube(at(o, -7.0, 4.7, -12.0), at(o, 7.0, 4.7, -12.0), 0.36, 0.36, 10, iron, PLAIN)
+            loop x in [-1.0, 1.0]:
+                tube(at(o, x - 0.22, 4.7, -12.0), at(o, x + 0.22, 4.7, -12.0), 0.67, 0.67, 12, bronze, PLAIN)
+                tube(at(o, x, 4.3, -12.0), at(o, x, 3.4, -12.0), 0.04, 0.04, 6, steel, PLAIN)
+            loop x in [-2.65, 2.65]:
+                box(at(o, x, 0.0, -23.65), v3(0.75, 4.9, 0.8), 0.0, steel, SHR_TILE, false)
+            box(at(o, 0.0, 4.9, -23.65), v3(6.2, 0.65, 1.0), 0.0, bronze, PLAIN, false)
+            __pit_depth(o, 10.0, -16.0, -8.0)
+            __vault(o, 11.7, -49.0, -25.0, 6.6, 2.9, 3, blue)
+            loop x in [-11.65, 11.65]:
+                box(at(o, x, 3.2, -38.0), v3(0.7, 0.5, 23.0), 0.0, pale, SHEIKAH_M, false)
+            loop x in [-2.2, 2.2]:
+                box(at(o, x, -5.6, -12.0), v3(0.55, 4.8, 1.5), 0.0, blue, SHEIKAH_M, false)
+        1:
+            # Blast chamber: broad angled ribs and a smoke hood, rather than a vault.
+            soot = stone(0.18, 0.16, 0.15)
+            fired = stone(0.30, 0.33, 0.38)
+            loop z in [-3.0, -12.5, -18.5]:
+                loop side in [-1.0, 1.0]:
+                    box(at(o, side * 9.4, 0.0, z), v3(1.0, 3.6, 1.45), 0.0, fired, SHR_TILE, false)
+                    box_m(translation(at(o, side * 7.1 - 2.0, 4.4, z)) * rotation_z(side * 0.48) * scaling(v3(5.6, 0.9, 1.45)), fired, PLAIN, false)
+                box(at(o, -2.0, 5.2, z), v3(13.8, 0.6, 1.45), 0.0, soot, PLAIN, false)
+            loop x in [-3.0, 3.0]:
+                box(at(o, x, 0.0, -19.5), v3(1.1, 4.8, 1.0), 0.0, fired, SHR_TILE, false)
+                box(at(o, x, 0.6, -19.5), v3(1.5, 0.3, 1.3), 0.0, soot, PLAIN, false)
+            box(at(o, 0.0, 4.8, -19.5), v3(7.4, 1.0, 1.3), 0.0, soot, PLAIN, false)
+            # Pale broken keystones make the actual cracked wall the entry focal point.
+            loop x in [-1.4, 0.0, 1.4]:
+                box_m(translation(at(o, x, 5.35, -18.7)) * rotation_z(0.12 * x) * scaling(v3(0.65, 0.5, 0.35)), fired, PLAIN, false)
+            loop x in [-13.6, 9.6]:
+                box(at(o, x, 0.0, -9.0), v3(0.4, 2.4, 7.0), 0.0, soot, PLAIN, false)
+            __vault(o, 9.6, -43.0, -21.0, 7.0, 4.4, 2, pale)
+            __pit_depth(o, 10.0, -36.0, -26.0)
+            __portal(o, -43.65, 4.2, pale)
+            # A chimney hood and a scalloped bowl frame the existing fire.
+            column(at(o, -6.0, 3.5, -8.0), 1.35, 0.7, 1.8, 8, pale, SHEIKAH_M, false)
+            __ring_stone(at(o, -6.0, 0.72, -8.0), 0.7, 0.15, 0.25, pale)
+            loop x in [6.0, 8.0]: __ring_stone(at(o, x, 0.01, -4.0), 0.76, 0.12, 0.035, pale)
+            loop x in [-9.6, 9.6]:
+                loop z in [-25.0, -37.0]:
+                    column(at(o, x, -9.0, z), 0.8, 0.6, 15.0, 8, pale, SHEIKAH_M, false)
+                    column(at(o, x, 5.8, z), 0.9, 0.9, 0.4, 8, pale, PLAIN, false)
+            __vault(o, 5.7, -55.5, -45.0, 4.2, 2.3, 2, pale)
+            loop z in [-4.0,-8.0,-12.0]:
+                box(at(o,-13.65,0.35,z),v3(0.45,2.2,2.5),0.0,soot,PLAIN,false)
+                loop y in [0.6,1.0,1.4,1.8,2.2]: box(at(o,-13.35,y,z),v3(0.10,0.075,2.2),0.0,fired,PLAIN,false)
+            loop x in [-11.5,-9.7]:
+                column(at(o,x,0,-2.4),0.56,0.53,1.35,10,stone(0.34,0.23,0.14),PLAIN,false)
+                loop y in [0.18,1.1]: __ring_stone(at(o,x,y,-2.4),0.55,0.055,0.1,soot)
+        2:
+            # Clockwork nave: bronze spokes against an open, uncoffered ceiling.
+            brass = stone(0.48, 0.4, 0.25)
+            loop z in [-8.0, -22.0, -36.0]:
+                loop x in [-11.5, 11.5]:
+                    loop dx in [-0.2, 0.2]:
+                        column(at(o, x + dx, 0.0, z), 0.2, 0.17, 10.2, 10, pale, PLAIN, false)
+                    box(at(o, x, 10.0, z), v3(1.0, 0.45, 1.0), 0.0, brass, PLAIN, false)
+            __gallery(o, 12.0, -41.0, 3.0, 5.0, pale)
+            __pit_depth(o, 12.0, -36.0, -6.0)
+            __portal(o, -41.6, 4.7, pale)
+            # The same gear language as the optional clockwork, now visible on arrival.
+            __great_gear(at(o, 0.0, 6.2, OWA_PIV1), 3.25)
+            __great_gear(at(o, 0.0, 6.4, OWA_PIV2), 2.4)
+            loop z in [OWA_PIV1, OWA_PIV2]:
+                __ring_stone(at(o, 0.0, 6.8, z), 4.5, 0.55, 0.75, pale, SHEIKAH_M)
+                loop x in [-4.5, 4.5]: tube(at(o, x, 7.3, z), at(o, x, 11.8, z), 0.14, 0.14, 8, brass, PLAIN)
+                box(at(o, 0.0, 11.2, z), v3(24.0, 0.45, 0.8), 0.0, blue, PLAIN, false)
+                column(at(o, 0.0, -3.5, z), 1.65, 1.65, 2.7, 12, pale, SHEIKAH_M, false)
+                __ring_stone(at(o, 0.0, -2.0, z), 1.72, 0.14, 0.3, blue, SHR_TILE)
+                # Open rods expose which wheel owns which rotating walkway.
+                tube(at(o, 0.0, 0.6, z), at(o, 0.0, 6.3, z), 0.10, 0.10, 8, brass, PLAIN)
+            loop k in [0..9):
+                z = -44.0 - f64(k) * 4.0
+                y = __owa_stair(z)
+                __arch(at(o, 0.0, y + 3.8, z), 1.9, 1.4, 0.4, pale)
+                box(at(o, -1.94, y + 0.3, z), v3(0.08, 2.8, 0.22), 0.0, pale, SHEIKAH_M, false)
+            # Small wall drives sit behind the threshold, leaving the first hub
+            # as the arrival focal point. Bearings and shafts join the overhead
+            # clockwork rather than presenting two freestanding brass discs.
+            drive = stone(0.26,0.21,0.14)
+            iron = stone(0.16,0.18,0.19)
+            loop x in [-10.6,10.6]:
+                box(at(o,x,2.85,-8.7),v3(0.75,0.9,0.45),0.0,iron,PLAIN,false)
+                tube(at(o,x,3.3,-7.7),at(o,x,3.3,OWA_PIV1),0.12,0.12,10,iron,PLAIN)
+                __wall_drive(at(o,x,3.3,-8.0),0.68)
+                box(at(o,x,3.0,OWA_PIV1),v3(0.6,0.6,0.6),0.0,iron,PLAIN,false)
+                tube(at(o,x,3.3,OWA_PIV1),at(o,x,6.2,OWA_PIV1),0.10,0.10,8,drive,PLAIN)
+                box(at(o,x,5.9,OWA_PIV1),v3(0.6,0.6,0.6),0.0,iron,PLAIN,false)
+            tube(at(o,-10.6,6.2,OWA_PIV1),at(o,10.6,6.2,OWA_PIV1),0.11,0.11,10,drive,PLAIN)
+        _:
+            frost = stone(0.35, 0.39, 0.42)
+            # Cistern: a scalloped pale aqueduct and faceted ice over its inflow.
+            ice = stone(0.53, 0.68, 0.73)
+            loop z in [-3.0, -17.5, -27.0]:
+                loop x in [-11.4, 11.4]:
+                    box(at(o, x, 0.0, z), v3(1.0, 6.2, 1.3), 0.0, frost, PLAIN, false)
+                    column(at(o, x, 5.9, z), 0.65, 0.85, 0.35, 8, frost, SHR_TILE, false)
+            # Three lobes leave a recognisable scalloped skyline above the reservoir.
+            loop x in [-7.6, 0.0, 7.6]:
+                __arch(at(o, x, 4.5, -18.0), 3.7, 2.3, 0.85, frost)
+            box(at(o, 0.0, 6.7, -18.0), v3(23.5, 0.5, 1.5), 0.0, frost, SHR_TILE, false)
+            __portal(o, -29.6, 4.3, frost)
+            # Side aqueducts stop above the west niche; every handhold remains exposed.
+            loop x in [-11.55, 11.55]:
+                box(at(o, x, 6.6, -13.0), v3(0.85, 0.65, 32.0), 0.0, frost, SHR_TILE, false)
+            # The east inflow landmark is visible from both crystals, above the plate.
+            box(at(o, 11.4, 4.4, -21.0), v3(1.3, 0.55, 5.8), 0.0, frost, SHR_TILE, false)
+            loop k in [0..7):
+                z = -23.3 + f64(k) * 0.76
+                h = 1.4 + f64((k * 3) % 4) * 0.48
+                column(at(o, 11.15, 4.4 - h, z), 0.10, 0.32, h, 5, ice, PLAIN, false)
+            loop z in [-22.5, -19.5]:
+                column(at(o, 11.5, -1.8, z), 0.4, 0.3, 4.1, 6, frost, SHR_TILE, false)
+            box(at(o, 11.5, 2.1, -21.0), v3(0.6, 0.3, 3.5), 0.0, frost, PLAIN, false)
+            loop q in [(6.0, -1.0), (-6.0, -27.0)]:
+                __ring_stone(at(o, q.0, 0.0, q.1), 0.72, 0.15, 0.035, frost)
+                column(at(o, q.0, 0.56, q.1), 0.33, 0.55, 0.23, 8, frost, SHEIKAH_M, false)
+            loop z in [-22.2, -19.8]:
+                box(at(o, 11.78, -1.8, z), v3(0.4, 4.4, 0.35), 0.0, frost, SHEIKAH_M, false)
+            box(at(o, 11.78, 2.2, -21.0), v3(0.4, 0.4, 2.75), 0.0, frost, PLAIN, false)
+            __vault(o, 5.7, -45.5, -31.0, 5.8, 2.6, 2, frost)
+    __control_sightlines(o, id, pale)
+    end_named()
+    __mechanism_channels(r, id)
+    loop k in [0..4):
+        begin_named(r.key + "_rune_{k}")
+        __rune(o + __rune_sites[id][k])
+        if id == OMAN and k == 3: __rune(at(o, -42.0, 5.2, -39.8), true)
+        if id == OWA and k == 1:
+            loop q in [v3(1.9, 3.1, -50.7), v3(1.9, 5.6, -60.7), v3(1.9, 8.1, -70.7)]: __rune(o + q, true, -PI / 2.0)
+        end_named()
+        hooks.named_hidden[r.key + "_rune_{k}"] = true
+    # The annex fixtures light the working path and frame its distant reward.
+    # These circuits share the existing lamp batch and never add collision.
+    begin_named(r.key + "_lamps")
+    match id:
+        0:
+            __line(o, -43.0, -34.0, -39.0, -39.0, 0.025, 0.045, 0.45)
+            __line(o, -42.0, -42.0, -41.5, -39.0, 0.025, 0.045, 0.45)
+            __line(o, -60.0, -46.0, -40.85, -40.85, 7.32, 0.045, 0.0)
+            __ring_stone(at(o, -65.0, 3.42, -39.0), 1.6, 0.08, 0.04, pale, vec4(0, 0, 0.3, 0))
+        1:
+            __ring_stone(at(o, 26.0, 0.02, -10.0), 0.65, 0.07, 0.04, pale, vec4(0, 0, 0.35, 0))
+            __line(o, 32.55, 60.5, -10.0, -10.0, 0.025, 0.03, 0.18)
+        2:
+            loop x in [24.5, 39.5]: __ring_stone(at(o, x, 1.2, -28.5), 0.65, 0.08, 0.04, pale, vec4(0, 0, 0.35, 0))
+            __ring_stone(at(o, 53.0, 0.02, -28.5), 1.6, 0.08, 0.04, pale, vec4(0, 0, 0.3, 0))
+        _:
+            __line(o, -40.5, -20.0, -19.5, -19.5, 3.625, 0.035, 0.2)
+            __line(o, -35.0, -35.0, -19.5, -16.1, 3.625, 0.035, 0.2)
+            __ring_stone(at(o, -42.0, 6.02, -14.0), 1.4, 0.08, 0.04, pale, vec4(0, 0, 0.3, 0))
+    end_named()
+    __entrance_lightwork(r, id)
+    __goal_lightwork(r, id)
+    # Hanging bronze lanterns: a narrow stem, dark hood, luminous core and pierced cage.
+    begin_named(r.key + "_architecture")
+    loop l in __pendants[id]:
+        p = o + l.xyz
+        ceiling = match id:
+            0: if l.z > -24.0: __shrine_roof_height(OMAN,SHR_ENTRY_TOP[OMAN],(f64(l.x)+8.0)/16.0)-0.05 else: 9.0
+            1: if l.z > -20.0: __shrine_roof_height(JABAIJ,SHR_ENTRY_TOP[JABAIJ],(f64(l.x)+14.0)/24.0)-0.05 else: (if l.z > -44.0: 10.0 else: 6.2)
+            2: if l.z > -42.0: 11.7 else: 15.5
+            _: if l.z > -30.0: 9.2 else: 8.5
+        column(p + vec3(0, 0.6, 0), 0.035, 0.035, max(0.2, ceiling - f64(l.y) - 0.6), 6, pale, PLAIN, false)
+        column(p + vec3(0, 0.4, 0), 0.52, 0.2, 0.22, 8, darken(pale, 0.3), PLAIN, false)
+        column(p - vec3(0, 0.2, 0), 0.38, 0.46, 0.12, 8, pale, PLAIN, false)
+        loop k in [0..6):
+            a = TAU * f64(k) / 6.0
+            column(p + v3(cos(a) * 0.34, -0.1, sin(a) * 0.34), 0.028, 0.028, 0.58, 5, pale, PLAIN, false)
+    end_named()
+    # Small amber fittings give the blue halls a warm focal point.
+    begin_named(r.key + "_lamps")
+    loop l in __pendants[id]:
+        column(o + l.xyz - vec3(0, 0.07, 0), 0.24, 0.28, 0.50, 8, pale, vec4(0, 0, 2.4, 0), false)
+    loop k in [0..2):
+        p = o + __signal_sites[id][k]
+        yaw = if id == KEH and k == 0: -PI / 2.0 else: 0.0
+        m = translation(p) * rotation_y(yaw)
+        loop side in [-1.0, 1.0]:
+            box_m(m * translation(v3(side * 0.85, 0.0, 0.0)) * scaling(v3(0.1, 0.8, 0.14)), pale, SH_GLOW, false)
+    if id == OWA:
+        loop z in [OWA_PIV1, OWA_PIV2]: __ring_stone(at(o, 0.0, 6.76, z), 4.5, 0.12, 0.055, pale, vec4(0, 0, 0.32, 0))
+    if id == JABAIJ:
+        __ring_stone(at(o, -6.0, 3.98, -8.0), 1.25, 0.12, 0.06, pale, vec4(0, 0, 0.3, 0))
+    end_named()
+    loop k in [0..2):
+        begin_named(r.key + "_signal_{k}")
+        p = o + __signal_sites[id][k]
+        box_m(translation(p) * rotation_y(if id == KEH and k == 0: -PI / 2.0 else: 0.0) * rotation_z(PI / 4.0) * scaling(v3(0.4, 0.4, 0.12)), pale, SH_GLOW, false)
+        end_named()
+    loop part in ["_architecture", "_lamps", "_signal_0", "_signal_1"]: hooks.named_hidden[r.key + part] = true
+
+# ---------------- Oman Au ----------------
+__build_oman = (r: SRec):
+    o = r.o
+    # room A: the bridge over the pit
+    __shell(o, -8.0, 8.0, -24.0, 4.0, 0.0, SHR_ENTRY_TOP[OMAN], [Gap("n", 0.0, 4.0, 4.0)], decor = false, coffers = false, shaft = true)
+    __floor(o, -8.0, 8.0, -8.0, 4.0, 0.0, 9.0)
+    __floor(o, -8.0, 8.0, -24.0, -16.0, 0.0, 9.0)
+    __abyss(o, -10.0, 10.0, -16.0, -8.0, -9.0)
+    __block(o, -11.0, -10.0, -16.0, -8.0, -9.0, 0.0)
+    __block(o, 10.0, 11.0, -16.0, -8.0, -9.0, 0.0)
+    # The pit is wider than the landings. Close the exposed ends beside their
+    # slabs so a raised chase lens cannot see out below the side walls.
+    loop side in [-1.0,1.0]:
+        x0 = if side < 0.0: -10.0 else: 8.0
+        loop z in [-17.0,-8.0]: __block(o,x0,x0+2.0,z,z+1.0,-9.0,0.0)
+    # glowing edges along the pit
+    __line(o, -10.0, 10.0, -8.06, -8.0, -0.04)
+    __line(o, -10.0, 10.0, -16.0, -15.94, -0.04)
+    # the plate's frame
+    p = at(o, -5.0, 0.0, -5.0)
+    begin_named(r.key + "_circuit_0")
+    loop k in [0..4):
+        a = f64(k) * PI / 2.0
+        box(p + v3(cos(a) * 1.1, 0.0, sin(a) * 1.1), v3(2.3, 0.04, 0.08), -a + PI / 2.0, SHR_STONE, vec4(0.0, 0.0, 1.0, 0.0), false)
+    end_named()
+    __lift_pad(o)
+    __light_pool(at(o, 0.0, 0.0, -20.0), 2.0)
+    # room B: the Guardian's hall, the monk's ledge
+    __shell(o, -12.0, 12.0, -50.0, -25.0, 0.0, 10.0, [Gap("w", -28.0, 4.0, 4.0), Gap("s", 0.0, 4.0, 4.0)])
+    __floor(o, -12.0, 12.0, -44.0, -24.0, 0.0)
+    __floor(o, -12.0, 12.0, -50.0, -44.0, 3.4, 4.4)
+    __line(o, -12.0, 12.0, -44.0, -43.94, 3.36)
+    __line(o, -12.0, 12.0, -44.0, -43.94, 1.6)
+    # Optional metal foundry: crate rails feed a weighted shuttle across a higher gap.
+    __shell(o, -68.0, -13.0, -43.0, -24.0, 0.0, 9.0, [Gap("e", -28.0, 4.0, 4.0)])
+    __floor(o, -46.0, -12.0, -43.0, -24.0, 0.0, 9.0)
+    __floor(o, -68.0, -60.0, -43.0, -24.0, 3.4, 12.4)
+    __abyss(o, -60.0, -46.0, -43.0, -24.0, -9.0)
+    # A pier forces the crate round a corner; pale rails show its legal path.
+    __block(o, -39.0, -35.0, -37.0, -33.0, 0.0, 4.0)
+    loop z in [-40.0, -38.0]: __line(o, -43.0, -33.0, z, z, 0.02)
+    loop x in [-35.0, -33.0]: __line(o, x, x, -39.0, -34.0, 0.02)
+    loop x in [-47.0, -59.0]:
+        column(at(o, x, -9.0, -39.0), 0.6, 0.45, 16.0, 8, SHR_STONE, SHEIKAH_M, false)
+    __line(o, -60.0, -46.0, -39.0, -39.0, 6.0, 0.12, 0.7)
+    # Counterweight hoist: twin rails, crosshead and cable drums above the shuttle.
+    loop x in [-46.0, -60.0]:
+        box(at(o, x, -5.0, -41.5), v3(0.8, 12.0, 0.9), 0.0, stone(0.28, 0.3, 0.32), PLAIN, false)
+        column(at(o, x, 6.5, -41.5), 1.0, 1.0, 0.5, 12, stone(0.44, 0.38, 0.28), PLAIN, false)
+    loop x in [-53.75, -52.25]:
+        tube(at(o, x, 0.6, -41.5), at(o, x, 7.0, -41.5), 0.065, 0.065, 8, stone(0.4, 0.41, 0.42), PLAIN)
+    box(at(o, -53.0, 7.0, -41.5), v3(16.0, 0.7, 1.2), 0.0, stone(0.35, 0.38, 0.4), PLAIN, false)
+    loop z in [-40.6, -37.4]:
+        tube(at(o, -46.0, 5.8, z), at(o, -60.0, 9.2, z), 0.045, 0.045, 6, stone(0.42, 0.4, 0.33), PLAIN)
+    # the chest's dais (west) and the scout's ring
+    box(at(o, -10.0, 0.0, -33.0), v3(2.6, 0.3, 2.6), 0.0, SHR_STONE, PLAIN, true, false)
+    __light_pool(at(o, 0.0, 0.0, -34.5), 4.0, 0.35)
+    __monk_dais(r)
+
+# ---------------- Ja Baij ----------------
+__build_jabaij = (r: SRec):
+    o = r.o
+    # room A: brazier, barrels, a cracked wall ahead and one to the east (the chest)
+    __shell(o, -14.0, 10.0, -20.0, 4.0, 0.0, SHR_ENTRY_TOP[JABAIJ], [Gap("n", 0.0, 4.0, 4.0), Gap("e", -10.0, 4.0, 3.5)], decor = false, coffers = false, shaft = true)
+    __floor(o, -14.0, 10.0, -20.0, 4.0, 0.0)
+    __lift_pad(o)
+    # the alcove behind the east wall
+    __shell(o, 11.0, 15.0, -12.5, -7.5, 0.0, 4.0, [Gap("e", -10.0, 3.0, 3.5)], "w")
+    __floor(o, 10.0, 15.0, -12.5, -7.5, 0.0)
+    # Optional rolling-bomb gallery. The low trough goes under a cycling stone shutter.
+    __shell(o, 16.0, 66.0, -14.0, -6.0, 0.0, 6.0, [Gap("w", -10.0, 3.0, 3.5)])
+    __floor(o, 15.0, 66.0, -14.0, -6.0, 0.0)
+    loop z in [-11.0, -9.0]:
+        __block(o, 26.0, 55.0, z - 0.12, z + 0.12, 0.0, 0.22)
+        __line(o, 26.0, 55.0, z, z, 0.23, 0.04, 0.5)
+    # Amber seams and low channel rails invite a sword roll through the timed shutter.
+    __block(o, 31.5, 32.5, -14.0, -11.1, 0.0, 6.0)
+    __block(o, 31.5, 32.5, -8.9, -6.0, 0.0, 6.0)
+    __block(o, 31.5, 32.5, -11.1, -8.9, 3.0, 6.0)
+    column(at(o, 29.0, 0.0, -11.8), 0.4, 0.6, 0.8, 8, SHR_STONE, PLAIN, false)
+    __crack_wall(o, "ja_baij_crack_far", 60.5, 61.5, -14.0, -6.0, 5.0)
+    # Bomb rack: dark iron cradles, spare wooden drums and a warm stone backboard.
+    box(at(o, 24.0, 0.0, -13.5), v3(6.0, 3.4, 0.35), 0.0, stone(0.32, 0.23, 0.16), PLAIN, false)
+    loop y in [0.45, 2.0]:
+        box(at(o, 24.0, y, -13.0), v3(6.0, 0.18, 0.9), 0.0, stone(0.2, 0.2, 0.21), PLAIN, false)
+        loop x in [22.0, 24.0, 26.0]:
+            column(at(o, x, y + 0.18, -13.0), 0.44, 0.4, 1.1, 10, stone(0.38, 0.24, 0.12), PLAIN, false)
+            loop dy in [0.32, 0.95]: column(at(o, x, y + dy, -13.0), 0.455, 0.455, 0.09, 10, stone(0.19, 0.2, 0.21), PLAIN, false)
+    loop z in [-11.2, -8.8]:
+        box(at(o, 32.0, 0.0, z), v3(1.5, 3.2, 0.35), 0.0, stone(0.38, 0.32, 0.25), PLAIN, false)
+        tube(at(o, 32.0, 0.0, z), at(o, 32.0, 4.4, z), 0.075, 0.075, 8, stone(0.52, 0.49, 0.39), PLAIN)
+    # the brazier: a stone bowl
+    column(at(o, -6.0, 0.0, -8.0), 0.5, 0.35, 0.7, 10, SHR_STONE, PLAIN, true)
+    column(at(o, -6.0, 0.7, -8.0), 0.5, 0.75, 0.3, 12, SHR_STONE, vec4(0.0, 0.0, 0.3, 0.0), false)
+    __light_pool(at(o, -6.0, 0.0, -8.0), 2.4, 0.3)
+    # the barrel pads
+    loop x in [6.0, 8.0]: __light_pool(at(o, x, 0.0, -4.0), 0.7, 0.6)
+    # room B: the chasm
+    __shell(o, -10.0, 10.0, -44.0, -21.0, 0.0, 12.0, [Gap("n", 0.0, 4.0, 4.0), Gap("s", 0.0, 4.0, 4.0)])
+    __floor(o, -10.0, 10.0, -26.0, -20.0, 0.0, 10.0)
+    __floor(o, -10.0, 10.0, -44.0, -36.0, 0.0, 10.0)
+    __abyss(o, -10.0, 10.0, -36.0, -26.0, -10.0)
+    __block(o, -11.0, -10.0, -36.0, -26.0, -10.0, 0.0)
+    __block(o, 10.0, 11.0, -36.0, -26.0, -10.0, 0.0)
+    __line(o, -10.0, 10.0, -26.06, -26.0, -0.04)
+    __line(o, -10.0, 10.0, -36.0, -35.94, -0.04)
+    # the pedestal in the chasm (a barrel waits on it)
+    column(at(o, 3.0, -10.0, -30.5), 0.7, 0.7, 10.0, 10, SHR_STONE, SHR_TILE, true)
+    __line(o, 2.4, 3.6, -31.1, -29.9, -0.02, 0.04, 0.8)
+    # room C: the monk
+    __shell(o, -6.0, 6.0, -56.0, -45.0, 0.0, 7.0, [Gap("s", 0.0, 4.0, 4.0)])
+    __floor(o, -6.0, 6.0, -56.0, -44.0, 0.0)
+    __monk_dais(r)
+
+# ---------------- Owa Daim ----------------
+const OWA_PIV1 = -13.5
+const OWA_PIV2 = -28.5
+
+# the stair's height at z (local), for boulders
+__owa_stair = (z: f64) -> f64:
+    if z > -42.0: return 0.0
+    if z < -78.0: return 9.0
+    clamp(0.25 * (-42.0 - z) + 0.125, 0.0, 9.0)
+
+__build_owa = (r: SRec):
+    o = r.o
+    # room A: two turning bars over a pit
+    __shell(o, -12.0, 12.0, -42.0, 4.0, 0.0, 12.0, [Gap("n", 0.0, 4.0, 4.5), Gap("e", -28.5, 4.0, 4.0)], decor = false, coffers = false, shaft = true)
+    __floor(o, -12.0, 12.0, -6.0, 4.0, 0.0, 10.0)
+    __floor(o, -12.0, 12.0, -42.0, -36.0, 0.0, 10.0)
+    __abyss(o, -12.0, 12.0, -36.0, -6.0, -10.0)
+    __block(o, -13.0, -12.0, -36.0, -6.0, -10.0, 0.0)
+    __block(o, 12.0, 13.0, -36.0, -6.0, -10.0, 0.0)
+    __line(o, -12.0, 12.0, -6.06, -6.0, -0.04)
+    __line(o, -12.0, 12.0, -36.0, -35.94, -0.04)
+    __lift_pad(o)
+    # the hubs: great cogs on pillars (their tops are a safe place to wait)
+    loop pz in [OWA_PIV1, OWA_PIV2]:
+        column(at(o, 0.0, -10.0, pz), 1.4, 1.4, 9.5, 12, SHR_STONE, SHR_TILE, false)
+        column(at(o, 0.0, -0.5, pz), 1.9, 1.9, 0.6, 16, SHR_STONE, PLAIN, true)
+        loop k in [0..12):
+            a = f64(k) / 12.0 * TAU
+            box(at(o, cos(a) * 2.0, -0.45, pz + sin(a) * 2.0), v3(0.5, 0.5, 0.35), -a, SHR_STONE, PLAIN, false)
+        column(at(o, 0.0, 0.1, pz), 0.9, 0.9, 0.02, 16, stone(0.4, 0.4, 0.4), vec4(0.0, 0.0, 1.2, 0.0), false)
+    # the island east of the second bar (the chest)
+    __floor(o, 7.6, 12.0, -30.5, -26.5, 0.0, 3.0)
+    __line(o, 7.6, 7.66, -30.5, -26.5, -0.04)
+    # Optional suspended clockwork: two independently arrestable bars, out of phase.
+    __shell(o, 13.0, 56.0, -40.0, -17.0, 0.0, 9.0, [Gap("w", -28.5, 4.0, 4.0)])
+    __floor(o, 12.0, 17.0, -36.0, -26.0, 0.0, 10.0)
+    __floor(o, 47.0, 56.0, -36.0, -24.0, 0.0, 10.0)
+    # Close the whole lower chamber, including the shoulders beside the smaller
+    # landings. Low and raised camera angles can see under those floor edges.
+    __abyss(o, 13.0, 56.0, -40.0, -17.0, -10.0)
+    __block(o,12.0,13.0,-40.0,-17.0,-10.0,0.0)
+    __block(o,56.0,57.0,-40.0,-17.0,-10.0,0.0)
+    __block(o,13.0,56.0,-41.0,-40.0,-10.0,0.0)
+    __block(o,13.0,56.0,-17.0,-16.0,-10.0,0.0)
+    loop x in [24.5, 39.5]:
+        column(at(o, x, -10.0, -28.5), 1.4, 1.4, 10.1, 16, SHR_STONE, SHR_TILE, true)
+        __ring_stone(at(o, x, 6.0, -28.5), 3.5, 0.2, 0.3, SHR_STONE, SHEIKAH_M)
+    # Great suspended gear: teeth and spokes silhouette the clockwork's northern wall.
+    __great_gear(at(o, 32.0, 4.4, -18.0), 3.8)
+    loop x in [24.5, 39.5]:
+        __ring_stone(at(o, x, -0.7, -28.5), 1.75, 0.28, 0.22, stone(0.4, 0.37, 0.28))
+        loop k in [0..12):
+            a = f64(k) * TAU / 12.0
+            box(at(o, x + cos(a) * 1.75, -1.0, -28.5 + sin(a) * 1.75), v3(0.45, 0.25, 0.4), -a, stone(0.43, 0.39, 0.29), PLAIN, false)
+    # room B: the stair, boulders rolling down it, three niches on the east side
+    steps(at(o, 0.0, 0.0, -42.5), PI, 4.0, 0.25, 1.0, 36, SHR_FLOOR, SHR_TILE)
+    __block(o, -3.0, -2.0, -83.0, -42.0, 0.0, 15.0)
+    niches = [(28, -72.0, -70.0), (18, -62.0, -60.0), (8, -52.0, -50.0)]
+    z = -76.0
+    loop n in niches:
+        __block(o, 2.0, 3.0, z, n.1, 0.0, 15.0)
+        top = 0.25 * f64(n.0 + 2)
+        __floor(o, 2.0, 4.5, n.1, n.2, top, top)
+        __block(o, 4.5, 5.5, n.1 - 1.0, n.2 + 1.0, 0.0, top + 3.2)
+        __block(o, 2.0, 4.5, n.1 - 1.0, n.1, 0.0, top + 3.2)
+        __block(o, 2.0, 4.5, n.2, n.2 + 1.0, 0.0, top + 3.2)
+        __block(o, 2.0, 4.5, n.1, n.2, top + 3.0, top + 3.2)
+        __block(o, 2.0, 3.0, n.1, n.2, top + 3.2, 15.0)
+        __line(o, 4.42, 4.48, n.1 + 0.2, n.2 - 0.2, top + 1.6, 0.08, 1.6)
+        __light_pool(at(o, 3.25, top, (n.1 + n.2) / 2.0), 0.8, 0.8)
+        z = n.2
+    __block(o, 2.0, 3.0, z, -42.0, 0.0, 15.0)
+    # Shallow trim follows the stair elevation; leave all three refuge mouths clear.
+    loop k in [0..9):
+        z = -42.0 - f64(k) * 4.0
+        frame = translation(at(o, -1.99, __owa_stair(z - 2.0) + 0.25, z)) * rotation_y(PI / 2.0)
+        __wall_bays(frame, OWA, 4.0, 5.2, 0.28)
+    # glowing lines up the stair's walls
+    loop i in [0..9):
+        z0 = -42.0 - f64(i) * 4.0
+        y = __owa_stair(z0 - 2.0) + 1.2
+        __line(o, -2.0, -1.94, z0 - 3.8, z0 - 0.2, y)
+    # the top landing, the boulders' shaft above it, the stair's ceiling
+    __floor(o, -2.0, 2.0, -82.0, -78.0, 9.0, 9.0)
+    __block(o, -3.0, 3.0, -83.0, -82.0, 0.0, 22.0)
+    __block(o, -3.0, 3.0, -77.0, -76.0, 14.5, 22.0)
+    __block(o, -3.0, -2.0, -83.0, -76.0, 14.5, 22.0)
+    __block(o, 2.0, 3.0, -83.0, -76.0, 14.5, 22.0)
+    __block(o, -3.0, 3.0, -83.0, -76.0, 22.0, 23.0)
+    __block(o, 2.0, 3.0, -78.0, -76.0, 0.0, 14.5)
+    loop i in [0..9):
+        z0 = -42.0 - f64(i) * 4.0
+        if z0 - 4.0 < -77.0:
+            __block(o, -3.0, 3.0, -77.0, z0, __owa_stair(z0) + 5.5, __owa_stair(z0) + 7.5)
+            continue
+        __block(o, -3.0, 3.0, z0 - 4.0, z0, __owa_stair(z0 - 4.0) + 5.5, __owa_stair(z0 - 4.0) + 7.5)
+    # where boulders land: a warning ring
+    column(at(o, 0.0, 9.01, -79.5), 1.6, 1.6, 0.02, 20, stone(0.4, 0.3, 0.2), vec4(0.0, 0.0, 0.8, 0.0), false)
+    # the monk's room, east of the landing
+    __shell(o, 3.0, 13.0, -84.0, -76.0, 9.0, 7.0, [Gap("w", -80.0, 4.0, 4.0)])
+    __floor(o, 2.0, 13.0, -84.0, -76.0, 9.0, 2.0)
+    __monk_dais(r)
+
+# ---------------- Keh Namut ----------------
+const KEH_LOW = -2.6
+const KEH_HIGH = -0.4
+const KEH_PLATE = vec2(9.0, -21.0)
+
+__build_keh = (r: SRec):
+    o = r.o
+    begin_named("keh_namut_room")
+    # room A: the flooded hall; ledges south and north, the pool between
+    __shell(o, -12.0, 12.0, -30.0, 4.0, 0.0, 10.0, [Gap("n", 0.0, 4.0, 4.0), Gap("w", -14.0, 4.0, 4.6, 3.6)], decor = false, coffers = false, shaft = true)
+    __floor(o,-12.0,12.0,-2.0,1.8,0.0)
+    __floor(o,-2.6,2.6,-4.0,4.0,0.0)
+    __floor(o,-10.0,-7.0,-4.0,-2.0,0.0)
+    __floor(o,5.0,8.0,-4.0,3.0,0.0)
+    __floor(o,-12.0,12.0,-4.0,4.0,-6.0)
+    # Retaining walls seal the extended landing basins below the room shell.
+    __block(o,-13.0,-12.0,-4.0,4.0,-6.0,0.0)
+    __block(o,12.0,13.0,-4.0,4.0,-6.0,0.0)
+    __block(o,-12.0,12.0,4.0,5.0,-6.0,0.0)
+    __floor(o, -12.0, 12.0, -30.0, -24.0, 0.0)
+    __floor(o, -12.0, 12.0, -24.0, -4.0, -6.0)
+    # the pool's sides (smooth: not climbable)
+    __block(o, -12.0, 12.0, -4.0, -3.0, -6.0, -1.0)
+    __block(o, -12.0, 12.0, -25.0, -24.0, -6.0, -1.0)
+    __block(o, -13.0, -12.0, -24.0, -4.0, -6.0, 0.0)
+    __block(o, 12.0, 13.0, -24.0, -4.0, -6.0, 0.0)
+    # handholds: one up the south side (out of the pool at any level), one on the west wall
+    # that only reaches the water when it is high (to the chest's niche)
+    box(at(o, -8.0, -6.0, -4.1), v3(2.0, 6.0, 0.2), 0.0, stone(0.3, 0.32, 0.36), PLAIN, true, true)
+    box(at(o, -11.9, -1.0, -14.0), v3(0.2, 4.6, 4.0), 0.0, stone(0.3, 0.32, 0.36), PLAIN, true, true)
+    loop k in [0..6): __line(o, -8.9, -7.1, -4.24, -4.2, -5.5 + f64(k), 0.06, 1.8)
+    loop k in [0..5): __line(o, -11.84, -11.8, -15.8, -12.2, -0.6 + f64(k) * 0.9, 0.06, 1.8)
+    # the chest's niche
+    __floor(o, -16.0, -11.8, -16.0, -12.0, 3.6, 1.0)
+    # The raised, unadorned niche clears the lens without foreground reliefs or pilasters.
+    __shell(o, -16.0, -13.0, -16.0, -12.0, 3.6, 4.8, [Gap("w", -14.0, 4.0, 4.6)], "e", false, false)
+    # Optional frost cistern entered from the Spear niche. A dry rim links both valves.
+    __shell(o, -44.0, -17.0, -22.0, -6.0, 3.6, 7.0, [Gap("e", -14.0, 4.0, 4.6)])
+    __floor(o, -44.0, -16.0, -10.0, -6.0, 3.6)
+    __floor(o, -44.0, -16.0, -22.0, -18.0, 3.6)
+    __floor(o, -23.0, -16.0, -18.0, -10.0, 3.6)
+    __floor(o, -39.0, -23.0, -18.0, -10.0, -0.4)
+    # The treasury rises from the basin; its fascia must reach the basin floor,
+    # not leave a view out beneath a one-metre floating slab.
+    __floor(o, -44.0, -39.0, -18.0, -10.0, 6.0, 6.4)
+    __block(o, -37.0, -33.0, -16.0, -12.0, -0.4, 2.8)
+    loop z in [-18.0, -10.0]:
+        box(at(o, -31.0, -0.4, z), v3(16.0, 4.0, 0.2), 0.0, SHR_STONE, SHR_TILE, true, true)
+    # Frozen waterfall: faceted pale cascades from a broken aqueduct into the cistern.
+    box(at(o, -30.0, 8.4, -7.1), v3(8.0, 0.6, 1.3), 0.0, stone(0.4, 0.5, 0.56), PLAIN, false)
+    loop k in [0..9):
+        x = -33.2 + f64(k) * 0.8
+        h = 4.0 + f64((k * 3) % 5) * 0.65
+        column(at(o, x, 8.4 - h, -7.6), 0.12, 0.43, h, 5, stone(0.48, 0.69, 0.78), PLAIN, false)
+        column(at(o, x, 7.8, -8.1), 0.0, 0.18, 0.9, 5, stone(0.65, 0.79, 0.84), PLAIN, false)
+    loop x in [-37.5, -40.5]:
+        box(at(o, x, 2.8, -20.2), v3(3.1, 0.8, 0.4), 0.0, stone(0.36, 0.46, 0.51), PLAIN, false)
+    # the sunken platform with the plate (north-east), the inflow above it
+    __floor(o, 6.0, 12.0, -24.0, -18.0, -2.0, 4.0)
+    box(at(o, 11.9, -1.6, -21.0), v3(0.2, 1.2, 2.4), 0.0, stone(0.2, 0.3, 0.4), vec4(0.0, 0.0, 1.2, 0.0), false)
+    # glowing trim: the ledges' edges, the pool's walls under water
+    __line(o, -12.0, 12.0, -4.06, -4.0, -0.04)
+    __line(o, -12.0, 12.0, -24.0, -23.94, -0.04)
+    loop y in [-3.0]:
+        __line(o, -12.0, 12.0, -4.08, -4.02, y)
+        __line(o, -12.0, 12.0, -23.98, -23.92, y)
+        __line(o, -11.98, -11.92, -24.0, -4.0, y)
+        __line(o, 11.92, 11.98, -24.0, -4.0, y)
+    __lift_pad(o)
+    # crystal pedestals
+    loop q in [(6.0, -1.0), (-6.0, -27.0)]: column(at(o, q.0, 0.0, q.1), 0.4, 0.3, 0.8, 8, SHR_STONE, PLAIN, true)
+    # Stone gate housing with exposed metal guides; the leaf slides through its lintel.
+    loop x in [-2.4, 2.4]:
+        box(at(o, x, 0.0, -30.5), v3(0.65, 5.0, 1.25), 0.0, stone(0.38, 0.43, 0.47), PLAIN, false)
+        tube(at(o, x, 0.2, -29.8), at(o, x, 4.9, -29.8), 0.07, 0.07, 8, stone(0.51, 0.48, 0.39), PLAIN)
+    box(at(o, 0.0, 4.7, -30.5), v3(5.5, 0.6, 1.3), 0.0, stone(0.36, 0.42, 0.46), SHEIKAH_M, false)
+    # room B: a wall to climb to the monk's balcony
+    __shell(o, -6.0, 6.0, -46.0, -31.0, 0.0, 9.0, [Gap("s", 0.0, 4.0, 4.0)])
+    __floor(o, -6.0, 6.0, -46.0, -30.0, 0.0)
+    box(at(o, 0.0, -1.0, -43.0), v3(12.0, 5.0, 6.0), 0.0, SHR_STONE, SHR_TILE, true, true)
+    loop k in [0..4): __line(o, -1.5, 1.5, -39.96, -39.9, 0.6 + f64(k), 0.06, 1.8)
+    __line(o, -6.0, 6.0, -40.06, -40.0, 3.96)
+    __monk_dais(r)
+    end_named()
+
+# a Sheikah chest; add_chest accepts the reward before these presentation callbacks
+shr_chest = (pos: vec3, yaw: f64, id: str, count: int = 1) -> int:
+    add_chest(pos, yaw, id, count, true, ():
+        nm = item(id).name
+        slog("chest: {id}")
+        if ui.pickup_name == nm and ui.pickup_t > 2.4: return
+        ui_pickup(nm)
+        item_jingle()
+    )
+
+# ---------------- the build hook ----------------
+__keh_cols = (0, 0)          # Kay Nomut's colliders (off unless the player is there)
+__keh_extra: int[]
+
+shrines_build = ():
+    __shr_log = env("BOTW_SHRINE_LOG") != none
+    # each shrine's entrance
+    loop mut r in srec:
+        loop i in 0.. and s in shrines:
+            if s.name == r.name: r.entry = i
+        r.checkpoint = r.o
+    # Every chamber uses the same Sheikah slate. Iron, soot, brass and ice
+    # fixtures provide material variety; their nearby light provides the accent.
+    SHR_STONE = stone(0.19, 0.23, 0.28)
+    SHR_FLOOR = stone(0.28, 0.32, 0.37)
+    __build_oman(srec[OMAN])
+    __shrine_details(srec[OMAN], OMAN)
+    __build_jabaij(srec[JABAIJ])
+    __shrine_details(srec[JABAIJ], JABAIJ)
+    __build_owa(srec[OWA])
+    __shrine_details(srec[OWA], OWA)
+    c0 = colliders.len()
+    __build_keh(srec[KEH])
+    __shrine_details(srec[KEH], KEH)
+    SHR_STONE = stone(0.15, 0.17, 0.2)
+    SHR_FLOOR = stone(0.21, 0.23, 0.26)
+    __keh_cols = (c0, colliders.len())
+    loop mut key, b in __bchunks: __shrine_fixture_light(b)
+    loop mut key, b in __named_b: __shrine_fixture_light(b)
+    loop r in srec: zones.push(Zone(r.key, r.o + r.lo, r.o + r.hi))
+
+# structures_build calls its hook before finishing the build; a top-level assignment elsewhere
+# would declare a new global there, so the hook is set from inside a function, as this file's
+# globals are initialized (before the main file's statements run)
+__install_build_hook = () -> bool:
+    shrines_build_hook = shrines_build
+    true
+__shr_hook_installed = __install_build_hook()
+
+# ---------------- moving pieces ----------------
+# a slab drawn with the prop shader (dark stone, glowing lines), optionally solid
+struct Piece:
+    body: Mesh
+    glow: Mesh
+    size = vec3(1, 1, 1)
+    pos = vec3(0, 0, 0)        # base center
+    yaw = 0.0
+    col = -1
+
+__swhite = vec4(1, 1, 1, 1)
+
+__body_mesh = (size: vec3, col: vec4) -> Mesh:
+    b = MeshB()
+    mb_box(b, vec3(0, size.y * 0.5, 0), size * 0.5, col * vec4(0.7, 0.7, 0.7, 1))
+    hx = f64(size.x) * 0.5
+    hz = f64(size.z) * 0.5
+    h = f64(size.y)
+    mb_box(b, v3(0.0, h - 0.025, 0.0), v3(max(0.1, hx - 0.15), 0.025, max(0.1, hz - 0.15)), col)
+    loop side in [-1.0, 1.0]:
+        mb_box(b, v3(side * (hx - 0.055), h * 0.5, 0.0), v3(0.06, h * 0.5, hz), col)
+        mb_box(b, v3(0.0, h * 0.5, side * (hz - 0.055)), v3(hx, h * 0.5, 0.06), col)
+        loop end in [-1.0, 1.0]: mb_sphere(b, v3(side * (hx - 0.1), h + 0.012, end * (hz - 0.1)), v3(0.045, 0.02, 0.045), rgb(0.65, 0.61, 0.48), 6)
+    mesh(b.vs, b.idx)
+
+# Riveted weight: dark inset plates, raised edge rails, seams and small worn fasteners.
+__metal_weight = (size: vec3) -> Mesh:
+    b = MeshB()
+    hx = f64(size.x) * 0.5
+    hz = f64(size.z) * 0.5
+    h = f64(size.y)
+    iron = rgb(0.16, 0.19, 0.21)
+    edge = rgb(0.34, 0.38, 0.40)
+    mb_box(b, v3(0.0, h * 0.5, 0.0), v3(hx, h * 0.5, hz), iron)
+    loop x in [-1.0, 1.0]:
+        loop z in [-1.0, 1.0]:
+            mb_box(b, v3(x * (hx - 0.06), h * 0.5, z * (hz - 0.06)), v3(0.08, h * 0.5, 0.08), edge)
+            loop y in [0.16, h * 0.5, h - 0.16]:
+                mb_sphere(b, v3(x * (hx + 0.015), y, z * (hz - 0.13)), v3(0.028, 0.045, 0.045), rgb(0.51, 0.53, 0.51), 6)
+                mb_sphere(b, v3(x * (hx - 0.13), y, z * (hz + 0.015)), v3(0.045, 0.045, 0.028), rgb(0.51, 0.53, 0.51), 6)
+    loop y in [0.08, h * 0.5, h - 0.08]:
+        loop side in [-1.0, 1.0]:
+            mb_box(b, v3(0.0, y, side * hz), v3(hx, 0.035, 0.025), edge)
+            mb_box(b, v3(side * hx, y, 0.0), v3(0.025, 0.035, hz), edge)
+    loop z in [-0.42, 0.42]:
+        mb_box(b, v3(0.0, h + 0.012, z), v3(hx - 0.14, 0.012, 0.36), rgb(0.28, 0.32, 0.34))
+    mesh(b.vs, b.idx)
+
+# Floating wooden weight: separate planks, dark seams and restrained corner straps.
+__wood_crate = (size: vec3) -> Mesh:
+    b = MeshB()
+    hx = f64(size.x)*0.5
+    hz = f64(size.z)*0.5
+    h = f64(size.y)
+    mb_box(b,v3(0.0,h*0.5,0.0),v3(hx-0.02,h*0.5,hz-0.02),rgb(0.13,0.085,0.045))
+    loop row in [0..5):
+        y = (f64(row)+0.5)*h/5.0
+        col = rgb(0.30+f64(row%3)*0.025,0.205+f64(row%2)*0.025,0.11)
+        loop side in [-1.0,1.0]:
+            mb_box(b,v3(0.0,y,side*hz),v3(hx,h/10.0-0.012,0.025),col)
+            mb_box(b,v3(side*hx,y,0.0),v3(0.025,h/10.0-0.012,hz),col)
+        mb_box(b,v3((f64(row)+0.5)*f64(size.x)/5.0-hx,h+0.01,0.0),v3(f64(size.x)/10.0-0.012,0.02,hz),col)
+    loop side in [-1.0,1.0]:
+        loop end in [-1.0,1.0]:
+            mb_box(b,v3(side*(hx-0.04),h*0.5,end*(hz-0.04)),v3(0.05,h*0.5,0.05),rgb(0.19,0.20,0.18))
+            loop y in [0.12,h-0.12]: mb_sphere(b,v3(side*(hx+0.02),y,end*(hz-0.07)),v3(0.022,0.032,0.032),rgb(0.39,0.40,0.35),6)
+    mesh(b.vs,b.idx)
+
+# Moving machinery: cast dark iron frame, inset wear plates, bolts and ribs.
+# Small pivot/status inserts carry colour; no continuous emissive perimeter.
+__machine_body = (size: vec3) -> Mesh:
+    b=MeshB()
+    hx=f64(size.x)*0.5
+    hz=f64(size.z)*0.5
+    h=f64(size.y)
+    mb_box(b,v3(0.0,h*0.5,0.0),v3(hx,h*0.5,hz),rgb(0.20,0.22,0.23))
+    loop side in [-1.0,1.0]:
+        mb_box(b,v3(side*(hx-0.09),h*0.6,0.0),v3(0.09,h*0.43,hz),rgb(0.34,0.35,0.33))
+        mb_box(b,v3(0.0,h*0.6,side*(hz-0.10)),v3(hx,h*0.43,0.10),rgb(0.34,0.35,0.33))
+    count=max(2,int(f64(size.z)/0.9))
+    loop k in [0..count):
+        z=-hz+(f64(k)+0.5)*f64(size.z)/f64(count)
+        mb_box(b,v3(0.0,h+0.012,z),v3(max(0.1,hx-0.22),0.012,f64(size.z)/f64(count)*0.42),rgb(0.43,0.44,0.40))
+        loop side in [-1.0,1.0]:
+            mb_sphere(b,v3(side*(hx-0.12),h+0.025,z),v3(0.045,0.02,0.045),rgb(0.59,0.53,0.39),6)
+    loop side in [-1.0,1.0]:
+        mb_cyl(b,v3(0.0,0.04,side*hz*0.7),v3(0.0,h*0.65,side*hz*0.7),0.22,0.22,rgb(0.18,0.19,0.18),10)
+    mesh(b.vs,b.idx)
+
+__machine_lamps = (size: vec3) -> Mesh:
+    b=MeshB()
+    h=f64(size.y)
+    # Two short status slots around the axle, occupying a small part of the deck.
+    loop side in [-1.0,1.0]:
+        mb_box(b,v3(side*0.38,h+0.035,0.0),v3(0.045,0.015,0.20),__swhite)
+    mesh(b.vs,b.idx)
+
+piece_material = (p: mut Piece):
+    p.body=__machine_body(p.size)
+    p.glow=__machine_lamps(p.size)
+
+# glowing lines: a frame inset on the top, a band around the sides
+__lines_mesh = (size: vec3) -> Mesh:
+    b = MeshB()
+    hx = f64(size.x) / 2.0
+    hz = f64(size.z) / 2.0
+    h = f64(size.y)
+    i = min(0.18, min(hx, hz) * 0.3)
+    t = 0.04
+    loop s in [-1.0, 1.0]:
+        mb_box(b, v3(0.0, h + 0.004, s * (hz - i)), v3(hx - i, 0.006, t), __swhite)
+        mb_box(b, v3(s * (hx - i), h + 0.004, 0.0), v3(t, 0.006, hz - i), __swhite)
+        mb_box(b, v3(0.0, h * 0.45, s * (hz + 0.004)), v3(hx * 0.8, t, 0.006), __swhite)
+        mb_box(b, v3(s * (hx + 0.004), h * 0.45, 0.0), v3(0.006, t, hz * 0.8), __swhite)
+    mesh(b.vs, b.idx)
+
+# a box collider that may move within `reach` of where it starts (the collision grid is
+# filled for the whole area it can reach)
+__moving_box = (base: vec3, half: vec3, yaw: f64, reach: f64, climb: bool = false) -> int:
+    i = add_box(base, half + v3(reach, 0.0, reach), yaw, climb, .metal)
+    colliders[i].half = half
+    i
+
+piece_new = (size: vec3, col: vec4, pos: vec3, yaw: f64, solid: bool, reach: f64 = 0.0) -> Piece:
+    p = Piece(__body_mesh(size, col), __lines_mesh(size), size, pos, yaw)
+    if solid: p.col = __moving_box(pos, size * 0.5, yaw, reach)
+    p
+
+piece_sync = (p: Piece):
+    if p.col < 0: return
+    colliders[p.col].pos = p.pos
+    colliders[p.col].yaw = p.yaw
+
+piece_model = (p: Piece) -> mat4: translation(p.pos) * rotation_y(p.yaw)
+
+piece_draw = (p: Piece, glow: vec4, model: mat4 = mat4(), use_model: bool = false):
+    m = if use_model: model else: piece_model(p)
+    draw_prop(p.body, m, __swhite, 0.0, 0.3)
+    draw_prop(p.glow, m, glow, 0.42, 0.0)
+
+# carry the player standing on a collider that moved by `d`
+__ride = (col: int, d: vec3):
+    if col >= 0 and pl.state == .ground and pl.ground.collider == col: pl.pos += d
+
+# A vertical wheel built from separate rim, spokes, hub and teeth (decorative).
+__wall_drive = (p: vec3, r: f64):
+    # Proportionate teeth and a narrow rim preserve the open spaces at this
+    # scale. Recessed bronze, worn edges and iron bearings catch different light.
+    brass = stone(0.29,0.23,0.14)
+    worn = stone(0.38,0.31,0.20)
+    iron = stone(0.14,0.16,0.17)
+    loop k in [0..24):
+        a = f64(k) * TAU / 24.0
+        q = p + v3(cos(a)*r,sin(a)*r,0.0)
+        box_m(translation(q)*rotation_z(a)*scaling(v3(r*0.15,r*TAU/24.0*1.04,0.16)),brass,PLAIN,false)
+        if k % 2 == 0:
+            tooth = p + v3(cos(a)*r*1.09,sin(a)*r*1.09,-0.025)
+            box_m(translation(tooth)*rotation_z(a)*scaling(v3(r*0.19,r*0.13,0.20)),worn,PLAIN,false)
+    loop k in [0..6):
+        a = f64(k) * TAU / 6.0
+        tube(p+v3(cos(a)*r*0.22,sin(a)*r*0.22,0.0),p+v3(cos(a)*r*0.93,sin(a)*r*0.93,0.0),r*0.045,r*0.06,6,brass,PLAIN)
+    tube(p+vec3(0,0,-0.24),p+vec3(0,0,0.14),r*0.22,r*0.22,12,iron,PLAIN)
+    tube(p+vec3(0,0,0.14),p+vec3(0,0,0.19),r*0.13,r*0.13,10,worn,PLAIN)
+
+__great_gear = (p: vec3, r: f64):
+    col = stone(0.45, 0.39, 0.27)
+    loop k in [0..32):
+        a = f64(k) * TAU / 32.0
+        box_m(translation(p + v3(cos(a) * r, sin(a) * r, 0.0)) * rotation_z(a) * scaling(v3(0.5, r * TAU / 32.0, 0.45)), col, PLAIN, false)
+        box_m(translation(p + v3(cos(a) * (r + 0.32), sin(a) * (r + 0.32), 0.0)) * rotation_z(a) * scaling(v3(0.6, 0.4, 0.55)), darken(col, 0.15), PLAIN, false)
+    loop k in [0..8):
+        a = f64(k) * TAU / 8.0
+        tube(p + v3(cos(a) * 0.5, sin(a) * 0.5, 0.0), p + v3(cos(a) * (r - 0.2), sin(a) * (r - 0.2), 0.0), 0.12, 0.17, 6, col, PLAIN)
+    tube(p + vec3(0, 0, -0.4), p + vec3(0, 0, 0.4), 0.55, 0.55, 12, col, SHEIKAH_M)
+
+# ---------------- pressure plates ----------------
+struct Plate:
+    pos: vec3                  # top center (world)
+    pressed = false
+    k = 0.0                    # sunk 0..1
+    pulse = 0.0
+
+__plate_body: Mesh
+__plate_lines: Mesh
+__plate_base: Mesh
+__response_ring: Mesh
+__plate_ready = false
+
+plate_update = (p: mut Plate, weights: vec3[], dt: f64):
+    on = false
+    loop w in weights:
+        if f64(length(vec2(w.x - p.pos.x, w.z - p.pos.z))) < 1.05 and abs(f64(w.y - p.pos.y)) < 0.35: on = true
+    # the player stands on it too
+    if pl.state == .ground and f64(length(vec2(pl.pos.x - p.pos.x, pl.pos.z - p.pos.z))) < 1.0 and abs(f64(pl.pos.y - p.pos.y)) < 0.4: on = true
+    p.pulse = max(0.0, p.pulse - dt)
+    if on != p.pressed:
+        p.pulse = 0.6
+        __sfx(sfx.block, p.pos, 0.48, (if on: 0.55 else: 0.8))
+        if on: play(cached_chime(), 0.22, 0.0, 1.5)
+    p.pressed = on
+    p.k = approach(p.k, (if on: 1.0 else: 0.0), 6.0, dt)
+
+plate_draw = (p: Plate, receiver: bool = false):
+    if not __plate_ready:
+        __plate_ready = true
+        b = MeshB()
+        mb_box(b, v3(0.0, -0.12, 0.0), v3(1.2, 0.1, 1.2), rgb(0.3, 0.32, 0.35))
+        loop side in [-1.0, 1.0]:
+            mb_box(b, v3(side * 1.06, 0.015, 0.0), v3(0.09, 0.04, 1.13), rgb(0.45, 0.42, 0.34))
+            mb_box(b, v3(0.0, 0.015, side * 1.06), v3(1.13, 0.04, 0.09), rgb(0.45, 0.42, 0.34))
+        __plate_base = mesh(b.vs, b.idx)
+        __plate_body = __body_mesh(v3(1.85, 0.1, 1.85), rgb(0.42, 0.44, 0.46))
+        __plate_lines = __lines_mesh(v3(1.6, 0.1, 1.6))
+        ring = MeshB()
+        __mesh_ring(ring, 1.0, 0.025, 0.0, __swhite)
+        __response_ring = mesh(ring.vs, ring.idx)
+    draw_prop(__plate_base, translation(p.pos), __swhite, 0.0, 0.15)
+    m = translation(p.pos + vec3(0, f32(0.02 - 0.10 * p.k), 0))
+    draw_prop(__plate_body, m, __swhite, 0.0, 0.2)
+    draw_prop(__plate_lines, m, (if p.pressed or receiver: GLOW_BLUE else: GLOW_ORANGE), (if receiver and not p.pressed: 0.45 else: 0.65), 0.0)
+    __pulse_draw(p.pos + vec3(0, 0.14, 0), p.pulse, (if p.pressed: GLOW_BLUE else: GLOW_ORANGE), 1.15)
+
+# ---------------- struck by a sword or an arrow ----------------
+# true once per swing (last holds the swing's id)
+__struck = (c: vec3, r: f64, last: mut int) -> bool:
+    loop h in player_hits:
+        if h.id == last: continue
+        if not blade_touches(h, c, r): continue
+        last = h.id
+        return true
+    loop mut a in arrows:
+        if a.alive and a.stuck <= 0.0 and not a.hostile and arrow_touches(a, c, r + 0.3):
+            a.alive = false
+            return true
+    false
+
+# the strongest hit landing this frame (damage), for things with hit points
+__hit_damage = (c: vec3, r: f64, last: mut int, col: int = -1) -> f64:
+    dmg = 0.0
+    loop h in player_hits:
+        if h.id == last: continue
+        if not blade_touches(h, c, r): continue
+        last = h.id
+        dmg = max(dmg, h.damage)
+    loop mut a in arrows:
+        if a.alive and (a.stuck <= 0.0 or (col >= 0 and a.hit_col == col)) and not a.hostile and arrow_touches(a, c, r + 0.3):
+            a.alive = false
+            dmg = max(dmg, a.damage)
+    dmg
+
+__sfx = (s: Sound, p: vec3, vol: f64 = 0.8, pitch: f64 = 1.0):
+    sfx_at(s, p, sc.cam, normalize(cross(sc.fwd, vec3(0, 1, 0))), vol, pitch, 60.0)
+
+# ================================================================================================
+# Oman Au: push crates (on a 2 m grid) onto plates; a Guardian Scout
+# ================================================================================================
+struct Crate:
+    p: Piece
+    o: vec3                    # shrine origin
+    cell: vec2                 # local cell center
+    to: vec2
+    t = 1.0                    # slide progress (1: at rest)
+    push_t = 0.0
+    lo: vec2                   # allowed cells (local centers, inclusive)
+    hi: vec2
+    blocked: vec2[]
+
+__crates: Crate[]
+
+const CRATE = 1.6           # Kay Nomut's floating crate
+const METAL_W = 1.8         # Ohman Ow's metal crates (taller than a vault: they are pushed)
+const METAL_H = 2.2
+
+crate_new = (o: vec3, cell: vec2, lo: vec2, hi: vec2, blocked: vec2[]) -> Crate:
+    p = piece_new(v3(METAL_W, METAL_H, METAL_W), rgb(0.42, 0.4, 0.37), at(o, f64(cell.x), 0.0, f64(cell.y)), 0.0, true, 16.0)
+    p.body = __metal_weight(v3(METAL_W, METAL_H, METAL_W))
+    p.glow = __lines_mesh(p.size)
+    Crate(p, o, cell, cell, lo = lo, hi = hi, blocked = blocked)
+
+__cell_free = (c: Crate, q: vec2) -> bool:
+    if q.x < c.lo.x - 0.01 or q.y < c.lo.y - 0.01 or q.x > c.hi.x + 0.01 or q.y > c.hi.y + 0.01: return false
+    loop b in c.blocked:
+        if length(b - q) < 0.1: return false
+    loop o in __crates:
+        if length(o.cell - q) < 0.1 or length(o.to - q) < 0.1: return false
+    true
+
+crate_update = (i: int, dt: f64):
+    c = __crates[i]
+    if c.t < 1.0:
+        c.t = min(1.0, c.t + dt / 0.5)
+        k = smooth01(c.t)
+        cpos = c.cell + (c.to - c.cell) * f32(k)
+        np = at(c.o, f64(cpos.x), 0.0, f64(cpos.y))
+        c.p.pos = np
+        piece_sync(c.p)
+        if c.t >= 1.0:
+            c.cell = c.to
+            slog("crate {i} at {c.cell.x},{c.cell.y}")
+        __crates[i] = c
+        return
+    # pushing: on the ground, holding the stick toward the crate, against one of its faces
+    pushing = false
+    dir = vec2(0, 0)
+    if pl.state == .ground and length(act.move) > 0.5:
+        d = pl.pos - c.p.pos
+        ax = abs(f64(d.x))
+        az = abs(f64(d.z))
+        h = METAL_W / 2.0
+        if abs(f64(d.y)) < 0.5:
+            if ax > az and ax < h + RADIUS + 0.2 and az < h - 0.15: dir = vec2(f32(-sign(f64(d.x))), 0)
+            else if az >= ax and az < h + RADIUS + 0.2 and ax < h - 0.15: dir = vec2(0, f32(-sign(f64(d.z))))
+        if length(dir) > 0.0 and f64(dot(vec3(dir.x, 0, dir.y), pl.move_dir)) > 0.75: pushing = true
+    if pushing:
+        c.push_t += dt
+        if c.push_t > 0.3:
+            c.push_t = 0.0
+            q = c.cell + dir * 2.0
+            if __cell_free(c, q):
+                c.to = q
+                c.t = 0.0
+                __sfx(sfx.door, c.p.pos, 0.35, 1.6)
+    else: c.push_t = 0.0
+    __crates[i] = c
+
+# ---------------- the Guardian Scout I ----------------
+enum ScoutState: idle, aim, cool, wind, spin, dead
+
+struct Scout:
+    pos: vec3
+    face = 0.0
+    hp = 13.0
+    state = ScoutState.idle
+    t = 0.0
+    target = vec3(0, 0, 0)
+    last_hit = -1
+    flash = 0.0
+    spun = false               # the spin has hit already
+    col = -1
+
+__scout = Scout(vec3(0, 0, 0))
+__scout_body: Mesh
+__scout_eye: Mesh
+__scout_arm: Mesh
+
+__scout_meshes = ():
+    metal = rgb(0.45, 0.42, 0.38)
+    b = MeshB()
+    mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.0, 0.55, 0.0), 0.55, 0.5, metal, 12)
+    mb_sphere(b, v3(0.0, 0.6, 0.0), v3(0.62, 0.55, 0.62), metal, 14)
+    loop k in [0..3):
+        a = f64(k) / 3.0 * TAU
+        mb_cyl(b, v3(cos(a) * 0.3, 0.35, sin(a) * 0.3), v3(cos(a) * 0.9, 0.0, sin(a) * 0.9), 0.08, 0.06, metal, 6)
+    mb_box(b, v3(0.0, 0.58, 0.0), v3(0.64, 0.03, 0.64), rgb(0.25, 0.6, 0.9))
+    __scout_body = mesh(b.vs, b.idx)
+    b2 = MeshB()
+    mb_sphere(b2, v3(0.0, 0.0, 0.0), v3(0.17, 0.17, 0.1), __swhite, 10)
+    __scout_eye = mesh(b2.vs, b2.idx)
+    b3 = MeshB()
+    mb_box(b3, v3(0.0, 0.0, 0.0), v3(0.06, 0.06, 0.9), rgb(0.6, 0.6, 0.62))
+    __scout_arm = mesh(b3.vs, b3.idx)
+
+# where to lock on to the scout (combat's targets after the monsters), or nowhere: not in Oman Au,
+# or destroyed
+scout_target_pos = () -> vec3:
+    if shr_cur != OMAN or __scout.state == .dead or __scout.col < 0: return vec3(0, -10000, 0)
+    __scout.pos + vec3(0, 0.9, 0)
+
+__scout_eye_pos = () -> vec3: __scout.pos + vec3(0, 0.95, 0) + forward_of(__scout.face) * 0.5
+
+scout_update = (dt: f64):
+    s = __scout
+    if s.state == .dead: return
+    s.t += dt
+    s.flash = max(0.0, s.flash - dt)
+    chest = pl.pos + vec3(0, 1.0, 0)
+    dv = pl.pos - s.pos
+    dist = f64(length(vec3(dv.x, 0, dv.z)))
+    want = yaw_of(vec3(dv.x, 0, dv.z) + vec3(0.0001, 0, 0))
+    awake = dist < 15.0 and pl.state != .dead and f64(pl.pos.y - s.pos.y) < 2.5
+    match s.state:
+        idle:
+            s.face += dt * 0.7
+            if awake:
+                s.state = if dist < 2.8: ScoutState.wind else: ScoutState.aim
+                s.t = 0.0
+                s.target = __scout_eye_pos() + normalize(chest - __scout_eye_pos()) * 2.0
+                if s.state == .aim: __sfx(sfx.laser_lock, s.pos, 0.5, 1.4)
+        aim:
+            # the red sight follows the player, lagging; then the beam
+            s.face = turn_toward(s.face, want, 2.5 * dt)
+            s.target = s.target + (chest - s.target) * f32(min(1.0, dt * (if s.t < 1.1: 5.0 else: 0.6)))
+            if dist < 2.6:
+                s.state = .wind
+                s.t = 0.0
+            else if s.t > 1.5:
+                __sfx(sfx.laser, s.pos, 0.8, 1.3)
+                eye = s.pos + vec3(0, 0.95, 0) + forward_of(s.face) * 0.68
+                to = s.target - eye
+                bh = raycast(eye, to, max(f64(length(to)) - 0.05, 0.001))
+                if bh.hit: s.target = bh.pos
+                fx_sparks(s.target, 16, rgba(1.0, 0.4, 0.3, 1.0))
+                combat_revalidate_equipment()
+                blast_from = if bh.hit: bh.pos + bh.normal * 0.04 else: s.target
+                blast_to = chest - blast_from
+                if f64(length(blast_to)) < 1.2 and not raycast(blast_from, blast_to, max(f64(length(blast_to)) - 0.05, 0.001)).hit:
+                    if perfect_guard():
+                        # a perfect guard sends the beam back
+                        sfx_play(sfx.parry, 0.8, 0.0, 1.2)
+                        s.hp = 0.0
+                    else: hit_player(4, s.target - normalize(chest - s.pos) * 2.0, 4.0)
+                s.state = .cool
+                s.t = 0.0
+        cool:
+            s.face = turn_toward(s.face, want, 1.5 * dt)
+            if s.t > 1.6:
+                s.state = .idle
+                s.t = 0.0
+        wind:
+            # blades out, a short warning, then a spin
+            s.face = turn_toward(s.face, want, 3.0 * dt)
+            if s.t > 0.7:
+                s.state = .spin
+                s.t = 0.0
+                s.spun = false
+                __sfx(sfx.swing_heavy, s.pos, 0.7, 1.3)
+        spin:
+            s.face += dt * 16.0
+            if not s.spun and dist < 2.5 and abs(f64(dv.y)) < 1.5:
+                s.spun = true
+                hit_player(3, s.pos, 5.0, .horizontal)
+            if s.t > 1.1:
+                s.state = .cool
+                s.t = 0.0
+        _: pass
+    # sword hits and arrows
+    dmg = __hit_damage(s.pos + vec3(0, 0.7, 0), 0.8, s.last_hit, s.col)
+    if dmg > 0.0:
+        s.hp -= dmg
+        s.flash = 0.2
+        __sfx(sfx.hit, s.pos, 0.8, 1.4)
+        fx_sparks(s.pos + vec3(0, 0.8, 0), 10, rgba(0.6, 0.85, 1.0, 1.0))
+    if s.hp <= 0.0:
+        s.state = .dead
+        s.t = 0.0
+        fx_explosion(s.pos + vec3(0, 0.6, 0))
+        __sfx(sfx.explode, s.pos, 0.8, 1.6)
+        cam.shake = 0.4
+        if s.col >= 0: colliders[s.col].active = false
+        spawn_item("amber", s.pos + vec3(0, 0.6, 0), v3(0.0, 4.0, 1.0))
+        slog("scout destroyed")
+    __scout = s
+
+scout_draw = ():
+    s = __scout
+    if s.state == .dead: return
+    contact_shadows.push(vec4(s.pos.x, s.pos.y + 0.045, s.pos.z, 1.2))
+    m = translation(s.pos + vec3(0, f32(0.05 * sin(elapsed() * 3.0)), 0)) * rotation_y(PI - s.face)
+    fl = if s.flash > 0.0: 1.5 else: 0.0
+    draw_prop(__scout_body, m, __swhite, fl, 0.3)
+    hostile = s.state == .aim or s.state == .wind or s.state == .spin
+    eye_col = if hostile: rgba(1.0, 0.3, 0.2, 1) else: rgba(0.4, 0.8, 1.0, 1)
+    draw_prop(__scout_eye, translation(__scout_eye_pos()) * rotation_y(PI - s.face), eye_col, (if hostile: 4.0 else: 2.0), 0.0)
+    if s.state == .wind or s.state == .spin:
+        ext = if s.state == .wind: smooth01(s.t / 0.5) else: 1.0
+        loop k in [0..2):
+            am = m * translation(v3(0.0, 0.5, 0.0)) * rotation_y(f64(k) * PI + PI / 2.0) * translation(v3(0.0, 0.0, 0.4 + 0.5 * ext))
+            draw_prop(__scout_arm, am, rgba(1, 0.7, 0.6, 1), (if s.state == .wind: 1.5 else: 0.3), 0.3)
+    if s.state == .aim:
+        a = __scout_eye_pos()
+        d = s.target - a
+        l = f64(length(d))
+        if l > 0.1:
+            lm = translation(a) * rotation_y(atan2(f64(d.x), f64(d.z))) * rotation_x(-asin(clamp(f64(d.y) / l, -1.0, 1.0))) * scaling(v3(0.5, 0.5, l))
+            draw_prop(laser_mesh, lm, rgba(1, 0.2, 0.15, 1), 6.0)
+
+# ---------------- the shrine's state ----------------
+__oman_plate = Plate(vec3(0, 0, 0))
+__oman_bridge: Piece
+__oman_bridge_k = 0.0
+__oman_bridge_t = 0.0         # time since the plate was let go
+
+__setup_oman = ():
+    r = srec[OMAN]
+    o = r.o
+    __crates.push(crate_new(o, vec2(5, -1), vec2(-7, -5), vec2(7, 1), [vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1)]))
+    __crates.push(crate_new(o, vec2(4, -35), vec2(-8, -43), vec2(8, -29), []))
+    __oman_plate = Plate(at(o, -5.0, 0.0, -5.0))
+    __oman_bridge = piece_new(v3(3.2, 0.6, 8.4), rgb(0.4, 0.38, 0.35), at(o, 0.0, -6.0, -12.0), 0.0, true, 0.0)
+    __scout = Scout(at(o, 0.0, 0.0, -34.5))
+    __scout.col = add_cyl(__scout.pos, 0.6, 1.3, false, .metal)
+    __scout_meshes()
+    r.talk_u = -1
+    shr_chest(at(o, -10.0, 0.3, -33.0), PI / 2.0, "travelers_bow")
+
+oman_update = (dt: f64):
+    loop i in [0..__crates.len()): crate_update(i, dt)
+    weights = [loop c in __crates: c.p.pos]
+    plate_update(__oman_plate, weights, dt)
+    # the bridge rises while the plate is held down (and sinks soon after it is let go)
+    if __oman_plate.pressed: __oman_bridge_t = 0.0
+    else: __oman_bridge_t += dt
+    up = __oman_plate.pressed or __oman_bridge_t < 0.3
+    k0 = __oman_bridge_k
+    __oman_bridge_k = approach_linear(__oman_bridge_k, (if up: 1.0 else: 0.0), (if up: 1.0 / 1.2 else: 1.0 / 0.6) * dt)
+    if k0 < 1.0 and __oman_bridge_k >= 1.0: slog("bridge up")
+    if k0 > 0.0 and __oman_bridge_k <= 0.0: slog("bridge down")
+    if abs(__oman_bridge_k - k0) > 0.0 and int(k0 * 4.0) != int(__oman_bridge_k * 4.0): __sfx(sfx.rumble, __oman_bridge.pos, 0.15, 1.5)
+    np = at(srec[OMAN].o, 0.0, lerp(-6.5, -0.6, smooth01(__oman_bridge_k)), -12.0)
+    __ride(__oman_bridge.col, np - __oman_bridge.pos)
+    __oman_bridge.pos = np
+    piece_sync(__oman_bridge)
+    scout_update(dt)
+
+oman_draw = ():
+    loop j in [0..__crates.len()):
+        p = __crates[j].p
+        contact_shadows.push(vec4(p.pos.x, p.pos.y, p.pos.z, 1.55))
+        solved = if j == 0: __oman_plate.pressed else: (if j == 2: __foundry_plate.pressed else: __crates[j].cell.y <= -43.0)
+        piece_draw(p, (if solved: GLOW_BLUE * vec4(0.35, 0.35, 0.35, 1) else: GLOW_ORANGE))
+    plate_draw(__oman_plate)
+    piece_draw(__oman_bridge, (if __oman_plate.pressed: GLOW_BLUE else: GLOW_ORANGE))
+    scout_draw()
+
+# ================================================================================================
+# Ja Baij: barrels to carry, light and throw; cracked walls; a pillar that falls into a bridge
+# ================================================================================================
+enum BState: rest, carried, moving, gone
+
+struct SBarrel:
+    pos: vec3
+    vel = vec3(0, 0, 0)
+    state = BState.rest
+    fuse = -1.0                # seconds left (-1: not lit)
+    col = -1
+    pad = -1                   # the pad it came from (-1: placed)
+    roll = 0.0
+    last_hit = -1
+
+struct Crack:
+    name: str                  # its named mesh
+    center: vec3
+    col: int
+    broken = false
+
+__barrels: SBarrel[]
+__pads: vec3[]
+__pad_t: f64[]
+__braziers: vec3[]             # where the fire is
+__cracks: Crack[]
+__carry_u = -1
+__carrying = -1
+__barrel_mesh: Mesh
+__barrel_inlay: Mesh
+__pillar: Piece
+__pillar_pivot = vec3(0, 0, 0)
+__pillar_t = -1.0              # falling (seconds), -1: standing
+__pillar_done = false
+__pillar_bridge = -1           # its collider once fallen
+__pillar_stand = -1            # its collider while standing
+
+__barrel_new = (p: vec3, pad: int) -> int:
+    i = __barrels.len()
+    __barrels.push(SBarrel(p, pad = pad))
+    c = add_cyl(p, 14.0, 0.9, false, .wood)
+    colliders[c].half = v3(0.35, 0.45, 0.35)
+    __barrels[i].col = c
+    i
+
+__crack_wall = (o: vec3, name: str, x0: f64, x1: f64, z0: f64, z1: f64, h: f64):
+    begin_named(name)
+    c = at(o, (x0 + x1) / 2.0, 0.0, (z0 + z1) / 2.0)
+    box(c, v3(x1 - x0, h, z1 - z0), 0.0, stone(0.36, 0.33, 0.3), BLOCK, false)
+    # Connected fractures span the face, readable from the arrival platform.
+    # Dark chipped lips carry the breakable stone cue; narrow amber cores echo
+    # the shrine machinery without washing out the surrounding masonry.
+    along_x = x1 - x0 > z1 - z0
+    span = if along_x: x1 - x0 else: z1 - z0
+    chain = [vec2(-0.46,0.78),vec2(-0.23,0.64),vec2(-0.10,0.47),vec2(0.06,0.38),vec2(0.22,0.17),vec2(0.43,0.05)]
+    branches = [[vec2(-0.10,0.47),vec2(-0.28,0.29),vec2(-0.43,0.23)], [vec2(0.06,0.38),vec2(0.19,0.59),vec2(0.35,0.71)]]
+    branches.push(chain)
+    loop path in branches:
+        loop j in [0..path.len()-1):
+            p = path[j] * vec2(f32(span), f32(h))
+            q = path[j+1] * vec2(f32(span), f32(h))
+            mid = (p + q) * 0.5
+            d = q - p
+            a = atan2(f64(d.y), f64(d.x))
+            loop side in [-1.0, 1.0]:
+                face = if along_x: translation(c + v3(f64(mid.x), f64(mid.y), side*((z1-z0)/2.0+0.014))) * rotation_z(a) else: translation(c + v3(side*((x1-x0)/2.0+0.014), f64(mid.y), f64(mid.x))) * rotation_y(-PI/2.0) * rotation_z(a)
+                box_m(face * scaling(v3(f64(length(d)),0.105,0.015)),stone(0.065,0.075,0.085),vec4(0,0,0,0),false)
+                box_m(face * translation(v3(0,0,(if along_x: side else: -side)*0.012)) * scaling(v3(f64(length(d)),0.024,0.018)),stone(0.34,0.16,0.035),vec4(0,0,0.45,0),false)
+    seed_random(len(name) * 7)
+    loop k in [0..7):
+        u = random(-0.4, 0.4)
+        v = random(0.15, 0.85) * h
+        a = random(-1.2, 1.2)
+        l = random(0.6, 1.4)
+        loop s in [-1.0, 1.0]:
+            if along_x: box_m(translation(c + v3(u * (x1 - x0), v, s * ((z1 - z0) / 2.0 + 0.01))) * rotation_z(a) * scaling(v3(l, 0.05, 0.02)), stone(0.3, 0.2, 0.1), vec4(0.0, 0.0, 1.3, 0.0), false)
+            else: box_m(translation(c + v3(s * ((x1 - x0) / 2.0 + 0.01), v, u * (z1 - z0))) * rotation_x(a) * scaling(v3(0.02, 0.05, l)), stone(0.3, 0.2, 0.1), vec4(0.0, 0.0, 1.3, 0.0), false)
+    end_named()
+
+__setup_jabaij = ():
+    o = srec[JABAIJ].o
+    __pads = [at(o, 6.0, 0.0, -4.0), at(o, 8.0, 0.0, -4.0)]
+    __pad_t = [0.0, 0.0]
+    loop i in 0.. and p in __pads: __barrel_new(p, i)
+    # the chain across the chasm: the near edge, the pedestal, the far side by the pillar
+    __barrel_new(at(o, 7.0, 0.0, -24.4), -1)
+    __barrel_new(at(o, 3.0, 0.0, -30.5), -1)
+    __barrel_new(at(o, 3.0, 0.0, -37.5), -1)
+    __braziers = [at(o, -6.0, 1.15, -8.0)]
+    __cracks.push(Crack("ja_baij_crack_n", at(o, 0.0, 0.0, -20.5), add_box(at(o, 0.0, 0.0, -20.5), v3(2.0, 2.0, 0.5), 0.0, false, .stone)))
+    __cracks.push(Crack("ja_baij_crack_e", at(o, 10.5, 0.0, -10.0), add_box(at(o, 10.5, 0.0, -10.0), v3(0.5, 1.75, 2.0), 0.0, false, .stone)))
+    # the pillar on the far side of the chasm (falls south over it)
+    __pillar_pivot = at(o, 0.0, -1.2, -36.0)
+    b = MeshB()
+    mb_box(b, v3(0.0, 6.1, -0.6), v3(1.2, 6.1, 0.6), rgb(0.36, 0.34, 0.32))
+    lines = MeshB()
+    loop k in [0..6):
+        loop zf in [0.005, -1.205]: mb_box(lines, v3(0.0, 1.5 + f64(k) * 1.8, zf), v3(0.9, 0.04, 0.006), __swhite)
+    __pillar = Piece(mesh(b.vs, b.idx), mesh(lines.vs, lines.idx), v3(2.4, 12.2, 1.2), __pillar_pivot)
+    __pillar_stand = add_box(at(o, 0.0, -1.2, -36.6), v3(1.2, 6.1, 0.6), 0.0, false, .stone)
+    __pillar_bridge = add_box(at(o, 0.0, -1.2, -30.0), v3(1.2, 0.6, 6.1), 0.0, false, .stone)
+    colliders[__pillar_bridge].active = false
+    bm = MeshB()
+    mb_cyl(bm, v3(0.0, 0.0, 0.0), v3(0.0, 0.9, 0.0), 0.33, 0.33, __swhite, 12)
+    mb_cyl(bm, v3(0.0, 0.2, 0.0), v3(0.0, 0.26, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
+    mb_cyl(bm, v3(0.0, 0.64, 0.0), v3(0.0, 0.7, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
+    mb_cyl(bm, v3(0.0, 0.9, 0.0), v3(0.0, 1.0, 0.0), 0.04, 0.04, rgb(0.4, 0.4, 0.4), 4)
+    __barrel_mesh = mesh(bm.vs, bm.idx)
+    bands = MeshB()
+    loop y in [0.21, 0.65]: mb_cyl(bands, v3(0, y, 0), v3(0, y + 0.035, 0), 0.349, 0.349, __swhite, 12)
+    __barrel_inlay = mesh(bands.vs, bands.idx)
+    __carry_u = add_usable(vec3(0, -10000, 0), 1.6, "Pick up", __carry_action, false)
+    shr_chest(at(o, 13.5, 0.0, -10.0), -PI / 2.0, "travelers_claymore")
+
+# the action button: pick up the nearest barrel, or throw the one held
+__carry_action = ():
+    if __carrying >= 0:
+        b = __barrels[__carrying]
+        f = forward_of(pl.face)
+        b.state = .moving
+        b.pos = pl.pos + f * 0.7 + vec3(0, 1.5, 0)
+        b.vel = f * 5.5 + vec3(0, 4.0, 0) + vec3(pl.vel.x, 0, pl.vel.z) * 0.5
+        __barrels[__carrying] = b
+        __carrying = -1
+        pl.events.push("throw")
+        slog("barrel thrown")
+        return
+    best = -1
+    bd = 1.8
+    loop i in 0.. and b in __barrels:
+        if b.state != .rest: continue
+        d = f64(length(b.pos - pl.pos))
+        if d < bd:
+            bd = d
+            best = i
+    if best >= 0:
+        __carrying = best
+        __barrels[best].state = .carried
+        colliders[__barrels[best].col].active = false
+        sfx_play(sfx.cloth, 0.4, 0.0, 0.8)
+        slog("barrel picked up")
+
+__boom = (p: vec3):
+    slog("boom at {p - srec[JABAIJ].o}")
+    fx_explosion(p + vec3(0, 0.5, 0))
+    fx_dust(p, 12)
+    __sfx(sfx.explode, p, 1.0, 1.0)
+    cam.shake = max(cam.shake, 0.7)
+    source = p + vec3(0, 0.8, 0)
+    # Shrine rooms lie below the field heightmap; their built walls supply cover.
+    exposed = (q: vec3, radius: f64, col: int) -> bool:
+        blast_reaches(source, q, radius, col, false)
+    # Snapshot exposure before destroying any cover: one blast cannot pass through
+    # the cracked wall it is currently breaking to ignite a barrel behind it.
+    exposed_barrels: bool[]
+    loop b in __barrels: exposed_barrels.push(exposed(b.pos + vec3(0, 0.5, 0), 8.0, b.col))
+    exposed_cracks: bool[]
+    loop c in __cracks: exposed_cracks.push(exposed(c.center + vec3(0, 1.5, 0), 4.5, c.col))
+    pillar = exposed(__pillar_pivot + vec3(0, 1.2, -0.6), 5.0, __pillar_stand)
+    d = f64(length(pl.pos + vec3(0, 0.9, 0) - p))
+    if d < 4.0 and exposed(pl.pos + vec3(0, 0.9, 0), 4.5, -1): hit_player(int(lerp(6.0, 2.0, d / 4.0)), p, 7.0)
+    blast_loose_items(p, false)
+    # the next barrels catch
+    loop i in [0..__barrels.len()):
+        b = __barrels[i]
+        if (b.state == .rest or b.state == .moving) and b.fuse < 0.0 and exposed_barrels[i]: __barrels[i].fuse = random(0.3, 0.55)
+    # cracked walls break
+    loop i in [0..__cracks.len()):
+        c = __cracks[i]
+        if not c.broken and exposed_cracks[i]:
+            __cracks[i].broken = true
+            colliders[c.col].active = false
+            hooks.named_hidden[c.name] = true
+            loop k in [0..5): fx_dust(c.center + v3(random(-1.5, 1.5), random(0.2, 3.0), random(-1.5, 1.5)), 8)
+            secret_jingle()
+            slog("wall {c.name} broken")
+    # the pillar falls
+    if __pillar_t < 0.0 and pillar:
+        __pillar_t = 0.0
+        slog("pillar falls")
+
+jabaij_update = (dt: f64):
+    o = srec[JABAIJ].o
+    # pads make a new barrel a while after theirs is gone
+    loop i in [0..__pads.len()):
+        has = false
+        loop b in __barrels:
+            if b.pad == i and b.state != .gone: has = true
+        if has: __pad_t[i] = 0.0
+        else:
+            __pad_t[i] += dt
+            if __pad_t[i] > 2.0:
+                __pad_t[i] = 0.0
+                j = -1
+                loop k in 0.. and b in __barrels:
+                    if b.pad == i: j = k
+                if j >= 0:
+                    __barrels[j] = SBarrel(__pads[i], pad = i, col = __barrels[j].col)
+                    colliders[__barrels[j].col].pos = __pads[i]
+                    colliders[__barrels[j].col].active = true
+                    fx_sparks(__pads[i] + vec3(0, 0.5, 0), 12, rgba(0.5, 0.8, 1.0, 1.0))
+    # the carried barrel: dropped when the player cannot hold it
+    if __carrying >= 0:
+        if pl.state != .ground and pl.state != .air and pl.state != .cutscene:
+            __barrels[__carrying].state = .moving
+            __barrels[__carrying].vel = vec3(0, 0, 0)
+            __carrying = -1
+    loop i in [0..__barrels.len()):
+        b = __barrels[i]
+        if b.state == .gone: continue
+        if b.state == .carried: b.pos = pl.pos + vec3(0, 1.6, 0) + forward_of(pl.face) * 0.05
+        # struck: it rolls away
+        if b.state == .rest or b.state == .moving:
+            loop h in player_hits:
+                if h.id != b.last_hit and blade_touches(h, b.pos + vec3(0, 0.45, 0), 0.45):
+                    b.last_hit = h.id
+                    b.state = .moving
+                    b.vel = h.dir * 4.5 + vec3(0, 1.5, 0)
+                    if b.pad == 2 and f64(b.pos.x - o.x) < 27.0 and abs(f64(b.pos.z - o.z) + 10.0) < 0.8:
+                        b.vel = vec3(4.5, 1.5, 0)
+                        slog("gallery barrel rolled")
+                    colliders[b.col].active = false
+                    __sfx(sfx.hit_wood, b.pos, 0.6)
+                    if h.fire and b.fuse < 0.0: b.fuse = 4.0
+        if b.state == .moving:
+            roll_local = b.pos - o
+            # A shallow engraved chute sustains a struck barrel's roll, never a carried one.
+            if roll_local.x > 25.5 and roll_local.x < 38.5 and abs(f64(roll_local.z) + 10.0) < 0.8 and b.vel.x > 0.0:
+                b.vel.x = 4.5
+                b.vel.z = 0.0
+                if roll_local.x > 27.0 and b.fuse < 0.0:
+                    b.fuse = 4.0
+                    slog("gallery roll lit")
+            b.vel.y -= f32(18.0 * dt)
+            b.pos += b.vel * f32(dt)
+            # the ground first (a fast fall would sink into the floor, and be pushed out sideways)
+            g = ground_at(f64(b.pos.x), f64(b.pos.z), f64(b.pos.y) + 0.4, 0.6, 0.3)
+            # another barrel under it: it stops beside it rather than bouncing off its top
+            on_barrel = false
+            loop ob in __barrels:
+                if ob.col == g.collider: on_barrel = true
+            if on_barrel:
+                b.vel.x = 0.0
+                b.vel.z = 0.0
+                d2 = vec3(b.pos.x - colliders[g.collider].pos.x, 0, b.pos.z - colliders[g.collider].pos.z)
+                b.pos += normalize(d2 + vec3(0.001, 0, 0)) * f32(max(0.0, 0.72 - f64(length(d2))))
+            else if f64(b.pos.y) <= g.y:
+                b.pos.y = f32(g.y)
+                if abs(f64(b.vel.y)) > 3.0:
+                    b.vel.y = -b.vel.y * 0.25
+                    b.vel.x *= 0.45
+                    b.vel.z *= 0.45
+                    __sfx(sfx.hit_wood, b.pos, 0.4, 0.7)
+                else:
+                    b.vel.y = 0.0
+                    b.vel.x *= f32(max(0.0, 1.0 - 5.0 * dt))
+                    b.vel.z *= f32(max(0.0, 1.0 - 5.0 * dt))
+                    if length(b.vel) < 0.25:
+                        b.state = .rest
+                        b.vel = vec3(0, 0, 0)
+            # walls
+            pushed = push_out(b.pos, 0.35, 0.9)
+            if length(pushed) > 0.001:
+                n = normalize(pushed)
+                vn = dot(vec3(b.vel.x, 0, b.vel.z), n)
+                if vn < 0.0: b.vel = b.vel - n * (vn * 1.5)
+            if b.state == .rest:
+                colliders[b.col].pos = b.pos
+                colliders[b.col].active = true
+            b.roll += f64(length(vec3(b.vel.x, 0, b.vel.z))) * dt / 0.33
+            if f64(b.pos.y) < f64(o.y) - 9.0:
+                # fell into the chasm (a lit one still goes off down there)
+                b.state = .gone
+                colliders[b.col].active = false
+                if b.fuse >= 0.0:
+                    __barrels[i] = b
+                    __boom(b.pos)
+                    continue
+        # fire: the fuse catches at the brazier
+        loop f in __braziers:
+            if b.fuse < 0.0 and f64(length(b.pos + vec3(0, 0.5, 0) - f)) < 1.8:
+                b.fuse = 4.0
+                __sfx(sfx.fire, b.pos, 0.6, 2.0)
+                slog("barrel lit")
+        if b.fuse >= 0.0:
+            b.fuse -= dt
+            if random() < dt * 20.0: emit(.spark, b.pos + vec3(0, 1.0, 0), rv(1.5) + vec3(0, 2, 0), 0.3, 0.05, rgba(1.0, 0.7, 0.3, 1), 6.0, 1.0)
+            if b.fuse <= 0.0:
+                if __carrying == i: __carrying = -1
+                b.state = .gone
+                colliders[b.col].active = false
+                __barrels[i] = b
+                __boom(b.pos + vec3(0, 0.4, 0))
+                continue
+        __barrels[i] = b
+    # the carry button follows the nearest barrel (or the player while holding one)
+    u = usables[__carry_u]
+    u.enabled = false
+    if __carrying >= 0:
+        u.enabled = true
+        u.pos = pl.pos + forward_of(pl.face) * 0.5
+        u.prompt = "Throw"
+    else:
+        bd = 1.8
+        loop b in __barrels:
+            d = f64(length(b.pos - pl.pos))
+            if b.state == .rest and d < bd:
+                bd = d
+                u.enabled = true
+                u.pos = b.pos
+                u.prompt = (if b.fuse >= 0.0: "Pick up (lit!)" else: "Pick up")
+    usables[__carry_u] = u
+    # braziers burn
+    loop f in __braziers: fx_fire(f, 0.8, dt)
+    # the pillar: falls with growing speed, lands as a bridge
+    if __pillar_t >= 0.0 and not __pillar_done:
+        __pillar_t += dt
+        if __pillar_t > 0.1: colliders[__pillar_stand].active = false
+        if __pillar_t >= 1.5:
+            __pillar_done = true
+            colliders[__pillar_bridge].active = true
+            cam.shake = 0.9
+            __sfx(sfx.land, __pillar_pivot, 1.0, 0.4)
+            __sfx(sfx.rumble, __pillar_pivot, 0.6, 1.0)
+            loop k in [0..10): fx_dust(__pillar_pivot + v3(random(-1.2, 1.2), 1.0, f64(k) * 1.2 + 0.5), 6)
+            slog("pillar bridge down")
+
+jabaij_draw = ():
+    loop b in __barrels:
+        if b.state == .gone: continue
+        if b.state == .rest or (b.state == .moving and b.vel.y == 0.0): contact_shadows.push(vec4(b.pos.x, b.pos.y, b.pos.z, 0.68))
+        m = translation(b.pos)
+        if b.state == .moving or b.state == .rest:
+            sp = vec3(b.vel.x, 0, b.vel.z)
+            if b.roll > 0.0 and length(sp) > 0.3: m = m * rotation_y(atan2(f64(sp.x), f64(sp.z))) * rotation_x(b.roll)
+        glow = if b.fuse >= 0.0: 0.8 + 0.8 * sin(elapsed() * (if b.fuse < 1.2: 30.0 else: 12.0)) else: 0.0
+        draw_prop(__barrel_mesh, m, rgba(0.8, 0.22, 0.12, 1), glow, 0.2)
+        draw_prop(__barrel_inlay, m, GLOW_ORANGE, 0.55 + glow * 0.25, 0.0)
+    ang = if __pillar_done: PI / 2.0 else: (if __pillar_t >= 0.0: PI / 2.0 * min(1.0, (__pillar_t / 1.5) ^ 2.0) else: 0.0)
+    pm = translation(__pillar_pivot) * rotation_x(ang)
+    piece_draw(__pillar, GLOW_ORANGE, pm, true)
+
+# ================================================================================================
+# Owa Daim: two turning bars, boulders down a stair
+# ================================================================================================
+struct Gear:
+    pivot: vec3
+    ang = 0.0
+    speed = 0.0
+    p: Piece
+    tips: int[]                # the round pads at its ends (colliders)
+
+const OWA_R = 7.5            # half the bar's length
+const OWA_TIP = 1.5          # the pads' radius
+__tip_mesh: Mesh
+__tip_lines: Mesh
+
+__gears: Gear[]
+__owa_t = 0.0
+
+struct Boulder:
+    pos: vec3
+    vel = vec3(0, 0, 0)
+    phase = 0                  # 0 dropping, 1 rolling, 2 falling into the pit
+    roll = 0.0
+    alive = true
+
+__boulders: Boulder[]
+__boulder_t = 2.0
+__boulder_mesh: Mesh
+const BOULDER_R = 1.5
+
+__setup_owa = ():
+    o = srec[OWA].o
+    w = 1.0                  # (the second turns the other way, as meshing gears do)
+    loop k in [0..2):
+        pz = if k == 0: OWA_PIV1 else: OWA_PIV2
+        pv = at(o, 0.0, -0.6, pz)
+        p = piece_new(v3(3.0, 0.6, OWA_R * 2.0), rgb(0.38, 0.37, 0.36), pv, 0.0, true, 8.0)
+        tips: int[]
+        loop e in [-1.0, 1.0]:
+            c = add_cyl(pv + v3(0.0, 0.0, e * OWA_R), 10.0, 0.6, false, .metal)
+            colliders[c].half = v3(OWA_TIP, 0.3, OWA_TIP)
+            tips.push(c)
+        piece_material(p)
+        __gears.push(Gear(pv, 0.0, (if k == 0: w else: -w), p, tips))
+    tb = MeshB()
+    mb_cyl(tb, v3(0.0, 0.0, 0.0), v3(0.0, 0.6, 0.0), OWA_TIP, OWA_TIP, rgb(0.38, 0.37, 0.36), 20)
+    mb_cyl(tb, v3(0.0, 0.6, 0.0), v3(0.0, 0.601, 0.0), OWA_TIP, 0.0, rgb(0.38, 0.37, 0.36), 20)
+    __tip_mesh = mesh(tb.vs, tb.idx)
+    tl = MeshB()
+    mb_cyl(tl, v3(0.0, 0.0, 0.0), v3(0.0, 0.61, 0.0), OWA_TIP + 0.01, OWA_TIP + 0.01, __swhite, 20)
+    __tip_lines = mesh(tl.vs, tl.idx)
+    b = MeshB()
+    mb_sphere(b, v3(0.0, 0.0, 0.0), v3(BOULDER_R, BOULDER_R, BOULDER_R), rgb(0.42, 0.4, 0.38), 14)
+    loop k in [0..3): mb_box(b, v3(0.0, 0.0, 0.0), v3(BOULDER_R * 1.01, 0.05, 0.12), rgb(0.3, 0.6, 0.9), rotation_y(f64(k) * PI / 3.0))
+    __boulder_mesh = mesh(b.vs, b.idx)
+    shr_chest(at(o, 10.4, 0.0, -28.5), -PI / 2.0, "travelers_shield")
+
+__owa_aligned = false
+
+owa_update = (dt: f64):
+    o = srec[OWA].o
+    __owa_t += dt
+    loop mut brake in __brakes:
+        brake.cool = max(0.0, brake.cool - dt)
+        brake.pulse = max(0.0, brake.pulse - dt)
+        frozen_before = brake.frozen
+        brake.frozen = max(0.0, brake.frozen - dt)
+        if frozen_before > 2.0 and brake.frozen <= 2.0:
+            __sfx(sfx.block, brake.pos, 0.3, 1.4)
+        if frozen_before > 0.0 and brake.frozen == 0.0:
+            brake.pulse = 0.6
+            __sfx(sfx.block, brake.pos, 0.38, 1.0)
+        if brake.cool <= 0.0 and __struck(brake.pos, 0.65, brake.last_hit):
+            brake.pulse = 0.6
+            brake.turn += PI / 3.0
+            brake.frozen = 12.0
+            brake.cool = 15.0
+            sfx_play(sfx.block, 0.4, 0.0, 0.7)
+            play(cached_chime(), 0.3, 0.0, 0.8)
+            slog("gear {brake.gear} frozen")
+    # the bars turn together, like meshing gears (both lie along the way every 10 s)
+    loop i in [0..__gears.len()):
+        g = __gears[i]
+        a1 = (0.9 + __owa_t * TAU / 20.0) * g.speed
+        if i >= 2:
+            a1 = g.ang + (if __brakes[i - 2].frozen > 0.0: 0.0 else: dt * TAU / 26.0 * g.speed)
+        da = a1 - g.ang
+        if pl.state == .ground and (pl.ground.collider == g.p.col or g.tips.contains(pl.ground.collider)):
+            d = pl.pos - g.pivot
+            pl.pos = g.pivot + transform_dir(rotation_y(da), d)
+            pl.face -= da
+            cam.yaw -= da
+        g.ang = a1
+        g.p.yaw = a1
+        piece_sync(g.p)
+        loop e in 0.. and c in g.tips:
+            colliders[c].pos = g.pivot + transform_dir(rotation_y(a1), v3(0.0, 0.0, (if e == 0: -OWA_R else: OWA_R)))
+        __gears[i] = g
+    # The matching bar tips briefly brighten when the two main bridges align.
+    # This confirms a crossing window without changing its duration or rotation.
+    aligned = abs(sin(__gears[0].ang)) < 0.15
+    if aligned and not __owa_aligned: play(cached_chime(), 0.18, 0.0, 1.6)
+    __owa_aligned = aligned
+    # boulders: one drops into the stair's top every 6.5 s and rolls down
+    __boulder_t -= dt
+    if __boulder_t <= 0.0:
+        __boulder_t = 6.5
+        __boulders.push(Boulder(at(o, 0.0, 20.0, -79.5)))
+        if shr_cur == OWA: __sfx(sfx.rumble, at(o, 0.0, 9.0, -79.5), 0.35, 1.8)
+    i = 0
+    loop i < __boulders.len():
+        b = __boulders[i]
+        lz = f64(b.pos.z - o.z)
+        floor_y = f64(o.y) + __owa_stair(lz) + BOULDER_R
+        match b.phase:
+            0:
+                b.vel.y -= f32(25.0 * dt)
+                b.pos += b.vel * f32(dt)
+                if f64(b.pos.y) <= floor_y:
+                    b.pos.y = f32(floor_y)
+                    b.vel = vec3(0, 0, 0)
+                    b.phase = 1
+                    __sfx(sfx.land, b.pos, 0.9, 0.5)
+            1:
+                b.vel.z = f32(approach(f64(b.vel.z), 4.5, 6.0, dt))
+                b.pos.z += b.vel.z * f32(dt)
+                b.pos.y = f32(f64(o.y) + __owa_stair(f64(b.pos.z - o.z)) + BOULDER_R)
+                if f64(b.pos.z - o.z) > -36.0 + BOULDER_R * 0.5: b.phase = 2
+            _:
+                b.vel.y -= f32(25.0 * dt)
+                b.pos += b.vel * f32(dt)
+        b.roll += f64(b.vel.z) * dt / BOULDER_R
+        # the player in the way is knocked down the stair
+        d = f64(length(b.pos - (pl.pos + vec3(0, 0.9, 0))))
+        if d < BOULDER_R + 0.5 and pl.invuln <= 0.0 and pl.state != .dead:
+            hit_player(4, b.pos - vec3(0, 0, 1.0), 7.0)
+            slog("boulder hit")
+        b.alive = f64(b.pos.y) > f64(o.y) - 14.0
+        if b.alive:
+            __boulders[i] = b
+            i += 1
+        else: __boulders.remove(i)
+
+__bar_edge = Mesh()
+__bar_tread = Mesh()
+__bar_inlay = Mesh()
+__bar_draw_ready = false
+
+owa_draw = ():
+    if not __bar_draw_ready:
+        __bar_draw_ready = true
+        b = MeshB()
+        e = MeshB()
+        loop side in [-1.0, 1.0]:
+            loop z in [-6.0,-3.0,0.0,3.0,6.0]:
+                mb_box(e,v3(side*1.46,0.58,z),v3(0.055,0.065,0.8),rgb(0.46,0.43,0.34))
+        # Worn cross ribs and bronze side guards establish the physical walking surface.
+        loop k in [0..15):
+            mb_box(b, v3(0.0, 0.605, -7.0 + f64(k)), v3(1.25, 0.009, 0.065), rgb(0.5, 0.56, 0.6))
+        __bar_edge = mesh(e.vs, e.idx)
+        __bar_tread = mesh(b.vs, b.idx)
+        inlay = MeshB()
+        # A pair of narrow rails joins each boarding tip to its working hub.
+        loop side in [-1.0, 1.0]:
+            mb_box(inlay, v3(side * 1.22, 0.64, 0), v3(0.035, 0.012, 7.2), __swhite)
+        __bar_inlay = mesh(inlay.vs, inlay.idx)
+    loop i in 0.. and g in __gears:
+        frozen = if i >= 2: __brakes[i - 2].frozen else: 0.0
+        ready = if i < 2: __owa_aligned else: frozen > 0.0
+        glow = if ready: GLOW_BLUE else: GLOW_ORANGE
+        # The next hub remains the focal point after stepping off the first.
+        passed = i < 2 and f64(pl.pos.z - srec[OWA].o.z) < f64(g.pivot.z - srec[OWA].o.z) - 3.0
+        if passed: glow = GLOW_BLUE * vec4(0.32, 0.32, 0.32, 1)
+        if frozen > 0.0 and frozen < 2.0: glow *= f32(0.65 + 0.35 * abs(sin(frozen * 12.0)))
+        piece_draw(g.p, glow)
+        draw_prop(__gear_crown, piece_model(g.p), __swhite, 0.0, 0.2)
+        draw_prop(__bar_inlay, piece_model(g.p), glow, 0.42, 0.0)
+        draw_prop(__bar_tread, piece_model(g.p), __swhite, 0.0, 0.0)
+        draw_prop(__bar_edge, piece_model(g.p), __swhite, 0.0, 0.0)
+        loop c in g.tips:
+            m = translation(colliders[c].pos)
+            draw_prop(__tip_mesh, m, __swhite, 0.0, 0.3)
+            draw_prop(__tip_lines, m * translation(v3(0.0, 0.57, 0.0)) * scaling(v3(1.0, 0.08, 1.0)), glow * (if i < 2 and __owa_aligned: vec4(1.25,1.25,1.25,1.0) else: vec4(0.55,0.55,0.55,1.0)), 0.12, 0.0)
+    loop b in __boulders: draw_prop(__boulder_mesh, translation(b.pos) * rotation_x(b.roll), __swhite, 0.1, 0.3)
+
+# ================================================================================================
+# Keh Namut: water levels, crystal switches, a floating crate, a gate
+# ================================================================================================
+struct WCell:
+    k: int
+    floor: f64                 # the floor under it (local)
+    orig: f32
+
+struct Crystal:
+    pos: vec3
+    last_hit = -1
+    cool = 0.0
+    turn = 0.0
+
+__keh_cells: WCell[]
+__keh_level = KEH_LOW
+__keh_high = false
+__crystals: Crystal[]
+__crystal_mesh: Mesh
+__crystal_socket: Mesh
+__crystal_band: Mesh
+__keh_crate: Piece
+__keh_crate_vel = vec2(0, 0)
+__keh_plate = Plate(vec3(0, 0, 0))
+__keh_gate: Piece
+__keh_gate_k = 0.0
+__unit_box: Mesh
+__keh_active = true
+__keh_chest = -1
+__keh_chest_pos = vec3(0, 0, 0)
+
+# Glow lives in the collar; six-sided cut glass retains shaded planes and a real depth.
+__mesh_ring = (b: mut MeshB, r: f64, width: f64, y: f64, col: vec4):
+    loop k in [0..32):
+        a = (f64(k) + 0.5) * TAU / 32.0
+        mb_box(b, vec3(0, 0, 0), v3(width, 0.012, r * PI / 32.0 * 1.02), col, translation(v3(cos(a) * r, y, sin(a) * r)) * rotation_y(-a))
+
+__pulse_draw = (pos: vec3, pulse: f64, col: vec4, start: f64 = 0.55):
+    if pulse <= 0.0: return
+    # Initialized by crystal construction, shared with plates.
+    r = start + (1.0 - pulse / 0.6) * 0.65
+    draw_prop(__response_ring, translation(pos) * scaling(v3(r, 1.0, r)), col * f32(pulse / 0.6), 1.1, 0.0)
+
+__crystal_build = ():
+    b = MeshB()
+    loop k in [0..6):
+        a = f64(k) * TAU / 6.0
+        a1 = f64(k + 1) * TAU / 6.0
+        p = v3(cos(a) * 0.36, -0.2, sin(a) * 0.36)
+        q = v3(cos(a1) * 0.36, -0.2, sin(a1) * 0.36)
+        u = v3(cos(a) * 0.28, 0.28, sin(a) * 0.28)
+        v = v3(cos(a1) * 0.28, 0.28, sin(a1) * 0.28)
+        loop fi in 0.. and face in [[v3(0.0, -0.48, 0.0), q, p], [p, q, u], [q, v, u], [u, v, v3(0.0, 0.62, 0.0)]]:
+            normal = normalize(cross(face[2] - face[0], face[1] - face[0]))
+            base = u32(b.vs.len())
+            value = [0.36,0.62,0.79,0.95][fi] * [1.0,0.70,0.89,0.64,0.94,0.76][k]
+            loop pt in face: b.vs.push(Vertex3D(pt, normal, vec2(0, 0), rgb(value,value,value)))
+            loop i in [base, base + 2, base + 1]: b.idx.push(i)
+    __crystal_mesh = mesh(b.vs, b.idx)
+    b = MeshB()
+    stone_ = rgb(0.4, 0.43, 0.46)
+    mb_box(b, v3(0.0, -1.35, 0.0), v3(0.62, 0.1, 0.62), stone_)
+    mb_cyl(b, v3(0.0, -1.25, 0.0), v3(0.0, -0.7, 0.0), 0.42, 0.28, stone_, 8)
+    mb_cyl(b, v3(0.0, -0.7, 0.0), v3(0.0, -0.52, 0.0), 0.28, 0.48, rgb(0.52, 0.48, 0.37), 8)
+    loop k in [0..4):
+        a = f64(k) * PI / 2.0
+        mb_box(b, v3(cos(a) * 0.31, -0.95, sin(a) * 0.31), v3(0.065, 0.18, 0.065), rgb(0.075, 0.105, 0.13))
+        mb_cyl(b, v3(cos(a) * 0.36, -0.55, sin(a) * 0.36), v3(cos(a) * 0.25, -0.25, sin(a) * 0.25), 0.045, 0.035, rgb(0.57, 0.53, 0.4), 5)
+    __crystal_socket = mesh(b.vs, b.idx)
+    b = MeshB()
+    __mesh_ring(b, 0.42, 0.02, -0.51, __swhite)
+    __crystal_band = mesh(b.vs, b.idx)
+    b = MeshB()
+    __mesh_ring(b, 1.0, 0.025, 0.0, __swhite)
+    __response_ring = mesh(b.vs, b.idx)
+
+__crystal_draw = (pos: vec3, on: bool, pulse: f64, turn: f64, quiet: bool = false):
+    col = if on: rgba(0.2, 0.58, 0.86, 1) else: rgba(0.92, 0.36, 0.055, 1)
+    m = translation(pos)
+    draw_prop(__crystal_socket, m, __swhite, 0.0, 0.1)
+    active = smoothstep(0.0, 0.6, pulse)
+    if quiet: col = mix(if on: rgba(0.16, 0.30, 0.37, 1) else: rgba(0.34, 0.21, 0.10, 1), col, f32(active))
+    draw_prop(__crystal_mesh, m * rotation_y(turn - PI / 3.0 * smooth01(pulse / 0.6)), col, if quiet: 0.025 + active * 0.135 else: 0.16, 0.35)
+    draw_prop(__crystal_band, m, (if on: GLOW_BLUE else: GLOW_ORANGE) * f32(if quiet: 0.3 + active * 0.7 else: 1.0), 0.6, 0.0)
+    __pulse_draw(pos - vec3(0, 0.48, 0), pulse, (if on: GLOW_BLUE else: GLOW_ORANGE))
+
+__setup_keh = ():
+    o = srec[KEH].o
+    # the pool's cells in the water grid (2 m; the pool's sides lie on cell borders)
+    x = f64(o.x) - 11.0
+    loop x < f64(o.x) + 12.0:
+        z = f64(o.z) - 23.0
+        loop z < f64(o.z) + 4.0:
+            xi = int(round((x - HF_X0) / HF_CELL))
+            zi = int(round((z - HF_Z0) / HF_CELL))
+            k = zi * HF_N + xi
+            lx = x - f64(o.x)
+            lz = z - f64(o.z)
+            fl = if lx > 6.0 and lz < -18.0: -2.0 else: -6.0
+            if k >= 0 and k < water_grid.len(): __keh_cells.push(WCell(k, fl, water_grid[k]))
+            z += 2.0
+        x += 2.0
+    __crystals = [Crystal(at(o, 6.0, 1.45, -1.0)), Crystal(at(o, -6.0, 1.45, -27.0))]
+    __crystal_build()
+    __keh_crate = piece_new(v3(CRATE, CRATE, CRATE), rgb(0.45, 0.36, 0.26), at(o, -4.0, KEH_LOW - 1.0, -14.0), 0.0, true, 16.0)
+    __keh_crate.body = __wood_crate(__keh_crate.size)
+    __keh_crate.glow = __lines_mesh(__keh_crate.size)
+    __keh_plate = Plate(at(o, KEH_PLATE.x, -2.0, KEH_PLATE.y))
+    __keh_gate = piece_new(v3(4.0, 4.0, 0.8), rgb(0.3, 0.31, 0.35), at(o, 0.0, 0.0, -30.5), 0.0, true, 0.0)
+    ub = MeshB()
+    mb_box(ub, v3(0.0, 0.0, 0.0), v3(0.5, 0.5, 0.5), __swhite)
+    __unit_box = mesh(ub.vs, ub.idx)
+    c0 = colliders.len()
+    __keh_chest = shr_chest(at(o, -14.5, 3.6, -14.0), PI / 2.0, "travelers_spear")
+    __keh_chest_pos = chests[__keh_chest].pos
+    loop i in [c0..colliders.len()): __keh_extra.push(i)
+    __keh_extra.push(__keh_crate.col)
+    __keh_extra.push(__keh_gate.col)
+    __keh_set_active(false)
+
+# the floating chamber exists only while the player is in it
+__keh_set_active = (on: bool):
+    if on == __keh_active: return
+    __keh_active = on
+    hooks.named_hidden["keh_namut_room"] = not on
+    hooks.named_hidden["keh_namut_dais"] = not on
+    loop i in [__keh_cols.0..__keh_cols.1): colliders[i].active = on
+    loop c in __keh_extra: colliders[c].active = on
+    loop k in [0..__bonus_chests.len()):
+        chests[__bonus_chests[k]].pos = if on: __bonus_positions[k] else: __bonus_positions[k] - vec3(0, 5000, 0)
+    # (chests are drawn by the game: this one waits far below while the hall is away)
+    if __keh_chest >= 0: chests[__keh_chest].pos = if on: __keh_chest_pos else: __keh_chest_pos - vec3(0, 5000, 0)
+
+# the pool's level in the water grid (only while the player is inside)
+__keh_water = ():
+    o = srec[KEH].o
+    inside = shr_cur == KEH
+    loop c in __keh_cells:
+        wet = inside and __keh_level - c.floor > 1.1
+        water_grid[c.k] = if wet: f32(f64(o.y) + __keh_level) else: c.orig
+    loop c in __cistern_cells:
+        water_grid[c.k] = if inside and __cistern_level - c.floor > 1.1: f32(f64(o.y) + __cistern_level) else: c.orig
+
+keh_update = (dt: f64):
+    o = srec[KEH].o
+    # crystals: struck, they turn the water (blue: high, orange: low)
+    loop mut c in __crystals:
+        c.cool = max(0.0, c.cool - dt)
+        if __struck(c.pos, 0.6, c.last_hit) and c.cool <= 0.0:
+            c.cool = 0.6
+            c.turn += PI / 3.0
+            __keh_high = not __keh_high
+            play(cached_chime(), 0.5, 0.0, (if __keh_high: 1.0 else: 0.8))
+            __sfx(sfx.rumble, o + vec3(0, -2, -14), 0.5, 1.2)
+            __sfx(sfx.water, c.pos, 0.42, (if __keh_high: 1.2 else: 0.8))
+            fx_sparks(c.pos, 18, rgba(0.6, 0.9, 1.0, 1.0))
+            slog(if __keh_high: "water rising" else: "water draining")
+    target = if __keh_high: KEH_HIGH else: KEH_LOW
+    l0 = __keh_level
+    __keh_level = approach_linear(__keh_level, target, 0.6 * dt)
+    if l0 != target and __keh_level == target: slog("water level {__keh_level:.1}")
+    # the crate floats (its top a little above the water), drifts with the current from the
+    # inflow when the water is high, and settles on whatever is under it when it is low
+    cp = __keh_crate.pos
+    lx = f64(cp.x - o.x)
+    lz = f64(cp.z - o.z)
+    over_plat = lx > 6.0 + 0.2 and lz < -18.0 - 0.2
+    support = if over_plat: -2.0 else: -6.0
+    bottom = max(__keh_level - 1.0, support)
+    v = __keh_crate_vel
+    if __keh_level > KEH_HIGH - 0.6:
+        to = vec2(f32(9.2 - lx), f32(-21.2 - lz))
+        if length(to) > 0.2: v = v + (normalize(to) * 1.2 - v) * f32(min(1.0, dt * 0.8))
+    # the swimmer pushes it
+    if pl.state == .swim:
+        dd = vec2(f32(lx - f64(pl.pos.x - o.x)), f32(lz - f64(pl.pos.z - o.z)))
+        if length(dd) < CRATE / 2.0 + RADIUS + 0.4 and dot(vec2(pl.vel.x, pl.vel.z), dd) > 0.0:
+            v = v + (vec2(pl.vel.x, pl.vel.z) * 0.9 - v) * f32(min(1.0, dt * 4.0))
+    resting = f64(cp.y - o.y) <= support + 0.01
+    if resting: v = vec2(0, 0)
+    v = v * f32(max(0.0, 1.0 - 0.6 * dt))
+    nx = clamp(lx + f64(v.x) * dt, -12.0 + 0.85, 12.0 - 0.85)
+    nz = clamp(lz + f64(v.y) * dt, -24.0 + 0.85, -4.0 - 0.85)
+    # it cannot slide into the platform's side from below its top
+    if bottom < -2.0 + 0.05 and not over_plat and nx > 6.0 - 0.85 and nz < -18.0 + 0.85:
+        if lx <= 6.0 - 0.85: nx = 6.0 - 0.85
+        else: nz = -18.0 + 0.85
+    y = approach(f64(cp.y - o.y), bottom, 3.0, dt)
+    __keh_crate_vel = v
+    __keh_crate.pos = at(o, nx, y, nz)
+    piece_sync(__keh_crate)
+    # the plate under the crate opens the gate
+    plate_update(__keh_plate, [__keh_crate.pos], dt)
+    k0 = __keh_gate_k
+    __keh_gate_k = approach_linear(__keh_gate_k, (if __keh_plate.pressed: 1.0 else: 0.0), dt)
+    if k0 < 1.0 and __keh_gate_k >= 1.0: slog("gate open")
+    if (k0 == 0.0 and __keh_gate_k > 0.0) or (k0 == 1.0 and __keh_gate_k < 1.0): __sfx(sfx.door, __keh_gate.pos, 0.6)
+    __keh_gate.pos = at(o, 0.0, -4.2 * smooth01(__keh_gate_k), -30.5)
+    piece_sync(__keh_gate)
+    # the current: bubbles from the inflow while the water is high
+    if __keh_level > KEH_HIGH - 0.6 and random() < dt * 14.0:
+        emit(.glow, at(o, 11.5, __keh_level, -21.0 + random(-1.0, 1.0)), v3(-1.2, 0.2, 0.0), 1.2, 0.08, rgba(0.6, 0.9, 1.0, 0.7), 0.0, 0.5)
+        emit(.splash, at(o, 11.6, __keh_level + 0.1, -21.0 + random(-1.0, 1.0)), v3(random(-1.5, -0.5), random(0.5, 1.5), random(-0.5, 0.5)), 0.6, 0.08, rgba(0.85, 0.92, 1.0, 0.8), 6.0, 0.3)
+
+keh_draw = ():
+    loop i in 0.. and c in __crystals:
+        # Once the near valve has raised the pool, the far drain is the next input.
+        quiet = if i == 0: __keh_high or c.turn > 0.0 else: __keh_plate.pressed
+        __crystal_draw(c.pos, __keh_high, c.cool, c.turn, quiet)
+    if __keh_plate.pressed: contact_shadows.push(vec4(__keh_crate.pos.x, __keh_crate.pos.y, __keh_crate.pos.z, 1.4))
+    piece_draw(__keh_crate, (if __keh_plate.pressed: GLOW_BLUE * vec4(0.35, 0.35, 0.35, 1) else: GLOW_ORANGE))
+    plate_draw(__keh_plate, true)
+    piece_draw(__keh_gate, (if __keh_plate.pressed: GLOW_BLUE else: GLOW_ORANGE))
+
+# the pool's surface (blended, after the opaque scene)
+keh_draw_water = ():
+    shrine_water_draw(sc.vp, at(srec[KEH].o, 0.0, __keh_level + 0.025, -14.0), sc.cam, smooth01((__keh_level - KEH_LOW) / (KEH_HIGH - KEH_LOW)))
+
+# ================================================================================================
+# entering and leaving: fades and the lift
+# ================================================================================================
+# ================================================================================================
+# Optional second beats. Existing trial objectives and the monk remain independently reachable.
+# ================================================================================================
+__foundry_plate = Plate(vec3(0, 0, 0))
+__shuttle: Piece
+__shuttle_t = 0.0
+__shuttle_on = false
+__hoist_carriage: Mesh
+__hoist_weight: Mesh
+__gear_crown: Mesh
+__ice_cap: Mesh
+__shutter: Piece
+__shutter_t = 0.0
+__shutter_open = false
+__roll_clear = false
+__roll_failed = false
+
+struct Brake:
+    pos: vec3
+    gear: int
+    last_hit = -1
+    frozen = 0.0
+    cool = 0.0
+    pulse = 0.0
+    turn = 0.0
+__brakes: Brake[]
+__clock_chest = -1
+__return_bridge: Piece
+__return_open = false
+
+__cistern_cells: WCell[]
+__cistern_high = false
+__cistern_level = 0.4
+__cistern_crystals: Crystal[]
+__float: Piece
+__float_mast: Mesh
+__frost_plate = Plate(vec3(0, 0, 0))
+__ice: Piece[]
+__ice_k = 0.0
+__ice_open = false
+__bonus_chests: int[]
+__bonus_positions: vec3[]
+
+__setup_annexes = ():
+    b = MeshB()
+    steel = rgb(0.48, 0.46, 0.4)
+    loop side in [-1.0, 1.0]:
+        mb_box(b, v3(side * 1.7, -0.35, 0.0), v3(0.14, 0.35, 1.7), steel)
+        loop end in [-1.0, 1.0]: mb_cyl(b, v3(side * 1.7, -0.7, end * 1.4), v3(side * 1.7, -0.2, end * 1.4), 0.23, 0.23, steel, 10)
+    __hoist_carriage = mesh(b.vs, b.idx)
+    __hoist_weight = __body_mesh(v3(1.3, 1.8, 1.0), rgb(0.42, 0.38, 0.3))
+    b = MeshB()
+    mb_cyl(b, v3(0.0, -0.65, 0.0), v3(0.0, -0.12, 0.0), 0.75, 0.75, steel, 12)
+    __mesh_ring(b, 1.55, 0.14, -0.4, steel)
+    loop k in [0..16):
+        a = f64(k) * TAU / 16.0
+        mb_box(b, vec3(0, 0, 0), v3(0.21, 0.12, 0.15), steel, translation(v3(cos(a) * 1.65, -0.4, sin(a) * 1.65)) * rotation_y(-a))
+    __gear_crown = mesh(b.vs, b.idx)
+    b = MeshB()
+    mb_box(b, v3(0.0, 1.205, 0.0), v3(1.27, 0.01, 1.27), rgb(0.65, 0.85, 0.9))
+    loop k in [0..5):
+        mb_box(b, v3(-1.0 + f64(k) * 0.45, 0.65, 1.305), v3(0.028, 0.42, 0.01), rgb(0.7, 0.89, 0.94), rotation_z(0.28))
+    __ice_cap = mesh(b.vs, b.idx)
+    o = srec[OMAN].o
+    # Six deliberate cells: north twice to clear the pier, then west four to the socket.
+    blocked = [vec2(-38, -35), vec2(-36, -35), vec2(-38, -37), vec2(-36, -37)]
+    __crates.push(crate_new(o, vec2(-34, -35), vec2(-42, -39), vec2(-34, -35), blocked))
+    __foundry_plate = Plate(at(o, -42.0, 0.0, -39.0))
+    __shuttle = piece_new(v3(4.0, 0.6, 4.0), rgb(0.4, 0.43, 0.46), at(o, -46.0, -0.6, -39.0), 0.0, true, 16.0)
+    piece_material(__shuttle)
+    shr_chest(at(o, -65.0, 3.4, -39.0), PI / 2.0, "rusty_broadsword")
+
+    o = srec[JABAIJ].o
+    __shutter = piece_new(v3(1.0, 1.35, 2.2), rgb(0.35, 0.33, 0.3), at(o, 32.0, 0.0, -10.0), 0.0, true)
+    __pads.push(at(o, 26.0, 0.0, -10.0))
+    __pad_t.push(0.0)
+    __barrel_new(__pads[2], 2)
+    loop x in [40.0, 47.0, 53.0, 57.0]: __barrel_new(at(o, x, 0.0, -10.0), -1)
+    __braziers.push(at(o, 29.0, 1.0, -11.8))
+    __cracks.push(Crack("ja_baij_crack_far", at(o, 61.0, 0.0, -10.0), add_box(at(o, 61.0, 0.0, -10.0), v3(0.5, 2.5, 4.0), 0.0, false, .stone)))
+    shr_chest(at(o, 64.0, 0.0, -10.0), -PI / 2.0, "arrow", 10)
+
+    o = srec[OWA].o
+    loop k in [0..2):
+        x = if k == 0: 24.5 else: 39.5
+        pv = at(o, x, -0.6, -28.5)
+        angle = if k == 0: 0.0 else: PI / 3.0
+        piece = piece_new(v3(3.0, 0.6, OWA_R * 2.0), rgb(0.38, 0.37, 0.36), pv, angle, true, 8.0)
+        tips: int[]
+        loop e in [-1.0, 1.0]:
+            c = add_cyl(pv, 10.0, 0.6, false, .metal)
+            colliders[c].half = v3(OWA_TIP, 0.3, OWA_TIP)
+            tips.push(c)
+        piece_material(piece)
+        __gears.push(Gear(pv, angle, (if k == 0: 1.0 else: -1.0), piece, tips))
+        __brakes.push(Brake(at(o, x, 1.45, -28.5), k + 2))
+    __clock_chest = shr_chest(at(o, 53.0, 0.0, -28.5), -PI / 2.0, "amber", 3)
+    __return_bridge = piece_new(v3(30.4, 0.6, 3.0), rgb(0.35, 0.42, 0.45), at(o, 32.0, -0.6, -34.0), 0.0, true)
+    colliders[__return_bridge.col].active = false
+
+    o = srec[KEH].o
+    __cistern_crystals = [Crystal(at(o, -20.0, 5.05, -19.5)), Crystal(at(o, -40.0, 5.05, -19.5))]
+    __float = piece_new(v3(1.6, 1.6, 1.6), rgb(0.4, 0.35, 0.29), at(o, -26.0, -0.4, -14.0), 0.0, true, 16.0)
+    # An exposed status mast lets an arriving explorer spot the low float over
+    # the cistern rim. It rides the crate and never changes its collision or drift.
+    b = MeshB()
+    mb_cyl(b, v3(0.6, 1.6, 0.0), v3(0.6, 4.75, 0.0), 0.045, 0.045, rgb(0.38, 0.43, 0.46), 6)
+    loop k in [0..16):
+        a = (f64(k) + 0.5) * TAU / 16.0
+        center = v3(0.6, 4.5 + sin(a) * 0.18, cos(a) * 0.35)
+        mb_box(b, vec3(0, 0, 0), v3(0.03, 0.03, 0.09), rgb(0.45, 0.8, 1.0), translation(center) * rotation_x(a))
+    mb_box(b, v3(0.6, 4.5, 0.0), v3(0.04, 0.12, 0.05), rgb(0.45, 0.8, 1.0))
+    __float_mast = mesh(b.vs, b.idx)
+    __frost_plate = Plate(at(o, -35.0, 2.8, -14.0))
+    loop q in [vec3(-37.5, 3.6, -19), vec3(-40.5, 4.8, -17)]:
+        __ice.push(piece_new(v3(2.6, 1.2, 2.6), rgb(0.45, 0.75, 0.88), o + q - vec3(0, 3, 0), 0.0, true))
+    loop x in [-37.0, -35.0, -33.0, -31.0, -29.0, -27.0, -25.0]:
+        loop z in [-17.0, -15.0, -13.0, -11.0]:
+            xi = int(round((f64(o.x) + x - HF_X0) / HF_CELL))
+            zi = int(round((f64(o.z) + z - HF_Z0) / HF_CELL))
+            k = zi * HF_N + xi
+            if k >= 0 and k < water_grid.len(): __cistern_cells.push(WCell(k, -0.4, water_grid[k]))
+    __keh_extra.push(__float.col)
+    loop ice in __ice: __keh_extra.push(ice.col)
+    c0 = colliders.len()
+    __bonus_chests.push(shr_chest(at(o, -42.0, 6.0, -14.0), PI / 2.0, "opal"))
+    __bonus_positions.push(chests[__bonus_chests[0]].pos)
+    loop c in [c0..colliders.len()):
+        __keh_extra.push(c)
+        colliders[c].active = false
+    loop c in [__float.col, __ice[0].col, __ice[1].col]: colliders[c].active = false
+    chests[__bonus_chests[0]].pos -= vec3(0, 5000, 0)
+
+__annex_update = (dt: f64):
+    match shr_cur:
+        0:
+            plate_update(__foundry_plate, [__crates[2].p.pos], dt)
+            if __foundry_plate.pressed:
+                if not __shuttle_on: slog("foundry shuttle powered")
+                __shuttle_on = true
+                __shuttle_t += dt
+            else:
+                __shuttle_on = false
+                __shuttle_t = 0.0
+            # Four-second docks retain easy boarding. Ten-second eased crossings
+            # keep the rising carriage/counterweight spectacle without a long wait.
+            cycle = __shuttle_t % 28.0
+            k = if cycle < 4.0: 0.0 else: (if cycle < 14.0: (cycle - 4.0) / 10.0 else: (if cycle < 18.0: 1.0 else: 1.0 - (cycle - 18.0) / 10.0))
+            np = at(srec[OMAN].o, -46.0 - 14.0 * smooth01(k), -0.6 + 3.4 * smooth01(k), -39.0)
+            __ride(__shuttle.col, np - __shuttle.pos)
+            __shuttle.pos = np
+            piece_sync(__shuttle)
+        1:
+            __shutter_t += dt
+            phase = __shutter_t % 14.0
+            open = phase >= 6.0 and phase < 10.0
+            if open != __shutter_open:
+                __shutter_open = open
+                __sfx(sfx.door, __shutter.pos, 0.5, (if open: 1.2 else: 0.9))
+            # A fast, visible quarter-second stroke, with the actual collider riding it.
+            target_y = f64(srec[JABAIJ].o.y) + (if open: 3.1 else: 0.0)
+            __shutter.pos.y = f32(approach_linear(f64(__shutter.pos.y), target_y, 12.4 * dt))
+            piece_sync(__shutter)
+            # Once past the shutter, the roll triggers the farther chain instead of a throw.
+            loop b in __barrels:
+                l = b.pos - srec[JABAIJ].o
+                if b.pad == 2 and b.state == .moving and l.x > 31.0 and l.x < 33.0 and not open and not __roll_failed:
+                    __roll_failed = true
+                    slog("rolling bomb stopped by shutter")
+                if b.pad == 2 and b.state == .moving and l.x > 33.0 and not __roll_clear:
+                    __roll_clear = true
+                    slog("rolling bomb cleared shutter")
+        2:
+            if chests[__clock_chest].opened and not __return_open:
+                __return_open = true
+                colliders[__return_bridge.col].active = true
+                play(cached_chime(), 0.5)
+                slog("clockwork return bridge deployed")
+        _:
+            o = srec[KEH].o
+            loop mut c in __cistern_crystals:
+                c.cool = max(0.0, c.cool - dt)
+                if __struck(c.pos, 0.6, c.last_hit) and c.cool <= 0.0:
+                    c.cool = 0.6
+                    c.turn += PI / 3.0
+                    __cistern_high = not __cistern_high
+                    play(cached_chime(), 0.5, 0.0, (if __cistern_high: 1.0 else: 0.8))
+                    __sfx(sfx.rumble, c.pos, 0.35, 1.4)
+                    __sfx(sfx.water, c.pos, 0.42, (if __cistern_high: 1.2 else: 0.8))
+                    slog(if __cistern_high: "frost cistern rising" else: "frost cistern draining")
+            __cistern_level = approach_linear(__cistern_level, (if __cistern_high: 4.0 else: 0.4), dt * 0.7)
+            p = __float.pos
+            x = f64(p.x - o.x)
+            if __cistern_level > 3.8: x = max(-35.0, x - 0.75 * dt)
+            support = if x < -33.0: 2.8 else: -0.4
+            np = at(o, x, approach(f64(p.y - o.y), max(support, __cistern_level - 1.0), 4.0, dt), -14.0)
+            __ride(__float.col, np - p)
+            __float.pos = np
+            piece_sync(__float)
+            plate_update(__frost_plate, (if __cistern_level < 3.0: [np] else: []), dt)
+            ice_before = __ice_k
+            __ice_k = approach_linear(__ice_k, (if __frost_plate.pressed: 1.0 else: 0.0), dt * 0.5)
+            if ice_before == 0.0 and __ice_k > 0.0:
+                __sfx(sfx.block, __frost_plate.pos, 0.55, 1.4)
+                loop ice in __ice:
+                    loop k in [0..8):
+                        a = TAU * f64(k) / 8.0
+                        fx_feedback(.glow, ice.pos + vec3(0, 1.2, 0), v3(cos(a) * 0.7, 1.2, sin(a) * 0.7), 1.6, 0.08, rgba(0.4, 0.85, 1.0, 0.8))
+            if __ice_k == 1.0 and not __ice_open:
+                __ice_open = true
+                slog("frost plate weighted, ice stair raised")
+                play(cached_chime(), 0.5)
+            loop k in [0..__ice.len()):
+                ice = __ice[k]
+                target = o + (if k == 0: vec3(-37.5, 3.6, -19) else: vec3(-40.5, 4.8, -17)) - v3(0.0, 3.0 * (1.0 - smooth01(__ice_k)), 0.0)
+                __ride(ice.col, target - ice.pos)
+                __ice[k].pos = target
+                piece_sync(__ice[k])
+
+__annex_draw = ():
+    match shr_cur:
+        0:
+            plate_draw(__foundry_plate)
+            piece_draw(__shuttle, (if __shuttle_on: GLOW_BLUE else: GLOW_ORANGE))
+            draw_prop(__hoist_carriage, piece_model(__shuttle), __swhite, 0.0, 0.2)
+            o = srec[OMAN].o
+            weight = at(o, -53.0, 4.8 - f64(__shuttle.pos.y - o.y) - 0.6, -41.5)
+            draw_prop(__hoist_weight, translation(weight), __swhite, 0.0, 0.15)
+        1: piece_draw(__shutter, (if __shutter_t % 14.0 >= 6.0 and __shutter_t % 14.0 < 10.0: GLOW_BLUE else: GLOW_ORANGE))
+        2:
+            if __return_open: piece_draw(__return_bridge, GLOW_BLUE)
+            loop brake in __brakes:
+                __crystal_draw(brake.pos, brake.frozen > 0.0, brake.pulse, brake.turn)
+        _:
+            loop c in __cistern_crystals: __crystal_draw(c.pos, __cistern_high, c.cool, c.turn)
+            if __frost_plate.pressed: contact_shadows.push(vec4(__float.pos.x, __float.pos.y, __float.pos.z, 1.4))
+            piece_draw(__float, (if __frost_plate.pressed: GLOW_BLUE else: GLOW_ORANGE))
+            draw_prop(__float_mast, piece_model(__float), __swhite, 0.18, 0.2)
+            plate_draw(__frost_plate)
+            loop ice in __ice:
+                piece_draw(ice, rgba(0.48, 0.73, 0.83, 1))
+                draw_prop(__ice_cap, piece_model(ice), __swhite, 0.0, 0.6)
+
+__cistern_water_mesh: Mesh
+__cistern_water_shader: Shader
+__cistern_water_ready = false
+__cistern_water_draw = ():
+    if not __cistern_water_ready:
+        __cistern_water_ready = true
+        __cistern_water_shader = make_sh(shader(shrine_water_vs, shrine_water_fs))
+        vs: PoolV[]
+        corners = [vec3(-8, 0, -4), vec3(8, 0, -4), vec3(8, 0, 4), vec3(-8, 0, 4)]
+        loop k in [0, 1, 2, 0, 2, 3]: vs.push(PoolV(corners[k]))
+        __cistern_water_mesh = mesh(vs)
+    gl_blend_state()
+    glDisable(GL_CULL_FACE)
+    draw_fast(__cistern_water_shader, __cistern_water_mesh, ShrineWaterU(sc.vp, at(srec[KEH].o, -31.0, __cistern_level + 0.025, -14.0), sc.cam, f32(elapsed()), (if __cistern_high: f32(1) else: f32(0))))
+    gl_opaque_state()
+
+# ================================================================================================
+# entering and leaving: fades and the lift
+# ================================================================================================
+
+struct Trans:
+    active = false
+    t = 0.0
+    kind = 0                   # 1 down into a shrine, 2 back up, 3 back to the checkpoint
+    shrine = -1
+    moved = false
+
+__trans = Trans()
+
+__exit_lift_mesh: Mesh
+__exit_lift_ring: Mesh
+__exit_lift_ready = false
+__exit_lift = () -> Mesh:
+    if not __exit_lift_ready:
+        __exit_lift_ready = true
+        b = MeshB()
+        mb_cyl(b, vec3(0, 0, 0), vec3(0, 0.18, 0), 1.8, 1.8, rgb(0.23, 0.28, 0.31), 32)
+        __exit_lift_mesh = mesh(b.vs, b.idx)
+        b = MeshB()
+        __mesh_ring(b, 1.65, 0.045, 0.006, __swhite)
+        __exit_lift_ring = mesh(b.vs, b.idx)
+    __exit_lift_mesh
+
+__start_trans = (kind: int, i: int):
+    if __trans.active: return
+    __trans = Trans(true, 0.0, kind, i)
+    pl.state = .cutscene
+    pl.speed = 0.0
+    pl.vel = vec3(0, 0, 0)
+    if kind == 1 or kind == 2: play(cached_chime(), 0.35, 0.0, (if kind == 1: 0.75 else: 1.0))
+
+# where the player stands at the top (on the entrance's lift)
+__entrance_spot = (i: int) -> vec3:
+    r = srec[i]
+    if r.entry < 0: return r.o + vec3(0, 200, 0)
+    p = shrines[r.entry].pos
+    g = ground_at(f64(p.x), f64(p.z), f64(p.y) + 1.0, 1.5, 0.3)
+    v3(f64(p.x), g.y, f64(p.z))
+
+__teleport = (p: vec3, face: f64, inside: bool):
+    use_terrain = not inside
+    env.indoor = if inside: 1.0 else: 0.0
+    pl.pos = p
+    pl.vel = vec3(0, 0, 0)
+    pl.face = face
+    pl.last_safe = p
+    pl.air_peak = f64(p.y)
+    cam.yaw = face
+    cam.pitch = 0.22
+    camera_snap()
+
+# go straight into a shrine (tests)
+__enter_now = (i: int):
+    r = srec[i]
+    if r.entry >= 0: shrines[r.entry].activated = true
+    if i == KEH: __keh_set_active(true)
+    __teleport(r.o + vec3(0, 0.1, 0), 0.0, true)
+    shr_cur = i
+    srec[i].checkpoint = r.o
+    srec[i].check_face = 0.0
+    ui.location = ""
+    ui_location(r.name + " Shrine")
+
+__trans_update = (dt: f64):
+    if not __trans.active: return
+    t = __trans.t
+    __trans.t += dt
+    i = __trans.shrine
+    r = srec[i]
+    out = if __trans.kind == 3: 0.35 else: 0.7
+    pl.state = .cutscene
+    pl.speed = 0.0
+    if t < out:
+        post.fade = t / out
+        # the lift sinks (or the light rises)
+        if __trans.kind == 1: pl.pos.y -= f32(dt * 1.2)
+        if __trans.kind == 2 and random() < dt * 30.0: emit(.glow, pl.pos + v3(random(-0.6, 0.6), random(0.0, 2.0), random(-0.6, 0.6)), v3(0.0, 2.0, 0.0), 1.0, 0.08, rgba(0.5, 0.85, 1.0, 0.9))
+        return
+    if not __trans.moved:
+        __trans.moved = true
+        match __trans.kind:
+            1:
+                if i == KEH: __keh_set_active(true)
+                __teleport(r.o + vec3(0, 0.1, 0), 0.0, true)
+                srec[i].checkpoint = r.o
+                srec[i].check_face = 0.0
+                cam.pos = r.o + vec3(0, 2.5, 3.4)
+                # Transfer the lens under full black as well as Link. Blending
+                # from the exterior lens while fading in flies above the shell.
+                cam.override = true
+                cam.was_override = true
+                cam.handoff_t = 1.0
+                cam.blend = 1.0
+            2:
+                # (facing the hood: the camera stays outside it)
+                __teleport(__entrance_spot(i), (if r.entry >= 0: -shrines[r.entry].rot else: 0.0), false)
+                if i == KEH: __keh_set_active(false)
+                # Start the exterior shot under full black. Blending from the
+                # monk's underground lens would travel through terrain as it fades in.
+                cam.override = true
+                cam.was_override = true
+                cam.handoff_t = 1.0
+                cam.blend = 1.0
+                slog("exit lift rising into hood")
+            _:
+                __teleport(r.checkpoint + vec3(0, 0.1, 0), r.check_face, true)
+                damage_player(2, pl.pos, 0.0)
+    post.fade = 1.0
+    if __trans.kind == 2:
+        # The black transfer masks the world/lighting boundary. The physical lift
+        # then rises inside the hood in an exterior three-quarter shot.
+        top = __entrance_spot(i)
+        rise = smooth01(clamp((t - out - 0.25) / 1.1, 0.0, 1.0))
+        pl.pos = top - v3(0.0, (1.0 - rise) * 1.35, 0.0)
+        pl.last_safe = top
+        face = if r.entry >= 0: -shrines[r.entry].rot else: 0.0
+        exterior = rotation_y(-face)
+        k = smooth01(clamp((t - out) / 1.7, 0.0, 1.0))
+        cam.override = t < 2.45
+        cam.o_pos = top + transform_dir(exterior, v3(6.8 - k * 1.3, 5.2 - k * 0.4, 13.0 - k * 1.2))
+        cam.o_target = top + transform_dir(exterior, v3(0.0, 3.0 - k * 0.5, -1.1))
+        cam.o_fov = 55.0
+        # Frame 600 of the first ceremony remains black for weather continuity.
+        post.fade = 1.0 - clamp((t - out - 0.5) / 0.75, 0.0, 1.0)
+        if t > 3.3:
+            pl.pos = top
+            pl.state = .ground
+            cam.override = false
+            post.fade = 0.0
+            __trans.active = false
+            slog("exit exterior shot complete; control returned")
+        return
+    # Arrival first reveals the dark shaft mouth above the lift, then lowers
+    # its gaze into the themed hall and settles behind Link.
+    intro = if i == OWA: 2.8 else: 4.4
+    if __trans.kind == 1:
+        k = clamp((t - out) / intro, 0.0, 1.0)
+        ke = k * k * (3.0 - 2.0 * k)
+        if k < 1.0:
+            cam.override = true
+            cam.blend = 1.0
+            if i == OMAN:
+                # The lift's rear wall bounds the lens. A wide opening tableau
+                # puts the crate at (5,-1), plate at (-5,-5) and bridge mouth
+                # together through the reveal before easing into the following camera.
+                settle = smoothstep(0.88, 1.0, ke)
+                cam.o_pos = r.o + v3(0.0, lerp(2.9, 2.5, settle), lerp(3.65, 3.4, settle))
+                cam.o_target = r.o + v3(0.0, lerp(1.7, 1.2, settle), lerp(-18.0, -1.0, settle))
+                cam.o_fov = lerp(90.0, 94.0, settle)
+            else if i == JABAIJ:
+                settle = smoothstep(0.88, 1.0, ke)
+                cam.o_pos = r.o + v3(0, lerp(3.45, 2.5, settle), 3.4)
+                cam.o_target = r.o + v3(0, lerp(0.85, 1.2, settle), lerp(-6.0, -1.0, settle))
+                cam.o_fov = 78.0
+            else if i == KEH:
+                # The south crystal, floating crate and receiving plate share the reveal.
+                settle = smoothstep(0.78, 1.0, ke)
+                cam.o_pos = r.o + v3(lerp(-0.7, 0.0, settle), lerp(3.1, 2.5, settle), lerp(3.6, 3.4, settle))
+                cam.o_target = r.o + v3(lerp(1.0, 0.0, settle), lerp(1.7, 1.2, settle), lerp(-20.0, -1.0, settle))
+                cam.o_fov = 82.0
+            else:
+                cam.o_pos = r.o + v3(0.0, 3.0 - 0.5 * ke, 1.6 + 1.8 * ke)
+                cam.o_target = r.o + v3(0.0, lerp(2.8,1.2,smoothstep(0.35,1.0,ke)), -8.0 + 7.0 * ke)
+                cam.o_fov = lerp(56.0, 62.0, ke)
+        else: cam.override = false
+    if t > out + 0.3:
+        post.fade = max(0.0, 1.0 - (t - out - 0.3) / 0.8)
+        if __trans.kind == 1 and t - dt <= out + 0.3:
+            ui.location = ""
+            ui_location(r.name + " Shrine")
+    if t > out + (if __trans.kind == 1: intro + 0.4 else: 1.1):
+        post.fade = 0.0
+        __trans.active = false
+        if pl.state == .cutscene: pl.state = .ground
+
+# ---------------- low steps ----------------
+# (the physics blocks the feet at any edge more than 5 cm high; in the shrines and on the
+# entrances' platforms the player steps up edges of up to 30 cm: stairs, the lift's platform)
+__step_assist = ():
+    if pl.state != .ground or length(act.move) < 0.3: return
+    near = shr_cur >= 0
+    loop r in srec:
+        if r.entry >= 0 and f64(length(shrines[r.entry].pos - pl.pos)) < 9.0: near = true
+    if not near: return
+    ahead = pl.pos + pl.move_dir * f32(RADIUS + 0.1)
+    g = ground_at(f64(ahead.x), f64(ahead.z), f64(pl.pos.y), 0.32, 0.0)
+    if g.y > f64(pl.pos.y) + 0.04 and g.y <= f64(pl.pos.y) + 0.32: pl.pos.y = f32(g.y)
+
+# ---------------- checkpoints and pits ----------------
+__check_t = 0.0
+
+__solid_under = (p: vec3) -> bool:
+    g = ground_at(f64(p.x), f64(p.z), f64(p.y) + 0.3, 0.6, 0.0)
+    g.y > f64(p.y) - 0.6 and g.collider >= 0 and colliders[g.collider].surf != .metal
+
+__checkpoint_update = (dt: f64):
+    if shr_cur < 0 or pl.state != .ground: return
+    __check_t += dt
+    if __check_t < 0.5: return
+    __check_t = 0.0
+    p = pl.pos
+    loop d in [v3(1.3, 0.0, 0.0), v3(-1.3, 0.0, 0.0), v3(0.0, 0.0, 1.3), v3(0.0, 0.0, -1.3), v3(0.0, 0.0, 0.0)]:
+        if not __solid_under(p + d): return
+    srec[shr_cur].checkpoint = p
+    srec[shr_cur].check_face = pl.face
+
+__pit_update = ():
+    if shr_cur < 0 or __trans.active or shr_cur == KEH: return
+    if f64(pl.pos.y - srec[shr_cur].o.y) < -4.5 and pl.state != .dead:
+        slog("fell; back to the checkpoint")
+        __start_trans(3, shr_cur)
+
+# ================================================================================================
+# the monks
+# ================================================================================================
+__orb_pos = vec3(0, 0, 0)
+__orb_glow = 0.0
+
+__monk_talk = (i: int):
+    if srec[i].orb_t >= 0.0 or srec[i].gone: return
+    srec[i].orb_t = 0.0
+    pl.state = .cutscene
+    pl.speed = 0.0
+    # a camera from the side, the monk and the player in view
+    r = srec[i]
+    m = r.o + r.monk
+    side = normalize(cross(vec3(pl.pos.x - m.x, 0, pl.pos.z - m.z) + vec3(0.001, 0, 0), vec3(0, 1, 0)))
+    cam.o_pos = (m + pl.pos) * 0.5 + side * 4.2 + vec3(0, 1.9, 0)
+    cam.o_target = (m + pl.pos) * 0.5 + vec3(0, 1.0, 0)
+    cam.o_fov = 45.0
+    cam.override = true
+    pass
+    slog("monk {i} talks")
+
+__monk_update = (dt: f64):
+    i = shr_cur
+    r = srec[i]
+    p = r.o + r.monk + vec3(0, 0.25, 0)
+    if random() < dt * 3.0 and not r.gone: emit(.glow, p + v3(random(-0.5, 0.5), random(0.3, 1.4), random(-0.5, 0.5)), v3(0.0, 0.4, 0.0), 2.0, 0.05, rgba(1.0, 0.85, 0.5, 0.6))
+    # a shaft of warm light falls on him from above, dust turning slowly in it
+    if not r.gone:
+        shafts.push(vec4(p.x, p.y - 0.25, p.z, 1.0))
+        if random() < dt * 10.0: emit(.glow, p + v3(random(-0.7, 0.7), random(0.0, 5.0), random(-0.7, 0.7)), v3(random(-0.05, 0.05), -0.08, random(-0.05, 0.05)), 4.0, 0.025, rgba(1.0, 0.9, 0.7, 0.5))
+    # walking up to him, the camera eases round to one side: the monk and Link side by side, not
+    # the monk hidden behind his head
+    if r.orb_t < 0.0 and not r.gone and not cam.override:
+        mv = p - pl.pos
+        if f64(length(vec3(mv.x, 0, mv.z))) < 5.0:
+            want = yaw_of(vec3(mv.x, 0, mv.z)) - 0.5
+            cam.yaw += wrap_angle(want - cam.yaw) * min(1.0, 2.0 * dt)
+    if r.orb_t < 0.0: return
+    t = r.orb_t
+    srec[i].orb_t = t + dt
+    pl.state = .cutscene
+    pl.speed = 0.0
+    # face the monk
+    dv = p - pl.pos
+    pl.face = turn_toward(pl.face, yaw_of(vec3(dv.x, 0, dv.z)), 4.0 * dt)
+    # the orb rises from the monk, hangs above him brightening, then floats to the player
+    a = p + vec3(0, 1.0, 0)
+    b = pl.pos + vec3(0, 1.4, 0)
+    k = smooth01((t - 2.2) / 1.8)
+    __orb_pos = a + (b - a) * f32(k) + vec3(0, f32(sin(k * PI) * 0.5 + (smooth01(t / 1.2) * 0.9 + sin(t * 2.4) * 0.06) * (1.0 - k)), 0)
+    __orb_glow = smooth01(t / 1.5) * (1.0 + 0.25 * sin(t * 7.0)) + smooth01((t - 3.4) / 0.6) * 1.2
+    if t < 4.2 and random() < dt * 40.0: emit(.glow, __orb_pos + rv(0.2), rv(0.5), 1.0, 0.07, rgba(1.0, 0.8, 0.4, 0.9))
+    if t < 4.0:
+        shafts.push(vec4(__orb_pos.x, __orb_pos.y - 1.0, __orb_pos.z, f32(0.6 * smooth01(t / 1.5))))
+    if t < 4.0 and t + dt >= 4.0:
+        story.orbs += 1
+        inv_add("spirit_orb")
+        ui_pickup("Sprite Orb")
+        orb_jingle()
+        if r.entry >= 0: shrines[r.entry].done = true
+        slog("orb received ({story.orbs})")
+        # taken into him: a ring of light bursting outward
+        loop q in [0..48):
+            ang = TAU * f64(q) / 48.0
+            emit(.glow, b, v3(cos(ang) * 2.6, random(-0.3, 0.6), sin(ang) * 2.6), 1.2, 0.08, rgba(1.0, 0.85, 0.5, 1.0))
+    # (afterwards the camera settles in a little on Link)
+    if t > 4.0 and t < 6.5:
+        cam.o_target = cam.o_target + (pl.pos + vec3(0, 1.2, 0) - cam.o_target) * f32(min(1.0, dt * 1.2))
+        cam.o_pos = cam.o_pos + (pl.pos + vec3(0, 1.5, 0) - cam.o_pos) * f32(min(1.0, dt * 0.12))
+    if t > 4.4 and random() < dt * 30.0: emit(.glow, p + v3(random(-0.4, 0.4), random(0.2, 1.4), random(-0.4, 0.4)), v3(0.0, 1.5, 0.0), 1.5, 0.06, rgba(1.0, 0.9, 0.6, 0.9))
+    # Input can end a repeat ceremony only on a later update than the 4 s award.
+    # The first earned orb always keeps its full ceremony; reward and done state above
+    # are already committed before the normal exit transition begins.
+    skip = t >= 4.0 and story.orbs > 1 and (act.interact or act.back)
+    if t > 8.5 or skip:
+        if skip: slog("orb ceremony skipped ({story.orbs})")
+        srec[i].gone = true
+        srec[i].orb_t = -2.0
+        pl.state = .ground
+        cam.override = false
+        __start_trans(2, i)
+
+__monk_dais_m = Mesh()
+__monk_dais_ok = false
+__monk_dais = () -> Mesh:
+    if not __monk_dais_ok:
+        __monk_dais_ok = true
+        b = MeshB()
+        mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.0, 0.22, 0.0), 0.75, 0.7, rgb(0.24, 0.22, 0.2), 20)
+        mb_cyl(b, v3(0.0, 0.22, 0.0), v3(0.0, 0.25, 0.0), 0.7, 0.55, rgb(0.5, 0.36, 0.2), 20)
+        __monk_dais_m = mesh(b.vs, b.idx)
+    __monk_dais_m
+
+__monk_draw = ():
+    i = shr_cur
+    r = srec[i]
+    if r.gone: return
+    p = r.o + r.monk + vec3(0, 0.25, 0)
+    dis = if r.orb_t > 4.6: clamp((r.orb_t - 4.6) / 3.0, 0.0, 1.0) else: 0.0
+    world = facing_mat(p, PI) * scaling(v3(1.15, 1.15, 1.15))
+    # his dais: a low round seat, a glowing ring round it
+    if not sc.shadow:
+        draw_prop(__monk_dais(), translation(r.o + r.monk) , vec4(1, 1, 1, 1), 0.0, 0.2)
+    cp = CharParams(dissolve = f32(dis), fill = 0.8, rim = 0.6)
+    # The dais lanterns light the ascetic even when the player's nearest light
+    # is a blue puzzle fixture. Existing character point-light path, no new pass.
+    monk_scene = cur_scene()
+    monk_scene.lp = vec4(p.x - 1.2, p.y + 2.4, p.z + 1.8, 5.5)
+    monk_scene.lc = vec3(2.8, 1.55, 0.65)
+    draw_prop(shrine_monk_model(), world, monk_scene, cp)
+    if r.orb_t >= 0.0 and r.orb_t < 4.0:
+        sz = f32(1.3 + 0.5 * __orb_glow)
+        draw_prop(shape_mesh(.orb), translation(__orb_pos) * scaling(v3(sz, sz, sz)), rgba(1.0, 0.82, 0.5, 1), f32(3.0 + 2.5 * __orb_glow), 0.5)
+
+# ================================================================================================
+# set up, per frame, drawing
+# ================================================================================================
+__glow_name = (r: SRec) -> str: r.key + "_dais"
+
+shrines_setup = ():
+    loop i in [0..srec.len()):
+        r = srec[i]
+        # outside: the terminal and the lift
+        if r.entry >= 0:
+            s = shrines[r.entry]
+            t = s.terminal
+            tp = v3(f64(t.x), height_at(f64(t.x), f64(t.z)), f64(t.z))
+            srec[i].term_u = add_usable(tp, 2.0, "Activate", ():
+                e = srec[i].entry
+                shrines[e].activated = true
+                play(cached_chime(), 0.55)
+                discovery_jingle()
+                fx_sparks(tp + vec3(0, 1.2, 0), 20, rgba(0.5, 0.85, 1.0, 1.0))
+                slog("{srec[i].name} activated")
+            )
+            slog("{r.name}: entrance {s.pos} rot {s.rot:.2} terminal {tp}")
+            srec[i].enter_u = add_usable(s.pos + vec3(0, 0.3, 0), 2.6, "Enter", (): __start_trans(1, i), false)
+        # inside: the lift back up, the monk
+        srec[i].leave_u = add_usable(r.o + vec3(0, 0.1, 0), 1.6, "Leave", (): __start_trans(2, i), false)
+        mp = r.o + r.monk
+        srec[i].talk_u = add_usable(mp + v3(0.0, 0.0, 2.0), 2.4, "Talk", (): __monk_talk(i), false)
+    __setup_oman()
+    __setup_jabaij()
+    __setup_owa()
+    __setup_keh()
+    __setup_annexes()
+    __shr_ready = true
+
+# wrap the renderer's transparent pass once (the pool's surface)
+__hooked = false
+__hook_once = ():
+    if __hooked: return
+    __hooked = true
+    prev = hooks.transparent
+    hooks.transparent = ():
+        prev()
+        if shr_cur == KEH and not sc.shadow: keh_draw_water()
+
+# tests: the stages before `stage` already solved
+__preset = (i: int, stage: int):
+    if stage < 1: return
+    match i:
+        0:
+            __crates[0].cell = vec2(-5, -5)
+            __crates[0].to = vec2(-5, -5)
+            __crates[0].p.pos = at(srec[OMAN].o, -5.0, 0.0, -5.0)
+            piece_sync(__crates[0].p)
+            if stage >= 2:
+                __crates[1].cell = vec2(0, -43)
+                __crates[1].to = vec2(0, -43)
+                __crates[1].p.pos = at(srec[OMAN].o, 0.0, 0.0, -43.0)
+                piece_sync(__crates[1].p)
+        1:
+            loop mut c in __cracks:
+                if c.name == "ja_baij_crack_n" or (stage >= 3 and c.name == "ja_baij_crack_e"):
+                    c.broken = true
+                    colliders[c.col].active = false
+                    hooks.named_hidden[c.name] = true
+            if stage >= 2:
+                loop mut b in __barrels:
+                    if b.pad < 0 and b.pos.x - srec[JABAIJ].o.x < 15.0: b.state = .gone
+                __pillar_t = 1.5
+                __pillar_done = true
+                colliders[__pillar_stand].active = false
+                colliders[__pillar_bridge].active = true
+        3:
+            __keh_high = stage == 1
+            __keh_level = if stage == 1: KEH_HIGH else: KEH_LOW
+            # (stage 1: the water high, the crate already drifted over the plate)
+            if stage == 1:
+                __keh_crate.pos = at(srec[KEH].o, KEH_PLATE.x, KEH_HIGH - 1.0, KEH_PLATE.y)
+                piece_sync(__keh_crate)
+            if stage >= 2:
+                __keh_crate.pos = at(srec[KEH].o, KEH_PLATE.x, -2.0, KEH_PLATE.y)
+                piece_sync(__keh_crate)
+        _: pass
+
+# tests: straight into a shrine
+__shr_test_done = false
+__test_hook = ():
+    if __shr_test_done: return
+    __shr_test_done = true
+    if env("BOTW_SHRINE_ACTIVE") != none:
+        loop r in srec:
+            if r.entry >= 0: shrines[r.entry].activated = true
+    # (test: go down shrine n's lift, as if Enter were pressed on it)
+    if let s = env("BOTW_ENTER"):
+        n = (to_int(s) ?? 0) - 1
+        if n >= 0 and n < srec.len():
+            if srec[n].entry >= 0: shrines[srec[n].entry].activated = true
+            __start_trans(1, n)
+    if let s = env("BOTW_SHRINE"):
+        n = (to_int(s) ?? 0) - 1
+        if n < 0 or n >= srec.len(): return
+        __enter_now(n)
+        if let st = env("BOTW_SHRINE_STAGE"): __preset(n, to_int(st) ?? 0)
+        if let g = env("BOTW_SHRINE_GIVE"):
+            loop id in split(g, ","): inv_add(id)
+        if let a = env("BOTW_SHRINE_AT"):
+            q = split(a, ",")
+            if q.len() >= 3:
+                p = srec[n].o + v3(to_float(q[0]) ?? 0.0, to_float(q[1]) ?? 0.0, to_float(q[2]) ?? 0.0)
+                f = if q.len() > 3: to_float(q[3]) ?? 0.0 else: 0.0
+                __teleport(p, f, true)
+        # (Ja Baij) start holding a barrel
+        if n == JABAIJ and env("BOTW_SHRINE_CARRY") != none:
+            __carrying = 0
+            __barrels[0].state = .carried
+            if (env("BOTW_SHRINE_CARRY") ?? "") == "lit": __barrels[0].fuse = 4.0
+            colliders[__barrels[0].col].active = false
+
+__stage_seen = fill(false, 8)
+__stage_pulse = fill(0.0, 8)
+__circuit_on = fill(false, 12)
+__circuit_pulse = fill(0.0, 12)
+
+__stage_feedback = (dt: f64):
+    i = shr_cur
+    if i < 0: return
+    local = pl.pos - srec[i].o
+    done = [false, false]
+    match i:
+        0:
+            done[0] = __oman_bridge_k >= 1.0 and length(__crates[0].p.pos - __oman_plate.pos) < 1.05
+            done[1] = __scout.state == .dead
+        1:
+            done[0] = __cracks[0].broken
+            done[1] = __pillar_done
+        2:
+            done[0] = local.z < -36.0 and local.y > -0.2
+            done[1] = local.z < -78.0 and local.y >= 8.9
+        _:
+            done[0] = __keh_level >= KEH_HIGH
+            done[1] = __keh_gate_k >= 1.0
+    loop k in [0..2):
+        j = i * 2 + k
+        __stage_pulse[j] = max(0.0, __stage_pulse[j] - dt)
+        if done[k] and not __stage_seen[j]:
+            __stage_seen[j] = true
+            __stage_pulse[j] = SHR_STAGE_SECONDS
+            play(cached_chime(), 0.45, 0.0, 1.0 + f64(k) * 0.25)
+            p = srec[i].o + __signal_sites[i][k]
+            loop n in [0..18):
+                a = TAU * f64(n) / 18.0
+                emit(.glow, p, v3(cos(a) * 0.9, sin(a) * 0.9, 0.2), 1.4, 0.045, rgba(0.35, 0.8, 1.0, 0.8))
+            slog("stage {k + 1} illuminated")
+
+# A lift action belongs to feet planted on its platform, never to a player
+# jumping above it or standing on nearby floor with a weighted vertical reach.
+shrine_on_lift = (i: int) -> bool:
+    if shr_cur != i or pl.state != .ground or not pl.grounded: return false
+    d = pl.pos - srec[i].o
+    hypot(f64(d.x), f64(d.z)) <= 1.55 and abs(f64(d.y) - 0.1) < 0.3
+
+# Immutable render-hook keys used by every 120 Hz world tick. Constructing
+# 200+ solve/signal/rune strings per tick magnified catch-up CPU tails outdoors.
+# Cache names, not values: all timers, state changes and map writes stay exact.
+struct ShrineHookNames:
+    key: str
+    model_name: str
+    dais: str
+    terminal: str
+    architecture: str
+    lamps: str
+    goal: str
+    hidden: str[]
+    circuits: str[]
+    signals: str[]
+    solves: str[]
+    runes: str[]
+__shrine_hook_names: ShrineHookNames[]
+__shrine_hook_names_init = ():
+    valid = __shrine_hook_names.len() == srec.len()
+    if valid:
+        loop i in [0..srec.len()):
+            if __shrine_hook_names[i].key != srec[i].key or __shrine_hook_names[i].model_name != srec[i].name: valid = false
+    if valid: return
+    __shrine_hook_names.clear()
+    loop r in srec:
+        n = ShrineHookNames(key = r.key, model_name = r.name, dais = __glow_name(r), terminal = r.name + "_terminal", architecture = r.key + "_architecture", lamps = r.key + "_lamps", goal = r.key + "_goal")
+        loop part in ["_architecture", "_lamps", "_goal", "_signal_0", "_signal_1", "_circuit_0", "_circuit_1", "_circuit_2"]: n.hidden.push(r.key + part)
+        loop k in [0..3): n.circuits.push(r.key + "_circuit_{k}")
+        loop k in [0..2):
+            n.signals.push(r.key + "_signal_{k}")
+            loop j in [0..SHR_STAGE_SEGMENTS): n.solves.push(r.key + "_solve_{k}_{j}")
+        loop k in [0..4): n.runes.push(r.key + "_rune_{k}")
+        __shrine_hook_names.push(n)
+
+shrines_update = (dt: f64):
+    if not __shr_ready: return
+    __hook_once()
+    __shrine_hook_names_init()
+    __test_hook()
+    map_survey_update(dt)
+    z = zone_at(pl.pos + vec3(0, 1, 0))
+    shr_cur = -1
+    loop i in 0.. and r in srec:
+        if r.key == z: shr_cur = i
+    # (a torch lit outside goes out: fire here would reach the grass far above)
+    if shr_cur >= 0: torch_lit = false
+    # the halls' light: from above (floors lit, walls darker, ceilings in gloom), the far
+    # end falling away into darkness
+    if shr_cur >= 0 and env.indoor > 0.0:
+        k = f32(env.indoor)
+        env.sky_amb = mix(env.sky_amb, SHR_SKY, k)
+        env.ground_amb = mix(env.ground_amb, SHR_GROUND, k)
+        env.haze = mix(env.haze, SHR_HAZE, k)
+        env.density = lerp(env.density, 0.012, env.indoor)
+    # the outside: terminals wake when the tower has risen; lifts work once activated
+    loop i in 0.. and r in srec:
+        still = not __trans.active and r.orb_t < 0.0 and shrine_on_lift(i) and pl.speed < 0.12 and length(pl.vel.xz) < 0.12 and length(act.move) < 0.05
+        srec[i].leave_still = if still: r.leave_still + dt else: 0.0
+        usables[r.leave_u].enabled = srec[i].leave_still >= 0.65
+        usables[r.talk_u].enabled = not r.gone and r.orb_t < 0.0
+        if r.entry < 0: continue
+        s = shrines[r.entry]
+        usables[r.term_u].enabled = story.tower_risen and not s.activated
+        usables[r.enter_u].enabled = story.tower_risen and s.activated and not __trans.active
+    # Widen only the entry landing; camera_update eases the lens and collision
+    # remains authoritative. No forced yaw: the player can still look freely.
+    entry_wide = 0.0
+    if shr_cur >= 0:
+        local = pl.pos - srec[shr_cur].o
+        entry_wide = (1.0 - smoothstep(3.0, 7.0, -f64(local.z))) * (1.0 - smoothstep(5.0, 9.0, abs(f64(local.x))))
+    cam.fov = lerp(50.0, (if shr_cur >= 0: SHR_ENTRY_FOV[shr_cur] else: 50.0), entry_wide)
+    __trans_update(dt)
+    __step_assist()
+    __keh_water()
+    # puzzles run while their shrine is visited
+    if shr_cur >= 0:
+        match shr_cur:
+            0: oman_update(dt)
+            1: jabaij_update(dt)
+            2: owa_update(dt)
+            _: keh_update(dt)
+        __annex_update(dt)
+        __stage_feedback(dt)
+        __checkpoint_update(dt)
+        __pit_update()
+        __monk_update(dt)
+    loop i in 0.. and r in srec:
+        hooks.named_glow[__shrine_hook_names[i].dais] = (if r.gone: GLOW_BLUE.xyz else: GLOW_ORANGE.xyz)
+        if r.entry >= 0: hooks.named_glow[__shrine_hook_names[i].terminal] = (if shrines[r.entry].activated: vec3(0.3, 1.0, 2.6) else: vec3(3.0, 1.1, 0.25))
+    loop c in __cracks: hooks.named_glow[c.name] = GLOW_ORANGE.xyz
+    loop i in [0..srec.len()):
+        names = __shrine_hook_names[i]
+        loop name in names.hidden: hooks.named_hidden[name] = shr_cur != i
+        active = match i:
+            0: [__oman_plate.pressed, __foundry_plate.pressed, false]
+            1: [__cracks[0].broken, __cracks[1].broken, false]
+            2: [true, __stage_seen[5], false]
+            _: [__keh_high, __keh_plate.pressed, __frost_plate.pressed]
+        loop k in [0..3):
+            j = i * 3 + k
+            __circuit_pulse[j] = max(0.0, __circuit_pulse[j] - dt)
+            if active[k] != __circuit_on[j]:
+                __circuit_on[j] = active[k]
+                __circuit_pulse[j] = 0.9
+            surge = sin(__circuit_pulse[j] / 0.9 * PI)
+            hooks.named_glow[names.circuits[k]] = (if active[k]: GLOW_BLUE.xyz else: GLOW_ORANGE.xyz) * f32((if active[k]: 0.32 else: 0.62) + surge * 1.5)
+        # Decorative ribs, arch inlays and caustics support the puzzle hierarchy.
+        # Machinery, pressure plates, stage signals and the exit retain their glow.
+        hooks.named_glow[names.architecture] = GLOW_BLUE.xyz * 0.32
+        hooks.named_glow[names.lamps] = __shrine_accent[i] * 0.24
+        hooks.named_glow[names.goal] = vec3(1.25, 1.05, 0.65) * f32(if i == OWA: 1.35 else: 0.65)
+        loop k in [0..2):
+            j = i * 2 + k
+            pulse = sin(clamp(__stage_pulse[j] / SHR_STAGE_SECONDS, 0.0, 1.0) * PI)
+            hooks.named_glow[names.signals[k]] = (if __stage_seen[j]: GLOW_BLUE.xyz else: GLOW_ORANGE.xyz) * f32((if __stage_seen[j]: 0.25 else: (if k == 0 or __stage_seen[j - 1]: 1.2 else: 0.55)) + pulse * 3.0)
+            loop n in [0..SHR_STAGE_SEGMENTS):
+                name = names.solves[k * SHR_STAGE_SEGMENTS + n]
+                front = __stage_front(__stage_pulse[j], n)
+                hooks.named_hidden[name] = shr_cur != i or front <= 0.005
+                hooks.named_glow[name] = GLOW_BLUE.xyz * f32(1.2 + front * 5.5)
+
+        loop k in [0..4):
+            name = names.runes[k]
+            hooks.named_hidden[name] = shr_cur != i
+            near = 1.0 - smoothstep(2.0, 7.0, f64(length(pl.pos - srec[i].o - __rune_sites[i][k])))
+            if i == OWA and k == 1:
+                loop q in [v3(1.9, 3.1, -50.7), v3(1.9, 5.6, -60.7), v3(1.9, 8.1, -70.7)]:
+                    near = max(near, 1.0 - smoothstep(2.0, 7.0, f64(length(pl.pos - srec[i].o - q))))
+            solved = if k < 2: __stage_seen[i * 2 + k] else: false
+            if k == 1 and i == OMAN: solved = __crates[1].cell.y <= -43.0
+            if k == 3 and i == OMAN: solved = __shuttle_on
+            if k >= 2 and i == OWA: solved = __brakes[k - 2].frozen > 0.0
+            if k == 3 and i == KEH: solved = __ice_open
+            hooks.named_glow[name] = (if solved: GLOW_BLUE.xyz else: GLOW_ORANGE.xyz) * f32((0.18 + near * 0.62) * (if solved: 0.32 else: 1.0))
+
+shrines_draw = ():
+    if not __shr_ready or sc.shadow: return
+    if __trans.active and __trans.kind == 2 and __trans.moved:
+        draw_prop(__exit_lift(), translation(pl.pos - vec3(0, 0.18, 0)), __swhite, 0.0, 0.2)
+        draw_prop(__exit_lift_ring, translation(pl.pos), GLOW_BLUE, 0.6, 0.0)
+    if shr_cur < 0: return
+    match shr_cur:
+        0: oman_draw()
+        1: jabaij_draw()
+        2: owa_draw()
+        _: keh_draw()
+    __annex_draw()
+    __monk_draw()
+
+# the shell of light the monk sits in (after the opaque scene: it is see-through)
+shrines_draw_transparent = ():
+    if not __shr_ready or shr_cur < 0: return
+    r = srec[shr_cur]
+    shrine_air_draw(sc.vp, r.o, shr_cur, __pendants[shr_cur])
+    if shr_cur == KEH: __cistern_water_draw()
+    if r.gone: return
+    # (it melts away as he walks up to the monk, as in BotW, and is gone once they speak)
+    dm = f64(length(vec3(pl.pos.x - (r.o.x + r.monk.x), 0, pl.pos.z - (r.o.z + r.monk.z))))
+    fade = if r.orb_t >= 0.0: 0.0 else: smoothstep(2.6, 5.5, dm)
+    if fade <= 0.01: return
+    col = vec3(1.0, 0.5, 0.15)
+    dome_draw(sc.vp, r.o + r.monk + vec3(0, 1.1, 0), 1.65, sc.cam, col, fade * (0.8 + 0.2 * sin(elapsed() * 1.3)))
+
+# the light near the player in a shrine (for the scene's one point light: position and
+# radius, color); false outside
+struct SLight:
+    p: vec3                    # local
+    r: f64
+    c: vec3
+
+__lights = [
+    [SLight(v3(0.0, 1.6, 0.0), 7.0, v3(0.9, 1.15, 1.4)), SLight(v3(0.0, 1.5, -34.5), 9.0, v3(0.9, 1.15, 1.4)), SLight(v3(0.0, 5.0, -47.0), 7.0, v3(1.3, 0.9, 0.5)), SLight(v3(-30.0, 3.0, -36.0), 20.0, v3(0.7, 0.9, 1.2)), SLight(v3(-60.0, 5.5, -39.0), 12.0, v3(0.8, 1.0, 1.2))],
+    [SLight(v3(-6.0, 1.8, -8.0), 9.0, v3(2.2, 1.0, 0.35)), SLight(v3(0.0, 1.6, 0.0), 6.0, v3(0.9, 1.15, 1.4)), SLight(v3(0.0, 1.6, -51.5), 7.0, v3(1.3, 0.9, 0.5)), SLight(v3(29.0, 2.0, -10.0), 12.0, v3(1.4, 0.8, 0.4)), SLight(v3(51.0, 2.5, -10.0), 17.0, v3(0.7, 0.9, 1.1))],
+    [SLight(v3(0.0, 1.6, 0.0), 7.0, v3(0.9, 1.15, 1.4)), SLight(v3(0.0, 2.0, -13.5), 8.0, v3(0.9, 1.15, 1.4)), SLight(v3(0.0, 2.0, -28.5), 8.0, v3(0.9, 1.15, 1.4)), SLight(v3(3.2, 4.0, -61.0), 9.0, v3(0.9, 1.15, 1.4)), SLight(v3(10.0, 10.6, -80.0), 7.0, v3(1.3, 0.9, 0.5)), SLight(v3(24.5, 4.0, -28.5), 12.0, v3(0.7, 0.95, 1.2)), SLight(v3(39.5, 4.0, -28.5), 16.0, v3(0.7, 0.95, 1.2))],
+    [SLight(v3(0.0, 1.6, 0.0), 7.0, v3(0.9, 1.15, 1.4)), SLight(v3(9.0, 0.5, -21.0), 9.0, v3(0.9, 1.15, 1.4)), SLight(v3(0.0, 5.6, -43.5), 7.0, v3(1.3, 0.9, 0.5)), SLight(v3(-31.0, 7.0, -14.0), 18.0, v3(0.65, 1.0, 1.4))],
+]
+
+shrines_light = (lp: mut vec4, lc: mut vec3) -> bool:
+    if shr_cur < 0: return false
+    o = srec[shr_cur].o
+    best = 1e9
+    loop l in __lights[shr_cur]:
+        d = f64(length(o + l.p - pl.pos))
+        if d < best:
+            best = d
+            q = o + l.p
+            lp = vec4(q.x, q.y, q.z, f32(l.r))
+            lc = l.c
+    # Accent reaches Link only when he approaches a real pendant. Compare the
+    # bounded light's contribution, not proximity to an unrelated blue mechanism.
+    strength = (l: vec4, c: vec3) -> f64:
+        d2 = f64(dot(l.xyz - pl.pos, l.xyz - pl.pos))
+        q = max(0.0, 1.0 - d2 / f64(l.w * l.w))
+        q * q * q * f64(max(c.x, max(c.y, c.z)))
+    score = strength(lp, lc)
+    loop lamp in __pendants[shr_cur]:
+        candidate = vec4(o + lamp.xyz, 6.5)
+        col = __shrine_accent[shr_cur] * 1.35
+        value = strength(candidate, col)
+        if value > score:
+            score = value
+            lp = candidate
+            lc = col
+    loop k in [0..2):
+        t = __stage_pulse[shr_cur * 2 + k]
+        p = o + __signal_sites[shr_cur][k]
+        if t > 0.0 and length(p - pl.pos) < 12.0:
+            q = p + (if shr_cur == KEH and k == 0: vec3(-0.6, 0, 0) else: vec3(0, 0, 0.6))
+            pulse = f32(sin(t / 1.6 * PI))
+            lp = mix(lp, vec4(q.x, q.y, q.z, 9.0), pulse)
+            lc = mix(lc, GLOW_BLUE.xyz * 2.0, pulse)
+    true
+
+shrines_draw_2d = ():
+    if not __shr_ready: return
+    # Survey rings belong to the tower reveal too, while its ordinary HUD is hidden.
+    if shr_cur < 0 and (story.beat == .tower_rise or not ui.hide): map_survey_draw()
+

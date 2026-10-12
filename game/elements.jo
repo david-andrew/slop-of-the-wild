@@ -1,0 +1,1346 @@
+use 'gfx.jo'
+use 'sfx.jo'
+use 'env.jo'
+use 'terrain.jo'
+use 'physics.jo'
+from 'physics.jo' import __ray_collider, __to_local
+use 'water.jo'
+use 'worldgen.jo'
+use 'player.jo'
+use 'combat.jo'
+use 'items.jo'
+use 'enemies.jo'
+use 'talus.jo'
+use 'cputime.jo'
+use 'element_puzzles.jo'
+use 'wildlife.jo'
+use 'fx.jo'
+use 'scene.jo'
+use 'matter.jo'
+use 'vegetation.jo'
+use 'trees.jo'
+use 'structures.jo'
+use 'render.jo'
+use 'chars.jo'
+use 'skel.jo'
+use 'input.jo'
+use 'sheath.jo'
+
+# The chemistry: fire spreads through dry grass (with the wind, not in rain), burns wooden
+# things, cooks food, lights torches, scares and hurts monsters, makes updrafts for the
+# paraglider; explosive barrels go off in fire and set off each other; water and rain put fire
+# out; the cold of the snowy heights hurts without warmth; a storm sends lightning to metal.
+
+struct Flame:
+    cell: int              # index in the burn grid
+    t = 0.0
+    life = 5.0
+
+flames: Flame[]
+__burning: {int: bool} = {}
+# Conservative bounds in the same linear cell space as the existing neighbour
+# queries. Keep their row-edge behaviour and ordering; this only rejects ranges
+# that cannot contain a live cell. Ignition expands the bounds immediately.
+__burn_first = 1 << 30
+__burn_last = -1
+
+__grass_may_reach = (c: int, k: int) -> bool:
+    if c < 0 or __burning.len() == 0: return false
+    span = k * hf.n + k
+    c + span >= __burn_first and c - span <= __burn_last
+
+struct Bonfire:
+    pos: vec3
+    lit = true
+    pot = false            # a cooking pot sits on it
+
+bonfires: Bonfire[]
+# Active pot feedback is driven by the production cooking transaction.
+pot_cook_pos = vec3(0, -10000, 0)
+pot_cook_t = 0.0
+
+struct Barrel:
+    pos: vec3
+    explosive: bool
+    alive = true
+    fuse = 0.0
+    col = -1
+    el = Elem()
+
+barrels: Barrel[]
+
+struct ElemEvent:
+    kind: str
+    pos: vec3
+    equipment = false
+
+elem_events: ElemEvent[]
+
+temp_feel = 0.5            # 0 freezing .. 1 hot (the HUD's thermometer)
+cold_dmg_t = 0.0
+player_cold = false
+player_cold_t = 0.0
+__breath_t = 0.0
+lightning_warn = 0.0
+lightning_pos = vec3(0, 0, 0)
+
+# The spark position is on the same metal mesh/socket that hero_draw uses.
+# Headless checks use a body-relative socket when the character rig is absent.
+lightning_metal_pos = () -> vec3?:
+    g = lightning_gear
+    if g.world >= 0:
+        if g.world >= witems.len() or not witems[g.world].alive or not item(witems[g.world].id).metal: return none
+        w = witems[g.world]
+        d = item(w.id)
+        return transform_point(world_item_transform(w), v3(0.0, (if d.kind == .weapon: weapon_length(d) * 0.55 else: 0.0), 0.0))
+    if g.index < 0: return none
+    id = ""
+    index = -1
+    match g.kind:
+        weapon: id = equipped_weapon(); index = inv.weapon
+        shield: id = equipped_shield(); index = inv.shield
+        bow: id = equipped_bow(); index = inv.bow
+        _: return none
+    if id != g.id or index != g.index or not item(id).metal: return none
+    carried_gear_pos(g.kind, id)
+
+# Shared by fire exposure and lightning: query the socket actually used to draw gear.
+carried_gear_pos = (kind: IKind, id: str) -> vec3:
+    if not chars_ready: return pl.pos + vec3(0, 1.3, 0)
+    d = item(id)
+    m = socket_world(hero_m, hero_world, hero_skin, SOCKET_BACK)
+    match kind:
+        weapon:
+            hand = fight.weapon_out or fight.act != .idle or torch_lit
+            if pl.state == .climb or pl.state == .mantle or pl.state == .glide or pl.state == .swim or fight.act == .aim: hand = false
+            if hand: m = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_R)
+            else: m = sword_back_transform(m, d.shape)
+        shield:
+            two = len(equipped_weapon()) > 0 and (item(equipped_weapon()).two_handed or item(equipped_weapon()).spear) and (fight.act == .swing or fight.act == .charge or fight.act == .spin or fight.act == .jump_attack or fight.act == .flurry)
+            if pl.state == .surf or (pl.surfing and pl.state == .air): m = facing_mat(pl.pos + vec3(0, 0.06, 0), pl.face) * rotation_x(-PI / 2.0)
+            else if not two and pl.state != .mantle and (fight.act == .guard or fight.act == .hop or fight.act == .backflip or (act.lock and fight.target >= 0) or ((fight.weapon_out or (fight.act != .idle and fight.act != .aim and fight.act != .eat and fight.act != .throw_ and fight.act != .pickup)) and (pl.state == .ground or pl.state == .air))): m = socket_world(hero_m, hero_world, hero_skin, SOCKET_SHIELD)
+            else: m = shield_back_transform(m)
+        bow:
+            if fight.act == .aim: m = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_L) * rotation_y(1.2) * rotation_x(-0.25)
+            else: m = bow_back_transform(m)
+        _: pass
+    transform_point(m, v3(0.0, (if d.kind == .weapon: weapon_length(d) * 0.55 else: 0.0), 0.0))
+
+lightning_begin = () -> bool:
+    if not use_terrain or env.weather != .storm or env.rain <= 0.6: return false
+    loop kind in [IKind.weapon, IKind.shield, IKind.bow]:
+        index = -1
+        id = ""
+        match kind:
+            weapon: index = inv.weapon; id = equipped_weapon()
+            shield: index = inv.shield; id = equipped_shield()
+            bow: index = inv.bow; id = equipped_bow()
+            _: pass
+        if len(id) == 0 or not item(id).metal: continue
+        lightning_gear = GearTrace(id = id, kind = kind, index = index)
+        if let p = lightning_metal_pos():
+            if not rain_exposed(p): continue
+            lightning_pos = p
+            lightning_warn = 2.2
+            sfx_play(sfx.block, 0.4, 0.0, 2.4)
+            return true
+    lightning_gear = GearTrace()
+    false
+
+elements_place = ():
+    loop a in actors:
+        x = f64(a.pos.x)
+        z = f64(a.pos.z)
+        if not in_bounds(x, z) or edge_at(x, z) > -3.0: continue
+        g = height_at(x, z)
+        p = v3(x, g, z)
+        if a.name == "FireWood" or a.name == "Obj_FireWoodBundle": bonfires.push(Bonfire(p))
+        else if a.name == "Item_CookSet": bonfires.push(Bonfire(p, pot = true))
+        else if a.name == "BarrelBomb" or a.name == "BarrelBomb3":
+            bi = barrels.len()
+            barrels.push(Barrel(p, true))
+            barrels[bi].col = add_cyl(p, 0.35, 0.9, false, .wood)
+        else if a.name == "Barrel" or a.name == "Obj_BarrelOld_A_01":
+            bi = barrels.len()
+            barrels.push(Barrel(p, false))
+            barrels[bi].col = add_cyl(p, 0.35, 0.9, false, .wood)
+    # the old man's campfire
+    bonfires.push(Bonfire(v3(-943.0, height_at(-943.0, 1880.0), 1880.0)))
+    # trampled ground and an old scorch around every fireplace
+    loop b in bonfires:
+        burn_mark(f64(b.pos.x), f64(b.pos.z), 3.5, 1, 1.0)
+        burn_mark(f64(b.pos.x), f64(b.pos.z), 1.1, 0, 0.8)
+    eprint("bonfires {bonfires.len()}, barrels {barrels.len()}")
+
+__cell_of = (x: f64, z: f64) -> int:
+    xi = int((x - hf.x0) / hf.cell)
+    zi = int((z - hf.z0) / hf.cell)
+    if xi < 1 or zi < 1 or xi >= hf.n - 1 or zi >= hf.n - 1: return -1
+    zi * hf.n + xi
+
+cell_pos = (c: int) -> vec3:
+    x = hf.x0 + (f64(c % hf.n) + 0.5) * hf.cell
+    z = hf.z0 + (f64(c / hf.n) + 0.5) * hf.cell
+    v3(x, height_at(x, z), z)
+
+# can this cell burn: grass (not rock, snow, path, water), not burnt yet, not wet
+__flammable = (c: int) -> bool:
+    if c < 0 or __burning.has(c): return false
+    p = cell_pos(c)
+    if burn_value(f64(p.x), f64(p.z), 0) > 0.5: return false
+    # trampled or cut short (campfire clearings): too little to burn
+    if burn_value(f64(p.x), f64(p.z), 1) > 0.6: return false
+    m = material_at(f64(p.x), f64(p.z))
+    if m.y > 0.4 or m.z > 0.2 or m.w > 0.4: return false
+    if water_depth(f64(p.x), f64(p.z)) > 0.0: return false
+    if env.rain > 0.2 or env.wet > 0.5: return false
+    true
+
+# Heat and blasts use the same obstruction rule at every height.
+blast_reaches = (source: vec3, p: vec3, r: f64, target_col: int = -1, terrain_too: bool = true) -> bool:
+    d = p - source
+    dist = f64(length(d))
+    if dist >= r: return false
+    if dist < 0.001: return true
+    h = raycast(source, d, max(dist - 0.05, 0.001), true, terrain_too)
+    # Reaching a target barrel's own surface is exposure, not intervening cover.
+    not h.hit or (target_col >= 0 and h.collider == target_col)
+
+__fire_reaches = (source: vec3, p: vec3, r: f64, target_col: int = -1) -> bool:
+    blast_reaches(source, p, r, target_col)
+
+# A burning tree is a finite vertical source, not an infinite column below its roots.
+__tree_heat_pos = (i: int, p: vec3) -> vec3:
+    root = places[i].pos
+    root + vec3(0, clamp(p.y - root.y, 0.3, f32(places[i].height)), 0)
+
+ignite_at = (p: vec3) -> bool:
+    c = __cell_of(f64(p.x), f64(p.z))
+    if not __flammable(c): return false
+    q = cell_pos(c)
+    if abs(f64(p.y - q.y)) > 1.6: return false
+    if not __fire_reaches(p + vec3(0, 0.1, 0), q + vec3(0, 0.1, 0), max(1.7, hf.cell * 0.8)): return false
+    if flames.len() > 2500: return false
+    __burning[c] = true
+    __burn_first = min(__burn_first, c)
+    __burn_last = max(__burn_last, c)
+    flames.push(Flame(c, life = random(4.0, 6.5)))
+    # its heat browns the grass round it before the flames get there
+    burn_mark(f64(q.x), f64(q.z), hf.cell * 2.2, 2, 0.45)
+    true
+
+# One bounded crackle bed for nearby fire. Grass fires used to be silent because
+# main only looked at bonfires. Count nearby cells without stacking loud loop voices.
+fire_audio_level = (listener: vec3) -> f64:
+    level = 0.0
+    loop b in bonfires:
+        if b.lit: level = max(level, clamp(1.0 - f64(length(b.pos - listener)) / 12.0, 0.0, 1.0) * 0.5)
+    grass = 0.0
+    loop f in flames:
+        if f.t < f.life:
+            p = cell_pos(f.cell)
+            grass += clamp(1.0 - f64(length(p - listener)) / 12.0, 0.0, 1.0) * 0.18
+    min(0.5, max(level, grass))
+
+# burning grass within r of p
+grass_fire_near = (p: vec3, r: f64) -> bool:
+    loop barrier in element_puzzles:
+        if burning(barrier.el) and __fire_reaches(barrier.pos+vec3(0,0.8,0),p,r): return true
+    c = __cell_of(f64(p.x), f64(p.z))
+    if c < 0: return false
+    k = int(ceil(r / hf.cell))
+    if not __grass_may_reach(c, k): return false
+    loop dz in [-k..k]:
+        loop dx in [-k..k]:
+            cell = c + dz * hf.n + dx
+            if cell >= 0 and cell < hf.n * hf.n and __burning.has(cell) and __fire_reaches(cell_pos(cell) + vec3(0, 0.5, 0), p, r): return true
+    false
+
+# a fire anywhere near p (lit bonfires, burning grass, burning items)
+fire_near = (p: vec3, r: f64) -> bool:
+    loop barrier in element_puzzles:
+        if burning(barrier.el) and __fire_reaches(barrier.pos+vec3(0,0.8,0),p,r): return true
+    loop b in bonfires:
+        if b.lit and __fire_reaches(b.pos + vec3(0, 0.5, 0), p, r): return true
+    if grass_fire_near(p, r): return true
+    loop w in witems:
+        if w.alive and (w.burning > 0.0 or w.lit) and __fire_reaches(w.pos, p, r): return true
+    false
+
+# burning brands lofted off a grass fire, carried on the wind; where one lands it starts a spot fire
+struct Brand:
+    pos: vec3
+    vel: vec3
+brands: Brand[]
+
+# where the grass burnt (x, z, when): it grows back
+__scars: vec4[]
+__scar_t = 0.0
+
+# Visual remains may arrive after rain has removed the fire and death reset an actor.
+# Only fresh runtime scars count; the plateau's authored dark ground does not.
+fire_remains_near = (p: vec3, r: f64) -> bool:
+    if grass_fire_near(p, r): return true
+    now = elapsed()
+    loop scar in __scars:
+        if now - f64(scar.z) > 8.0: continue
+        if hypot(f64(scar.x - p.x), f64(scar.y - p.z)) > r: continue
+        if use_terrain and abs(f64(p.y) - height_at(f64(scar.x), f64(scar.y))) > 3.0: continue
+        return true
+    false
+
+tree_fire: {int: Elem} = {}        # trees that are warming or burning (vegetation places)
+torch_tip = vec3(0, -10000, 0)      # the player's lit torch (or burning weapon)
+# the camps' tents: 0 standing, above 0 how long it has burnt, -1 burnt down
+tent_fire: f64[]
+
+# A callback-local source list only for the loose-item stage. Enemies cannot
+# ignite during that stage; newly ignited loose items join before later receivers
+# query them. Every candidate is still read live. Other callers use the full scan.
+__heat_items_scope = false
+__heat_items: int[]
+__heat_enemies: int[]
+__heat_items_begin = ():
+    __heat_items.clear()
+    __heat_enemies.clear()
+    loop i in 0.. and w in witems:
+        if w.alive and burning(w.el): __heat_items.push(i)
+    loop i in 0.. and e in enemies:
+        if e.burning > 0.0 and e.state != .gone: __heat_enemies.push(i)
+    __heat_items_scope = true
+
+# heat at a point: how strongly the fires around it warm it (per second)
+heat_at = (p: vec3, target_col: int = -1) -> f64:
+    h = log_heat(p,target_col)
+    loop barrier in element_puzzles:
+        if burning(barrier.el) and __fire_reaches(barrier.pos+vec3(0,0.8,0),p,2.3,target_col): h += 1.0
+    loop i in 0.. and t in tent_fire:
+        if t > 0.0 and __fire_reaches(camp_tents[i] + vec3(0, 1, 0), p, 2.6, target_col): h += 1.5
+    loop b in bonfires:
+        if b.lit and __fire_reaches(b.pos + vec3(0, 0.5, 0), p, 1.8, target_col): h += 1.5
+    c = __cell_of(f64(p.x), f64(p.z))
+    if __grass_may_reach(c, 1):
+        loop dz in [-1..1]:
+            loop dx in [-1..1]:
+                cell = c + dz * hf.n + dx
+                if cell >= 0 and cell < hf.n * hf.n and __burning.has(cell) and __fire_reaches(cell_pos(cell) + vec3(0, 0.5, 0), p, 3.0, target_col): h += (if dx == 0 and dz == 0: 1.2 else: 0.4)
+    if __heat_items_scope:
+        loop i in __heat_items:
+            w = witems[i]
+            if w.alive and burning(w.el) and __fire_reaches(w.pos, p, 1.3, target_col): h += 1.0
+        loop i in __heat_enemies:
+            e = enemies[i]
+            if e.burning > 0.0 and e.state != .gone and __fire_reaches(e.pos + vec3(0, 0.8, 0), p, 1.4, target_col): h += 0.8
+    else:
+        loop w in witems:
+            if w.alive and burning(w.el) and __fire_reaches(w.pos, p, 1.3, target_col): h += 1.0
+        loop e in enemies:
+            if e.burning > 0.0 and e.state != .gone and __fire_reaches(e.pos + vec3(0, 0.8, 0), p, 1.4, target_col): h += 0.8
+    loop a in arrows:
+        if a.alive and a.fire and not __in_water(a.pos, 0.0) and __fire_reaches(a.pos, p, 1.0, target_col): h += 3.0
+    loop i, t in tree_fire:
+        if burning(t):
+            if __fire_reaches(__tree_heat_pos(i, p), p, 3.5, target_col): h += 1.5
+    if __fire_reaches(torch_tip, p, 0.9, target_col): h += 1.5
+    h
+
+# Sample exposure along the accepted flight segment, spaced below any heat radius.
+# Endpoint-only exposure misses a fire entirely at 30 Hz (4.5 m of travel).
+arrow_crosses_heat = (a: Arrow) -> bool:
+    steps = max(1, int(ceil(f64(length(a.pos - a.prev)) / 0.35)))
+    loop k in [0..steps + 1):
+        if heat_at(lerp(a.prev, a.pos, f32(k) / f32(steps))) > 0.5: return true
+    false
+
+# Include the accepted flight segment: an arrow can enter and leave a narrow stream
+# within one callback, before any actor or grass consumes its fire flag.
+arrow_crosses_water = (a: Arrow) -> bool:
+    steps = max(1, int(ceil(f64(length(a.pos - a.prev)) / 0.2)))
+    loop k in [0..steps + 1):
+        if __in_water(lerp(a.prev, a.pos, f32(k) / f32(steps)), 0.0): return true
+    false
+
+# electricity at a point (a lightning strike just now)
+strike_pos = vec3(0, -10000, 0)
+strike_t = 0.0
+strike_wet = false          # it struck water: the water carries it
+strike_id = 0
+strike_water: {int: bool} = {}
+
+# The bounded graph is rebuilt once per strike. Its accepted links are shared by
+# exposure, immediate water damage and visible arcs (never random cross-wall rays).
+struct ShockRelay:
+    pos: vec3
+    col = -1
+    distance = 0.0
+    hops = 0
+
+strike_paths: ConductionPath[]
+strike_relays: ShockRelay[]
+__shock_receivers: vec3[]
+__shock_arc_points = 0
+const SHOCK_ARC_POINTS = 1680
+const SHOCK_REACH = 14.0
+const SHOCK_WATER_REACH = 16.0   # water fan includes a nearby wader, metal relays keep their bound
+const SHOCK_RELAYS = 64
+const SHOCK_HOPS = 6
+
+shock_link_clear = (a: vec3, b: vec3, from_col: int = -1, to_col: int = -1) -> bool:
+    cover = rain_cover_height(f64(b.x), f64(b.z))
+    if cover > f64(b.y) + 0.1 and (f64(a.y) > cover or rain_exposed(a)): return false
+    delta = b - a
+    dist = f64(length(delta))
+    if dist < 0.001: return true
+    dir = delta / f32(dist)
+    if use_terrain and ray_terrain(a, dir, max(dist - 0.01, 0.001), 0.25).hit: return false
+    mid = (a + b) * 0.5
+    loop id in nearby(f64(mid.x), f64(mid.z), dist * 0.5 + 1.0):
+        if id == from_col or id == to_col or not colliders[id].active: continue
+        c = colliders[id]
+        loop point in [a, b]:
+            local = __to_local(c, point)
+            if local.y < 0.0 or local.y > c.half.y * 2.0: continue
+            if c.kind == 0:
+                if length(vec2(local.x, local.z)) <= c.half.x: return false
+            else if abs(local.x) <= c.half.x and abs(local.z) <= c.half.z: return false
+        # Reverse rays detect a connection starting inside another solid.
+        if __ray_collider(colliders[id], a, dir, dist).hit or __ray_collider(colliders[id], b, -dir, dist).hit: return false
+    true
+
+__shock_water_at = (p: vec3) -> bool:
+    if not strike_wet or f64(length(p - strike_pos)) >= SHOCK_WATER_REACH: return false
+    if let wl = water_level(f64(p.x), f64(p.z)):
+        return f64(p.y) < wl + 0.6 and water_region_has(strike_water, p)
+    false
+
+__shock_graph = ():
+    strike_relays.clear()
+    strike_paths.clear()
+    __shock_receivers.clear()
+    __shock_arc_points = 0
+    loop path in water_paths:
+        if strike_wet: strike_paths.push(path)
+    candidates: ShockRelay[]
+    loop w in witems:
+        if w.alive and matter_of(w.id).metal and length(w.pos - strike_pos) < f32(SHOCK_REACH): candidates.push(ShockRelay(w.pos))
+    # Solid metal props conduct too; their own volume is the conductor, while
+    # intervening cover still blocks each incoming/outgoing link.
+    loop id in nearby(f64(strike_pos.x), f64(strike_pos.z), SHOCK_REACH):
+        c = colliders[id]
+        q = c.pos + vec3(0, c.half.y, 0)
+        if c.active and c.surf == .metal and length(q - strike_pos) < f32(SHOCK_REACH): candidates.push(ShockRelay(q, col = id))
+    reached: {int: bool} = {}
+    r = if env.rain > 0.3: 7.0 else: 4.0
+    loop i in 0.. and candidate in candidates:
+        if strike_relays.len() >= SHOCK_RELAYS: break
+        distance = f64(length(candidate.pos - strike_pos))
+        wet = __shock_water_at(candidate.pos)
+        if (distance >= r and not wet) or not shock_link_clear(strike_pos, candidate.pos, -1, candidate.col):
+            # Water may reach metal around a corner through its accepted region.
+            if not wet: continue
+            cell = water_cell_pos(water_cell(candidate.pos))
+            if not shock_link_clear(cell, candidate.pos, -1, candidate.col): continue
+            strike_paths.push(ConductionPath(cell, candidate.pos))
+        else: strike_paths.push(ConductionPath(strike_pos, candidate.pos))
+        relay = candidate
+        relay.distance = distance
+        relay.hops = 1
+        strike_relays.push(relay)
+        reached[i] = true
+    head = 0
+    loop head < strike_relays.len() and strike_relays.len() < SHOCK_RELAYS:
+        source = strike_relays[head]
+        head += 1
+        if source.hops >= SHOCK_HOPS: continue
+        loop i in 0.. and candidate in candidates:
+            if reached.has(i): continue
+            distance = f64(length(candidate.pos - source.pos))
+            if distance >= 2.5 or source.distance + distance >= SHOCK_REACH: continue
+            if not shock_link_clear(source.pos, candidate.pos, source.col, candidate.col): continue
+            relay = candidate
+            relay.distance = source.distance + distance
+            relay.hops = source.hops + 1
+            strike_relays.push(relay)
+            strike_paths.push(ConductionPath(source.pos, candidate.pos))
+            reached[i] = true
+            if strike_relays.len() >= SHOCK_RELAYS: break
+
+strike_at = (p: vec3):
+    strike_id += 1
+    strike_pos = p
+    strike_t = 0.3
+    strike_wet = false
+    if let wl = water_level(f64(p.x), f64(p.z)): strike_wet = water_depth(f64(p.x), f64(p.z)) > 0.01 and f64(p.y) < wl + 1.6
+    strike_water = if strike_wet: water_region(p, SHOCK_WATER_REACH) else: {}
+    __shock_graph()
+    __shock_arcs()
+    if __shock_water_at(pl.pos): shock_player(4, p, 3.0)
+
+__shock_arc = (path: ConductionPath):
+    dist = f64(length(path.to - path.from))
+    if dist < 0.01: return
+    n = clamp(int(ceil(dist / 0.35)), 2, 20)
+    previous = path.from
+    loop j in [1..n + 1):
+        # Reserve the rest of the shared pool for the lightning bolt and world FX.
+        if __shock_arc_points >= SHOCK_ARC_POINTS: return
+        __shock_arc_points += 1
+        # Jagged surface lifts keep x/z on the accepted water/collider route.
+        # Connected segments share endpoints, so conduction never reads as dots.
+        point = lerp(path.from, path.to, f32(j) / f32(n))
+        if j < n:
+            seed = hash2(f64(j) + f64(path.from.z), f64(strike_id) + f64(path.from.x))
+            point.y += f32(0.06 + 0.16 * seed)
+            lateral = normalize(cross(path.to - path.from, vec3(0, 1, 0))) * f32((seed - 0.5) * 0.5)
+            bent = point + lateral
+            if strike_wet and water_region_has(strike_water, bent) and water_link_clear(previous, bent) and water_link_clear(bent, path.to): point = bent
+        emit(.arc, (previous + point) * 0.5, point - previous, 0.28, 0.047, rgba(0.75, 0.9, 1.0, 1.0))
+        previous = point
+
+__shock_arcs = ():
+    # Eight short radial leaders through the same connected water region. Clear
+    # shortcuts avoid rendering the flood-fill grid as two straight waterlines;
+    # a blocked shortcut falls back to accepted parents around the obstruction.
+    chosen: {int: bool} = {}
+    parent: {int: int} = {}
+    leaders: ConductionPath[]
+    loop i in [1..water_paths.len()): parent[water_cell(water_paths[i].to)] = i
+    if strike_wet and water_paths.len() > 0:
+        source = water_paths[0].from
+        loop branch in [0..8):
+            angle = f64(branch) * TAU / 8.0 + 0.23
+            best = 0
+            score = -10000.0
+            loop i in [1..water_paths.len()):
+                d = water_paths[i].to - strike_pos
+                if length(d.xz) > 11.5: continue
+                reach = f64(d.x) * cos(angle) + f64(d.z) * sin(angle)
+                side = abs(f64(d.x) * sin(angle) - f64(d.z) * cos(angle))
+                value = reach - side * 0.9
+                if value > score:
+                    score = value
+                    best = i
+            if best > 0 and water_link_clear(source, water_paths[best].to):
+                tip = water_paths[best].to
+                leaders.push(ConductionPath(source, tip))
+                # A few short twigs make the radial flash branch as it runs out.
+                mid = lerp(source, tip, 0.55)
+                fork = mid + v3(cos(angle + 0.9) * 3.0, 0.0, sin(angle + 0.9) * 3.0)
+                if water_region_has(strike_water, fork) and water_link_clear(mid, fork): leaders.push(ConductionPath(mid, fork))
+                continue
+            loop hop in [0..64):
+                if best <= 0 or chosen.has(best): break
+                chosen[best] = true
+                best = parent.get(water_cell(water_paths[best].from), 0)
+    loop i in 0.. and path in strike_paths:
+        if strike_wet and i < water_paths.len() and i > 0 and not chosen.has(i): continue
+        __shock_arc(path)
+    # Retain these accepted geometric links alongside flood parents, so the
+    # regression can check every visible filament against its conduction route.
+    loop path in leaders:
+        strike_paths.push(path)
+        __shock_arc(path)
+
+__shock_contact = (from: vec3, to: vec3) -> f64:
+    # Actor/item exposure adds its accepted final connection to the visible graph
+    # once, rather than spraying more particles on every simulation query.
+    loop receiver in __shock_receivers:
+        if length(receiver - to) < 0.05: return 1.0
+    if __shock_receivers.len() < 64:
+        __shock_receivers.push(to)
+        path = ConductionPath(from, to)
+        strike_paths.push(path)
+        __shock_arc(path)
+    1.0
+
+shock_at = (p: vec3) -> f64:
+    if strike_t <= 0.0: return 0.0
+    r = if env.rain > 0.3: 7.0 else: 4.0
+    d = f64(length(p - strike_pos))
+    if d < r and shock_link_clear(strike_pos, p): return __shock_contact(strike_pos, p)
+    if __shock_water_at(p): return 1.0
+    loop relay in strike_relays:
+        distance = f64(length(p - relay.pos))
+        if distance < 2.5 and relay.distance + distance < SHOCK_REACH and shock_link_clear(relay.pos, p, relay.col): return __shock_contact(relay.pos, p)
+    0.0
+
+# in water deeper than d where it stands, and down in it (not on a bridge or a branch over it)
+__in_water = (p: vec3, d: f64) -> bool:
+    if let l = water_level(f64(p.x), f64(p.z)): return water_depth(f64(p.x), f64(p.z)) > d and f64(p.y) < l + 0.1
+    false
+
+__exposure = (p: vec3, in_water: bool, target_col: int = -1) -> Exposure:
+    Exposure(heat = heat_at(p, target_col), water = in_water, rain = (if use_terrain and env.rain > 0.0 and rain_exposed(p): env.rain else: 0.0), shock = shock_at(p), shock_id = strike_id)
+
+__explode = (p: vec3, from_player: bool):
+    elem_events.push(ElemEvent("explosion", p))
+    fx_explosion(p + vec3(0, 0.5, 0))
+    source = p + vec3(0, 0.8, 0)
+    loop k in [0..10):
+        q = p + v3(random(-4.0, 4.0), 0.0, random(-4.0, 4.0))
+        if __fire_reaches(source, q + vec3(0, 0.1, 0), 6.0): ignite_at(q)
+    # hurts everything near
+    d = f64(length(pl.pos - p))
+    if d < 5.0 and __fire_reaches(source, pl.pos + vec3(0, 0.8, 0), 6.0): hit_player(int(lerp(16.0, 4.0, d / 5.0)), p, 7.0)
+    loop mut e in enemies:
+        if e.state == .gone or e.state == .dead or e.state == .buried: continue
+        if e.kind == .talus:
+            talus_blast(e,source)
+            continue
+        de = f64(length(e.pos - p))
+        if de < 6.0 and __fire_reaches(source, e.pos + vec3(0, 0.8, 0), 7.0):
+            if enemy_damage(e, lerp(40.0, 10.0, de / 6.0), p, 5.0): continue
+            e.burning = 3.0
+            e.el.burning = 3.0
+            e.state = .knocked
+            e.t = 0.0
+            dv = e.pos - p
+            dv.y = 0
+            e.vel = normalize(dv + vec3(0.001, 0, 0)) * 7.0 + vec3(0, 6, 0)
+    loop mut a in animals:
+        de = f64(length(a.pos - p))
+        if de < 6.0 and blast_reaches(source, wildlife_hit_center(a), 7.0):
+            wildlife_damage(a, lerp(40.0, 10.0, de / 6.0), p, true, 7.0)
+    blast_loose_items(p)
+    element_puzzles_blast(source)
+    trees_blast(source)
+
+# Shared by field explosions and Ja Baij; every impulse/ignition tests exposure.
+blast_loose_items = (p: vec3, terrain_too: bool = true):
+    source = p + vec3(0, 0.8, 0)
+    # loose things are thrown by the blast (and wooden ones catch)
+    loop mut w in witems:
+        if not w.alive: continue
+        dv = w.pos - p
+        dd = f64(length(dv))
+        if dd < 7.0 and blast_reaches(source, w.pos, 8.0, -1, terrain_too):
+            k = (7.0 - dd) * 2.0
+            w.hang = false
+            w.resting = false
+            w.vel = w.vel + normalize(dv + vec3(0, 0.6, 0)) * f32(k) + vec3(0, f32(k * 0.5), 0)
+            w.spin = random(-12.0, 12.0)
+            if item(w.id).wood and dd < 4.0:
+                w.burning = 5.0
+                w.el.burning = 5.0
+    # chain reaction: other barrels close by go off shortly after
+    loop mut b in barrels:
+        if b.alive and b.explosive and f64(length(b.pos - p)) < 7.0 and b.fuse <= 0.0 and blast_reaches(source, b.pos + vec3(0, 0.5, 0), 8.0, b.col, terrain_too): b.fuse = random(0.15, 0.4)
+
+elements_update = (dt: f64, cam: vec3):
+    element_puzzles_update(dt,cam)
+    elem_events.clear()
+    # Rebuild once before any live queries; expired cells may leave conservative
+    # slack until the next callback. No discovery, RNG or reaction work changes.
+    __burn_first = 1 << 30
+    __burn_last = -1
+    loop cell, active in __burning:
+        __burn_first = min(__burn_first, cell)
+        __burn_last = max(__burn_last, cell)
+    cpu_mark("elements_grass")
+    # ---- burning grass ----
+    wind = vec3(env.wind.x, 0, env.wind.y)
+    i = 0
+    dirty = false
+    loop i < flames.len():
+        f = flames[i]
+        f.t += dt
+        p = cell_pos(f.cell)
+        rained = env.rain > 0.3 and random() < dt * 2.0
+        # spread to the neighbors (downwind first)
+        if f.t > 0.4 and random() < dt * 2.2:
+            dir = normalize(wind + v3(random(-1.6, 1.6), 0.0, random(-1.6, 1.6)))
+            q = p + dir * f32(hf.cell * 1.1)
+            # (the neighbor on its own ground: level with this cell it lay inside an uphill slope, and
+            # a fire could only ever run downhill)
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            if __fire_reaches(p + vec3(0, 0.5, 0), q + vec3(0, 0.5, 0), hf.cell * 1.5): ignite_at(q + vec3(0, 0.1, 0))
+        # in a wind, now and then a brand lifts off and sails ahead of the front
+        if f.t > 1.0 and length(wind) > 0.5 and brands.len() < 6 and random() < dt * 0.008:
+            brands.push(Brand(p + vec3(0, 1.2, 0), wind * f32(random(2.5, 3.5)) + v3(random(-0.8, 0.8), random(3.5, 5.0), random(-0.8, 0.8))))
+        # (each patch burns its own height: a ragged front, not a fence)
+        # (each cell its own: some flare tall, some only smoulder low, the flames wandering about it;
+        # and they rise and die down over its burning)
+        hc = hash2(f64(f.cell), 3.0)
+        str_ = (0.35 + 1.05 * hc * hc) * min(1.0, f.t * 0.8) * (0.4 + 0.6 * sin(clamp(f.t / f.life, 0.0, 1.0) * PI))
+        if f64(length(p - cam)) < 90.0 and random() < dt * (5.0 + 8.0 * hc):
+            offset = v3(random(-1.4, 1.4), 0.0, random(-1.4, 1.4))
+            # Three rooted clumps per cell, with bare gaps between them.
+            clump = int(hash2(f64(f.cell), floor(f.t * 5.0)) * 3.0)
+            angle = f64(clump) * TAU / 3.0 + hc * TAU
+            q = p + v3(cos(angle) * 0.9, 0.0, sin(angle) * 0.9) + offset * 0.24
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            fx_fire(q, str_, 0.12)
+        # a grass fire smokes: grey-brown billows rising off the burning front
+        if f64(length(p - cam)) < 150.0 and random() < dt * 0.45 * min(1.0, 80.0 / f64(max(flames.len(), 1))): emit(.smoke, p + v3(random(-1.0, 1.0), 0.8, random(-1.0, 1.0)), v3(random(-0.4, 0.4), random(1.5, 2.6), random(-0.4, 0.4)) + wind * 0.6, random(3.0, 5.0), random(1.2, 2.0), rgba(0.34, 0.31, 0.29, 0.28), -0.25, 0.2)
+        # in the fire: the player, monsters, items
+        if __fire_reaches(p + vec3(0, 0.5, 0), pl.pos, 1.4) and pl.state != .glide:
+            if pl.invuln <= 0.0:
+                # a quarter heart and a hop clear of the flames, the way he was going
+                mv = vec3(pl.vel.x, 0, pl.vel.z)
+                away = if length(mv) > 0.5: normalize(mv) else: forward_of(pl.face)
+                burn_player(pl.pos - away * 0.5, 7.0)
+        if rained:
+            elem_events.push(ElemEvent("douse", p))
+            if length(p - cam) < 80.0: fx_steam(p + vec3(0, 0.15, 0), 8)
+        if f.t >= f.life or rained:
+            burn_mark(f64(p.x), f64(p.z), hf.cell * 1.3, 0, 1.0)
+            __scars.push(vec4(p.x, p.z, f32(elapsed()), 0.0))
+            if not rained and f64(length(p - cam)) < 90.0:
+                loop k in [0..3): emit(.glow, p + v3(random(-0.8, 0.8), 0.07, random(-0.8, 0.8)), vec3(0, 0, 0), random(1.0, 2.5), 0.04, rgba(0.75, 0.075, 0.01, 0.65))
+            __burning.remove(f.cell)
+            flames.remove(i)
+            continue
+        flames[i] = f
+        i += 1
+    cpu_mark("elements_brands")
+    j = 0
+    loop j < brands.len():
+        b = brands[j]
+        b.vel += (vec3(wind.x, 0, wind.z) * 3.0 - vec3(b.vel.x, 0, b.vel.z)) * f32(dt * 0.8) - vec3(0, f32(4.0 * dt), 0)
+        b.pos += b.vel * f32(dt)
+        if f64(length(b.pos - cam)) < 120.0 and random() < 0.35: emit(.ember, b.pos, v3(random(-0.6, 0.6), random(-0.2, 0.5), random(-0.6, 0.6)), random(0.3, 0.6), 0.05, rgba(1.0, 0.55, 0.15, 0.9), 0.0, 0.5)
+        if f64(b.pos.y) <= height_at(f64(b.pos.x), f64(b.pos.z)) + 0.1 or env.rain > 0.3:
+            if env.rain <= 0.3: ignite_at(b.pos)
+            brands.remove(j)
+            continue
+        brands[j] = b
+        j += 1
+    # burnt ground greens again: a couple of minutes on, new grass comes up through the ash
+    cpu_mark("elements_scars")
+    __scar_t -= dt
+    if __scar_t <= 0.0 and __scars.len() > 0:
+        __scar_t = 1.0
+        now = elapsed()
+        k = 0
+        loop k < __scars.len():
+            sc_ = __scars[k]
+            age = now - f64(sc_.z)
+            # The front is orange, fresh coals are briefly red, cold char has no glow.
+            # Cooling is visual only; grass left behind the front is already safe to cross.
+            if age < 4.0: burn_mark(f64(sc_.x), f64(sc_.y), hf.cell * 1.3, 2, -0.35)
+            if age > 120.0:
+                burn_mark(f64(sc_.x), f64(sc_.y), hf.cell * 1.3, 0, -0.04)
+                burn_mark(f64(sc_.x), f64(sc_.y), hf.cell * 2.2, 2, -0.04)
+                if age > 160.0:
+                    __scars.remove(k)
+                    continue
+            k += 1
+    # the grass fire burns monsters standing in it
+    loop mut e in enemies:
+        if not enemy_alive(e) or e.burning > 0.0: continue
+        if grass_fire_near(e.pos, 1.4) and e.kind != .guardian and e.kind != .talus: e.burning = 4.0
+    pl.updraft = if pl.state == .air or pl.state == .glide: fire_updraft_at(pl.pos) else: 0.0
+    if pl.state == .glide and pl.updraft > 0.0:
+        if random() < dt * 4.0: elem_events.push(ElemEvent("updraft", pl.pos))
+    # ---- the camps' tents: dry hides catch, burn for a while, fall in ----
+    cpu_mark("elements_tents")
+    if tent_fire.len() != camp_tents.len():
+        tent_fire = fill(0.0, camp_tents.len())
+        loop i in [0..camp_tents.len()): hooks.named_hidden["camp_ash{i}"] = true
+        if let ts = env("BOTW_TENTFIRE"): tent_fire[to_int(ts) ?? 0] = 0.01
+    loop i in [0..camp_tents.len()):
+        tp = camp_tents[i] + vec3(0, 0.8, 0)
+        if tent_fire[i] == 0.0:
+            if f64(length(tp - cam)) < 200.0 and env.rain < 0.3:
+                hh = 0.0
+                loop k in [0..3): hh += heat_at(tp + v3(f64(k - 1) * 1.1, 0.0, 0.0))
+                if hh > 0.9: tent_fire[i] = 0.01
+        else if tent_fire[i] > 0.0:
+            tent_fire[i] += dt
+            t = tent_fire[i]
+            collapse = smoothstep(2.0, 7.0, t)
+            if f64(length(tp - cam)) < 150.0:
+                loop k in [0..2): fx_fire(tp + v3(random(-1.2, 1.2), random(-0.6, 1.2) * (1.0 - collapse) - collapse * 0.5, random(-1.5, 1.5)), lerp(1.3, 0.5, collapse), dt)
+                if random() < dt * 3.0: emit(.smoke, tp + v3(random(-1.0, 1.0), 1.5, random(-1.0, 1.0)), v3(random(-0.3, 0.3), random(2.0, 3.0), random(-0.3, 0.3)) + wind * 0.6, random(3.5, 5.5), random(1.2, 1.8), rgba(0.25, 0.22, 0.2, 0.32), -0.25, 0.2)
+            if random() < dt * 2.0:
+                q = tp + v3(random(-3.0, 3.0), -0.8, random(-3.0, 3.0))
+                if __fire_reaches(tp, q + vec3(0, 0.1, 0), 5.0): ignite_at(q)
+            key = "camp_tent{i}"
+            hooks.named_char[key] = max(hooks.named_char.get(key, 0.0), smoothstep(0.0, 4.5, t))
+            hooks.named_collapse[key] = vec4(camp_tents[i], f32(collapse))
+            if t > 3.0 and t - dt <= 3.0: elem_events.push(ElemEvent("collapse", tp))
+            if t > 3.0:
+                # fallen in: the remains smoulder a little longer
+                hooks.named_hidden["camp_tent{i}"] = t > 7.0
+                hooks.named_hidden["camp_ash{i}"] = false
+                if i < camp_tent_colliders.len() and camp_tent_colliders[i] >= 0: colliders[camp_tent_colliders[i]].active = false
+            if t > 9.0:
+                tent_fire[i] = -1.0
+                burn_mark(f64(tp.x), f64(tp.z), 3.2, 0, 1.0)
+            if random() < dt * 8.0 * (1.0 - smoothstep(5.0, 9.0, t)):
+                emit(.ember, tp + v3(random(-1.4, 1.4), random(0.0, 1.2) * (1.0 - collapse), random(-1.7, 1.7)), wind * 0.8 + v3(random(-0.5, 0.5), random(0.8, 1.7), random(-0.5, 0.5)), random(1.0, 2.5), 0.035, rgba(1.5, 0.45, 0.08, 0.8), 0.4, 0.2)
+            if env.rain > 0.5 and t < 3.0:
+                tent_fire[i] = 0.0
+                hooks.named_collapse[key] = vec4(camp_tents[i], 0)
+    # ---- bonfires ----
+    loop mut b in bonfires:
+        if not b.lit: continue
+        # a steady rain puts an open fire out within a few seconds, in a hiss of steam
+        if env.rain > 0.35 and env.indoor < 0.5 and rain_exposed(b.pos + vec3(0, 0.6, 0)) and random() < dt * 0.6:
+            b.lit = false
+            elem_events.push(ElemEvent("douse", b.pos))
+            # (a thin wisp of small puffs: a few big ones, alone against the trees, read as a glowing disc)
+            loop k in [0..14): emit(.steam, b.pos + v3(random(-0.20, 0.20), 0.3 + random(0.0, 0.35), random(-0.20, 0.20)), v3(random(-0.12, 0.12), random(0.7, 1.4), random(-0.12, 0.12)), random(0.7, 1.1), random(0.10, 0.18), rgba(0.70, 0.76, 0.78, 0.20), -0.2, 0.3)
+        if f64(length(b.pos - cam)) < 120.0: fx_fire(b.pos + vec3(0, 0.1, 0), (if b.pot: 0.6 else: 0.75), dt)
+    strike_t = max(0.0, strike_t - dt)
+    # ---- loose items: the rules decide (wood burns away, food cooks, torches light) ----
+    cpu_mark("elements_items")
+    __heat_items_begin()
+    next_item = 0
+    loop mut w in witems:
+        wi = next_item
+        next_item += 1
+        if not w.alive: continue
+        if f64(length(w.pos - pl.pos)) > 160.0 and not burning(w.el): continue
+        if w.id=="flint" and item(equipped_weapon()).metal:
+            loop h in player_hits:
+                if not blade_touches(h,w.pos,0.22): continue
+                sparked=false
+                loop mut wood in witems:
+                    if wood.alive and wood.id=="firewood" and length(wood.pos-w.pos)<1.2 and blast_reaches(w.pos+vec3(0,0.1,0),wood.pos+vec3(0,0.1,0),1.3):
+                        wood.el.heat=2.0
+                        sparked=true
+                        break
+                if sparked:
+                    w.alive=false
+                    fx_sparks(w.pos,5,rgb(1,0.7,0.3))
+                    break
+            if not w.alive: continue
+        wet = __in_water(w.pos, 0.05) and not w.hang
+        was_burning = burning(w.el)
+        r = react(matter_of(w.id), w.el, __exposure(w.pos, wet), dt)
+        if not was_burning and burning(w.el): __heat_items.push(wi)
+        match r:
+            ignited:
+                elem_events.push(ElemEvent("ignite", w.pos))
+                if w.id=="firewood":
+                    bonfires.push(Bonfire(w.pos))
+                    w.alive=false
+            cooked:
+                w.id = item(w.id).cooks_to
+                elem_events.push(ElemEvent("cook", w.pos))
+            burnt_up:
+                w.alive = false
+                fx_charcoal(w.pos)
+            put_out:
+                elem_events.push(ElemEvent("fizz", w.pos))
+                fx_steam(w.pos, 8)
+            shocked: fx_sparks(w.pos, 8, rgba(0.7, 0.85, 1.0, 1))
+            _: pass
+        if item(w.id).wood and w.el.burning > 0.0:
+            duration = matter_of(w.id).burn_time
+            if duration > 0.0: w.char = max(w.char, 1.0 - w.el.burning / duration)
+        w.burning = if burning(w.el): 1.0 else: 0.0
+        w.lit = w.id == "torch" and burning(w.el)
+        if burning(w.el):
+            if f64(length(w.pos - cam)) < 80.0: fx_fire(w.pos + vec3(0, (if w.lit: 0.6 else: 0.0), 0), (if w.lit: 0.4 else: 0.5), dt)
+            if random() < dt * 1.2:
+                q = w.pos + v3(random(-1.0, 1.0), 0.0, random(-1.0, 1.0))
+                if __fire_reaches(w.pos, q + vec3(0, 0.1, 0), 2.0): ignite_at(q)
+        # apples drop from trees on fire
+        if w.hang and heat_at(w.pos - vec3(0, 2.0, 0)) > 0.0: w.hang = false
+    __heat_items_scope = false
+    # ---- monsters ----
+    loop mut e in enemies:
+        if e.state == .gone or e.state == .buried or e.state == .dead: continue
+        if f64(length(e.pos - pl.pos)) > 120.0: continue
+        if e.kind == .stalkoblin and e.skull_out:
+            wet_skull = __in_water(e.skull_pos, 0.9)
+            sr = react(FLESH, e.skull_el, __exposure(e.skull_pos, wet_skull), dt)
+            if wet_skull or sr == .ignited or sr == .shocked:
+                stalk_skull_hit(e, e.skull_hp, e.skull_pos)
+                if wet_skull: fx_splash(e.skull_pos, 8)
+                else: fx_charcoal(e.skull_pos)
+                continue
+        m = match e.kind:
+            ice_chuchu: ICE_FLESH
+            guardian: METAL
+            talus: STONE
+            _: FLESH
+        wet = __in_water(e.pos, 0.6)
+        r = react(m, e.el, __exposure(e.pos + vec3(0, 0.6, 0), wet), dt)
+        match r:
+            ignited: e.burning = 4.0
+            melted:
+                enemy_damage(e, e.hp, e.pos)
+                fx_splash(e.pos + vec3(0, 0.4, 0), 24)
+                elem_events.push(ElemEvent("melt", e.pos))
+            shocked:
+                lethal = enemy_damage(e, 4.0, strike_pos)
+                if not lethal:
+                    e.stun = 2.0
+                    e.state = .stagger
+                    e.t = 0.0
+                fx_sparks(e.pos + vec3(0, 1.0, 0), 16, rgba(0.7, 0.85, 1.0, 1))
+                # a shocked Bokoblin lets go of its weapon
+                if len(e.weapon) > 0 and e.kind != .guardian:
+                    spawn_item(e.weapon, e.pos + vec3(0, 1.0, 0), vec3(f32(random(-2.0, 2.0)), 3.0, f32(random(-2.0, 2.0))))
+                    e.weapon = ""
+            put_out:
+                e.burning = 0.0
+                elem_events.push(ElemEvent("douse", e.pos + vec3(0, 0.8, 0)))
+            _: pass
+        if burning(e.el) and e.burning <= 0.0: e.el.burning = 0.0
+        if e.burning > 0.0:
+            if random() < dt * 2.0: ignite_at(e.pos)
+            if random() < dt * 20.0: fx_fire(e.pos + vec3(0, 0.9, 0), 0.6, 0.05)
+    # ---- wildlife: the same material/exposure rules and accepted damage path ----
+    loop mut a in animals:
+        if a.state == .dead or a.state == .gone: continue
+        if f64(length(a.pos - pl.pos)) > 120.0: continue
+        ex = __exposure(wildlife_hit_center(a), __in_water(a.pos, 0.3))
+        # Fur buffers cold; fish are already sheltered by their water habitat.
+        if use_terrain and a.kind != .fish and is_snow_area(f64(a.pos.x), f64(a.pos.z)):
+            ex.cold = if a.kind == .boar or a.kind == .fox: 0.2 else: 0.4
+        burn_dt = min(dt, max(0.0, a.el.burning))
+        r = react(FLESH, a.el, ex, dt)
+        if r == .shocked:
+            wildlife_damage(a, 4.0, strike_pos)
+            fx_sparks(wildlife_hit_center(a), 12, rgba(0.7, 0.85, 1.0, 1))
+        if r == .ignited:
+            wildlife_damage(a, 0.0, a.pos - forward_of(a.face))
+            elem_events.push(ElemEvent("ignite", a.pos))
+        if r == .put_out:
+            burn_dt = 0.0
+            elem_events.push(ElemEvent("douse", a.pos))
+        if burn_dt > 0.0: wildlife_damage(a, burn_dt * 2.0, a.scare, false, 0.0, false)
+        if burning(a.el): fx_fire(wildlife_hit_center(a), 0.4, dt)
+    # ---- barrels ----
+    loop mut b in barrels:
+        if not b.alive: continue
+        if f64(length(b.pos - pl.pos)) > 150.0 and b.fuse <= 0.0: continue
+        if b.fuse > 0.0:
+            b.fuse -= dt
+            if random() < dt * 30.0: fx_sparks(b.pos + vec3(0, 1.0, 0), 1, rgba(1.0, 0.7, 0.3, 1))
+            if b.fuse <= 0.0:
+                b.alive = false
+                if b.col >= 0: colliders[b.col].active = false
+                __explode(b.pos, false)
+            continue
+        ex = __exposure(b.pos + vec3(0, 0.5, 0), __in_water(b.pos, 0.3), b.col)
+        # a burning blade or a fire arrow is a lot of heat at once
+        loop h in player_hits:
+            if h.fire and blade_touches(h, b.pos + vec3(0, 0.5, 0), 0.5, b.col): ex.heat += 30.0
+        r = react((if b.explosive: POWDER else: WOOD), b.el, ex, dt)
+        match r:
+            exploded: b.fuse = 0.15
+            burnt_up:
+                b.alive = false
+                if b.col >= 0: colliders[b.col].active = false
+                fx_charcoal(b.pos + vec3(0, 0.5, 0))
+            _: pass
+        if burning(b.el) and f64(length(b.pos - cam)) < 80.0: fx_fire(b.pos + vec3(0, 0.9, 0), 0.6, dt)
+    # ---- arrows through fire become fire arrows; where they land, they burn ----
+    loop mut a in arrows:
+        if not a.alive: continue
+        if __in_water(a.pos, 0.0):
+            a.fire = false
+            continue
+        if not a.fire and heat_at(a.pos) > 0.5: a.fire = true
+        if a.fire:
+            if random() < dt * 30.0: emit(.flame, a.pos, vec3(0, 0.5, 0), 0.25, 0.12, rgba(1.0, 0.6, 0.2, 0.9), -0.5, 1.0)
+            if a.stuck > 0.0:
+                ignite_at(a.pos)
+                if a.stuck < 5.0: a.fire = false
+    # ---- trees: a grass fire (or a burning tree) sets them alight; they burn and char ----
+    cpu_mark("elements_felled_trees")
+    trees_update(dt, cam)
+    __trees_update(dt, cam)
+    cpu_mark("elements_contact")
+    # ---- fire: walking into the flames burns him and throws him back out of them ----
+    if (pl.state == .ground or pl.state == .air) and use_terrain:
+        loop b in bonfires:
+            if b.lit and __fire_reaches(b.pos + vec3(0, 0.5, 0), pl.pos, 0.9):
+                burn_player(b.pos, 3.0)
+        # (the burning grass under his feet: the front hurts as it passes, the char behind it is safe)
+        # (measured at his shins: to his soles from half a meter up the cell's centre, the line
+        # met the ground, and the cell he stood in was often out of reach; he stood in fire unhurt)
+        if grass_fire_near(pl.pos + vec3(0, 0.5, 0), 1.5): burn_player(pl.pos + forward_of(pl.face), 3.0)
+    # ---- cold: the snowy heights hurt without warmth ----
+    cold_dt = max(0.0, dt - warm_t)
+    warm_t = max(0.0, warm_t - dt)
+    snow_here = is_snow_area(f64(pl.pos.x), f64(pl.pos.z)) and use_terrain
+    night_chill = env.night > 0.5 and f64(pl.pos.y) > 290.0
+    cold = (snow_here or night_chill) and warm_t <= 0.0 and not has_key("warm_doublet") and not fire_near(pl.pos, 4.0)
+    player_cold = cold
+    player_cold_t = if cold: player_cold_t + dt else: 0.0
+    # The first exhale precedes damage. Clothes, food, sheltering fire and indoor
+    # rooms use exactly the damage rule, so the body never gives a false warning.
+    if cold and pl.state != .dead and pl.state != .cutscene:
+        __breath_t -= dt
+        if __breath_t <= 0.0:
+            __breath_t = 1.8
+            mouth = pl.pos + vec3(0, 1.55, 0) + forward_of(pl.face) * 0.18
+            loop k in [0..4):
+                fx_feedback(.breath, mouth + forward_of(pl.face) * f32(f64(k) * 0.015),
+                    forward_of(pl.face) * f32(0.20 + f64(k) * 0.025) + v3(env.wind.x * 0.025, 0.035, env.wind.y * 0.025),
+                    0.28 + f64(k) * 0.025, 0.040 + f64(k) * 0.004, rgba(0.70, 0.78, 0.82, 0.24))
+    else: __breath_t = 0.0
+    if cold:
+        cold_dmg_t += cold_dt
+        if cold_dmg_t >= 5.0:
+            cold_dmg_t -= 5.0
+            damage_player(1, pl.pos, 0.0)
+            elem_events.push(ElemEvent("cold", pl.pos))
+    else: cold_dmg_t = 0.0
+    # (how it feels, for the thermometer: cold in the snow or a mountain night, cooler by night,
+    # warm by a fire; dressed warm or a spicy meal holds the cold off)
+    feel = 0.5 - 0.08 * env.night
+    if snow_here or night_chill: feel = (if cold: 0.1 else: 0.32)
+    if fire_near(pl.pos, 4.0): feel = max(feel, 0.75)
+    temp_feel = feel
+    # ---- lightning: equipped metal draws it, even when carried on the back ----
+    if lightning_warn <= 0.0 and use_terrain and env.weather == .storm and env.rain > 0.6 and random() < dt * 0.06: lightning_begin()
+    if lightning_warn > 0.0:
+        target = lightning_metal_pos()
+        # Stowing the gear, losing the item or going indoors ends its warning.
+        # A drop/throw transfers the warning to the world item before this update.
+        if target == none or (not use_terrain and lightning_gear.world < 0):
+            lightning_warn = 0.0
+            lightning_gear = GearTrace()
+            return
+        lightning_pos = target!
+        lightning_warn -= dt
+        if rain_exposed(lightning_pos) and random() < dt * 30.0: fx_sparks(lightning_pos, 2, rgba(0.6, 0.8, 1.0, 1))
+        if lightning_warn <= 0.0:
+            env.lightning = 1.0
+            impact = lightning_pos
+            # Resolve cover at impact time: a warning started outdoors can end under a roof.
+            # Rain faces include sloped and moving roofs without walking colliders.
+            roof = rain_cover_height(f64(impact.x), f64(impact.z))
+            sheltered = roof >= f64(impact.y) + 0.1
+            if sheltered: impact.y = f32(roof + 0.05)
+            strike_at(impact)
+            elem_events.push(ElemEvent("thunder", lightning_pos))
+            chest = pl.pos + vec3(0, 1, 0)
+            to = chest - impact
+            if not sheltered and rain_exposed(chest) and f64(length(to)) < 3.0 and not raycast(impact, to, max(f64(length(to)) - 0.05, 0.001)).hit: shock_player(12, impact + vec3(0.2, 0, 0), 5.0)
+            fx_sparks(impact, 40, rgba(0.7, 0.85, 1.0, 1))
+            ignite_at(impact)
+            lightning_gear = GearTrace()
+
+# the player's torch: lit at a fire, put out by water and rain; it sets grass and monsters alight
+# what the player holds meets the elements: a torch lights at a fire and stays lit; any other
+# wooden weapon catches too, burns for a while and is consumed. Swings through grass cut it.
+
+player_carried_element = (kind: IKind, gear: mut CarriedElem, dt: f64):
+    id = if kind == .shield: equipped_shield() else: equipped_bow()
+    revision = if kind == .shield: inv.shield_revision else: inv.bow_revision
+    index = if kind == .shield: inv.shield else: inv.bow
+    if id != gear.id or revision != gear.revision or index != gear.index:
+        gear_elements_sync()
+        gear = CarriedElem(id = id, revision = revision, index = index, el = gear_element(kind, index))
+    if id == "": return
+    p = carried_gear_pos(kind, id)
+    r = react(matter_of(id), gear.el, __exposure(p, pl.state == .swim), dt)
+    match r:
+        ignited: elem_events.push(ElemEvent("ignite", p))
+        burnt_up:
+            inv_remove_gear(kind, (if kind == .shield: inv.shield else: inv.bow))
+            fx_charcoal(p)
+            elem_events.push(ElemEvent("burnt_up", p))
+        put_out:
+            fx_equipment_douse(p)
+            elem_events.push(ElemEvent("fizz", p, equipment = true))
+        shocked:
+            drop_gear(kind, (if kind == .shield: inv.shield else: inv.bow), p, vec3(0, 4, 0))
+            damage_player(2, pl.pos - forward_of(pl.face), 2.0)
+            fx_sparks(p, 16, rgba(0.7, 0.85, 1.0, 1))
+        _: pass
+    gear_elements_sync()
+    if burning(gear.el): fx_fire(p, 0.3, dt)
+    combat_revalidate_equipment()
+
+player_torch_update = (dt: f64, lit: mut bool):
+    player_carried_element(.shield, shield_el, dt)
+    player_carried_element(.bow, bow_el, dt)
+    w = equipped_weapon()
+    if w != held_id or held_revision != inv.weapon_revision or held_index != inv.weapon:
+        gear_elements_sync()
+        next_el = gear_element(.weapon, inv.weapon)
+        held_id = w
+        held_revision = inv.weapon_revision
+        held_index = inv.weapon
+        held_el = next_el
+    if len(w) == 0:
+        lit = false
+        torch_tip = vec3(0, -10000, 0)
+        return
+    d = item(w)
+    tip = pl.pos + vec3(0, 1.6, 0) + forward_of(pl.face) * 0.45
+    if w == "torch" and chars_ready and fight.act == .idle and pl.state == .ground:
+        hand = torch_idle_socket(socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_R))
+        tip = transform_point(hand, v3(0.0, weapon_length(d), 0.0))
+    torch_tip = vec3(0, -10000, 0)
+    wet = pl.state == .swim
+    r = react(matter_of(w), held_el, __exposure(tip, wet), dt)
+    match r:
+        ignited: elem_events.push(ElemEvent("ignite", tip))
+        burnt_up:
+            # burnt to ash in the hand
+            inv_remove_weapon()
+            fx_charcoal(tip)
+            elem_events.push(ElemEvent("burnt_up", tip))
+        put_out:
+            elem_events.push(ElemEvent("fizz", tip, equipment = true))
+            fx_equipment_douse(tip)
+        shocked:
+            # electricity: the weapon flies out of the hand
+            drop_gear(.weapon, inv.weapon, tip, forward_of(pl.face) * -2.0 + vec3(0, 4.0, 0))
+            before = pl.hp
+            damage_player(2, pl.pos - forward_of(pl.face), 2.0)
+            if pl.hp < before: player_shock_t = 0.32
+            fx_sparks(tip, 30, rgba(0.7, 0.85, 1.0, 1))
+        _: pass
+    combat_revalidate_equipment()
+    if equipped_weapon() != w or inv.weapon_revision != held_revision:
+        held_id = ""
+        held_el = Elem()
+        lit = false
+        return
+    gear_elements_sync()
+    lit = burning(held_el)
+    if lit:
+        fx_fire(tip + vec3(0, 0.15, 0), (if w == "torch": 0.35 else: 0.3), dt)
+        torch_tip = tip                              # (set after its own exposure: it does not warm itself)
+        loop mut h in player_hits: h.fire = true
+        loop h in player_hits:
+            if blade_clear(h, h.pos): ignite_at(h.pos)
+    # a blade through tall grass mows it
+    loop h in player_hits:
+        if not d.wood or w == "branch" or d.two_handed or d.metal:
+            loop k in [0..5):
+                p = lerp(h.grip, h.tip, f32(k) / 4.0)
+                if not blade_clear(h, p): continue
+                g = height_at(f64(p.x), f64(p.z))
+                if f64(p.y) - g < 1.6: burn_mark(f64(p.x), f64(p.z), 0.25, 1, 0.5)
+    # ice: a frozen player thaws in fire's warmth
+    if pl.frozen > 0.0 and fire_near(pl.pos + vec3(0, 1, 0), 3.0): pl.frozen = 0.0
+
+charred: {int: bool} = {}
+__tree_scan = 0
+__tree_tints: {int: vec4} = {}
+__tree_cooling: {int: f64} = {}
+__tree_candidates: int[]
+__tree_places = -1
+# trees catch from fire at their foot or from a burning neighbour; they burn ten seconds,
+# throw embers that light the grass downwind, and are left charred
+__trees_update = (dt: f64, cam: vec3):
+    # Cache combustible vegetation once; rocks and tall solid props cannot catch.
+    if __tree_places != places.len():
+        __tree_places = places.len()
+        __tree_candidates.clear()
+        loop i in 0.. and p in places:
+            if p.height < 3.5 or p.owner>=0: continue
+            leafy = false
+            loop pt in vmodels[p.model].parts:
+                if pt.kind == 1: leafy = true
+            if leafy: __tree_candidates.push(i)
+    __tree_scan += 1
+    cpu_mark("elements_tree_scan")
+    scanned = 0
+    # Visit each candidate once per six callbacks, spreading the former sixth-
+    # frame sweep across the interval. Live cover, heat and immediate damage
+    # queries are unchanged; ignition discovery moves by at most five frames.
+    if flames.len() > 0 or tree_fire.len() > 0:
+        lo = vec2(1e9, 1e9)
+        hi = vec2(-1e9, -1e9)
+        loop f in flames:
+            q = cell_pos(f.cell).xz
+            lo = min(lo, q - vec2(3.0, 3.0))
+            hi = max(hi, q + vec2(3.0, 3.0))
+        loop j, t in tree_fire:
+            if not burning(t): continue
+            q = places[j].pos.xz
+            lo = min(lo, q - vec2(3.5, 3.5))
+            hi = max(hi, q + vec2(3.5, 3.5))
+        loop barrier in element_puzzles:
+            if not burning(barrier.el): continue
+            lo = min(lo, barrier.pos.xz - vec2(3.0, 3.0))
+            hi = max(hi, barrier.pos.xz + vec2(3.0, 3.0))
+        candidate = __tree_scan % 6
+        loop candidate < __tree_candidates.len():
+            i = __tree_candidates[candidate]
+            candidate += 6
+            scanned += 1
+            p = places[i]
+            if p.pos.x < lo.x or p.pos.x > hi.x or p.pos.z < lo.y or p.pos.z > hi.y: continue
+            if p.felled or tree_is_falling(i) or charred.has(i) or tree_fire.has(i): continue
+            if f64(length(p.pos - pl.pos)) > 200.0: continue
+            hot = grass_fire_near(p.pos + vec3(0, 0.5, 0), 3.0)
+            if not hot:
+                loop j, other in tree_fire:
+                    if burning(other) and __fire_reaches(__tree_heat_pos(j, p.pos + vec3(0, 0.5, 0)), p.pos + vec3(0, 0.5, 0), 3.5): hot = true
+            if hot:
+                tree_fire[i] = Elem()
+                if not __tree_tints.has(i): __tree_tints[i] = p.tint
+    cpu_detail("fire flames={flames.len()} brands={brands.len()} trees={tree_fire.len()} scan={scanned}/{__tree_candidates.len()}")
+    cpu_mark("elements_tree_active")
+    done: int[]
+    loop i, t0 in tree_fire:
+        t = t0
+        p = places[i]
+        # Use actual accumulated heat: a short-lived neighbouring grass cell can ignite a tree.
+        ex = Exposure(heat = heat_at(p.pos + vec3(0, 0.5, 0)), rain = env.rain, water = env.rain > 0.65)
+        r = react(GRASS_TREE, t, ex, dt)
+        if r == .ignited: elem_events.push(ElemEvent("ignite", p.pos))
+        if burning(t):
+            age = GRASS_TREE.burn_time - t.burning
+            scorch = smoothstep(0.0, 7.0, age)
+            vegetation_tint(i, mix(__tree_tints.get(i, p.tint), vec4(0.16, 0.13, 0.11, 0), f32(scorch)))
+            if f64(length(p.pos - cam)) < 150.0:
+                # Licks climb the bark before the upper crown catches; small tongues retain detail.
+                top = min(p.height * 0.78, 0.8 + age * p.height * 0.27)
+                loop k in [0..3):
+                    ang = age * 2.0 + f64(k) * 2.1 + f64(i)
+                    y = top * (0.2 + f64(k) * 0.3)
+                    rr = if y < p.height * 0.38: 0.3 else: min(2.0, p.radius * 0.4)
+                    q = p.pos + v3(cos(ang) * rr, y, sin(ang) * rr)
+                    fx_fire(q, (if age < 2.0: 0.65 else: 1.0) * min(1.0, t.burning), dt)
+                if age > 1.8 and random() < dt * 7.0:
+                    q = p.pos + v3(random(-1.5, 1.5), random(0.5, 0.78) * p.height, random(-1.5, 1.5))
+                    # Singed leaves tumble down; glowing flakes rise away from them.
+                    emit(.leaf, q, v3(random(-0.8, 0.8), -0.6, random(-0.8, 0.8)), random(1.8, 3.0), 0.11, rgba(0.3, 0.12, 0.035, 1.0), 1.0, 0.7)
+                    emit(.ember, q, v3(random(-0.6, 0.6), 0.8, random(-0.6, 0.6)), random(0.8, 1.7), 0.045, rgba(1.0, 0.28, 0.035, 0.8), 0.2, 0.3)
+            if random() < dt * 0.8:
+                q = p.pos + vec3(env.wind.x, 0, env.wind.y) * f32(random(1.0, 4.0)) + v3(random(-2.0, 2.0), 0.0, random(-2.0, 2.0))
+                if __fire_reaches(p.pos + vec3(0, 0.5, 0), q + vec3(0, 0.1, 0), 8.0): ignite_at(q)
+        if r == .burnt_up or r == .put_out:
+            if r == .burnt_up:
+                charred[i] = true
+                vegetation_tint(i, vec4(0.16, 0.13, 0.11, 0.0))
+                __tree_cooling[i] = 4.0
+                burn_mark(f64(p.pos.x), f64(p.pos.z), 3.0, 0, 1.0)
+            else: fx_steam(p.pos + vec3(0, 0.5, 0), 4)
+            done.push(i)
+        else if not burning(t) and t.heat <= 0.0: done.push(i)
+        tree_fire[i] = t
+    loop i in done: tree_fire.remove(i)
+    done.clear()
+    loop i, left in __tree_cooling:
+        p = places[i].pos
+        if f64(length(p - cam)) < 100.0 and random() < dt * left * 1.5:
+            emit(.glow, p + v3(random(-0.4, 0.4), random(0.1, 0.8), random(-0.4, 0.4)), vec3(0, 0, 0), 0.3, 0.025, rgba(0.7, 0.07, 0.01, left * 0.15))
+        __tree_cooling[i] = left - dt
+        if left <= dt: done.push(i)
+    loop i in done: __tree_cooling.remove(i)
+
+# a fireplace: a ring of stones, split logs leaning together, their ends charred
+__fire_stones = Mesh()
+__fire_logs = Mesh()
+__fire_ready = false
+__fire_meshes = ():
+    if __fire_ready: return
+    __fire_ready = true
+    b = MeshB()
+    loop k in [0..10):
+        a = f64(k) / 10.0 * TAU + 0.2
+        sh = 0.8 + 0.2 * f64((k * 7) % 4) / 3.0
+        mb_sphere(b, v3(cos(a) * 0.62, 0.06, sin(a) * 0.62), v3(0.15, 0.11 + 0.03 * f64(k % 3), 0.13), rgb(0.17 * sh, 0.16 * sh, 0.15 * sh), 6)
+    mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.0, 0.02, 0.0), 0.55, 0.5, rgb(0.08, 0.07, 0.06), 12)
+    __fire_stones = mesh(b.vs, b.idx)
+    b2 = MeshB()
+    loop k in [0..6):
+        a = f64(k) / 6.0 * TAU + 0.5
+        base = v3(cos(a) * 0.42, 0.04, sin(a) * 0.42)
+        top = v3(cos(a) * 0.06, 0.62, sin(a) * 0.06)
+        mb_cyl(b2, base, base + (top - base) * 0.7, 0.06, 0.05, rgb(0.13, 0.085, 0.05), 6)
+        mb_cyl(b2, base + (top - base) * 0.7, top, 0.05, 0.03, rgb(0.08, 0.06, 0.05), 6)
+    __fire_logs = mesh(b2.vs, b2.idx)
+
+draw_bonfires = (cam: vec3):
+    __fire_meshes()
+    loop b in bonfires:
+        if f64(length(b.pos - cam)) > 120.0: continue
+        m = translation(b.pos) * rotation_y(f64(b.pos.x) * 3.1)
+        draw_prop(__fire_stones, m, rgba(1, 1, 1, 1), 0.0)
+        draw_prop(__fire_logs, m, rgba(1, 1, 1, 1), (if b.lit: 0.1 else: 0.0))
+        if b.pot:
+            active = pot_cook_t > 0.0 and length(b.pos - pot_cook_pos) < 0.5
+            t = 2.2 - pot_cook_t
+            bounce = if active: abs(sin(t * 13.0)) * 0.07 * min(1.0, pot_cook_t * 4.0) else: 0.0
+            tilt = if active: sin(t * 17.0) * 0.055 else: 0.0
+            draw_prop(shape_mesh(.lid), translation(b.pos + v3(0.0, 0.55 + bounce, 0.0)) * rotation_z(tilt) * rotation_x(PI / 2.0) * scaling(v3(1.5, 1.5, 3.0)), rgba(0.25, 0.25, 0.27, 1), 0.0)
+
+barrel_mesh: Mesh
+__powder_wick: Mesh
+__puzzle_cracks: Mesh
+__thorn_stubble: Mesh
+__barrel_ready = false
+draw_barrels = (cam: vec3):
+    element_puzzles_draw(cam)
+    if not __barrel_ready:
+        __barrel_ready = true
+        b = MeshB()
+        mb_cyl(b, v3(0.0, 0.0, 0.0), v3(0.0, 0.9, 0.0), 0.33, 0.33, rgb(1, 1, 1), 12)
+        mb_cyl(b, v3(0.0, 0.2, 0.0), v3(0.0, 0.26, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
+        mb_cyl(b, v3(0.0, 0.64, 0.0), v3(0.0, 0.7, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
+        barrel_mesh = mesh(b.vs, b.idx)
+        wick = MeshB()
+        mb_cyl(wick, v3(0, 0.89, 0), v3(0.08, 1.10, 0.03), 0.018, 0.012, rgb(0.24, 0.17, 0.09), 5)
+        mb_sphere(wick, v3(0.08, 1.10, 0.03), vec3(0.025, 0.02, 0.025), rgb(0.72, 0.46, 0.14), 4)
+        __powder_wick = mesh(wick.vs, wick.idx)
+        cracks = MeshB()
+        loop k in [0..3):
+            boulder = element_puzzle_boulder(vec3(0, 0, 0), k)
+            crack_point = (j: int) -> vec3:
+                y = min(f64(boulder.half.y) * 2.0 - 0.08, 0.16 + f64(j) * 0.25)
+                radius = f64(boulder.half.x) * sqrt(max(0.0, 1.0 - pow(y / f64(boulder.half.y) - 1.0, 2.0))) * 0.96
+                x = sin(f64(j + k) * 1.7) * min(0.13, radius * 0.3)
+                return boulder.pos + v3(x, y, sqrt(max(0.0, radius * radius - x * x)) + 0.025)
+            loop j in [0..4):
+                mb_cyl(cracks, crack_point(j), crack_point(j + 1), 0.016, 0.012, rgb(0.065, 0.055, 0.04), 4)
+        __puzzle_cracks = mesh(cracks.vs, cracks.idx)
+        stubble = MeshB()
+        loop k in [0..16):
+            x = -1.4 + f64(k) * 0.18
+            mb_cyl(stubble, v3(x, 0.01, 0), v3(x + sin(f64(k)) * 0.07, 0.06 + hash2(f64(k), 7.0) * 0.17, 0.03), 0.035, 0.012, rgb(0.085, 0.065, 0.04), 4)
+        __thorn_stubble = mesh(stubble.vs, stubble.idx)
+    loop puzzle in element_puzzles:
+        if length(puzzle.pos - cam) > 70.0: continue
+        if puzzle.thorn and puzzle.opened: draw_prop(__thorn_stubble, translation(puzzle.pos), rgb(1, 1, 1), 0.0)
+        else if not puzzle.thorn and not puzzle.opened: draw_prop(__puzzle_cracks, translation(puzzle.pos), rgb(1, 1, 1), 0.0)
+    loop b in barrels:
+        if not b.alive or f64(length(b.pos - cam)) > 100.0: continue
+        col = if b.explosive: rgba(0.8, 0.22, 0.12, 1) else: rgba(0.5, 0.36, 0.22, 1)
+        glow = if b.fuse > 0.0: 1.5 else: 0.0
+        draw_prop(barrel_mesh, translation(b.pos), col, glow)
+        if b.explosive: draw_prop(__powder_wick, translation(b.pos), rgb(1, 1, 1), glow)
+
+# An electrical hit uses the existing hurt/flinch animation and only adds a
+# bounded visual timer when health actually falls (guard/invulnerability keep it off).
+shock_player = (quarters: int, from: vec3, knock: f64):
+    before = pl.hp
+    hit_player(quarters, from, knock)
+    if pl.hp < before: player_shock_t = 0.32
+
+# Contact burns use the same immediate flinch as electrical/combat wounds.
+# Only accepted damage starts body flames; repeated contacts cannot reset them.
+burn_player = (from: vec3, knock: f64):
+    before = pl.hp
+    damage_player(1, from, knock)
+    combat_hit_reaction(before, from, false)
+    if pl.hp < before:
+        player_burn_t = 0.85
+        pl.events.push("burn")
+
+# Finite columns over live sources, blocked by a roof/overhang. Do not wrap
+# neighbour indices across a row or lift a glider below/inside the fire's ground.
+fire_updraft_at = (p: vec3) -> f64:
+    loop f in flames:
+        source = cell_pos(f.cell)
+        if __updraft_reaches(source, p, hf.cell * 2.5): return 9.0
+    loop b in bonfires:
+        if b.lit and __updraft_reaches(b.pos, p, 3.0): return 7.0
+    0.0
+
+__updraft_reaches = (source: vec3, p: vec3, radius: f64) -> bool:
+    rise = f64(p.y - source.y)
+    if rise < 0.0 or rise >= 40.0: return false
+    # Rising air tilts with the same prevailing wind as the flames and smoke.
+    # Explicit components also keep CPU vector arithmetic on the x/z plane.
+    center = vec2(source.x, source.z) + env.wind * f32(env.gust * rise * 0.045)
+    if f64(length(vec2(p.x, p.z) - center)) >= radius: return false
+    start = source + vec3(0, 0.7, 0)
+    to = p + vec3(0, 1.5, 0) - start
+    not raycast(start, normalize(to), f64(length(to)), true, false).hit

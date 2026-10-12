@@ -1,0 +1,2207 @@
+{
+  "title_command": "BOTW_TITLE=1 BOTW_AT=-1024,1799,0 BOTW_CPU=1 BOTW_FRAME_LOG=1 BOTW_LOADTIME=1 BOTW_SCALE=0.8 SLOPPY_STATS=log SLOPPY_FRAME_STATS=1 SLOPPY_SCREENSHOT=... SLOPPY_FRAMES=720",
+  "baseline": "9c98d6b archived under build/perf-baseline, measurement instrumentation only",
+  "notes": "Cold processes with shared OS/driver caches retained. Title test puts Link at the actual trigger; BOTW_TITLE alone leaves him outside it. Raw sample CPU describes the preceding draw/update.",
+  "logs": "/tmp/botw-sol-perf",
+  "runs": {
+    "title-card-before-1": {
+      "load_time": 4.47,
+      "load_snapshot": "16:45:29 up 1 day,  9:22,  1 user,  load average: 5.57, 8.00, 8.39",
+      "first_game_frame": [
+        "first frame: cpu 272.358 thread 270.581 ms; uploads 26 bytes 116680"
+      ],
+      "first_interval": [
+        1.0,
+        276.793,
+        272.358,
+        4.434,
+        270.581,
+        26.0,
+        116680.0,
+        0.0,
+        29.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.687,
+        "p95": 33.918,
+        "p99": 73.791,
+        "worst": 276.793,
+        "max_cpu_sample": [
+          1.0,
+          276.793,
+          272.358,
+          4.434,
+          270.581,
+          26.0,
+          116680.0,
+          0.0,
+          29.0
+        ],
+        "max_interval_sample": [
+          1.0,
+          276.793,
+          272.358,
+          4.434,
+          270.581,
+          26.0,
+          116680.0,
+          0.0,
+          29.0
+        ],
+        "max_thread_sample": [
+          1.0,
+          276.793,
+          272.358,
+          4.434,
+          270.581,
+          26.0,
+          116680.0,
+          0.0,
+          29.0
+        ]
+      },
+      "use_window": "345-420",
+      "first_use": {
+        "samples": 76,
+        "p50": 16.693,
+        "p95": 19.954,
+        "p99": 50.363,
+        "worst": 50.363,
+        "max_cpu_sample": [
+          362.0,
+          50.363,
+          50.065,
+          0.298,
+          49.504,
+          36.0,
+          96040.0,
+          0.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          362.0,
+          50.363,
+          50.065,
+          0.298,
+          49.504,
+          36.0,
+          96040.0,
+          0.0,
+          1.0
+        ],
+        "max_thread_sample": [
+          362.0,
+          50.363,
+          50.065,
+          0.298,
+          49.504,
+          36.0,
+          96040.0,
+          0.0,
+          1.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.68,
+        "p95": 18.682,
+        "p99": 31.077,
+        "worst": 50.363,
+        "max_cpu_sample": [
+          362.0,
+          50.363,
+          50.065,
+          0.298,
+          49.504,
+          36.0,
+          96040.0,
+          0.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          362.0,
+          50.363,
+          50.065,
+          0.298,
+          49.504,
+          36.0,
+          96040.0,
+          0.0,
+          1.0
+        ],
+        "max_thread_sample": [
+          362.0,
+          50.363,
+          50.065,
+          0.298,
+          49.504,
+          36.0,
+          96040.0,
+          0.0,
+          1.0
+        ]
+      },
+      "warmup": [],
+      "atlases": [],
+      "long_cpu_lines": [
+        "long cpu 272.3 ms: sky 90.7 sh-chars0 66.1 sh-chars2 65.9 far-trees 26.6 hero_animate 12.6 veg_cull_sh0 1.9",
+        "long cpu 12.2 ms: veg_draw_view 2.2 shadow2 1.9 wildlife_draw 1.0 sh-chars0 0.8 shadow0 0.8 veg_cull_view 0.6",
+        "long cpu 12.0 ms: veg_draw_view 2.0 veg_cull_view 2.0 wildlife_draw 0.8 veg_cull_sh1 0.8 sh-chars1 0.6 shadow0 0.5",
+        "long cpu 12.1 ms: veg_cull_view 2.2 shadow2 2.0 shadow0 0.9 sh-chars0 0.9 veg_draw_view 0.9 sh-chars2 0.6",
+        "long cpu 13.3 ms: veg_cull_view 2.8 shadow2 1.8 veg_draw_view 1.4 wildlife_draw 0.9 sh-chars2 0.8 shadow0 0.6",
+        "long cpu 12.1 ms: veg_cull_view 2.9 veg_draw_view 1.1 shadow2 1.0 wildlife_draw 0.7 sh-chars2 0.6 shadow0 0.5",
+        "long cpu 14.4 ms: veg_cull_view 3.3 veg_draw_view 1.4 buildings 0.9 veg_cull_sh1 0.8 wildlife_draw 0.7 sh-chars0 0.6",
+        "long cpu 12.7 ms: veg_cull_view 2.9 veg_draw_view 1.8 shadow2 1.2 wildlife_draw 0.7 veg_cull_sh0 0.5 shadow0 0.5",
+        "long cpu 12.6 ms: veg_cull_view 3.5 veg_draw_view 1.7 veg_cull_sh1 0.8 wildlife_draw 0.6 sh-chars0 0.5 shadow0 0.5",
+        "long cpu 12.3 ms: veg_cull_view 3.2 veg_draw_view 1.2 veg_cull_sh1 0.8 wildlife_draw 0.6 shadow0 0.5 sh-chars1 0.5",
+        "long cpu 16.3 ms: terrain_select 4.3 veg_cull_view 3.2 veg_draw_view 1.2 shadow2 1.0 wildlife_draw 0.6 shadow0 0.6",
+        "long cpu 13.4 ms: veg_cull_view 3.1 veg_draw_view 1.5 veg_cull_sh1 0.9 wildlife_draw 0.8 sh-chars1 0.7 world_items 0.6",
+        "long cpu 13.1 ms: veg_cull_view 3.0 veg_draw_view 1.5 veg_cull_sh1 1.0 wildlife_draw 0.8 shadow0 0.7 shadow1 0.5",
+        "long cpu 50.0 ms: story_hud 45.2 veg_cull_view 1.3 veg_draw_view 0.4 veg_cull_sh1 0.3 wildlife_draw 0.2 shadow0 0.2",
+        "long cpu 12.7 ms: veg_cull_view 3.1 veg_draw_view 1.5 veg_cull_sh1 0.8 wildlife_draw 0.6 shadow0 0.6 sh-chars1 0.5",
+        "long cpu 12.6 ms: veg_cull_view 3.1 veg_draw_view 1.2 veg_cull_sh1 1.0 shadow0 0.8 wildlife_draw 0.6 shadow1 0.5",
+        "long cpu 12.5 ms: veg_cull_view 3.2 veg_draw_view 1.5 shadow2 1.1 wildlife_draw 0.7 shadow0 0.5 sh-chars2 0.5",
+        "long cpu 12.8 ms: veg_cull_view 3.4 veg_draw_view 1.2 veg_cull_sh1 0.7 wildlife_draw 0.7 veg_cull_sh0 0.5 shadow1 0.5",
+        "long cpu 12.7 ms: veg_cull_view 3.3 veg_draw_view 1.1 shadow2 1.0 wildlife_draw 0.6 shadow0 0.6 buildings 0.5",
+        "long cpu 13.3 ms: veg_cull_view 3.5 veg_draw_view 1.2 shadow2 1.1 hero_draw 0.7 wildlife_draw 0.7 shadow0 0.5"
+      ],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 0 272.358/270.581 ms; switches voluntary 0 involuntary 29; uploads 26 bytes 116680",
+        "cpu wall/thread: frame 54 12.361/12.116 ms; switches voluntary 0 involuntary 1; uploads 32 bytes 28464",
+        "cpu wall/thread: frame 127 12.186/11.954 ms; switches voluntary 0 involuntary 0; uploads 44 bytes 61544",
+        "cpu wall/thread: frame 150 12.147/11.237 ms; switches voluntary 0 involuntary 1; uploads 28 bytes 73184",
+        "cpu wall/thread: frame 156 13.381/12.739 ms; switches voluntary 0 involuntary 0; uploads 27 bytes 75632",
+        "cpu wall/thread: frame 224 12.221/11.951 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 78592",
+        "cpu wall/thread: frame 234 12.024/11.685 ms; switches voluntary 0 involuntary 2; uploads 25 bytes 85752",
+        "cpu wall/thread: frame 253 14.557/14.065 ms; switches voluntary 0 involuntary 3; uploads 35 bytes 94488",
+        "cpu wall/thread: frame 260 12.868/12.370 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 93496",
+        "cpu wall/thread: frame 261 12.666/12.105 ms; switches voluntary 0 involuntary 1; uploads 36 bytes 95096",
+        "cpu wall/thread: frame 281 12.406/12.198 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 95880",
+        "cpu wall/thread: frame 282 16.437/12.143 ms; switches voluntary 1 involuntary 0; uploads 25 bytes 94408",
+        "cpu wall/thread: frame 331 13.494/12.893 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 95832",
+        "cpu wall/thread: frame 347 13.220/12.685 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 95200",
+        "cpu wall/thread: frame 361 50.065/49.504 ms; switches voluntary 0 involuntary 1; uploads 36 bytes 96040",
+        "cpu wall/thread: frame 369 12.860/12.608 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 96368",
+        "cpu wall/thread: frame 403 12.748/12.530 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 104240",
+        "cpu wall/thread: frame 404 12.649/12.395 ms; switches voluntary 0 involuntary 0; uploads 25 bytes 102640",
+        "cpu wall/thread: frame 661 12.908/12.678 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 131976",
+        "cpu wall/thread: frame 662 12.859/12.649 ms; switches voluntary 0 involuntary 0; uploads 26 bytes 130456",
+        "cpu wall/thread: frame 680 13.377/13.147 ms; switches voluntary 0 involuntary 0; uploads 27 bytes 130744"
+      ],
+      "card_first_use_sample": [
+        362.0,
+        50.363,
+        50.065,
+        0.298,
+        49.504,
+        36.0,
+        96040.0,
+        0.0,
+        1.0
+      ]
+    },
+    "title-card-before-2": {
+      "load_time": 3.15,
+      "load_snapshot": "16:46:06 up 1 day,  9:22,  1 user,  load average: 3.60, 7.24, 8.12",
+      "first_game_frame": [
+        "first frame: cpu 39.930 thread 39.703 ms; uploads 26 bytes 116680"
+      ],
+      "first_interval": [
+        1.0,
+        44.206,
+        39.93,
+        4.276,
+        39.703,
+        26.0,
+        116680.0,
+        0.0,
+        1.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.712,
+        "p95": 33.945,
+        "p99": 44.206,
+        "worst": 99.787,
+        "max_cpu_sample": [
+          1.0,
+          44.206,
+          39.93,
+          4.276,
+          39.703,
+          26.0,
+          116680.0,
+          0.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          99.787,
+          3.584,
+          96.203,
+          3.561,
+          38.0,
+          118360.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          1.0,
+          44.206,
+          39.93,
+          4.276,
+          39.703,
+          26.0,
+          116680.0,
+          0.0,
+          1.0
+        ]
+      },
+      "use_window": "345-420",
+      "first_use": {
+        "samples": 76,
+        "p50": 16.654,
+        "p95": 19.028,
+        "p99": 40.601,
+        "worst": 40.601,
+        "max_cpu_sample": [
+          362.0,
+          40.601,
+          39.616,
+          0.985,
+          39.446,
+          36.0,
+          96040.0,
+          0.0,
+          0.0
+        ],
+        "max_interval_sample": [
+          362.0,
+          40.601,
+          39.616,
+          0.985,
+          39.446,
+          36.0,
+          96040.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          362.0,
+          40.601,
+          39.616,
+          0.985,
+          39.446,
+          36.0,
+          96040.0,
+          0.0,
+          0.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.684,
+        "p95": 19.411,
+        "p99": 24.681,
+        "worst": 40.601,
+        "max_cpu_sample": [
+          362.0,
+          40.601,
+          39.616,
+          0.985,
+          39.446,
+          36.0,
+          96040.0,
+          0.0,
+          0.0
+        ],
+        "max_interval_sample": [
+          362.0,
+          40.601,
+          39.616,
+          0.985,
+          39.446,
+          36.0,
+          96040.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          362.0,
+          40.601,
+          39.616,
+          0.985,
+          39.446,
+          36.0,
+          96040.0,
+          0.0,
+          0.0
+        ]
+      },
+      "warmup": [],
+      "atlases": [],
+      "long_cpu_lines": [
+        "long cpu 39.9 ms: hero_animate 13.1 shadow0 6.9 sky 3.5 sh-chars2 3.3 sh-chars0 2.8 veg_cull_sh0 1.8",
+        "long cpu 12.6 ms: veg_draw_view 2.2 shadow2 1.2 veg_cull_view 1.1 shadow0 1.0 monsters_draw 0.6 wildlife_draw 0.6",
+        "long cpu 12.6 ms: veg_draw_view 2.6 veg_cull_view 1.4 shadow2 1.2 wildlife_draw 1.1 world_items 0.6 buildings 0.5",
+        "long cpu 12.1 ms: veg_draw_view 2.0 veg_cull_view 1.5 veg_cull_sh1 0.9 wildlife_draw 0.8 buildings 0.7 shadow1 0.7",
+        "long cpu 12.1 ms: veg_draw_view 2.8 veg_cull_view 1.5 shadow2 1.1 wildlife_draw 0.9 buildings 0.5 sh-chars0 0.5",
+        "long cpu 12.8 ms: veg_cull_view 2.4 veg_draw_view 1.8 veg_cull_sh1 0.9 sh-chars1 0.8 wildlife_draw 0.7 buildings 0.6",
+        "long cpu 13.2 ms: veg_cull_view 2.6 shadow2 2.3 veg_draw_view 1.3 sh-chars2 0.9 wildlife_draw 0.7 shadow0 0.5",
+        "long cpu 14.0 ms: veg_cull_view 2.9 veg_draw_view 1.5 veg_cull_sh1 1.1 wildlife_draw 0.9 shadow0 0.7 world_items 0.6",
+        "long cpu 12.7 ms: veg_cull_view 3.0 veg_draw_view 1.3 veg_cull_sh1 1.0 wildlife_draw 0.6 world_items 0.6 shadow0 0.5",
+        "long cpu 39.6 ms: story_hud 35.4 veg_cull_view 1.1 veg_draw_view 0.5 veg_cull_sh1 0.3 shadow0 0.2 sh-chars1 0.2",
+        "long cpu 12.9 ms: veg_cull_view 3.2 shadow2 1.3 veg_draw_view 1.2 wildlife_draw 0.7 shadow0 0.7 buildings 0.6",
+        "long cpu 12.7 ms: veg_cull_view 3.5 veg_draw_view 1.2 veg_cull_sh1 0.9 wildlife_draw 0.6 buildings 0.5 shadow0 0.5",
+        "long cpu 15.1 ms: veg_cull_view 3.2 shadow2 2.2 veg_draw_view 1.4 sh-chars2 1.0 sh-chars0 0.8 wildlife_draw 0.6",
+        "long cpu 14.2 ms: veg_cull_view 3.2 wildlife_draw 1.2 veg_draw_view 1.2 buildings 0.9 veg_cull_sh1 0.9 shadow0 0.8",
+        "long cpu 13.0 ms: veg_cull_view 3.3 shadow2 1.4 veg_draw_view 1.4 wildlife_draw 0.6 post 0.6 shadow0 0.6",
+        "long cpu 20.1 ms: veg_cull_view 4.1 veg_draw_view 2.2 veg_cull_sh1 1.8 wildlife_draw 1.2 shadow0 0.9 world_items 0.8",
+        "long cpu 18.0 ms: veg_cull_view 4.2 veg_draw_view 2.2 shadow2 2.0 sh-chars2 0.9 elements_update 0.9 shadow0 0.8",
+        "long cpu 17.9 ms: veg_cull_view 4.1 veg_draw_view 2.0 shadow2 1.7 shadow0 1.0 hero_draw 1.0 buildings 0.9",
+        "long cpu 21.2 ms: veg_cull_view 4.2 water 3.1 veg_draw_view 2.2 shadow2 1.9 wildlife_draw 1.1 sh-chars2 0.8",
+        "long cpu 12.5 ms: veg_cull_view 2.4 veg_draw_view 1.2 veg_cull_sh1 1.0 shadow0 0.7 elements_update 0.6 wildlife_draw 0.6",
+        "long cpu 12.6 ms: veg_cull_view 3.4 veg_draw_view 1.3 shadow2 1.0 wildlife_draw 0.6 shadow0 0.6 sh-chars0 0.5",
+        "long cpu 18.1 ms: veg_cull_view 4.2 veg_draw_view 2.0 shadow2 1.8 world_items 1.3 shadow0 0.9 sh-chars2 0.8",
+        "long cpu 13.3 ms: veg_cull_view 3.3 veg_draw_view 1.4 veg_cull_sh1 1.0 shadow0 0.7 wildlife_draw 0.6 buildings 0.6",
+        "long cpu 14.5 ms: veg_cull_view 4.3 veg_draw_view 1.9 shadow2 1.1 shadow0 1.0 veg_cull_sh0 0.6 wildlife_draw 0.6",
+        "long cpu 15.3 ms: veg_cull_view 4.0 veg_draw_view 2.0 shadow0 1.3 shadow2 1.1 sh-chars0 0.6 veg_cull_sh0 0.6"
+      ],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 0 39.930/39.703 ms; switches voluntary 0 involuntary 1; uploads 26 bytes 116680",
+        "cpu wall/thread: frame 80 12.743/12.100 ms; switches voluntary 0 involuntary 1; uploads 31 bytes 35112",
+        "cpu wall/thread: frame 86 12.680/11.972 ms; switches voluntary 0 involuntary 0; uploads 31 bytes 36656",
+        "cpu wall/thread: frame 101 12.200/11.706 ms; switches voluntary 0 involuntary 0; uploads 45 bytes 46736",
+        "cpu wall/thread: frame 102 12.147/11.581 ms; switches voluntary 0 involuntary 0; uploads 34 bytes 44680",
+        "cpu wall/thread: frame 141 12.953/12.711 ms; switches voluntary 0 involuntary 0; uploads 42 bytes 72576",
+        "cpu wall/thread: frame 176 13.361/13.118 ms; switches voluntary 0 involuntary 0; uploads 26 bytes 83720",
+        "cpu wall/thread: frame 271 14.126/13.913 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 95536",
+        "cpu wall/thread: frame 291 12.872/12.641 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 96952",
+        "cpu wall/thread: frame 361 39.616/39.446 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 96040",
+        "cpu wall/thread: frame 422 13.074/12.476 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 110160",
+        "cpu wall/thread: frame 423 12.856/12.260 ms; switches voluntary 0 involuntary 1; uploads 36 bytes 111952",
+        "cpu wall/thread: frame 424 15.303/14.391 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 110832",
+        "cpu wall/thread: frame 425 14.314/13.455 ms; switches voluntary 0 involuntary 1; uploads 36 bytes 112640",
+        "cpu wall/thread: frame 426 13.164/12.498 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 111696",
+        "cpu wall/thread: frame 427 20.267/19.368 ms; switches voluntary 0 involuntary 1; uploads 36 bytes 113664",
+        "cpu wall/thread: frame 428 18.087/17.251 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 112336",
+        "cpu wall/thread: frame 436 17.991/17.295 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 113536",
+        "cpu wall/thread: frame 482 21.341/18.425 ms; switches voluntary 1 involuntary 0; uploads 25 bytes 117784",
+        "cpu wall/thread: frame 483 12.598/12.390 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 119768",
+        "cpu wall/thread: frame 540 12.790/12.493 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 122864",
+        "cpu wall/thread: frame 562 18.246/17.291 ms; switches voluntary 1 involuntary 1; uploads 25 bytes 124384",
+        "cpu wall/thread: frame 645 13.418/13.177 ms; switches voluntary 0 involuntary 0; uploads 36 bytes 131328",
+        "cpu wall/thread: frame 674 14.602/13.878 ms; switches voluntary 0 involuntary 1; uploads 27 bytes 130760",
+        "cpu wall/thread: frame 684 15.450/14.683 ms; switches voluntary 0 involuntary 1; uploads 27 bytes 131112"
+      ],
+      "card_first_use_sample": [
+        362.0,
+        40.601,
+        39.616,
+        0.985,
+        39.446,
+        36.0,
+        96040.0,
+        0.0,
+        0.0
+      ]
+    },
+    "title-card-before-3": {
+      "load_time": 3.13,
+      "load_snapshot": "16:46:43 up 1 day,  9:23,  1 user,  load average: 2.26, 6.44, 7.81",
+      "first_game_frame": [
+        "first frame: cpu 36.572 thread 36.395 ms; uploads 26 bytes 116680"
+      ],
+      "first_interval": [
+        1.0,
+        40.616,
+        36.572,
+        4.043,
+        36.395,
+        26.0,
+        116680.0,
+        0.0,
+        0.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.744,
+        "p95": 34.695,
+        "p99": 40.616,
+        "worst": 85.915,
+        "max_cpu_sample": [
+          1.0,
+          40.616,
+          36.572,
+          4.043,
+          36.395,
+          26.0,
+          116680.0,
+          0.0,
+          0.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          85.915,
+          3.59,
+          82.325,
+          3.576,
+          38.0,
+          118360.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          1.0,
+          40.616,
+          36.572,
+          4.043,
+          36.395,
+          26.0,
+          116680.0,
+          0.0,
+          0.0
+        ]
+      },
+      "use_window": "345-420",
+      "first_use": {
+        "samples": 76,
+        "p50": 16.671,
+        "p95": 18.472,
+        "p99": 46.421,
+        "worst": 46.421,
+        "max_cpu_sample": [
+          362.0,
+          46.421,
+          45.54,
+          0.881,
+          44.888,
+          36.0,
+          96040.0,
+          0.0,
+          10.0
+        ],
+        "max_interval_sample": [
+          362.0,
+          46.421,
+          45.54,
+          0.881,
+          44.888,
+          36.0,
+          96040.0,
+          0.0,
+          10.0
+        ],
+        "max_thread_sample": [
+          362.0,
+          46.421,
+          45.54,
+          0.881,
+          44.888,
+          36.0,
+          96040.0,
+          0.0,
+          10.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.685,
+        "p95": 18.542,
+        "p99": 33.43,
+        "worst": 46.421,
+        "max_cpu_sample": [
+          362.0,
+          46.421,
+          45.54,
+          0.881,
+          44.888,
+          36.0,
+          96040.0,
+          0.0,
+          10.0
+        ],
+        "max_interval_sample": [
+          362.0,
+          46.421,
+          45.54,
+          0.881,
+          44.888,
+          36.0,
+          96040.0,
+          0.0,
+          10.0
+        ],
+        "max_thread_sample": [
+          362.0,
+          46.421,
+          45.54,
+          0.881,
+          44.888,
+          36.0,
+          96040.0,
+          0.0,
+          10.0
+        ]
+      },
+      "warmup": [],
+      "atlases": [],
+      "long_cpu_lines": [
+        "long cpu 36.5 ms: hero_animate 12.3 shadow0 5.2 sh-chars2 3.5 sky 3.3 sh-chars0 2.8 veg_cull_sh0 1.8",
+        "long cpu 12.2 ms: veg_draw_view 2.0 veg_cull_view 1.0 veg_cull_sh1 0.9 shadow1 0.7 world_items 0.6 wildlife_draw 0.6",
+        "long cpu 12.2 ms: veg_draw_view 1.9 veg_cull_view 1.4 shadow2 1.2 sh-chars0 0.8 wildlife_draw 0.6 shadow0 0.6",
+        "long cpu 12.2 ms: veg_draw_view 2.1 veg_cull_view 1.3 veg_cull_sh1 0.8 shadow0 0.7 wildlife_draw 0.7 buildings 0.6",
+        "long cpu 12.4 ms: veg_draw_view 2.1 veg_cull_view 1.6 veg_cull_sh1 1.1 wildlife_draw 0.8 sh-chars0 0.6 sh-chars1 0.5",
+        "long cpu 12.5 ms: veg_draw_view 2.2 veg_cull_view 1.9 veg_cull_sh1 0.9 sh-chars1 0.8 wildlife_draw 0.7 buildings 0.6",
+        "long cpu 12.6 ms: veg_draw_view 2.2 veg_cull_view 2.1 veg_cull_sh1 0.9 wildlife_draw 0.6 shadow1 0.6 shadow0 0.6",
+        "long cpu 12.9 ms: veg_cull_view 2.5 veg_draw_view 1.5 sh-chars0 1.1 veg_cull_sh1 0.9 shadow1 0.7 wildlife_draw 0.6",
+        "long cpu 14.3 ms: veg_cull_view 3.4 veg_draw_view 1.9 veg_cull_sh1 0.8 hero_draw 0.7 wildlife_draw 0.7 shadow0 0.6",
+        "long cpu 45.5 ms: story_hud 42.6 veg_cull_view 0.7 veg_draw_view 0.3 veg_cull_sh1 0.2 wildlife_draw 0.2 shadow0 0.1",
+        "long cpu 12.0 ms: veg_cull_view 3.2 veg_draw_view 1.2 shadow2 1.1 wildlife_draw 0.6 shadow0 0.5 buildings 0.5",
+        "long cpu 13.7 ms: veg_cull_view 3.3 veg_draw_view 1.2 veg_cull_sh1 1.1 sh-chars0 0.9 shadow0 0.7 wildlife_draw 0.6",
+        "long cpu 14.0 ms: veg_cull_view 2.9 veg_draw_view 1.8 shadow2 1.8 shadow0 1.0 sh-chars0 1.0 sh-chars2 0.7"
+      ],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 0 36.572/36.395 ms; switches voluntary 0 involuntary 0; uploads 26 bytes 116680",
+        "cpu wall/thread: frame 71 12.290/12.058 ms; switches voluntary 0 involuntary 0; uploads 43 bytes 35272",
+        "cpu wall/thread: frame 90 12.369/12.026 ms; switches voluntary 0 involuntary 1; uploads 31 bytes 38144",
+        "cpu wall/thread: frame 97 12.300/11.925 ms; switches voluntary 0 involuntary 0; uploads 44 bytes 44928",
+        "cpu wall/thread: frame 105 12.456/12.181 ms; switches voluntary 0 involuntary 1; uploads 45 bytes 49840",
+        "cpu wall/thread: frame 111 12.589/12.266 ms; switches voluntary 0 involuntary 1; uploads 45 bytes 53192",
+        "cpu wall/thread: frame 151 12.684/12.444 ms; switches voluntary 0 involuntary 0; uploads 39 bytes 76272",
+        "cpu wall/thread: frame 157 13.024/12.780 ms; switches voluntary 0 involuntary 0; uploads 38 bytes 79104",
+        "cpu wall/thread: frame 321 14.466/13.856 ms; switches voluntary 0 involuntary 4; uploads 36 bytes 95832",
+        "cpu wall/thread: frame 361 45.540/44.888 ms; switches voluntary 0 involuntary 10; uploads 36 bytes 96040",
+        "cpu wall/thread: frame 426 12.164/11.985 ms; switches voluntary 0 involuntary 0; uploads 25 bytes 111696",
+        "cpu wall/thread: frame 427 13.824/13.443 ms; switches voluntary 0 involuntary 1; uploads 36 bytes 113664",
+        "cpu wall/thread: frame 428 14.126/13.830 ms; switches voluntary 0 involuntary 1; uploads 25 bytes 112336"
+      ],
+      "card_first_use_sample": [
+        362.0,
+        46.421,
+        45.54,
+        0.881,
+        44.888,
+        36.0,
+        96040.0,
+        0.0,
+        10.0
+      ]
+    },
+    "title-card-after-1": {
+      "load_time": 3.23,
+      "load_snapshot": "16:45:48 up 1 day,  9:22,  1 user,  load average: 4.43, 7.57, 8.24",
+      "first_game_frame": [
+        "first frame: cpu 4.051 thread 3.993 ms; uploads 37 bytes 118632"
+      ],
+      "first_interval": [
+        1.0,
+        8.249,
+        4.051,
+        4.198,
+        3.993,
+        37.0,
+        118632.0,
+        0.0,
+        0.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.66,
+        "p95": 35.382,
+        "p99": 39.877,
+        "worst": 92.637,
+        "max_cpu_sample": [
+          114.0,
+          14.242,
+          13.352,
+          0.89,
+          13.114,
+          15.0,
+          42024.0,
+          0.0,
+          0.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          92.637,
+          3.878,
+          88.759,
+          3.817,
+          10.0,
+          75592.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          114.0,
+          14.242,
+          13.352,
+          0.89,
+          13.114,
+          15.0,
+          42024.0,
+          0.0,
+          0.0
+        ]
+      },
+      "use_window": "345-420",
+      "first_use": {
+        "samples": 76,
+        "p50": 16.658,
+        "p95": 17.24,
+        "p99": 17.929,
+        "worst": 17.929,
+        "max_cpu_sample": [
+          414.0,
+          16.513,
+          6.762,
+          9.751,
+          6.655,
+          11.0,
+          56120.0,
+          0.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          382.0,
+          17.929,
+          3.265,
+          14.664,
+          3.221,
+          15.0,
+          83080.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          414.0,
+          16.513,
+          6.762,
+          9.751,
+          6.655,
+          11.0,
+          56120.0,
+          0.0,
+          1.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.68,
+        "p95": 18.716,
+        "p99": 21.0,
+        "worst": 37.677,
+        "max_cpu_sample": [
+          294.0,
+          28.485,
+          25.943,
+          2.542,
+          20.534,
+          7.0,
+          23064.0,
+          0.0,
+          163.0
+        ],
+        "max_interval_sample": [
+          267.0,
+          37.677,
+          7.228,
+          30.449,
+          7.148,
+          10.0,
+          56944.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          294.0,
+          28.485,
+          25.943,
+          2.542,
+          20.534,
+          7.0,
+          23064.0,
+          0.0,
+          163.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.238s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.033s upload 0.000s",
+        "  names_atlas decode 0.129s upload 0.001s"
+      ],
+      "long_cpu_lines": [
+        "long cpu 12.3 ms: shadow2 2.0 veg_draw_view 1.9 sh-chars0 1.0 veg_cull_view 0.8 wildlife_draw 0.7 buildings 0.6",
+        "long cpu 12.3 ms: veg_draw_view 2.8 veg_cull_view 1.2 shadow2 1.2 buildings 0.8 wildlife_draw 0.6 shadow0 0.6",
+        "long cpu 12.0 ms: veg_draw_view 1.8 veg_cull_view 1.4 wildlife_draw 0.8 buildings 0.7 hero_draw 0.7 veg_cull_sh1 0.7",
+        "long cpu 12.1 ms: shadow2 1.8 veg_draw_view 1.8 veg_cull_view 1.3 sh-chars0 0.7 wildlife_draw 0.6 shadow0 0.6",
+        "long cpu 12.4 ms: veg_draw_view 1.7 wildlife_draw 1.3 veg_cull_view 1.3 veg_cull_sh1 1.0 monsters_draw 0.8 buildings 0.5",
+        "long cpu 12.0 ms: veg_draw_view 1.9 veg_cull_view 1.8 veg_cull_sh1 0.8 wildlife_draw 0.7 buildings 0.6 shadow0 0.5",
+        "long cpu 13.3 ms: veg_draw_view 2.1 veg_cull_view 1.9 shadow2 1.7 buildings 0.9 sh-chars2 0.8 wildlife_draw 0.7",
+        "long cpu 12.1 ms: veg_draw_view 1.9 veg_cull_view 1.9 shadow2 1.3 wildlife_draw 0.8 shadow0 0.5 buildings 0.5",
+        "long cpu 12.5 ms: veg_cull_view 1.9 veg_draw_view 1.8 veg_cull_sh1 1.0 sh-chars0 0.7 shadow0 0.7 wildlife_draw 0.7",
+        "long cpu 12.9 ms: veg_cull_view 2.2 veg_draw_view 1.8 veg_cull_sh1 0.9 buildings 0.8 sh-chars1 0.8 wildlife_draw 0.7",
+        "long cpu 12.7 ms: veg_cull_view 2.2 shadow2 1.7 veg_draw_view 1.4 wildlife_draw 0.7 sh-chars0 0.6 sh-chars2 0.6",
+        "long cpu 12.1 ms: veg_cull_view 2.3 veg_draw_view 1.5 shadow1 0.8 veg_cull_sh1 0.7 wildlife_draw 0.7 shadow0 0.5",
+        "long cpu 12.0 ms: veg_cull_view 2.8 veg_draw_view 1.1 veg_cull_sh1 0.8 wildlife_draw 0.7 shadow0 0.6 sh-chars1 0.5",
+        "long cpu 12.2 ms: veg_cull_view 3.1 veg_draw_view 1.2 veg_cull_sh1 0.7 wildlife_draw 0.6 shadow0 0.5 sh-chars0 0.5",
+        "long cpu 12.7 ms: veg_cull_view 3.0 veg_draw_view 1.4 shadow2 1.2 wildlife_draw 0.7 shadow0 0.5 sh-chars2 0.5",
+        "long cpu 12.2 ms: veg_cull_view 1.9 shadow2 1.6 veg_draw_view 1.5 wildlife_draw 0.8 sh-chars0 0.6 sh-chars2 0.6",
+        "long cpu 25.7 ms: veg_cull_view 4.7 veg_draw_view 3.9 shadow2 3.5 wildlife_draw 2.3 hero_draw 2.2 buildings 1.6",
+        "long cpu 12.8 ms: veg_cull_view 3.2 shadow2 1.6 veg_draw_view 1.1 wildlife_draw 0.6 sh-chars0 0.5 shadow0 0.5",
+        "long cpu 12.2 ms: veg_cull_view 3.2 veg_draw_view 1.1 veg_cull_sh1 0.9 wildlife_draw 0.6 sh-chars1 0.5 buildings 0.5"
+      ],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 55 12.386/12.115 ms; switches voluntary 0 involuntary 0; uploads 7 bytes 11984",
+        "cpu wall/thread: frame 64 12.023/11.499 ms; switches voluntary 0 involuntary 0; uploads 13 bytes 19368",
+        "cpu wall/thread: frame 65 12.465/11.812 ms; switches voluntary 0 involuntary 0; uploads 9 bytes 17688",
+        "cpu wall/thread: frame 74 12.172/11.920 ms; switches voluntary 0 involuntary 0; uploads 13 bytes 24432",
+        "cpu wall/thread: frame 83 12.276/12.038 ms; switches voluntary 0 involuntary 0; uploads 10 bytes 20800",
+        "cpu wall/thread: frame 92 12.487/12.298 ms; switches voluntary 0 involuntary 0; uploads 13 bytes 25408",
+        "cpu wall/thread: frame 112 12.165/11.955 ms; switches voluntary 0 involuntary 0; uploads 12 bytes 31208",
+        "cpu wall/thread: frame 113 13.352/13.114 ms; switches voluntary 0 involuntary 0; uploads 15 bytes 42024",
+        "cpu wall/thread: frame 119 12.259/12.009 ms; switches voluntary 0 involuntary 0; uploads 10 bytes 29864",
+        "cpu wall/thread: frame 120 12.643/12.434 ms; switches voluntary 0 involuntary 0; uploads 13 bytes 43040",
+        "cpu wall/thread: frame 148 13.031/12.791 ms; switches voluntary 0 involuntary 0; uploads 11 bytes 44608",
+        "cpu wall/thread: frame 149 12.846/12.570 ms; switches voluntary 0 involuntary 1; uploads 7 bytes 29296",
+        "cpu wall/thread: frame 160 12.212/11.976 ms; switches voluntary 0 involuntary 0; uploads 8 bytes 32792",
+        "cpu wall/thread: frame 218 12.156/11.953 ms; switches voluntary 0 involuntary 0; uploads 14 bytes 67872",
+        "cpu wall/thread: frame 238 12.308/12.096 ms; switches voluntary 0 involuntary 0; uploads 13 bytes 76816",
+        "cpu wall/thread: frame 269 12.831/12.602 ms; switches voluntary 0 involuntary 0; uploads 9 bytes 57840",
+        "cpu wall/thread: frame 287 12.269/12.171 ms; switches voluntary 0 involuntary 0; uploads 10 bytes 69352",
+        "cpu wall/thread: frame 293 25.943/20.534 ms; switches voluntary 0 involuntary 163; uploads 7 bytes 23064",
+        "cpu wall/thread: frame 535 12.934/12.707 ms; switches voluntary 0 involuntary 0; uploads 8 bytes 46784",
+        "cpu wall/thread: frame 536 12.340/12.133 ms; switches voluntary 0 involuntary 0; uploads 7 bytes 27264"
+      ],
+      "card_first_use_sample": [
+        362.0,
+        16.649,
+        3.46,
+        13.189,
+        3.415,
+        6.0,
+        12280.0,
+        0.0,
+        0.0
+      ]
+    },
+    "title-card-after-2": {
+      "load_time": 3.55,
+      "load_snapshot": "16:46:25 up 1 day,  9:23,  1 user,  load average: 2.78, 6.81, 7.96",
+      "first_game_frame": [
+        "first frame: cpu 3.618 thread 3.599 ms; uploads 37 bytes 118632"
+      ],
+      "first_interval": [
+        1.0,
+        10.14,
+        3.618,
+        6.521,
+        3.599,
+        37.0,
+        118632.0,
+        0.0,
+        0.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.743,
+        "p95": 35.367,
+        "p99": 44.781,
+        "worst": 88.268,
+        "max_cpu_sample": [
+          12.0,
+          16.389,
+          15.328,
+          1.061,
+          12.463,
+          22.0,
+          76248.0,
+          10.0,
+          0.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          88.268,
+          3.264,
+          85.004,
+          3.219,
+          10.0,
+          75592.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          23.0,
+          31.91,
+          14.959,
+          16.951,
+          14.67,
+          24.0,
+          26760.0,
+          0.0,
+          1.0
+        ]
+      },
+      "use_window": "345-420",
+      "first_use": {
+        "samples": 76,
+        "p50": 16.691,
+        "p95": 18.657,
+        "p99": 23.89,
+        "worst": 23.89,
+        "max_cpu_sample": [
+          367.0,
+          19.519,
+          17.934,
+          1.584,
+          17.429,
+          8.0,
+          52280.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          391.0,
+          23.89,
+          6.865,
+          17.024,
+          6.79,
+          13.0,
+          77792.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          367.0,
+          19.519,
+          17.934,
+          1.584,
+          17.429,
+          8.0,
+          52280.0,
+          0.0,
+          2.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.69,
+        "p95": 18.848,
+        "p99": 33.206,
+        "worst": 41.157,
+        "max_cpu_sample": [
+          367.0,
+          19.519,
+          17.934,
+          1.584,
+          17.429,
+          8.0,
+          52280.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          288.0,
+          41.157,
+          3.161,
+          37.996,
+          3.144,
+          10.0,
+          69352.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          367.0,
+          19.519,
+          17.934,
+          1.584,
+          17.429,
+          8.0,
+          52280.0,
+          0.0,
+          2.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.225s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.034s upload 0.000s",
+        "  names_atlas decode 0.122s upload 0.001s"
+      ],
+      "long_cpu_lines": [
+        "long cpu 13.0 ms: veg_cull_view 2.8 veg_draw_view 1.2 veg_cull_sh1 0.8 wildlife_draw 0.6 elements_update 0.6 shadow0 0.6",
+        "long cpu 15.2 ms: sh-chars2 3.3 veg_cull_view 2.7 veg_draw_view 1.3 shadow2 1.2 wildlife_draw 0.7 shadow0 0.7",
+        "long cpu 14.9 ms: veg_draw_view 5.3 veg_cull_view 1.8 veg_cull_sh1 0.7 wildlife_draw 0.6 shadow0 0.6 buildings 0.5",
+        "long cpu 17.8 ms: veg_cull_view 3.2 veg_cull_sh1 1.6 sh-chars1 1.3 sh-chars0 1.2 shadow1 1.2 shadow0 1.2",
+        "long cpu 14.5 ms: veg_cull_view 3.1 veg_draw_view 1.3 wildlife_draw 1.1 world_items 1.1 veg_cull_sh1 0.7 elements_update 0.6",
+        "long cpu 12.2 ms: veg_cull_view 3.1 veg_draw_view 1.2 veg_cull_sh1 0.7 wildlife_draw 0.6 veg_cull_sh0 0.5 shadow0 0.5",
+        "long cpu 12.1 ms: veg_cull_view 3.1 veg_draw_view 1.1 shadow2 1.0 wildlife_draw 0.8 shadow0 0.5 post 0.5",
+        "long cpu 17.1 ms: sh-chars1 5.2 veg_cull_view 3.2 veg_draw_view 1.2 veg_cull_sh1 0.7 wildlife_draw 0.7 shadow0 0.5",
+        "long cpu 12.5 ms: veg_cull_view 3.1 shadow2 1.2 veg_draw_view 1.1 buildings 0.6 wildlife_draw 0.5 shadow0 0.5",
+        "long cpu 12.1 ms: veg_cull_view 3.1 veg_draw_view 1.1 veg_cull_sh1 0.7 wildlife_draw 0.6 sh-chars1 0.5 shadow0 0.5",
+        "long cpu 12.4 ms: veg_cull_view 3.2 shadow2 1.7 veg_draw_view 0.9 buildings 0.7 elements_update 0.6 shadow0 0.5",
+        "long cpu 12.4 ms: terrain_select 3.5 veg_cull_view 2.4 veg_draw_view 0.8 shadow2 0.8 sh-chars0 0.4 wildlife_draw 0.4",
+        "long cpu 12.8 ms: veg_cull_view 3.4 veg_draw_view 1.5 shadow2 1.1 wildlife_draw 0.7 shadow0 0.5 sh-chars2 0.5",
+        "long cpu 12.1 ms: veg_cull_view 2.5 buildings 1.3 veg_draw_view 0.8 veg_cull_sh1 0.8 sh-chars1 0.6 shadow0 0.6",
+        "long cpu 14.8 ms: veg_cull_view 3.3 veg_draw_view 1.7 wildlife_draw 1.4 shadow0 0.8 veg_cull_sh1 0.7 sh-chars1 0.6",
+        "long cpu 15.0 ms: veg_cull_view 3.0 shadow2 2.1 veg_draw_view 1.4 buildings 0.8 wildlife_draw 0.8 sh-chars2 0.8",
+        "long cpu 17.7 ms: veg_cull_view 3.5 shadow2 2.8 world_items 2.1 veg_draw_view 1.6 sh-chars2 0.9 buildings 0.8"
+      ],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 10 13.125/12.536 ms; switches voluntary 0 involuntary 4; uploads 22 bytes 80144",
+        "cpu wall/thread: frame 11 15.328/12.463 ms; switches voluntary 10 involuntary 0; uploads 22 bytes 76248",
+        "cpu wall/thread: frame 22 14.959/14.670 ms; switches voluntary 0 involuntary 1; uploads 24 bytes 26760",
+        "cpu wall/thread: frame 366 17.934/17.429 ms; switches voluntary 0 involuntary 2; uploads 8 bytes 52280",
+        "cpu wall/thread: frame 424 14.573/14.211 ms; switches voluntary 0 involuntary 1; uploads 11 bytes 60560",
+        "cpu wall/thread: frame 434 12.396/12.068 ms; switches voluntary 0 involuntary 1; uploads 8 bytes 50832",
+        "cpu wall/thread: frame 435 12.240/12.045 ms; switches voluntary 0 involuntary 0; uploads 7 bytes 51392",
+        "cpu wall/thread: frame 500 17.241/12.280 ms; switches voluntary 1 involuntary 0; uploads 5 bytes 10776",
+        "cpu wall/thread: frame 591 12.660/12.437 ms; switches voluntary 0 involuntary 0; uploads 6 bytes 11680",
+        "cpu wall/thread: frame 610 12.202/12.032 ms; switches voluntary 0 involuntary 0; uploads 5 bytes 11184",
+        "cpu wall/thread: frame 611 12.572/12.371 ms; switches voluntary 0 involuntary 0; uploads 5 bytes 11280",
+        "cpu wall/thread: frame 619 12.483/9.063 ms; switches voluntary 1 involuntary 0; uploads 5 bytes 11408",
+        "cpu wall/thread: frame 663 12.903/12.665 ms; switches voluntary 0 involuntary 0; uploads 6 bytes 29176",
+        "cpu wall/thread: frame 664 12.174/11.967 ms; switches voluntary 0 involuntary 0; uploads 5 bytes 10760",
+        "cpu wall/thread: frame 672 14.948/14.143 ms; switches voluntary 0 involuntary 8; uploads 5 bytes 10792",
+        "cpu wall/thread: frame 673 15.125/14.693 ms; switches voluntary 0 involuntary 2; uploads 5 bytes 10696",
+        "cpu wall/thread: frame 681 17.770/15.629 ms; switches voluntary 1 involuntary 2; uploads 5 bytes 10792"
+      ],
+      "card_first_use_sample": [
+        362.0,
+        16.537,
+        4.686,
+        11.85,
+        4.597,
+        6.0,
+        12280.0,
+        0.0,
+        1.0
+      ]
+    },
+    "title-card-after-3": {
+      "load_time": 3.27,
+      "load_snapshot": "16:47:01 up 1 day,  9:23,  1 user,  load average: 1.97, 6.17, 7.70",
+      "first_game_frame": [
+        "first frame: cpu 3.464 thread 3.439 ms; uploads 37 bytes 118632"
+      ],
+      "first_interval": [
+        1.0,
+        7.213,
+        3.464,
+        3.749,
+        3.439,
+        37.0,
+        118632.0,
+        0.0,
+        0.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.76,
+        "p95": 34.383,
+        "p99": 50.911,
+        "worst": 80.673,
+        "max_cpu_sample": [
+          20.0,
+          19.37,
+          12.712,
+          6.658,
+          12.311,
+          20.0,
+          35736.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          80.673,
+          3.116,
+          77.557,
+          3.1,
+          10.0,
+          75592.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          20.0,
+          19.37,
+          12.712,
+          6.658,
+          12.311,
+          20.0,
+          35736.0,
+          0.0,
+          2.0
+        ]
+      },
+      "use_window": "345-420",
+      "first_use": {
+        "samples": 76,
+        "p50": 16.709,
+        "p95": 18.426,
+        "p99": 19.245,
+        "worst": 19.245,
+        "max_cpu_sample": [
+          348.0,
+          17.086,
+          12.432,
+          4.654,
+          12.123,
+          7.0,
+          23360.0,
+          0.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          358.0,
+          19.245,
+          8.582,
+          10.663,
+          8.445,
+          7.0,
+          24024.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          348.0,
+          17.086,
+          12.432,
+          4.654,
+          12.123,
+          7.0,
+          23360.0,
+          0.0,
+          1.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.687,
+        "p95": 19.354,
+        "p99": 23.278,
+        "worst": 39.575,
+        "max_cpu_sample": [
+          348.0,
+          17.086,
+          12.432,
+          4.654,
+          12.123,
+          7.0,
+          23360.0,
+          0.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          456.0,
+          39.575,
+          4.75,
+          34.825,
+          4.714,
+          7.0,
+          29320.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          348.0,
+          17.086,
+          12.432,
+          4.654,
+          12.123,
+          7.0,
+          23360.0,
+          0.0,
+          1.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.232s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.035s upload 0.000s",
+        "  names_atlas decode 0.128s upload 0.001s"
+      ],
+      "long_cpu_lines": [
+        "long cpu 12.6 ms: veg_cull_view 1.7 veg_draw_view 1.6 shadow2 1.3 sh-chars0 0.8 shadow0 0.7 sh-chars2 0.6",
+        "long cpu 12.4 ms: veg_draw_view 1.8 veg_cull_view 1.5 buildings 1.1 veg_cull_sh1 0.8 wildlife_draw 0.6 sh-chars0 0.6",
+        "long cpu 12.4 ms: veg_cull_view 2.4 veg_draw_view 1.3 shadow1 0.8 veg_cull_sh1 0.7 wildlife_draw 0.7 buildings 0.5",
+        "long cpu 12.6 ms: veg_cull_view 2.4 veg_draw_view 1.5 shadow2 1.3 shadow0 0.9 wildlife_draw 0.6 sh-chars2 0.6",
+        "long cpu 12.3 ms: veg_cull_view 3.3 veg_draw_view 1.2 shadow2 1.1 shadow0 0.7 wildlife_draw 0.6 sh-chars2 0.4",
+        "long cpu 12.3 ms: veg_cull_view 3.1 veg_draw_view 1.1 veg_cull_sh1 0.7 shadow0 0.6 wildlife_draw 0.6 sh-chars0 0.6"
+      ],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 19 12.712/12.311 ms; switches voluntary 0 involuntary 2; uploads 20 bytes 35736",
+        "cpu wall/thread: frame 20 12.564/12.085 ms; switches voluntary 0 involuntary 4; uploads 23 bytes 30232",
+        "cpu wall/thread: frame 156 12.502/12.282 ms; switches voluntary 0 involuntary 0; uploads 11 bytes 37936",
+        "cpu wall/thread: frame 157 12.806/12.283 ms; switches voluntary 0 involuntary 1; uploads 14 bytes 62768",
+        "cpu wall/thread: frame 347 12.432/12.123 ms; switches voluntary 0 involuntary 1; uploads 7 bytes 23360",
+        "cpu wall/thread: frame 348 12.416/12.050 ms; switches voluntary 0 involuntary 2; uploads 9 bytes 41320"
+      ],
+      "card_first_use_sample": [
+        362.0,
+        16.641,
+        6.379,
+        10.262,
+        6.308,
+        6.0,
+        12280.0,
+        0.0,
+        1.0
+      ]
+    },
+    "before-shrine-enter": {
+      "load_time": 4.38,
+      "load_snapshot": "not captured separately",
+      "first_game_frame": [
+        "first frame: cpu 79.240 thread 78.046 ms; uploads 30 bytes 135232"
+      ],
+      "first_interval": [
+        1.0,
+        85.309,
+        79.24,
+        6.069,
+        78.046,
+        30.0,
+        135232.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.672,
+        "p95": 25.695,
+        "p99": 130.058,
+        "worst": 199.331,
+        "max_cpu_sample": [
+          61.0,
+          199.331,
+          198.973,
+          0.358,
+          183.689,
+          5.0,
+          2016.0
+        ],
+        "max_interval_sample": [
+          61.0,
+          199.331,
+          198.973,
+          0.358,
+          183.689,
+          5.0,
+          2016.0
+        ],
+        "max_thread_sample": [
+          61.0,
+          199.331,
+          198.973,
+          0.358,
+          183.689,
+          5.0,
+          2016.0
+        ]
+      },
+      "use_window": "30-130",
+      "first_use": {
+        "samples": 101,
+        "p50": 16.693,
+        "p95": 19.894,
+        "p99": 73.934,
+        "worst": 199.331,
+        "max_cpu_sample": [
+          61.0,
+          199.331,
+          198.973,
+          0.358,
+          183.689,
+          5.0,
+          2016.0
+        ],
+        "max_interval_sample": [
+          61.0,
+          199.331,
+          198.973,
+          0.358,
+          183.689,
+          5.0,
+          2016.0
+        ],
+        "max_thread_sample": [
+          61.0,
+          199.331,
+          198.973,
+          0.358,
+          183.689,
+          5.0,
+          2016.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.665,
+        "p95": 19.895,
+        "p99": 22.753,
+        "worst": 27.441,
+        "max_cpu_sample": [
+          299.0,
+          17.059,
+          5.649,
+          11.41,
+          1.887,
+          5.0,
+          2040.0
+        ],
+        "max_interval_sample": [
+          402.0,
+          27.441,
+          1.69,
+          25.751,
+          1.685,
+          5.0,
+          2472.0
+        ],
+        "max_thread_sample": [
+          476.0,
+          17.674,
+          3.147,
+          14.526,
+          3.131,
+          5.0,
+          2568.0
+        ]
+      },
+      "warmup": [],
+      "atlases": [],
+      "long_cpu_lines": [
+        "long cpu 79.2 ms: hero_animate 18.2 shrines_update 18.2 shadow0 10.5 sh-chars0 5.6 sky 5.3 sh-chars2 5.1",
+        "long cpu 73.5 ms: fx 71.0 shrines_props 0.9 shadow0 0.4 post 0.2 shadow1 0.2 buildings 0.1",
+        "long cpu 198.9 ms: post 197.3 shadow2 0.3 shadow0 0.2 buildings 0.2 hero_draw 0.1 sh-chars0 0.1"
+      ],
+      "thread_switch_lines": []
+    },
+    "final-shrine-enter": {
+      "load_time": 4.75,
+      "load_snapshot": "16:42:23 up 1 day,  9:18,  1 user,  load average: 7.99, 8.53, 8.55",
+      "first_game_frame": [
+        "first frame: cpu 5.269 thread 5.150 ms; uploads 38 bytes 136944"
+      ],
+      "first_interval": [
+        1.0,
+        8.019,
+        5.269,
+        2.75,
+        5.15,
+        38.0,
+        136944.0,
+        0.0,
+        0.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.669,
+        "p95": 21.705,
+        "p99": 33.088,
+        "worst": 134.044,
+        "max_cpu_sample": [
+          33.0,
+          16.151,
+          9.729,
+          6.422,
+          4.715,
+          5.0,
+          9952.0,
+          0.0,
+          3.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          134.044,
+          4.482,
+          129.561,
+          4.333,
+          5.0,
+          8304.0,
+          0.0,
+          1.0
+        ],
+        "max_thread_sample": [
+          11.0,
+          19.027,
+          9.021,
+          10.006,
+          5.903,
+          7.0,
+          9296.0,
+          1.0,
+          2.0
+        ]
+      },
+      "use_window": "30-130",
+      "first_use": {
+        "samples": 101,
+        "p50": 16.669,
+        "p95": 20.382,
+        "p99": 21.705,
+        "worst": 26.982,
+        "max_cpu_sample": [
+          33.0,
+          16.151,
+          9.729,
+          6.422,
+          4.715,
+          5.0,
+          9952.0,
+          0.0,
+          3.0
+        ],
+        "max_interval_sample": [
+          116.0,
+          26.982,
+          1.571,
+          25.411,
+          1.551,
+          5.0,
+          1248.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          35.0,
+          17.222,
+          5.116,
+          12.106,
+          4.989,
+          6.0,
+          10240.0,
+          0.0,
+          1.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.723,
+        "p95": 19.799,
+        "p99": 20.512,
+        "worst": 34.224,
+        "max_cpu_sample": [
+          416.0,
+          13.212,
+          8.173,
+          5.039,
+          2.686,
+          5.0,
+          2328.0,
+          0.0,
+          3.0
+        ],
+        "max_interval_sample": [
+          272.0,
+          34.224,
+          2.722,
+          31.502,
+          2.6,
+          5.0,
+          1944.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          422.0,
+          16.859,
+          5.979,
+          10.88,
+          2.967,
+          5.0,
+          2424.0,
+          0.0,
+          1.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.328s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.055s upload 0.000s",
+        "  names_atlas decode 0.186s upload 0.001s"
+      ],
+      "long_cpu_lines": [],
+      "thread_switch_lines": []
+    },
+    "final-2-shrine-enter": {
+      "load_time": 4.59,
+      "load_snapshot": "16:40:59 up 1 day,  9:17,  1 user,  load average: 7.58, 8.55, 8.55",
+      "first_game_frame": [
+        "first frame: cpu 4.908 thread 4.850 ms; uploads 38 bytes 136944"
+      ],
+      "first_interval": [
+        1.0,
+        12.578,
+        4.908,
+        7.671,
+        4.85,
+        38.0,
+        136944.0,
+        1.0,
+        0.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.64,
+        "p95": 32.964,
+        "p99": 36.421,
+        "worst": 139.029,
+        "max_cpu_sample": [
+          38.0,
+          19.656,
+          10.317,
+          9.34,
+          4.546,
+          5.0,
+          10064.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          139.029,
+          7.942,
+          131.086,
+          4.736,
+          5.0,
+          8304.0,
+          0.0,
+          1.0
+        ],
+        "max_thread_sample": [
+          27.0,
+          14.947,
+          6.588,
+          8.359,
+          5.772,
+          5.0,
+          9616.0,
+          0.0,
+          3.0
+        ]
+      },
+      "use_window": "30-130",
+      "first_use": {
+        "samples": 101,
+        "p50": 16.685,
+        "p95": 32.964,
+        "p99": 34.277,
+        "worst": 36.421,
+        "max_cpu_sample": [
+          38.0,
+          19.656,
+          10.317,
+          9.34,
+          4.546,
+          5.0,
+          10064.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          59.0,
+          36.421,
+          1.212,
+          35.209,
+          1.172,
+          5.0,
+          1872.0,
+          0.0,
+          1.0
+        ],
+        "max_thread_sample": [
+          42.0,
+          16.944,
+          4.964,
+          11.98,
+          4.9,
+          5.0,
+          10064.0,
+          0.0,
+          1.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.738,
+        "p95": 19.797,
+        "p99": 22.767,
+        "worst": 29.764,
+        "max_cpu_sample": [
+          460.0,
+          17.18,
+          6.444,
+          10.737,
+          3.397,
+          5.0,
+          2328.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          444.0,
+          29.764,
+          1.865,
+          27.899,
+          1.854,
+          5.0,
+          2424.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          460.0,
+          17.18,
+          6.444,
+          10.737,
+          3.397,
+          5.0,
+          2328.0,
+          0.0,
+          2.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.311s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.051s upload 0.000s",
+        "  names_atlas decode 0.178s upload 0.001s"
+      ],
+      "long_cpu_lines": [],
+      "thread_switch_lines": []
+    },
+    "final-3-shrine-enter": {
+      "load_time": 4.76,
+      "load_snapshot": "16:41:43 up 1 day,  9:18,  1 user,  load average: 8.94, 8.75, 8.62",
+      "first_game_frame": [
+        "first frame: cpu 5.001 thread 4.844 ms; uploads 38 bytes 136944"
+      ],
+      "first_interval": [
+        1.0,
+        19.324,
+        5.001,
+        14.324,
+        4.844,
+        38.0,
+        136944.0,
+        0.0,
+        1.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.727,
+        "p95": 21.225,
+        "p99": 27.294,
+        "worst": 134.21,
+        "max_cpu_sample": [
+          3.0,
+          22.835,
+          17.23,
+          5.605,
+          4.532,
+          6.0,
+          8400.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          134.21,
+          4.824,
+          129.386,
+          4.639,
+          5.0,
+          8304.0,
+          0.0,
+          1.0
+        ],
+        "max_thread_sample": [
+          34.0,
+          14.268,
+          7.888,
+          6.38,
+          6.083,
+          6.0,
+          31200.0,
+          0.0,
+          7.0
+        ]
+      },
+      "use_window": "30-130",
+      "first_use": {
+        "samples": 101,
+        "p50": 16.764,
+        "p95": 20.195,
+        "p99": 23.971,
+        "worst": 24.08,
+        "max_cpu_sample": [
+          32.0,
+          16.013,
+          15.443,
+          0.57,
+          5.831,
+          6.0,
+          27616.0,
+          0.0,
+          4.0
+        ],
+        "max_interval_sample": [
+          55.0,
+          24.08,
+          1.983,
+          22.097,
+          1.955,
+          5.0,
+          2064.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          34.0,
+          14.268,
+          7.888,
+          6.38,
+          6.083,
+          6.0,
+          31200.0,
+          0.0,
+          7.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.653,
+        "p95": 19.885,
+        "p99": 21.971,
+        "worst": 28.456,
+        "max_cpu_sample": [
+          282.0,
+          17.108,
+          5.483,
+          11.625,
+          1.829,
+          5.0,
+          2040.0,
+          0.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          461.0,
+          28.456,
+          1.79,
+          26.666,
+          1.781,
+          5.0,
+          2328.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          364.0,
+          17.663,
+          3.388,
+          14.275,
+          3.147,
+          5.0,
+          2232.0,
+          0.0,
+          2.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.329s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.054s upload 0.000s",
+        "  names_atlas decode 0.190s upload 0.002s"
+      ],
+      "long_cpu_lines": [
+        "long cpu 17.2 ms: shadow1 6.9 veg_draw_view 6.5 veg_cull_view 0.9 shadow0 0.3 veg_cull_sh1 0.2 sh-chars1 0.2",
+        "long cpu 15.4 ms: shadow2 5.0 veg_draw_view 3.5 veg_cull_view 2.2 sh-chars2 1.6 shadow0 0.3 wildlife_draw 0.3"
+      ],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 2 17.230/4.532 ms; switches voluntary 0 involuntary 2; uploads 6 bytes 8400",
+        "cpu wall/thread: frame 31 15.443/5.831 ms; switches voluntary 0 involuntary 4; uploads 6 bytes 27616"
+      ]
+    },
+    "no-stdlib-stats-1": {
+      "load_time": 4.71,
+      "load_snapshot": "not captured separately",
+      "first_game_frame": [
+        "first frame: cpu 7.477 thread 5.922 ms; uploads 57 bytes 119024"
+      ],
+      "first_interval": [
+        1.0,
+        11.878,
+        7.477,
+        4.401,
+        5.922,
+        57.0,
+        119024.0,
+        0.0,
+        1.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.714,
+        "p95": 20.028,
+        "p99": 33.611,
+        "worst": 149.143,
+        "max_cpu_sample": [
+          28.0,
+          17.043,
+          13.039,
+          4.005,
+          5.299,
+          5.0,
+          10192.0,
+          0.0,
+          4.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          149.143,
+          4.955,
+          144.188,
+          4.912,
+          5.0,
+          9184.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          83.0,
+          16.933,
+          6.573,
+          10.36,
+          6.379,
+          5.0,
+          11104.0,
+          0.0,
+          2.0
+        ]
+      },
+      "use_window": "241-480",
+      "first_use": {
+        "samples": 240,
+        "p50": 16.692,
+        "p95": 20.031,
+        "p99": 21.523,
+        "worst": 31.687,
+        "max_cpu_sample": [
+          249.0,
+          18.593,
+          18.089,
+          0.504,
+          4.966,
+          5.0,
+          11200.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          471.0,
+          31.687,
+          5.65,
+          26.037,
+          4.897,
+          5.0,
+          11344.0,
+          0.0,
+          3.0
+        ],
+        "max_thread_sample": [
+          308.0,
+          18.721,
+          7.666,
+          11.055,
+          7.508,
+          5.0,
+          11392.0,
+          0.0,
+          2.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.692,
+        "p95": 20.031,
+        "p99": 21.523,
+        "worst": 31.687,
+        "max_cpu_sample": [
+          249.0,
+          18.593,
+          18.089,
+          0.504,
+          4.966,
+          5.0,
+          11200.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          471.0,
+          31.687,
+          5.65,
+          26.037,
+          4.897,
+          5.0,
+          11344.0,
+          0.0,
+          3.0
+        ],
+        "max_thread_sample": [
+          308.0,
+          18.721,
+          7.666,
+          11.055,
+          7.508,
+          5.0,
+          11392.0,
+          0.0,
+          2.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.323s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.053s upload 0.000s",
+        "  names_atlas decode 0.190s upload 0.001s"
+      ],
+      "long_cpu_lines": [],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 27 13.039/5.299 ms; switches voluntary 0 involuntary 4; uploads 5 bytes 10192",
+        "cpu wall/thread: frame 83 12.747/5.077 ms; switches voluntary 0 involuntary 6; uploads 5 bytes 11152",
+        "cpu wall/thread: frame 168 12.784/5.077 ms; switches voluntary 0 involuntary 5; uploads 5 bytes 11248",
+        "cpu wall/thread: frame 248 18.089/4.966 ms; switches voluntary 0 involuntary 2; uploads 5 bytes 11200",
+        "cpu wall/thread: frame 252 12.252/5.123 ms; switches voluntary 0 involuntary 2; uploads 5 bytes 11152",
+        "cpu wall/thread: frame 255 13.541/5.141 ms; switches voluntary 0 involuntary 5; uploads 5 bytes 11152",
+        "cpu wall/thread: frame 257 12.872/6.776 ms; switches voluntary 0 involuntary 2; uploads 5 bytes 11248",
+        "cpu wall/thread: frame 269 16.103/5.136 ms; switches voluntary 0 involuntary 9; uploads 5 bytes 11824",
+        "cpu wall/thread: frame 376 13.183/5.150 ms; switches voluntary 0 involuntary 1; uploads 5 bytes 11344"
+      ]
+    },
+    "no-stdlib-stats-2": {
+      "load_time": 4.64,
+      "load_snapshot": "not captured separately",
+      "first_game_frame": [
+        "first frame: cpu 5.800 thread 5.629 ms; uploads 57 bytes 119024"
+      ],
+      "first_interval": [
+        1.0,
+        16.446,
+        5.8,
+        10.646,
+        5.629,
+        57.0,
+        119024.0,
+        0.0,
+        1.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.644,
+        "p95": 21.975,
+        "p99": 33.345,
+        "worst": 120.543,
+        "max_cpu_sample": [
+          98.0,
+          16.456,
+          13.389,
+          3.067,
+          5.092,
+          5.0,
+          11344.0,
+          0.0,
+          2.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          120.543,
+          7.972,
+          112.571,
+          5.212,
+          5.0,
+          9184.0,
+          0.0,
+          8.0
+        ],
+        "max_thread_sample": [
+          58.0,
+          25.338,
+          6.447,
+          18.891,
+          6.371,
+          5.0,
+          10624.0,
+          0.0,
+          1.0
+        ]
+      },
+      "use_window": "241-480",
+      "first_use": {
+        "samples": 240,
+        "p50": 16.713,
+        "p95": 19.665,
+        "p99": 21.979,
+        "worst": 41.98,
+        "max_cpu_sample": [
+          444.0,
+          17.087,
+          12.54,
+          4.546,
+          4.931,
+          5.0,
+          11776.0,
+          1.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          281.0,
+          41.98,
+          11.187,
+          30.793,
+          5.482,
+          5.0,
+          11824.0,
+          0.0,
+          4.0
+        ],
+        "max_thread_sample": [
+          279.0,
+          17.258,
+          11.579,
+          5.679,
+          6.767,
+          5.0,
+          11776.0,
+          0.0,
+          6.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.713,
+        "p95": 19.665,
+        "p99": 21.979,
+        "worst": 41.98,
+        "max_cpu_sample": [
+          444.0,
+          17.087,
+          12.54,
+          4.546,
+          4.931,
+          5.0,
+          11776.0,
+          1.0,
+          1.0
+        ],
+        "max_interval_sample": [
+          281.0,
+          41.98,
+          11.187,
+          30.793,
+          5.482,
+          5.0,
+          11824.0,
+          0.0,
+          4.0
+        ],
+        "max_thread_sample": [
+          279.0,
+          17.258,
+          11.579,
+          5.679,
+          6.767,
+          5.0,
+          11776.0,
+          0.0,
+          6.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.326s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.050s upload 0.000s",
+        "  names_atlas decode 0.190s upload 0.001s"
+      ],
+      "long_cpu_lines": [],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 97 13.389/5.092 ms; switches voluntary 0 involuntary 2; uploads 5 bytes 11344",
+        "cpu wall/thread: frame 155 12.644/5.644 ms; switches voluntary 0 involuntary 4; uploads 5 bytes 11440",
+        "cpu wall/thread: frame 202 13.085/5.034 ms; switches voluntary 0 involuntary 1; uploads 5 bytes 11104",
+        "cpu wall/thread: frame 208 12.865/5.094 ms; switches voluntary 0 involuntary 3; uploads 5 bytes 11104",
+        "cpu wall/thread: frame 271 12.051/5.196 ms; switches voluntary 0 involuntary 4; uploads 5 bytes 11824",
+        "cpu wall/thread: frame 311 12.088/5.107 ms; switches voluntary 0 involuntary 4; uploads 5 bytes 11440",
+        "cpu wall/thread: frame 443 12.540/4.931 ms; switches voluntary 1 involuntary 1; uploads 5 bytes 11776"
+      ]
+    },
+    "no-stdlib-stats-3": {
+      "load_time": 4.45,
+      "load_snapshot": "not captured separately",
+      "first_game_frame": [
+        "first frame: cpu 8.948 thread 5.732 ms; uploads 57 bytes 119024"
+      ],
+      "first_interval": [
+        1.0,
+        14.406,
+        8.948,
+        5.458,
+        5.732,
+        57.0,
+        119024.0,
+        1.0,
+        0.0
+      ],
+      "startup_120": {
+        "samples": 120,
+        "p50": 16.788,
+        "p95": 21.391,
+        "p99": 33.874,
+        "worst": 148.963,
+        "max_cpu_sample": [
+          62.0,
+          16.256,
+          14.585,
+          1.672,
+          5.206,
+          5.0,
+          10720.0,
+          0.0,
+          7.0
+        ],
+        "max_interval_sample": [
+          2.0,
+          148.963,
+          5.072,
+          143.891,
+          5.011,
+          5.0,
+          9184.0,
+          0.0,
+          1.0
+        ],
+        "max_thread_sample": [
+          13.0,
+          16.438,
+          10.518,
+          5.92,
+          8.351,
+          5.0,
+          9520.0,
+          0.0,
+          2.0
+        ]
+      },
+      "use_window": "241-480",
+      "first_use": {
+        "samples": 240,
+        "p50": 16.582,
+        "p95": 19.586,
+        "p99": 21.487,
+        "worst": 48.589,
+        "max_cpu_sample": [
+          346.0,
+          15.411,
+          11.492,
+          3.919,
+          5.111,
+          5.0,
+          11584.0,
+          0.0,
+          3.0
+        ],
+        "max_interval_sample": [
+          258.0,
+          48.589,
+          6.155,
+          42.434,
+          6.086,
+          5.0,
+          11248.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          391.0,
+          17.353,
+          7.298,
+          10.055,
+          7.205,
+          5.0,
+          11200.0,
+          0.0,
+          1.0
+        ]
+      },
+      "steady": {
+        "samples": 240,
+        "p50": 16.582,
+        "p95": 19.586,
+        "p99": 21.487,
+        "worst": 48.589,
+        "max_cpu_sample": [
+          346.0,
+          15.411,
+          11.492,
+          3.919,
+          5.111,
+          5.0,
+          11584.0,
+          0.0,
+          3.0
+        ],
+        "max_interval_sample": [
+          258.0,
+          48.589,
+          6.155,
+          42.434,
+          6.086,
+          5.0,
+          11248.0,
+          0.0,
+          0.0
+        ],
+        "max_thread_sample": [
+          391.0,
+          17.353,
+          7.298,
+          10.055,
+          7.205,
+          5.0,
+          11200.0,
+          0.0,
+          1.0
+        ]
+      },
+      "warmup": [
+        "  render_warmup 0.318s"
+      ],
+      "atlases": [
+        "  title_atlas decode 0.050s upload 0.000s",
+        "  names_atlas decode 0.175s upload 0.002s"
+      ],
+      "long_cpu_lines": [],
+      "thread_switch_lines": [
+        "cpu wall/thread: frame 47 12.674/5.416 ms; switches voluntary 0 involuntary 5; uploads 5 bytes 10528",
+        "cpu wall/thread: frame 48 13.761/5.593 ms; switches voluntary 0 involuntary 8; uploads 5 bytes 10528",
+        "cpu wall/thread: frame 58 12.171/5.153 ms; switches voluntary 0 involuntary 3; uploads 5 bytes 10624",
+        "cpu wall/thread: frame 61 14.585/5.206 ms; switches voluntary 0 involuntary 7; uploads 5 bytes 10720",
+        "cpu wall/thread: frame 132 13.256/5.310 ms; switches voluntary 0 involuntary 2; uploads 5 bytes 11776",
+        "cpu wall/thread: frame 226 12.491/6.435 ms; switches voluntary 0 involuntary 5; uploads 5 bytes 11056"
+      ]
+    }
+  }
+}

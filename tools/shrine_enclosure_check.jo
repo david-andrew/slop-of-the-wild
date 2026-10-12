@@ -1,0 +1,123 @@
+# Ray-test hall closure with production winding/culling, validate the visible
+# lift cap, and keep the chase lens inside the actual ceiling profile.
+use '../game/shrines.jo'
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+use '../game/items.jo'
+from '../game/build.jo' import __bchunks, __named_b
+
+use '../game/player.jo'
+use '../game/camera.jo'
+use '../game/input.jo'
+use '../game/audio_cache.jo'
+from '../game/shrines.jo' import __enter_now, __shrine_roof_height
+
+__audio_state = 2
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+find_shrines()
+shrines_build()
+shrines_setup()
+
+nearest = (b: Builder, eye: vec3, direction: vec3, limit: f64) -> f64:
+    best = limit
+    loop j in [0..b.idx.len()/3):
+        a = b.verts[int(b.idx[j*3])].pos
+        bb = b.verts[int(b.idx[j*3+1])].pos
+        c = b.verts[int(b.idx[j*3+2])].pos
+        e1 = bb-a
+        e2 = c-a
+        p = cross(direction,e2)
+        det = f64(dot(e1,p))
+        if det < 0.000001: continue
+        s = eye-a
+        u = f64(dot(s,p))/det
+        if u < -0.00001 or u > 1.00001: continue
+        q = cross(s,e1)
+        v = f64(dot(direction,q))/det
+        if v < -0.00001 or u+v > 1.00001: continue
+        t = f64(dot(e2,q))/det
+        if t > 0.001: best = min(best,t)
+    best
+
+# Real shell meshes, culled exactly as in production, across the full
+# sphere from the lift, controls, later halls, annexes and monk balconies.
+# The lift itself is tested separately at nine points by shrine_shaft_check.
+spots = [
+    [v3(0,6.2,1.37),v3(0,1.7,0),v3(4,1.7,0),v3(-5,1.7,-5),v3(0,1.7,-20),v3(0,1.7,-30),v3(0,5.1,-47),v3(-32,1.7,-29),v3(-64,5.1,-39)],
+    [v3(0,1.7,0),v3(4,1.7,0),v3(-6,1.7,-8),v3(0,1.7,-23),v3(0,1.7,-40),v3(0,1.7,-51),v3(13,1.7,-10),v3(26,1.7,-10),v3(57,1.7,-10)],
+    [v3(0,1.7,0),v3(0,1.7,-4),v3(0.6,2,-13.5),v3(0.6,2,-28.5),v3(0,1.7,-39),v3(0,5.5,-60),v3(10,10.7,-80),v3(24.5,1.7,-28.5),v3(53,1.7,-28.5)],
+    [v3(0,1.7,0),v3(4,1.7,0),v3(6,1.7,-1),v3(-6,1.7,-26),v3(0,5.7,-43.5),v3(-20,5.3,-19.5),v3(-35,4.5,-14),v3(-42,7.7,-14)],
+]
+checks = 0
+misses = 0
+loop id in [0..4):
+    # Exclude other shrines and the exterior from the closure proof.
+    mesh = Builder()
+    o = srec[id].o
+    loop key,b in __bchunks:
+        loop j in [0..b.idx.len()/3):
+            a = b.verts[int(b.idx[j*3])]
+            q = a.pos-o
+            if q.x < srec[id].lo.x-2 or q.x > srec[id].hi.x+2 or q.z < srec[id].lo.z-2 or q.z > srec[id].hi.z+2: continue
+            base = u32(mesh.verts.len())
+            loop k in [0..3):
+                mesh.verts.push(b.verts[int(b.idx[j*3+k])])
+                mesh.idx.push(base+u32(k))
+    if id == KEH:
+        b = __named_b["keh_namut_room"]
+        base = u32(mesh.verts.len())
+        loop v in b.verts: mesh.verts.push(v)
+        loop k in b.idx: mesh.idx.push(base+k)
+    # Geometry can close a ray while still reading as void. The actual cap
+    # vertices must retain stone pigment, cool fixture bounce and a dim emitter.
+    caps = 0
+    loop v in mesh.verts:
+        q = v.pos-o
+        if abs(q.y-16.0) < 0.005 and abs(q.x) <= 2.61 and abs(q.z) <= 2.61 and v.normal.y < -0.9:
+            assert(length(v.color.xyz) > 0.30,"shaft cap must have visible stone pigment")
+            assert(v.mat.z >= 0.035 and v.mat.z < 0.12,"shaft cap is a dim fixture, below active mechanism emission")
+            assert(length(v.light) > 0.12,"shaft cap receives cool local bounce")
+            caps += 1
+    assert(caps >= 6,"visible closed cap is present in production mesh")
+    loop spot in spots[id]:
+        loop elevation in [-1.5707,-1.15,-0.85,-0.5,-0.2,0.0,0.2,0.5,0.85,1.15,1.5707]:
+            loop step in [0..48):
+                yaw = TAU*f64(step)/48.0
+                direction = v3(sin(yaw)*cos(elevation),sin(elevation),-cos(yaw)*cos(elevation))
+                distance = nearest(mesh,o+spot,direction,120.0)
+                if distance >= 120.0:
+                    if misses < 60: print("MISS {srec[id].name}: eye={spot} yaw={yaw} elevation={elevation}")
+                    misses += 1
+                checks += 1
+    print("checked {srec[id].name}: {spots[id].len()} room/route positions, 48 bearings, eleven elevations")
+print("enclosure misses: {misses}")
+assert(misses == 0,"every enclosure ray must hit a front-facing shell within view distance")
+print("PASS shrine enclosure: {checks} culled mesh rays, no enclosure holes")
+
+# Production chase lens, including maximum downward tilt beside low eaves.
+camera_misses = 0
+loop id in [0..4):
+    __enter_now(id)
+    loop x in [SHR_ENTRY_LEFT[id]+1.0,-4.0,0.0,4.0,SHR_ENTRY_RIGHT[id]-1.0]:
+        loop pitch in [-1.15,0.22,1.35]:
+            loop k in [0..24):
+                pl.pos = srec[id].o+v3(x,0,-1)
+                cam = Cam(yaw = f64(k)*TAU/24.0,pitch = pitch,idle_t = 0.0)
+                camera_snap()
+                act = Actions()
+                loop frame in [0..60):
+                    shrines_update(1.0/60.0)
+                    camera_update(1.0/60.0)
+                q = view_pos()-srec[id].o
+                roof = __shrine_roof_height(id,SHR_ENTRY_TOP[id],(f64(q.x)-SHR_ENTRY_LEFT[id])/(SHR_ENTRY_RIGHT[id]-SHR_ENTRY_LEFT[id]))
+                if abs(q.x) < 2.6 and abs(q.z) < 2.6: roof = 16.0
+                if f64(q.y) > roof:
+                    print("MISS id={id} player x={x} pitch={pitch} yaw={k} view={q} roof={roof}")
+                    camera_misses += 1
+assert(camera_misses == 0,"all chase pitch extremes remain below visible ceiling")
+print("PASS shrine camera enclosure: 1440 settled views at both pitch limits and normal pitch")

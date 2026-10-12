@@ -1,0 +1,108 @@
+# Fixture for talus_save_element_check.sh; compile after applying the optional hooks.
+use 'talus_checks.jo'
+use '../game/save.jo'
+use '../game/talus.jo'
+use '../game/enemies.jo'
+use '../game/items.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/elements.jo'
+use '../game/matter.jo'
+use '../game/story.jo'
+use '../game/terrain.jo'
+use '../game/gfx.jo'
+from '../game/elements.jo' import __explode
+
+__audio_state = 2
+items_init()
+loop phase in [0..TALUS_STATES.len()):
+    e = talus_course()
+    enemies[e].state = TALUS_STATES[phase]
+    enemies[e].hp = if phase >= 8: 0.0 else: 123.5
+    enemies[e].pos = vec3(2,0,3)
+    enemies[e].face = 0.6
+    enemies[e].t = 0.28
+    enemies[e].move = 3
+    enemies[e].talus_attacks = 7
+    enemies[e].talus_contact = true
+    enemies[e].talus_shake = 4.5
+    if phase >= 8:
+        talus_drop(enemies[e])
+        witems[enemies[e].talus_drops[0]].alive = false
+        inv_add("flint")
+    s = save_capture()
+    s.awake = true
+    s.pos = vec3(10,0,10)
+    s.activated = fill(false,4)
+    s.completed = fill(false,4)
+    path = "build/talus-integration-proposal/save-fixture"
+    assert(save_write(path,s))
+    decoded = save_decode(read_file(path) ?? "")
+    talus_check(decoded != none,"production save codec phase {phase}")
+    enemies[e].state = .sleep
+    enemies[e].hp = 300.0
+    if let d = decoded: save_apply(d)
+    talus_check(enemies[e].state == TALUS_STATES[phase] and enemies[e].hp == s.talus[0].hp and enemies[e].pos == s.talus[0].pos and enemies[e].t == s.talus[0].time_ and enemies[e].talus_contact and enemies[e].talus_attacks == 7,"production save apply phase {phase}")
+    if phase >= 8:
+        piles = 0
+        loop w in witems:
+            if w.alive: piles += 1
+        talus_check(piles == 5 and count_of("flint") == 1,"saved uncollected loot restored without duplicate phase {phase}")
+    # Legacy saves and corrupt encounter rows are validated by the production codec.
+    encoded = save_encode(s)
+    for_bad = s
+    for_bad.talus[0].phase = 11
+    talus_check(save_decode(save_encode(for_bad)) == none,"malformed phase {phase}")
+    for_bad = s
+    for_bad.talus[0].hp = 301.0
+    talus_check(save_decode(save_encode(for_bad)) == none,"malformed HP {phase}")
+    s.talus = []
+    talus_check(save_decode(save_encode(s)) != none,"legacy save without encounter phase {phase}")
+    delete_file(path)
+# A saved shoulder rider stands on the restored surface; a held wall resumes safely outside.
+e = talus_course()
+enemies[e].state = .chase
+talus_sync(enemies[e],false)
+col = enemies[e].talus_col+2
+pl = Player(pos=vec3(0.5,4.65,0),ground=Ground(y=4.65,collider=col))
+s = save_capture()
+s.awake = true
+s.activated = fill(false,4)
+s.completed = fill(false,4)
+save_apply(s)
+talus_check(pl.pos == vec3(0.5,4.65,0) and pl.ground.collider == col,"saved shoulder rider resumes supported")
+pl.state = .climb
+pl.climb_col = col
+s = save_capture()
+talus_check(length(s.pos-enemies[e].pos) >= 5.0 and s.pos.y == 0.0,"held moving wall saves a safe terrain anchor")
+# Rock uses the production material dispatcher: fire immune; dry lightning inert,
+# wet lightning once per strike; ore exposed to bombs, body blast supplies an opening.
+loop kind in ["fire","dry shock","wet shock","bomb ore","bomb body","bomb cover"]:
+    e = talus_course()
+    enemies[e].state = .chase
+    talus_sync(enemies[e],false)
+    pl.pos = vec3(0,0,9)
+    burn_px = fill(u8(0),BURN_N*BURN_N*4)
+    if kind == "fire":
+        enemies[e].el.heat = 4.0
+        loop k in [0..120):
+            elements_update(1.0/60.0,pl.pos)
+            enemies_update(1.0/60.0,false)
+        talus_check(enemies[e].hp == 300.0 and enemies[e].burning == 0.0,"production fire cannot burn rock")
+    if kind == "dry shock" or kind == "wet shock":
+        if kind == "wet shock": enemies[e].el.wet = 1.0
+        strike_pos = enemies[e].pos+vec3(0,0.6,0)
+        strike_t = 1.0
+        strike_id += 1
+        loop k in [0..10): elements_update(1.0/60.0,pl.pos)
+        talus_check(enemies[e].hp == (if kind=="wet shock":296.0 else:300.0),"production {kind} rock hp={enemies[e].hp}")
+        strike_t = 0.0
+    if starts_with(kind,"bomb"):
+        ore = talus_ore(enemies[e])
+        p = if kind == "bomb ore": ore+vec3(0,0.4,1.5) else: enemies[e].pos+vec3(0,0.4,-4.5)
+        # Keep the cover outside the remodeled body, between it and the source.
+        if kind == "bomb cover": add_box(enemies[e].pos+vec3(0,0,-3.5),vec3(5,4,0.1),climbable=false)
+        __explode(p,false)
+        talus_check((if kind=="bomb ore":enemies[e].hp < 280.0 else:(if kind=="bomb body":enemies[e].hp >= 299.0 and enemies[e].state == .stagger else:enemies[e].hp == 300.0)),"production {kind} hp={enemies[e].hp} state={enemies[e].state}")
+print("Talus save/element integration proposal: {talus_checks-talus_failures}/{talus_checks}")
+assert(talus_failures==0)

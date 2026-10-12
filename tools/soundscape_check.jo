@@ -1,0 +1,177 @@
+use 'creature_audio.jo'
+use '../game/sfx.jo'
+use '../game/env.jo'
+use '../game/player.jo'
+use '../game/audio_assets.jo'
+use '../game/wildlife.jo'
+use '../game/scene.jo'
+from '../game/sfx.jo' import __amb_forest as forest_gain, __amb_snow as snow_gain, __peck_t as peck_timer
+
+soundscape_check = ():
+    __audio_state = 2
+    master_volume(0.8)
+    sfx_init()
+    reset = ():
+        stop_all()
+        amb = Ambient()
+        env = Env(hour = 11.0, gust = 1.0)
+        pl = Player(pos = vec3(-1040, 240, 1640))
+        amb_biome = 1
+        forest_gain = 1.0
+        snow_gain = 0.0
+        peck_timer = 100.0
+        amb_opening = false
+        amb.bird_t = 100.0
+        amb.owl_t = 100.0
+        amb.pond_t = 100.0
+    count = (sound: Sound) -> int:
+        n = 0
+        loop voice in __voices:
+            if data(voice.sound.samples) == data(sound.samples): n += 1
+        n
+    reset()
+    amb.bird_t = 0.0
+    ambient_update(1.0 / 60.0, 0.0, 240.0, 0.0)
+    assert(count(sfx.birds[0]) + count(sfx.birds[1]) == 1, "forest daytime songbird")
+    reset()
+    env.hour = 23.0
+    env.night = 1.0
+    amb.bird_t = 0.0
+    amb.owl_t = 0.0
+    ambient_update(1.0 / 60.0, 0.0, 240.0, 0.0)
+    assert(count(sfx.owl) == 1, "forest nighttime owl")
+    loop bird in sfx.birds: assert(count(bird) == 0, "no songbirds at night")
+    reset()
+    amb_biome = 2
+    snow_gain = 1.0
+    forest_gain = 0.0
+    amb.bird_t = 0.0
+    ambient_update(1.0 / 60.0, 0.0, 380.0, 0.0)
+    assert(amb.bird_t >= 22.5, "snow chirps at least 22.5 seconds apart")
+    loop voice in __voices:
+        loop bird in sfx.birds:
+            if data(voice.sound.samples) == data(bird.samples): assert(voice.volume < 0.06, "snow calls quiet and distant")
+    reset()
+    pl.pos = vec3(-1230, 235, 1650)
+    env.hour = 18.4
+    env.night = 0.35
+    amb.pond_t = 0.0
+    ambient_update(1.0 / 60.0, 0.0, 235.0, 0.0)
+    assert(count(sfx.frogs) == 1, "Hopper dusk frogs")
+    amb.pond_t = 0.0
+    ambient_update(1.0 / 60.0, 0.0, 235.0, 0.0)
+    assert(count(sfx.water_birds) == 1, "Hopper dusk water birds alternate")
+    reset()
+    pl.pos = vec3(-700, 235, 1800)
+    env.hour = 18.4
+    amb.pond_t = 0.0
+    ambient_update(1.0 / 60.0, 0.0, 235.0, 0.0)
+    assert(count(sfx.frogs) == 0 and count(sfx.water_birds) == 0, "pond species remain localized")
+    reset()
+    env.gust = 3.0
+    ambient_update(4.0, 0.0, 235.0, 0.0)
+    low = 0.0
+    loop voice in __voices:
+        if voice.id == amb.wind_gust: low = f64(voice.volume)
+    ambient_update(4.0, 0.0, 415.0, 0.0)
+    high = 0.0
+    loop voice in __voices:
+        if voice.id == amb.wind_gust: high = f64(voice.volume)
+    assert(high > low * 1.4, "altitude increases exposed gust layer")
+    reset()
+    amb_opening = true
+    sfx_priority_gain = 1.0
+    sfx_priority_hold = 0.1
+    ambient_update(0.0, 0.0, 235.0, 0.0)
+    level = () -> f64:
+        loop voice in __voices:
+            if voice.id == amb.wind: return f64(voice.volume)
+        0.0
+    breeze = level()
+    sfx_priority_gain = 0.35
+    ambient_update(0.0, 0.0, 235.0, 0.0)
+    assert(abs(level() - breeze) < 0.00001, "opening wind does not pump at each footfall")
+    amb_opening = false
+    ambient_update(0.0, 0.0, 235.0, 0.0)
+    assert(abs(level() - breeze * 0.35) < 0.00001, "gameplay retains footstep priority")
+    print("PASS opening wind: continuous beneath footsteps; normal gameplay priority retained")
+    # Variation is prebuilt and preserved by the same distance-filter/cache path as other SFX.
+    assert(sfx.individuals.len() == 5)
+    loop bank in sfx.individuals:
+        assert(bank.len() == 4)
+        loop i in [1..bank.len()):
+            assert(data(bank[i].samples) != data(bank[i - 1].samples), "individual samples differ")
+        loop sample in bank:
+            registered = false
+            loop variation in sfx_takes:
+                alias = false
+                loop source in variation.sources:
+                    if data(source.samples) == data(sample.samples): alias = true
+                if not alias: continue
+                registered = true
+                assert(variation.takes.len() == 4, "four articulations per animal identity")
+                loop take in variation.takes:
+                    filtered = false
+                    loop colour in sfx_spatial:
+                        if data(colour.source.samples) == data(take.samples): filtered = true
+                    assert(filtered, "each individual articulation has distance/wall colour")
+            assert(registered, "individual identity resolves to varied articulations")
+    loop name in ["boar", "fox", "crow", "bokoblin"]: creature_capture(name, "")
+    reset()
+    shrine_hum = 0.35
+    ambient_update(0.0, 1.0, -100.0, 0.0)
+    hum_level = 0.0
+    loop voice in __voices:
+        if voice.id == amb.hum: hum_level = f64(voice.volume)
+    assert(hum_level > 2.0 and hum_level < 2.3, "chamber hum lifted into the mix at production control")
+    shrine_hum = 0.12
+    ambient_update(0.0, 1.0, -100.0, 0.0)
+    loop voice in __voices:
+        if voice.id == amb.hum: assert(f64(voice.volume) < 0.13, "Resurrection passage retains its quiet hum")
+    assert(mkdir("build/soundscape-check"))
+    asset = sfx_asset()
+    assert(audio_asset_write("build/soundscape-check/audio.bin", 58, asset))
+    loaded = audio_asset_read("build/soundscape-check/audio.bin", 58)
+    assert(loaded != none)
+    loop index in [33, 34]:
+        assert(asset.groups[index].len() == 4, "four prebuilt gust takes per layer")
+        assert(loaded!.groups[index].len() == 4, "prepared gust bank survives")
+        loop j in [0..4):
+            take = asset.groups[index][j]
+            assert(loaded!.groups[index][j].samples == take.samples, "gust samples lossless")
+            assert(abs(take.samples[0]) < 0.00001 and abs(take.samples[take.samples.len() - 1]) < 0.00001, "gust endpoints fade to silence")
+            loop k in [0..j):
+                assert(take.samples != asset.groups[index][k].samples and duration(take) != duration(asset.groups[index][k]), "gust takes have distinct waveforms and durations")
+    reset()
+    amb.bird_t = 1000.0
+    amb.owl_t = 1000.0
+    amb.pond_t = 1000.0
+    previous = -1
+    starts = 0
+    intervals: f64[]
+    last_start = 0.0
+    last_id = 0
+    loop frame in [0..1800):
+        ambient_update(0.1, 0.0, 240.0, 0.0)
+        loop voice in __voices:
+            if voice.id != amb.wind_gust or voice.id == last_id: continue
+            assert(not voice.looping and voice.pitch >= 0.88 and voice.pitch <= 1.12, "gusts are bounded-rate one-shots")
+            pick = -1
+            loop i in [0..4):
+                if data(voice.sound.samples) == data(sfx.wind_gust_takes[i].samples): pick = i
+            assert(pick >= 0 and pick != previous, "gusts never repeat consecutive takes")
+            if starts > 0: intervals.push(f64(frame) * 0.1 - last_start)
+            last_start = f64(frame) * 0.1
+            last_id = voice.id
+            previous = pick
+            starts += 1
+        __mix(4800)
+    assert(starts >= 8 and starts <= 20 and max(intervals) - min(intervals) > 3.0, "gust clocks have irregular bounded intervals")
+    print("PASS gust variation: {starts} non-looping events in 180 s; no consecutive repeat; four distinct envelopes/filter sweeps per layer; lossless prepared banks")
+    loop index in [51..59):
+        assert(loaded!.groups[index].len() == asset.groups[index].len(), "prepared natural/individual bank survives")
+        loop j in [0..asset.groups[index].len()):
+            assert(loaded!.groups[index][j].samples == asset.groups[index][j].samples, "prepared natural/individual samples lossless")
+    print("PASS soundscape: day/night/snow species, localized alternating pond dusk calls, altitude gust gain, 20 individual voices with spatial colours, lossless prepared banks")
+
+soundscape_check()

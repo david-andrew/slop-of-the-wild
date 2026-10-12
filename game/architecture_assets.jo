@@ -1,0 +1,294 @@
+use 'mesh_assets.jo'
+use 'asset_stream.jo'
+use 'worldgen.jo'
+use 'water_render.jo'
+use 'farland.jo'
+use 'structures.jo'
+use 'build.jo'
+use 'physics.jo'
+use 'interiors.jo'
+use 'terrain.jo'
+use 'shrines.jo'
+from 'build.jo' import __bchunks, __named_b
+from 'physics.jo' import __col_grid, __rain_faces, __rain_grid, __rain_visual, __rain_names, __rain_owners, __rain_hidden, __rain_lift
+from 'structures.jo' import __cliff_grid, __cliff_install_collision, __cliff_finish, __wall_actors
+from 'shrines.jo' import __keh_cols, __shr_log
+
+# Static architecture includes the interior, castled far scenery, roof maps,
+# exact cliff triangles, broad-phase indices and mutable collider ownership.
+# Decode into an isolated snapshot: partial reads never replace a live world.
+pack_value = (s: mut AssetStream, x: mut Builder, writing: bool):
+    pack_array(s, x.verts, writing)
+    pack_array(s, x.idx, writing)
+pack_array = (s: mut AssetStream, xs: mut Builder[], writing: bool):
+    n = xs.len()
+    pack_count(s, n, writing)
+    if not s.ok or n > 65536:
+        s.ok = false
+        return
+    zero: Builder
+    if not writing: xs = fill(zero, n)
+    loop mut x in xs: pack_value(s, x, writing)
+
+pack_value = (s: mut AssetStream, x: mut RainCell, writing: bool):
+    pack_array(s, x.heights, writing)
+    pack_array(s, x.moving, writing)
+pack_array = (s: mut AssetStream, xs: mut RainCell[], writing: bool):
+    n = xs.len()
+    pack_count(s, n, writing)
+    if not s.ok or n > 65536:
+        s.ok = false
+        return
+    zero: RainCell
+    if not writing: xs = fill(zero, n)
+    loop mut x in xs: pack_value(s, x, writing)
+
+pack_value = (s: mut AssetStream, x: mut Zone, writing: bool):
+    pack_value(s, x.name, writing)
+    pack_value(s, x.lo, writing)
+    pack_value(s, x.hi, writing)
+pack_array = (s: mut AssetStream, xs: mut Zone[], writing: bool):
+    n = xs.len()
+    pack_count(s, n, writing)
+    if not s.ok or n > 65536:
+        s.ok = false
+        return
+    zero: Zone
+    if not writing: xs = fill(zero, n)
+    loop mut x in xs: pack_value(s, x, writing)
+
+pack_value = (s: mut AssetStream, x: mut Shrine, writing: bool):
+    pack_value(s, x.name, writing)
+    pack_value(s, x.pos, writing)
+    pack_value(s, x.rot, writing)
+    pack_value(s, x.terminal, writing)
+    pack_value(s, x.done, writing)
+    pack_value(s, x.activated, writing)
+pack_array = (s: mut AssetStream, xs: mut Shrine[], writing: bool):
+    n = xs.len()
+    pack_count(s, n, writing)
+    if not s.ok or n > 65536:
+        s.ok = false
+        return
+    zero: Shrine
+    if not writing: xs = fill(zero, n)
+    loop mut x in xs: pack_value(s, x, writing)
+
+pack_map = (s: mut AssetStream, xs: mut {int: Builder}, writing: bool):
+    keys: int[]
+    if writing:
+        loop k, v in xs: keys.push(k)
+        keys = sorted(keys)
+    pack_array(s, keys, writing)
+    if not s.ok or keys.len() > 1000000:
+        s.ok = false
+        return
+    if not writing: xs = {}
+    loop key in keys:
+        value: Builder
+        if writing: value = xs[key]
+        pack_value(s, value, writing)
+        if not s.ok: return
+        if not writing: xs[key] = value
+
+pack_map = (s: mut AssetStream, xs: mut {str: Builder}, writing: bool):
+    keys: str[]
+    if writing:
+        loop k, v in xs: keys.push(k)
+        keys = sorted(keys)
+    pack_array(s, keys, writing)
+    if not s.ok or keys.len() > 1000000:
+        s.ok = false
+        return
+    if not writing: xs = {}
+    loop key in keys:
+        value: Builder
+        if writing: value = xs[key]
+        pack_value(s, value, writing)
+        if not s.ok: return
+        if not writing: xs[key] = value
+
+pack_map = (s: mut AssetStream, xs: mut {int: RainCell}, writing: bool):
+    keys: int[]
+    if writing:
+        loop k, v in xs: keys.push(k)
+        keys = sorted(keys)
+    pack_array(s, keys, writing)
+    if not s.ok or keys.len() > 1000000:
+        s.ok = false
+        return
+    if not writing: xs = {}
+    loop key in keys:
+        value: RainCell
+        if writing: value = xs[key]
+        pack_value(s, value, writing)
+        if not s.ok: return
+        if not writing: xs[key] = value
+
+struct ArchitectureAsset:
+    order: int[]
+    bounds: {int: (vec3, vec3)}
+    chunks: {int: Builder}
+    named: {str: Builder}
+    cliffs: Builder[]
+    clo: vec3[]
+    chi: vec3[]
+    counts: int[]
+    front: int[]
+    triangles: CliffTriangle[]
+    cliff_grid: {int: int[]}
+    cols: Collider[]
+    col_grid: {int: int[]}
+    rain_faces: RainFace[]
+    rain_grid: {int: int[]}
+    rain_visual: {int: RainCell}
+    rain_names: str[]
+    rain_owners: {str: int}
+    rain_hidden: bool[]
+    rain_lift: f64[]
+    zones: Zone[]
+    shrines: Shrine[]
+    far_shrines: vec3[]
+    wall_actors: vec3[]
+    tower_cols: int[]
+    tower_bases: vec3[]
+    tents: vec3[]
+    tent_cols: int[]
+    rocks: vec4[]
+    burn: u8[]
+    keh: int[]
+    rng: Rng
+
+architecture_snapshot = () -> ArchitectureAsset:
+    build_prepare_bounds()
+    ArchitectureAsset(
+        order = build_chunk_order,
+        bounds = build_chunk_bounds,
+        chunks = __bchunks,
+        named = __named_b,
+        cliffs = cliff_surfaces,
+        clo = cliff_lo,
+        chi = cliff_hi,
+        counts = cliff_counts,
+        front = cliff_front_vertices,
+        triangles = cliff_triangles,
+        cliff_grid = __cliff_grid,
+        cols = colliders,
+        col_grid = __col_grid,
+        rain_faces = __rain_faces,
+        rain_grid = __rain_grid,
+        rain_visual = __rain_visual,
+        rain_names = __rain_names,
+        rain_owners = __rain_owners,
+        rain_hidden = __rain_hidden,
+        rain_lift = __rain_lift,
+        zones = zones,
+        shrines = shrines,
+        far_shrines = far_shrines,
+        wall_actors = __wall_actors,
+        tower_cols = tower_colliders,
+        tower_bases = tower_col_bases,
+        tents = camp_tents,
+        tent_cols = camp_tent_colliders,
+        rocks = sor_rocks,
+        burn = burn_px,
+        keh = [__keh_cols.0, __keh_cols.1],
+        rng = __global_rng)
+
+architecture_io = (s: mut AssetStream, x: mut ArchitectureAsset, writing: bool):
+    pack_array(s, x.order, writing)
+    pack_map(s, x.bounds, writing)
+    pack_map(s, x.chunks, writing)
+    pack_map(s, x.named, writing)
+    pack_array(s, x.cliffs, writing)
+    pack_array(s, x.clo, writing)
+    pack_array(s, x.chi, writing)
+    pack_array(s, x.counts, writing)
+    pack_array(s, x.front, writing)
+    pack_array(s, x.triangles, writing)
+    pack_map(s, x.cliff_grid, writing)
+    pack_array(s, x.cols, writing)
+    pack_map(s, x.col_grid, writing)
+    pack_array(s, x.rain_faces, writing)
+    pack_map(s, x.rain_grid, writing)
+    pack_map(s, x.rain_visual, writing)
+    pack_array(s, x.rain_names, writing)
+    pack_map(s, x.rain_owners, writing)
+    pack_array(s, x.rain_hidden, writing)
+    pack_array(s, x.rain_lift, writing)
+    pack_array(s, x.zones, writing)
+    pack_array(s, x.shrines, writing)
+    pack_array(s, x.far_shrines, writing)
+    pack_array(s, x.wall_actors, writing)
+    pack_array(s, x.tower_cols, writing)
+    pack_array(s, x.tower_bases, writing)
+    pack_array(s, x.tents, writing)
+    pack_array(s, x.tent_cols, writing)
+    pack_array(s, x.rocks, writing)
+    pack_array(s, x.burn, writing)
+    pack_array(s, x.keh, writing)
+    pack_value(s, x.rng, writing)
+
+architecture_key = () -> int:
+    own = asset_key(["game/architecture_assets.jo", "game/build.jo", "game/shrines.jo", "game/mesh_assets.jo", "game/fx.jo", "sloppy/lib/game/gpu.jo"])
+    int(__str_hash("{own}|{world_asset_key()}|{farland_asset_key()}|{water_asset_key()}"))
+architecture_write = (path: str = "assets/prepared/structures.bin") -> bool:
+    s = pack_create(path, architecture_key())
+    x = architecture_snapshot()
+    architecture_io(s, x, true)
+    pack_publish(s, path)
+architecture_load = (path: str = "assets/prepared/structures.bin") -> bool:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_NO_PREPARED_ASSETS") != none: return false
+    # Only the normal main startup calls this; geometry fixtures retain their own
+    # pad/hook/build sequence and use the inspectable production generators.
+    s = pack_open(path, architecture_key())
+    defer asset_close(s)
+    if not s.ok: return false
+    x: ArchitectureAsset
+    architecture_io(s, x, false)
+    if not s.ok or s.left != 0 or x.keh.len() != 2 or x.burn.len() != BURN_N * BURN_N * 4: return false
+    build_chunk_order = x.order
+    build_chunk_bounds = x.bounds
+    __bchunks = x.chunks
+    __named_b = x.named
+    cliff_surfaces = x.cliffs
+    cliff_lo = x.clo
+    cliff_hi = x.chi
+    cliff_counts = x.counts
+    cliff_front_vertices = x.front
+    cliff_triangles = x.triangles
+    __cliff_grid = x.cliff_grid
+    colliders = x.cols
+    __col_grid = x.col_grid
+    __rain_faces = x.rain_faces
+    __rain_grid = x.rain_grid
+    __rain_visual = x.rain_visual
+    __rain_names = x.rain_names
+    __rain_owners = x.rain_owners
+    __rain_hidden = x.rain_hidden
+    __rain_lift = x.rain_lift
+    zones = x.zones
+    shrines = x.shrines
+    far_shrines = x.far_shrines
+    __wall_actors = x.wall_actors
+    tower_colliders = x.tower_cols
+    tower_col_bases = x.tower_bases
+    camp_tents = x.tents
+    camp_tent_colliders = x.tent_cols
+    sor_rocks = x.rocks
+    burn_px = x.burn
+    __global_rng = x.rng
+    __keh_cols = (x.keh[0], x.keh[1])
+    __shr_log = env("BOTW_SHRINE_LOG") != none
+    loop mut r in srec:
+        loop i in 0.. and shrine in shrines:
+            if shrine.name == r.name: r.entry = i
+        r.checkpoint = r.o
+    burn_dirty = true
+    # Full initial map upload, with normal incremental updates afterwards.
+    burn_reset_bounds()
+    __cliff_install_collision()
+    build_finish()
+    __cliff_finish()
+    if env("BOTW_LOADTIME") != none: eprint("prepared structures: hit")
+    true

@@ -1,0 +1,349 @@
+# Appended to the Round 65 fixture prelude by defect_hunt_check.py.
+from '../../game/enemies.jo' import __guardian
+from '../../game/trees.jo' import __tree_active
+use '../../tools/traversal_course.jo'
+
+second_pass = (name: str):
+    if name == "long-session": long_session()
+    if name == "held-gear":
+        lit = false
+        inv_add("pot_lid")
+        inv_add("travelers_bow")
+        bonfires.push(Bonfire(pl.pos + vec3(0, 1.1, -0.45)))
+        press(.k)
+        loop i in [0..900):
+            combat_update(DT, (i: int) -> vec3: vec3(0, 0, -3), 0)
+            player_torch_update(DT, lit)
+        check(inv.shields.len() == 0, "wooden shield held in fire is consumed")
+        press(.l)
+        loop i in [0..900):
+            combat_update(DT, (i: int) -> vec3: vec3(0, 0, -3), 0)
+            player_torch_update(DT, lit)
+        check(inv.bows.len() == 0 and fight.act != .aim, "wooden bow held in fire is consumed and aim cancelled")
+        inv_add("pot_lid")
+        inv_add("pot_lid")
+        shield_el = CarriedElem(id = "pot_lid", revision = inv.shield_revision, el = Elem(burning = 0.05))
+        player_torch_update(0.05, lit)
+        player_torch_update(0.05, lit)
+        check(inv.shields.len() == 1 and not burning(shield_el.el), "burnt shield does not transfer fire to an identical spare")
+        shield_el.el.burning = 2.0
+        pl.state = .swim
+        player_torch_update(DT, lit)
+        check(not burning(shield_el.el) and inv.shields.len() == 1, "swimming douses carried shield without consuming it")
+    if name == "arrow-water":
+        water_grid_set(fill(f32(1), 4096), 64, -32.0, -32.0, 1.0)
+        arrows.push(Arrow(vec3(0, 1.5, 0), vec3(0, -15, 0), 5.0, fire = true))
+        arrows_update(0.05)
+        elements_update(0.05, pl.pos)
+        check(not arrows[0].fire, "burning arrow crossing water is extinguished before heat query")
+        check(heat_at(arrows[0].pos) == 0.0, "submerged arrow emits no heat")
+    if name == "skull-water" or name == "skull-fire":
+        e = spawn_enemy(.stalkoblin, vec3(8, 0, 0))
+        stalk_detach(enemies[e], vec3(9, 0, 0), 0.0)
+        enemies[e].skull_pos = vec3(0, 0.29, 0)
+        enemies[e].skull_vel = vec3(0, 0, 0)
+        if name == "skull-water":
+            wl = fill(f32(-10000), 4096)
+            loop z in [30..35):
+                loop x in [30..35): wl[z * 64 + x] = 2.0
+            water_grid_set(wl, 64, -32.0, -32.0, 1.0)
+        else: bonfires.push(Bonfire(vec3(0, 0, 0)))
+        loop i in [0..180):
+            enemies_update(DT, true)
+            elements_update(DT, pl.pos)
+        check(not enemy_alive(enemies[e]), "detached Stalkbonk skull destroyed by {(if name == "skull-water": "deep water" else: "fire")}")
+    if name == "item-wall":
+        add_box(vec3(0, 0, 0), vec3(8, 2, 0.02))
+        wi = spawn_item("travelers_sword", vec3(0, 1, 1), vec3(0, 0, -40))
+        items_physics(0.05)
+        check(witems[wi].pos.z > 0.1, "loose weapon cannot cross a 4cm wall at 20Hz")
+    if name == "guardian-cover":
+        pl.pos = vec3(0, 0, -10)
+        g = spawn_enemy(.guardian, vec3(0, 0, 0))
+        enemies[g].state = .laser
+        enemies[g].laser_t = 2.99
+        enemies[g].laser_target = pl.pos + vec3(0, 1, 0)
+        add_box(vec3(0, 0, -9.5), vec3(6, 2, 0.02))
+        __guardian(enemies[g], 0.05, 10.0)
+        check(pl.hp == 12 and enemies[g].state == .recover, "late thin cover blocks Old Sentinel beam and splash")
+    if name == "warm-expiry":
+        areas = fill(u8(47), 4096)
+        env = Env(hour = 12.0)
+        assert(is_snow_area(f64(pl.pos.x), f64(pl.pos.z)))
+        inv_add("pepper")
+        menu(3, 0, .e)
+        assert(warm_t == 150.0 and count_of("pepper") == 0)
+        warm_t = 0.025
+        elements_update(0.05, pl.pos)
+        check(abs(cold_dmg_t - 0.025) < 0.00001, "cold clock starts only after warmth expires within a frame")
+    if name == "rate-combat":
+        chars_init()
+        inv_add("travelers_sword")
+        loop hz in [20, 240]:
+            loop hitch in [0.0, 0.25, 0.5]:
+                dt = 1.0 / f64(hz)
+                loop mut c in colliders: c.active = false
+                witems.clear()
+                arrows.clear()
+                enemies.clear()
+                fight = Fight()
+                pl = Player(pos = vec3(0, 0, 0))
+                e = spawn_enemy(.blue_bokoblin, vec3(0, 0, -1.35), "boko_club")
+                enemies[e].state = .chase
+                enemies[e].alert = 1.0
+                t = 0.0
+                first = true
+                stalled = false
+                loop t < 1.5:
+                    step = dt
+                    if not stalled and t >= 0.08 and hitch > 0.0:
+                        step = hitch
+                        stalled = true
+                    keys()
+                    __key_pressed[int(Key.j)] = first
+                    input_update(step, false)
+                    combat_update(step, enemy_pos, enemies.len())
+                    hero_animate(step, 0.0)
+                    hero_blade_hits()
+                    enemies_take_hits()
+                    t += step
+                    first = false
+                check(enemies[e].hp == 67.0 and fight.swing_id == 1, "one melee hit at {hz}Hz with {hitch:.2}s hitch (HP {enemies[e].hp})")
+                enemies.clear()
+                pl = Player(pos = vec3(0, 0, 10))
+                e = spawn_enemy(.blue_bokoblin, vec3(0, 0, -2), "boko_club")
+                enemies[e].state = .chase
+                arrows.clear()
+                arrows.push(Arrow(vec3(0, 1, 1), vec3(0, 0, -135), 5.0))
+                loop i in [0..hz): arrows_update(if i == 0 and hitch > 0.0: hitch else: dt)
+                check(enemies[e].hp == 67.0 and arrows.len() == 0, "swept arrow hits once at {hz}Hz with {hitch:.2}s hitch")
+                loop cover in [false, true]:
+                    enemies.clear()
+                    witems.clear()
+                    loop mut c in colliders: c.active = false
+                    e = spawn_enemy(.blue_bokoblin, vec3(0, 0, -2), "boko_club")
+                    enemies[e].state = .chase
+                    if cover: add_box(vec3(0, 0, -0.3), vec3(2, 2, 0.02))
+                    wi = spawn_item("travelers_sword", vec3(0, 1, 1), vec3(0, 0, -135))
+                    witems[wi].thrown_by_player = true
+                    witems[wi].damage = 5
+                    enemies_take_hits()
+                    loop i in [0..hz / 10 + 1):
+                        items_physics(if i == 0 and hitch > 0.0: hitch else: dt)
+                        enemies_take_hits()
+                    check(enemies[e].hp == (if cover: 72.0 else: 67.0) and not witems[wi].thrown_by_player, "throw hits once or retires at cover: {hz}Hz hitch={hitch:.2}s cover={cover}")
+    if name == "camera-spaces":
+        worldgen_load()
+        hf.mat = fill(u8(0), hf.n * hf.n * 4)
+        sor_interior()
+        temple()
+        shrines_build()
+        chars_init()
+        cave_mouth = SOR_MOUTH_IN
+        cave_in = normalize(vec3(-1128, 0, 1884) - vec3(SOR_MOUTH_IN.x, 0, SOR_MOUTH_IN.z))
+        points = [vec3(-1128, 237, 1885), vec3(-1113, 239.5, 1874), lp(TEMPLE, TEMPLE_ROT, 0.0, 0.0, 24.0), srec[0].o + vec3(6.8, 0, -4.0), srec[1].o + vec3(-6.7, 0, -4.0), srec[2].o + vec3(6.7, 0, -4.0), srec[3].o + vec3(6.7, 0, -4.0)]
+        loop i in [0..points.len()):
+            use_terrain = i == 2
+            cam_open_ground = i >= 2
+            pl = Player(pos = points[i])
+            cam = Cam()
+            camera_snap()
+            worst = 0.0
+            peak = 0.0
+            loop frame in [0..720):
+                keys()
+                __key_down[int(Key.right)] = true
+                input_update(DT, false)
+                old = cam.pos
+                camera_update(DT)
+                worst = max(worst, tr_lens_overlap(cam.pos))
+                if frame > 0: peak = max(peak, f64(length(cam.pos - old)))
+            check(worst < 0.001, "camera lens clears production cave/roof/shrine space {i} (overlap {worst:.6}m, step {peak:.3}m)")
+    if name == "camera-water":
+        water_grid_set(fill(f32(2), 4096), 64, -32.0, -32.0, 1.0)
+        pl = Player(pos = vec3(0, 1.7, 0), state = .swim, water_y = 2.0)
+        plant()
+        cam = Cam(pitch = -0.6)
+        camera_snap()
+        finite = true
+        underwater = false
+        loop i in [0..360):
+            keys()
+            __key_down[int(Key.right)] = true
+            input_update(DT, false)
+            camera_update(DT)
+            finite = finite and length(cam.pos) < 100.0
+            if cam.pos.y < 2.0: underwater = true
+        check(finite and underwater, "camera can orbit through foliage and below water without invalid positions")
+    if name == "element-physics":
+        plant()
+        ti = tree_record(0)
+        tree_states[ti].phase = 2
+        tree_states[ti].col = places[0].col
+        tree_states[ti].pos = vec3(0, 0.25, 0)
+        tree_states[ti].el.burning = 8.0
+        water_grid_set(fill(f32(2), 4096), 64, -32.0, -32.0, 1.0)
+        __tree_active.push(ti)
+        trees_update(DT, pl.pos)
+        check(not burning(tree_states[ti].el), "burning submerged log is doused by water")
+        inv_add("travelers_sword")
+        env = Env(weather = .storm, rain = 1.0)
+        assert(lightning_begin())
+        menu(0, 0, .x)
+        wi = witems.len() - 1
+        items_physics(0.05)
+        lightning_warn = 0.01
+        elements_update(0.05, pl.pos)
+        check(lightning_warn <= 0.0 and strike_id == 1 and strike_wet and witems[wi].alive, "dropped metal warning strikes water and keeps one world weapon")
+        pl = Player(pos = vec3(20, 0, 20))
+        bonfires.push(Bonfire(vec3(20, 0, 19), pot = true))
+        inv_add("apple")
+        inv_hold("apple")
+        seed_random(17)
+        loop i in [0..1800): elements_update(DT, pl.pos)
+        check(not bonfires[0].lit, "rain extinguishes open cooking fire")
+        before = inv.held.len()
+        press(.e)
+        cook_at_pot()
+        check(inv.held.len() == before and __cook_t == 0.0 and count_of("dish_apple") == 0, "cooking at extinguished pot keeps ingredients")
+    if name == "enemy-edge":
+        e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+        enemies[e].state = .knocked
+        enemies[e].vel = vec3(3, 1, 0)
+        water_grid_set(fill(f32(2), 4096), 64, -32.0, -32.0, 1.0)
+        enemies_update(0.05, false)
+        check(not enemy_alive(enemies[e]), "knocked Bonkoblin drowns without recovering")
+        enemies.clear()
+        e = spawn_enemy(.stalkoblin, vec3(0, 0, 0))
+        enemies[e].state = .chase
+        enemies_update(0.05, true)
+        check(not enemy_alive(enemies[e]), "attached Stalkbonk body cannot reassemble through drowning")
+        water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+        enemies.clear()
+        e = spawn_enemy(.bokoblin, vec3(0, 20, 0))
+        enemies[e].state = .knocked
+        loop i in [0..80): enemies_update(0.05, false)
+        check(not enemy_alive(enemies[e]), "cliff fall applies lethal landing damage")
+        enemies.clear()
+        e = spawn_enemy(.blue_bokoblin, vec3(0, 0, -4), "boko_club")
+        enemies[e].alert = 1.0
+        enemies[e].state = .chase
+        pl = Player(pos = vec3(0, 8, 0), state = .climb)
+        loop i in [0..400): enemies_update(0.05, false)
+        check(pl.hp == 12 and abs(f64(enemies[e].pos.y)) < 0.01, "climbing target does not lift ground enemy or take unreachable melee damage")
+        pl.state = .glide
+        loop i in [0..400): enemies_update(0.05, false)
+        check(pl.hp == 12 and abs(f64(enemies[e].pos.y)) < 0.01, "gliding target does not lift ground enemy or take unreachable melee damage")
+        enemies.clear()
+        pl = Player(pos = vec3(0, 0, 30))
+        a = spawn_enemy(.blue_bokoblin, vec3(0, 0, -10), "boko_club")
+        b = spawn_enemy(.bokoblin, vec3(3, 0, -10), "boko_club")
+        arrow = Arrow(enemies[a].pos + vec3(0, 1, 0), vec3(0, 0, -30), 2.0)
+        enemy_arrow_hit(arrow, a)
+        check(enemies[b].alert == 1.0 and enemies[b].state == .notice, "far bow hit alerts nearby camp through accepted hit")
+    if name == "enemy-bank":
+        wl = fill(f32(-10000), 4096)
+        loop z in [0..64):
+            loop x in [34..64): wl[z * 64 + x] = 2.0
+        water_grid_set(wl, 64, -32.0, -32.0, 1.0)
+        pl = Player(pos = vec3(15, 2, 0), state = .swim)
+        e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+        enemies[e].face = PI / 2.0
+        enemies[e].state = .chase
+        enemies[e].alert = 1.0
+        loop i in [0..600): enemies_update(0.05, false)
+        check(enemy_alive(enemies[e]) and water_depth(f64(enemies[e].pos.x), f64(enemies[e].pos.z)) <= 0.9, "ground pursuit stops at deep water while Link swims")
+    if name == "talus-edge":
+        loop z in [0..64):
+            loop x in [34..64): hf.h[z * 64 + x] = -30.0
+        pl = Player(pos = vec3(15, 0, 0))
+        e = spawn_enemy(.talus, vec3(0, 0, 0))
+        enemies[e].face = PI / 2.0
+        enemies[e].state = .chase
+        talus_sync(enemies[e], false)
+        safe = true
+        loop i in [0..800):
+            enemies_update(0.05, false)
+            safe = safe and enemies[e].pos.y > -0.25 and enemies[e].pos.x < 2.0
+        check(safe and enemy_alive(enemies[e]), "Talus chase keeps support at cliff edge")
+        # A nearby wall and an obstructed lock target exercise the actual lens solve.
+        loop mut c in colliders: c.active = false
+        pl = Player(pos = vec3(0, 0, 6))
+        cam = Cam()
+        camera_snap()
+        add_box(vec3(0, 0, 9), vec3(8, 4, 0.1))
+        add_box(vec3(0, 0, 3), vec3(8, 4, 0.1))
+        inv_add("pot_lid")
+        worst = 0.0
+        loop i in [0..600):
+            press(.k)
+            combat_update(DT, enemy_pos, enemies.len())
+            camera_update(DT)
+            worst = max(worst, tr_lens_overlap(cam.pos))
+        check(worst < 0.001 and cam.locked, "lock-on Talus behind obstacle keeps lens outside adjacent wall")
+    if name == "shrine-fight":
+        shrines_build()
+        shrines_setup()
+        e = spawn_enemy(.blue_bokoblin, vec3(0, 0, 18), "boko_club")
+        enemies[e].state = .chase
+        enemies[e].alert = 1.0
+        before = enemies[e].hp
+        __start_trans(1, 0)
+        loop i in [0..1200):
+            use_terrain = zone_at(pl.pos + vec3(0, 1, 0)) == ""
+            env_update(DT, false)
+            shrines_update(DT)
+            player_update(DT)
+            enemies_update(DT, false)
+        check(shr_cur == 0 and pl.hp == 12 and enemies[e].hp == before and not in_combat(), "entering shrine separates live fight from interior")
+        __start_trans(2, 0)
+        loop i in [0..1200):
+            use_terrain = zone_at(pl.pos + vec3(0, 1, 0)) == ""
+            env_update(DT, false)
+            shrines_update(DT)
+            player_update(DT)
+            enemies_update(DT, false)
+        check(shr_cur < 0 and enemies.len() == 1 and enemies[e].hp == before and enemy_alive(enemies[e]), "return preserves exactly one live encounter")
+    if name == "blast":
+        pl.pos = vec3(20, 0, 20)
+        e = spawn_enemy(.talus, vec3(0, 0, 0))
+        enemies[e].state = .chase
+        talus_sync(enemies[e], false)
+        plant()
+        ti = tree_record(0)
+        tree_states[ti].phase = 2
+        tree_states[ti].pos = vec3(5, 0.4, 0)
+        tree_states[ti].col = places[0].col
+        collider_relocate(tree_states[ti].col, vec3(5, 0, 0), vec3(0.3, 0.3, 2.5), 0.0)
+        __tree_active.push(ti)
+        wi = spawn_item("boko_club", vec3(3, 0.6, 0))
+        barrels.push(Barrel(vec3(3, 0, 1), false))
+        barrels.push(Barrel(vec3(3, 0, -1), true, fuse = 0.01))
+        before = enemies[e].hp
+        elements_update(0.05, pl.pos)
+        check(not barrels[1].alive and length(witems[wi].vel) > 0.0 and burning(witems[wi].el), "barrel blast impulses and ignites adjacent loose wood")
+        check(length(tree_states[ti].vel) > 0.0, "barrel blast gives adjacent physical log an impulse")
+        check(enemies[e].hp <= before and enemies[e].state != .dead and barrels[0].alive, "Talus blast respects stone body and nearby crate material")
+    if name == "wind-river":
+        env = Env(wind = vec2(3, 0))
+        wl = fill(f32(-10000), 4096)
+        loop z in [0..64):
+            loop x in [30..34): wl[z * 64 + x] = 2.0
+        water_grid_set(wl, 64, -32.0, -32.0, 1.0)
+        assert(ignite_at(vec3(-5, 0, 0)))
+        brands.push(Brand(vec3(-5, 4, 0), vec3(12, 1, 0)))
+        landed = false
+        river_safe = true
+        loop i in [0..180):
+            elements_update(DT, pl.pos)
+            loop f in flames:
+                p = cell_pos(f.cell)
+                river_safe = river_safe and water_depth(f64(p.x), f64(p.z)) <= 0.0
+                if p.x > 2.0: landed = true
+        check(river_safe, "wind spread never ignites river cells")
+        check(landed, "windborne brand starts a fire across the river")
+    print("{checks - failures}/{checks} second-pass checks: {name}")
+    if failures > 0: exit(1)
+
+setup()
+second_pass(args()[1])

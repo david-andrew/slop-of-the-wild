@@ -1,0 +1,273 @@
+use '../game/wildlife.jo'
+use '../game/gfx.jo'
+use '../game/talus.jo'
+use '../game/enemies.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/physics.jo'
+from '../game/physics.jo' import __col_grid
+use '../game/terrain.jo'
+use '../game/water.jo'
+use '../game/combat.jo'
+use '../game/env.jo'
+use '../game/input.jo'
+use '../game/worldgen.jo'
+
+# Shared by fauna and integration; all controller/combat queries are production code.
+talus_checks = 0
+talus_failures = 0
+talus_check = (ok: bool, name: str):
+    talus_checks += 1
+    if not ok: talus_failures += 1
+    print("{(if ok: "PASS" else: "FAIL")} talus {name}")
+
+talus_course = () -> int:
+    colliders.clear()
+    __col_grid = {}
+    enemies.clear()
+    player_hits.clear()
+    witems.clear()
+    animals.clear()
+    inv = Inventory()
+    fight = Fight()
+    act = Actions()
+    env.rain = 0.0
+    hf.n = 96
+    hf.cell = 1.0
+    hf.x0 = -48.0
+    hf.z0 = -48.0
+    hf.h = fill(f32(0), 9216)
+    hf.mat = fill(u8(0), 9216 * 4)
+    edge_sd = fill(f32(-100), 9216)
+    areas = fill(u8(46), 9216)
+    water_grid_set(fill(f32(-10000), 9216), 96, -48.0, -48.0, 1.0)
+    use_terrain = true
+    pl = Player(pos = vec3(0,0,20))
+    spawn_enemy(.talus, vec3(0,0,0))
+
+talus_test_suite = ():
+    items_init()
+    loop hz in [30,60,120]:
+        dt = 1.0 / f64(hz)
+        e = talus_course()
+        loop k in [0..hz*2): enemies_update(dt, false)
+        talus_check(enemies[e].state == .sleep and enemies[e].pos == vec3(0,0,0) and enemies[e].talus_shake == 0.0 and not in_combat(), "dormant until approach {hz}Hz")
+        pl.pos = vec3(0,0,6.5)
+        enemies_update(dt, false)
+        talus_check(enemies[e].state == .notice and in_combat(), "reveal starts combat cue {hz}Hz")
+        loop k in [0..hz*3): enemies_update(dt, false)
+        talus_check(enemies[e].state != .sleep and enemies[e].state != .notice and enemy_pos(e).y > 4.8 and in_combat(), "revealed ore and combat cue {hz}Hz")
+        enemies[e].state = .stagger
+        talus_check(in_combat(),"boss music persists through ore stagger {hz}Hz")
+        # A player standing on the dormant mound rises with its changing deck height.
+        e = talus_course()
+        col = enemies[e].talus_col+2
+        p = colliders[col]
+        pl = Player(pos=p.pos+vec3(0.4,2*p.half.y,0),ground=Ground(y=f64(p.pos.y+2*p.half.y),collider=col))
+        clearance = 0.0
+        loop k in [0..hz*3):
+            player_update(dt)
+            enemies_update(dt,false)
+            p = colliders[col]
+            clearance=max(clearance,abs(f64(pl.pos.y-p.pos.y-2*p.half.y)))
+        talus_check(pl.state==.ground and clearance<0.0001,"reveal carries standing rider clearance={clearance:.6} {hz}Hz")
+        # Approach the rear face using the normal controller; climb and mantle the deck.
+        enemies[e].state = .chase
+        enemies[e].t = 0.0
+        enemies[e].pos = vec3(0,0,0)
+        enemies[e].face = 0.0
+        enemies[e].talus_shake = 0.0
+        talus_sync(enemies[e], false)
+        pl = Player(pos = vec3(0,0,2), face = 0.0)
+        act = Actions(move = vec2(0,1))
+        cam_yaw_global = 0.0
+        climbed = false
+        mantled = false
+        loop k in [0..hz*11):
+            player_update(dt)
+            enemies_update(dt, false)
+            if pl.state == .climb: climbed = true
+            if pl.state == .mantle: mantled = true
+            if pl.state == .ground and pl.pos.y > 4.4: break
+        talus_check(climbed and mantled and pl.state == .ground and pl.pos.y > 4.4 and pl.stamina < 1000.0 and pl.stamina > 0.0, "production climb drains stamina and mantles {hz}Hz pos={pl.pos} stamina={pl.stamina:.2}")
+        talus_check(pl.pos.y>6.0 and pl.pos.y<8.0 and f64(pl.pos.y)/HEIGHT>3.5, "shoulder towers over hero in metres {hz}Hz height={pl.pos.y}")
+        # Catch the real rear wall, then hold idle through two periodic heaves.
+        e = talus_course()
+        enemies[e].state=.chase
+        enemies[e].face=0.0
+        talus_sync(enemies[e],false)
+        pl=Player(pos=vec3(0,0,2),face=0.0)
+        act=Actions(move=vec2(0,1))
+        loop k in [0..hz):
+            player_update(dt)
+            enemies_update(dt,false)
+            if pl.state==.climb: break
+        talus_check(pl.state==.climb,"idle grip begins through production catch {hz}Hz")
+        act=Actions()
+        grip_stamina=pl.stamina
+        shakes=0
+        idle_from=pl.pos
+        idle_motion=0.0
+        loop k in [0..hz*14):
+            player_update(dt)
+            enemies_update(dt,false)
+            if pl.events.contains("talus_shake"): shakes+=1
+            idle_motion=max(idle_motion,f64(length(pl.pos-idle_from)))
+        talus_check(pl.state==.climb and talus_owns(enemies[e],pl.climb_col) and shakes==2 and abs(pl.stamina-(grip_stamina-240.0))<0.01 and idle_motion>0.04,"held idle grip survives two moving shakes {hz}Hz shakes={shakes} stamina={pl.stamina:.2} motion={idle_motion:.3}")
+        # Move and turn across a spatial cell. Rider stays in the collider's frame.
+        act = Actions()
+        e = talus_course()
+        enemies[e].state = .chase
+        enemies[e].pos = vec3(15.5,0,0)
+        talus_sync(enemies[e], false)
+        col = enemies[e].talus_col + 2
+        p = colliders[col]
+        pl = Player(pos = p.pos + vec3(0.4,2*p.half.y,0.1), ground = Ground(y = f64(p.pos.y+2*p.half.y), collider = col), grounded = true)
+        local = transform_point(inverse(translation(p.pos)*rotation_y(p.yaw)),pl.pos)
+        drift = 0.0
+        loop k in [0..hz*2):
+            player_update(dt)
+            enemies[e].pos.x += f32(dt*0.8)
+            enemies[e].face += dt*0.35
+            talus_sync(enemies[e])
+            p = colliders[col]
+            now = transform_point(inverse(translation(p.pos)*rotation_y(p.yaw)),pl.pos)
+            drift = max(drift,f64(length(now-local)))
+        talus_check(pl.state == .ground and drift < 0.001 and pl.ground.collider == col, "standing ride crosses grid cell drift={drift:.6} {hz}Hz")
+        # Held wall and mantle grips rotate/translate with exactly the same body.
+        loop state in [PState.climb,PState.mantle]:
+            p = colliders[col]
+            pl = Player(pos = p.pos + vec3(0,0.3,1.5), state = state, climb_col = col, climb_n = vec3(0,0,1), mantle_from = p.pos, mantle_to = p.pos+vec3(0,1.6,0), mantle_hands = [p.pos+vec3(-0.2,1.6,1),p.pos+vec3(0.2,1.6,1)])
+            old = pl
+            enemies[e].face += 0.23
+            enemies[e].pos += vec3(0.2,0.1,0.3)
+            delta = translation(enemies[e].pos)*rotation_y(-0.23)*translation((enemies[e].pos-vec3(0.2,0.1,0.3))*-1.0)
+            talus_sync(enemies[e])
+            talus_check(length(pl.pos-transform_point(delta,old.pos)) < 0.0001 and length(pl.climb_n-transform_dir(delta,old.climb_n)) < 0.0001 and (state != .mantle or length(pl.mantle_hands[0]-transform_point(delta,old.mantle_hands[0])) < 0.0001), "moving {state} grips {hz}Hz")
+        # The cut-away upper torso corner used to be an invisible enclosing slab.
+        # A projectile through that space now passes; the middle back stays climbable.
+        e = talus_course()
+        enemies[e].state=.chase
+        talus_sync(enemies[e],false)
+        loop part in [0..TALUS_PARTS):
+            if talus_group(part)>=3: colliders[enemies[e].talus_col+part].active=false
+        exposed=raycast(vec3(2.35,4.3,3)*f32(TALUS_SCALE),vec3(0,0,-1),6.0*TALUS_SCALE,true,false)
+        talus_check(not exposed.hit,"irregular torso corner has no enclosing box {hz}Hz")
+        rear=raycast(vec3(0,3.8,3)*f32(TALUS_SCALE),vec3(0,0,-1),4.0*TALUS_SCALE,true,false)
+        talus_check(rear.hit and talus_owns(enemies[e],rear.collider),"drawn middle back remains solid {hz}Hz")
+        talus_sync(enemies[e],false)
+        top=talus_projectile_distance(enemies[e],vec3(0.8,8,-0.8)*f32(TALUS_SCALE),vec3(0.8,0,-0.8)*f32(TALUS_SCALE))
+        talus_check(top>2.0*TALUS_SCALE and top<5.0*TALUS_SCALE,"downward projectile meets drawn rock ledge {hz}Hz")
+        ore=talus_ore(enemies[e])
+        talus_check(talus_cover(enemies[e],ore-vec3(0,6,0),ore),"rock caps block ore hits from below {hz}Hz")
+        c=colliders[enemies[e].talus_col+2]
+        c.active=false
+        talus_check(not talus_ray(c,c.pos+vec3(0,5,0),vec3(0,-1,0),10.0).hit,"inactive rock caps disappear with solid {hz}Hz")
+        # Each fist's exact drawn center damages only its swept path, once per blow.
+        loop move in [0..4):
+            loop spot in ["contact","far","far_z","cover"]:
+                e = talus_course()
+                enemies[e].state = .attack
+                enemies[e].move = move
+                enemies[e].t = 0.0
+                sample = enemies[e]
+                sample.t = 0.48
+                fist = talus_part(sample,5+move%2).pos
+                pl.pos = vec3(fist.x,0,fist.z)
+                if spot == "far": pl.pos.x += 3.0
+                if spot == "far_z": pl.pos.z += 3.0
+                if spot == "cover": add_box(vec3(0,0,-2),vec3(6,4,0.1),climbable=false)
+                loop k in [0..int(f64(hz)*1.25)):
+                    pl.invuln = max(0.0,pl.invuln-dt)
+                    enemies_update(dt,false)
+                talus_check(pl.hp == (if spot == "contact":4 else:12), "fist {move} {spot} {hz}Hz hp={pl.hp}")
+        # Body chips / weak point accept the blade through shared cover rules.
+        e = talus_course()
+        enemies[e].state = .recover
+        talus_sync(enemies[e],false)
+        pl.pos = vec3(0,0,4)
+        body = PHit(vec3(0,1,1),vec3(0,1,3),vec3(0,0,-1),10.0,2.0,false,101,vec3(0,1,2),vec3(0,1,0))
+        player_hits = [body]
+        enemies_take_hits()
+        talus_check(enemies[e].hp == 299.0, "body chips one HP {hz}Hz hp={enemies[e].hp}")
+        ore = talus_ore(enemies[e])
+        player_hits = [PHit(ore,ore+vec3(0,0,2),vec3(0,0,-1),10.0,2.0,false,102,ore+vec3(0,0,1.5),ore-vec3(0,0,0.2))]
+        enemies_take_hits()
+        talus_check(enemies[e].hp == 289.0 and enemies[e].state == .stagger, "ore full damage opening {hz}Hz hp={enemies[e].hp}")
+        wall = add_box(ore+vec3(0,-1,1),vec3(2,2,0.05),climbable=false)
+        player_hits[0].id = 103
+        enemies_take_hits()
+        talus_check(enemies[e].hp == 289.0, "ore cover blocks blade {hz}Hz")
+        colliders[wall].active = false
+        # A thin wall can sit inside contact tolerance without touching the blade.
+        wall = add_box(ore+vec3(0,-0.4,0.25),vec3(0.8,0.8,0.025),climbable=false)
+        player_hits = [PHit(ore,ore+vec3(0,0,2),vec3(0,0,-1),10.0,2.0,false,104,ore+vec3(0,0,1.4),ore+vec3(0,0,0.4))]
+        enemies_take_hits()
+        talus_check(enemies[e].hp == 289.0,"ore tolerance cannot cross thin cover {hz}Hz")
+        colliders[wall].active = false
+        # Production arrow path: body beats its own cover; ore allows full damage.
+        arrow = Arrow(pos=ore+vec3(0,0,2),prev=ore+vec3(0,0,2),vel=v3(0.0,0.0,-3.0/dt),damage=12.0)
+        arrows = [arrow]
+        arrows_update(dt)
+        talus_check(enemies[e].hp == 277.0 and not arrows[0].alive, "ore arrow production path {hz}Hz hp={enemies[e].hp}")
+        # Shake warns first; stamina preserves a grip and exhaustion releases it.
+        enemies[e].state = .chase
+        enemies[e].talus_shake = 13.0
+        col = enemies[e].talus_col+2
+        p = colliders[col]
+        pl = Player(pos = p.pos+vec3(0,2*p.half.y,0), ground=Ground(collider=col),grounded=true)
+        player_hits.clear()
+        enemies_update(dt,false)
+        talus_check(enemies[e].state == .celebrate and pl.state == .ground,"shake telegraph {hz}Hz")
+        before_stamina = pl.stamina
+        loop k in [0..hz*2): enemies_update(dt,false)
+        talus_check(pl.state == .ground and pl.stamina == before_stamina-200.0,"stamina braces through shake {hz}Hz")
+        # Watch actual collision transforms over two seconds of attached idle.
+        origin = talus_boulder(enemies[e],2).pos
+        motion = 0.0
+        loop k in [0..hz*2):
+            enemies_update(dt,false)
+            motion=max(motion,f64(length(talus_boulder(enemies[e],2).pos-origin)))
+        talus_check(motion>0.04 and pl.state==.ground,"attached idle masses move {hz}Hz motion={motion:.3}")
+        enemies[e].talus_shake=4.3
+        pl.stamina=100.0
+        enemies_update(dt,false)
+        talus_check(enemies[e].state==.celebrate,"periodic shake retries {hz}Hz")
+        loop k in [0..hz*2): enemies_update(dt,false)
+        talus_check(pl.state == .air and pl.exhausted and length(pl.vel) > 4.0,"exhausted shake throws rider {hz}Hz")
+        before = pl.pos
+        enemies[e].pos.x += 1.0
+        talus_sync(enemies[e])
+        talus_check(pl.pos == before,"detached air not carried {hz}Hz")
+        # One accepted lethal hit crumbles all colliders, drops exactly six materials.
+        talus_hit(enemies[e],1000.0,pl.pos,true,talus_ore(enemies[e]))
+        talus_hit(enemies[e],1000.0,pl.pos,true,talus_ore(enemies[e]))
+        player_hits.clear()
+        loop k in [0..hz*2): enemies_update(dt,false)
+        solids = 0
+        loop part in [0..TALUS_PARTS):
+            if colliders[enemies[e].talus_col+part].active: solids += 1
+        talus_check(enemies[e].state == .gone and solids == 0 and witems.len() == 6,"death removes solids and drops once {hz}Hz")
+        loop mut w in witems:
+            talus_check(item(w.id).kind == .material and inv_add(w.id),"ore material pickup {w.id} {hz}Hz")
+            w.alive = false
+        talus_check(count_of("flint")==2 and count_of("amber")==3 and count_of("opal")==1,"modest inventory rewards {hz}Hz")
+    # Serialization-independent encounter restore; the save codec calls these hooks.
+    e = talus_course()
+    enemies[e].state = .attack
+    enemies[e].hp = 123.5
+    enemies[e].pos = vec3(2,0,3)
+    enemies[e].face = 0.6
+    enemies[e].t = 0.28
+    enemies[e].move = 3
+    enemies[e].talus_attacks = 7
+    enemies[e].talus_contact = true
+    records = talus_records()
+    enemies[e].hp = 300.0
+    enemies[e].state = .sleep
+    talus_restore(records)
+    talus_check(enemies[e].hp == 123.5 and enemies[e].state == .attack and enemies[e].t == 0.28 and enemies[e].move == 3 and enemies[e].talus_attacks == 7 and enemies[e].talus_contact and enemies[e].pos == vec3(2,0,3),"mid-fight encounter state restores exactly")
+    records[0].phase = 100
+    talus_check(not talus_record_valid(records[0]),"invalid encounter phase rejected")
+    print("talus suite: {talus_checks-talus_failures}/{talus_checks} passed")
+    assert(talus_failures==0)

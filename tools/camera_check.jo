@@ -1,0 +1,334 @@
+# Headless camera regression: render-only tower tubes and swept pillar clearance.
+use '../game/camera.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/structures.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/gfx.jo'
+use '../game/combat.jo'
+
+check_camera = ():
+    use_terrain = false
+    hf.n = 64
+    hf.cell = 2.0
+    hf.x0 = -600.0
+    hf.z0 = 1640.0
+    hf.h = fill(f32(172), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    tower_add_colliders()
+    tower_set_lift(0.0)
+    # A centre ray misses the edge of a thin pillar; the camera sweep must see it.
+    id = add_cyl(vec3(-590, 172, 1665), 0.2, 8.0)
+    target = vec3(-590.45, 175, 1661)
+    back = vec3(0, 0, 1)
+    assert(not raycast(target, back, 6.6, true, false).hit)
+    assert(camera_climb_clearance(target, back, 6.6) < 4.0)
+    colliders[id].active = false
+    assert(camera_climb_clearance(target, back, 6.6) == 6.6)
+    # The nominal boom crosses one splayed tower leg, which has no player collider.
+    a = PI * 0.5 + 0.4
+    pl.pos = TOWER + v3(cos(a) * 4.3, 3.0, sin(a) * 4.3)
+    pl.face = yaw_of(v3(-cos(a), 0, -sin(a)))
+    pl.state = .climb
+    pl.speed = 0.0
+    cam = Cam(yaw = pl.face, pitch = 0.22, dist_cur = 6.6)
+    cam.target = pl.pos + vec3(0, 1.2, 0)
+    blocked = camera_climb_clearance(cam.target, v3(cos(a) * cos(cam.pitch), sin(cam.pitch), sin(a) * cos(cam.pitch)), 6.6)
+    assert(blocked < 6.0)
+    last = cam.pos
+    peak = 0.0
+    loop frame in [0..480):
+        camera_update(1.0 / 60.0)
+        boom = f64(length(cam.pos - cam.target))
+        free = camera_climb_clearance(cam.target, normalize(cam.pos - cam.target), cam.dist_cur, false)
+        if free < boom - 0.25: print("frame {frame} boom {boom} free {free} pos {cam.pos} offset {cam.climb_offset} d {cam.climb_dist}")
+        assert(free >= boom - 0.25)
+        if frame > 0: peak = max(peak, f64(length(cam.pos - last)))
+        last = cam.pos
+    assert(abs(cam.climb_offset) > 0.15)
+    assert(peak < 0.7)
+    # Holding a stationary climb must settle, and release after leaving the wall.
+    held = cam.pos
+    loop frame in [0..120): camera_update(1.0 / 60.0)
+    assert(length(cam.pos - held) < 0.01)
+    pl.state = .ground
+    exit_step = 0.0
+    loop frame in [0..240):
+        last = cam.pos
+        camera_update(1.0 / 60.0)
+        exit_step = max(exit_step, f64(length(cam.pos - last)))
+    assert(exit_step < 0.25)
+    assert(abs(cam.climb_offset) < 0.01)
+    # A beam in an upper corner of the image misses all three centre-strip rays.
+    target = vec3(-590, 175, 1650)
+    beam = add_box(vec3(-588.7, 175.4, 1655.0), vec3(0.45, 0.4, 0.45), 0.0, false, .stone)
+    assert(not raycast(target, vec3(0, 0, 1), 6.6, true, false).hit)
+    assert(camera_climb_clearance(target, vec3(0, 0, 1), 6.6) < 6.6)
+    colliders[beam].active = false
+    # Traverse an adjacent face, turn a narrow architectural corner, then pass
+    # under an overhang. The smoothed target changes continuously across surfaces.
+    wall = add_box(vec3(-590, 172, 1647), vec3(3, 5, 0.3), 0.0, true, .stone)
+    side = add_box(vec3(-587, 172, 1650), vec3(0.3, 5, 3), 0.0, true, .stone)
+    roof = add_box(vec3(-590, 179, 1650), vec3(3, 0.3, 3), 0.0, false, .stone)
+    pl = Player(pos = vec3(-590, 173, 1648), state = .climb, face = 0.0)
+    cam = Cam(yaw = 0.0, pitch = 0.22, dist_cur = 6.6)
+    camera_snap()
+    transition_peak = 0.0
+    loop frame in [0..600):
+        t = f64(frame) / 120.0
+        if frame < 240: pl.pos = v3(-589.8 + t, 173.0 + t * 0.8, 1648.0)
+        else if frame < 360:
+            pl.pos = v3(-587.8, 174.6, 1648.0 + (t - 2.0) * 1.2)
+            pl.face = -(t - 2.0) * PI * 0.5
+        else:
+            pl.pos = v3(-587.8, 174.6 + (t - 3.0) * 1.0, 1649.2 + (t - 3.0) * 0.4)
+            pl.face = -PI * 0.5
+        pl.speed = 0.5
+        last = cam.pos
+        camera_update(1.0 / 60.0)
+        if frame > 0:
+            jump = f64(length(cam.pos - last))
+            transition_peak = max(transition_peak, jump)
+        assert(length(cam.pos - cam.target) >= 0.79)
+        free = camera_climb_clearance(cam.target, normalize(cam.pos - cam.target), cam.dist_cur, false)
+        assert(free >= f64(length(cam.pos - cam.target)) - 0.25)
+    assert(transition_peak < 0.7)
+    colliders[wall].active = false
+    colliders[side].active = false
+    colliders[roof].active = false
+    # Prone hurt/death framing also applies on outdoor turf still near the cave mouth.
+    # Follow a knocked-back body at a range of input pitches, then settle back without a pop.
+    hurt_peak = 0.0
+    loop input_pitch in [-0.3, 0.1, 0.22]:
+        pl = Player(pos = vec3(-590, 172, 1680), state = .ground)
+        cam = Cam(yaw = 0.0, pitch = input_pitch)
+        cam_open_ground = false
+        use_terrain = true
+        camera_snap()
+        loop frame in [0..60): camera_update(1.0 / 60.0)
+        pl.state = .hurt
+        loop frame in [0..90):
+            last = cam.pos
+            camera_update(1.0 / 60.0)
+            hurt_peak = max(hurt_peak, f64(length(cam.pos - last)))
+        assert(cam.pos.y >= 173.78)
+        assert(cam.target.y < pl.pos.y + 0.72)
+        assert(cam.pos.y > cam.target.y + 1.0)
+        assert(length(cam.pos - cam.target) > 4.6)
+        # A conservative prone-body envelope must fit inside the vertical view cone.
+        # The old high look target/short cave boom cropped its nearer head entirely.
+        look = normalize(cam.target - cam.pos)
+        loop side in [-0.35, 0.35]:
+            loop along in [-1.25, 1.25]:
+                body = pl.pos + v3(side, 0.25, along)
+                angle = acos(f64(clamp(dot(normalize(body - cam.pos), look), -1.0, 1.0)))
+                assert(angle < view_fov() * PI / 360.0 * 0.95)
+        pl.state = .ground
+        loop frame in [0..240):
+            last = cam.pos
+            camera_update(1.0 / 60.0)
+            hurt_peak = max(hurt_peak, f64(length(cam.pos - last)))
+        assert(cam.hurt_frame < 0.001)
+        assert(abs(f64(cam.target.y - pl.pos.y) - 1.5) < 0.01)
+    # The elevated hurt lens must stay under a low porch, not pop through its roof.
+    porch = add_box(vec3(-590, 174.25, 1680), vec3(6, 0.2, 6), 0.0, false, .stone)
+    pl.state = .hurt
+    cam = Cam(yaw = 0.0, pitch = 0.22)
+    camera_snap()
+    loop frame in [0..180):
+        camera_update(1.0 / 60.0)
+        assert(cam.pos.y < 174.01)
+    colliders[porch].active = false
+    assert(hurt_peak < 0.35)
+    print("camera hurt: raised lens, prone look point, cave-edge outdoor turf, low porch, smooth recovery PASS (peak {hurt_peak:.3} m)")
+    print("camera: grazing pillar, inactive collider, tower legs, stable climb/release, adjacent surfaces, upper beam, overhang/corner PASS (peak {peak:.3} m, release {exit_step:.3} m, transitions {transition_peak:.3} m)")
+
+check_camera()
+
+# Normal gameplay camera around the animated Talus. Fixtures use production
+# controllers, rider transport, pose/solid and shader-skin queries; no authored
+# vertex positions, cinematic override or geometry-specific camera endpoints.
+use 'talus_checks.jo'
+use '../game/talus.jo'
+use '../game/enemies.jo'
+use '../game/items.jo'
+
+camera_talus_clear = (e: Enemy) -> f64:
+    eye = view_pos()
+    clearance = 1000.0
+    loop part in [0..TALUS_PARTS):
+        c = colliders[e.talus_col + part]
+        if not c.active: continue
+        # Euclidean distance from the lens to the solid cylinder, including caps.
+        radial = hypot(f64(eye.x - c.pos.x), f64(eye.z - c.pos.z)) - f64(c.half.x)
+        vertical = max(f64(c.pos.y - eye.y), f64(eye.y - c.pos.y - c.half.y * 2))
+        d = if radial <= 0.0 and vertical <= 0.0: max(radial, vertical) else: hypot(max(0.0, radial), max(0.0, vertical))
+        assert(d > 0.20, "normal Talus camera lens clears collision skin and caps")
+        clearance = min(clearance, d)
+    loop group in [0..TALUS_BOULDERS):
+        b = talus_boulder(e, group)
+        wide = max(f64(b.half.x), f64(b.half.z))
+        core = talus_part(e, group)
+        shape = v3(f64(group), f64(b.half.z) / wide, f64(core.half.x) / wide)
+        frame = translation(b.pos) * rotation_y(b.yaw) * scaling(v3(wide, f64(b.half.y), wide))
+        local = transform_point(inverse(frame), eye)
+        if local.y < 0.0 or local.y > 2.0: continue
+        center = talus_skin_point(vec3(0, local.y, 0), shape)
+        direction = normalize(vec3(local.x - center.x, 0, local.z - center.z))
+        skin = talus_skin_point(vec3(direction.x, local.y, direction.z), shape)
+        gap = f64(length((local - center).xz) - length((skin - center).xz)) * wide
+        assert(gap > 0.10, "normal Talus camera lens stays outside the rendered displaced skin")
+        clearance = min(clearance, gap)
+    assert(not cam.override and cam.blend == 0.0, "Talus regression uses the gameplay chase camera")
+    clearance
+
+check_talus_camera = ():
+    items_init()
+    loop hz in [30, 60, 120]:
+        dt = 1.0 / f64(hz)
+        e = talus_course()
+        cam_open_ground = true
+        cam = Cam()
+        pl = Player(pos = vec3(0, 0, 14), face = 0.0)
+        camera_snap()
+        camera_update(dt)
+        approach_peak = 0.0
+        climb_peak = 0.0
+        minimum = 1000.0
+        climbed = false
+        mantled = false
+        # Walk into wake range, wait for the full rise, then use the same forward
+        # input that climbs the rear seam and mantles the shoulder in Talus checks.
+        loop k in [0..hz * 16):
+            act = Actions(move = (if k < hz * 2 or k >= hz * 5: vec2(0, 1) else: vec2(0, 0)))
+            last = view_pos()
+            player_update(dt)
+            enemies_update(dt, false)
+            camera_update(dt)
+            minimum = min(minimum, camera_talus_clear(enemies[e]))
+            jump = f64(length(view_pos() - last))
+            if pl.state == .climb or pl.state == .mantle or climbed: climb_peak = max(climb_peak, jump)
+            else: approach_peak = max(approach_peak, jump)
+            if pl.state == .climb: climbed = true
+            if pl.state == .mantle: mantled = true
+            if mantled and pl.state == .ground: break
+        assert(climbed and mantled and pl.state == .ground, "normal-camera approach must actually climb and mantle the Talus")
+        assert(approach_peak * f64(hz) / 60.0 < 0.35, "Talus approach respects existing ground per-frame camera limit")
+        assert(climb_peak * f64(hz) / 60.0 < 0.7, "Talus climbing respects existing climb per-frame camera limit")
+        # Riding a moving, turning shoulder across a broad-phase grid boundary.
+        e = talus_course()
+        enemies[e].state = .chase
+        enemies[e].pos = vec3(15.5, 0, 0)
+        talus_sync(enemies[e], false)
+        col = enemies[e].talus_col + 2
+        p = colliders[col]
+        pl = Player(pos = p.pos + vec3(0.4, 2 * p.half.y, 0.1), ground = Ground(y = f64(p.pos.y + 2 * p.half.y), collider = col), grounded = true)
+        cam = Cam()
+        act = Actions()
+        camera_snap()
+        camera_update(dt)
+        ride_peak = 0.0
+        loop k in [0..hz * 8):
+            # One full player-controlled orbit, lowering then raising the lens
+            # across shoulder height, covers front/side/rear skin and moving arms.
+            tilt = if k < hz: -0.55 / f64(hz) else: (if k >= hz * 5 and k < hz * 6: 0.85 / f64(hz) else: 0.0)
+            act = Actions(look = vec2(f32(TAU / f64(hz * 8)), f32(tilt)))
+            last = view_pos()
+            player_update(dt)
+            enemies[e].pos.x += f32(dt * 0.8)
+            enemies[e].face += dt * 0.35
+            talus_sync(enemies[e])
+            camera_update(dt)
+            minimum = min(minimum, camera_talus_clear(enemies[e]))
+            ride_peak = max(ride_peak, f64(length(view_pos() - last)))
+            assert(pl.state == .ground and pl.ground.collider == col, "camera regression must remain a real standing rider")
+        assert(ride_peak * f64(hz) / 60.0 < 0.35, "Talus riding respects existing ground per-frame camera limit")
+        print("camera Talus PASS {hz}Hz: approach {approach_peak:.3}, climb/mantle {climb_peak:.3}, ride {ride_peak:.3} m/frame; minimum solid/skin clearance {minimum:.3} m")
+
+check_talus_camera()
+
+
+# A normal lock transition must close within half a second, preserve both actor
+# envelopes, and keep the ground-camera displacement bound at all update rates.
+check_lock_camera = ():
+    use_terrain = false
+    loop mut c in colliders: c.active = false
+    cam_open_ground = true
+    peak = 0.0
+    loop hz in [30, 60, 120]:
+        loop gap in [2.0, 6.0, 14.0, 20.0]:
+            pl = Player(pos = vec3(0, 0, 0), face = 0.0)
+            cam = Cam(yaw = if gap == 2.0: 0.9 else: 0.0)
+            act = Actions()
+            aim_fov = 50.0
+            camera_snap()
+            dt = 1.0 / f64(hz)
+            loop k in [0..hz): camera_update(dt)
+            cam.locked = true
+            cam.lock_pos = v3(0.0, 0.0, -gap)
+            loop k in [0..hz):
+                last = view_pos()
+                camera_update(dt)
+                peak = max(peak, f64(length(view_pos() - last)) * f64(hz) / 60.0)
+                if k == hz / 2 - 1:
+                    assert(cam.lock_frame > 0.99 and cam.dist_cur < 4.45 and view_fov() < 44.1, "lock closes its boom and field of view within 0.5 s")
+            eye = view_pos()
+            assert(cam.lock_side == (if gap == 2.0: 1.0 else: -1.0), "acquisition keeps its nearer shoulder")
+            forward = normalize(view_target() - eye)
+            right = normalize(cross(forward, vec3(0, 1, 0)))
+            up = normalize(cross(right, forward))
+            cone = tan(view_fov() * PI / 360.0)
+            ph = pl.pos + vec3(0,1.65,0) - eye
+            eh = cam.lock_pos + vec3(0,1.65,0) - eye
+            px = f64(dot(ph,right))/f64(dot(ph,forward))
+            ex = f64(dot(eh,right))/f64(dot(eh,forward))
+            assert(abs(px-ex)/(cone*16.0/9.0) > 0.08,"locked head centres keep readable horizontal separation")
+            loop actor in [pl.pos, cam.lock_pos]:
+                loop height in [0.05, 1.8]:
+                    loop side in [-0.35, 0.35]:
+                        d = actor + v3(side, height, 0.0) - eye
+                        depth = f64(dot(d, forward))
+                        assert(depth > 0.0 and abs(f64(dot(d, up))) / depth < cone, "paired lock keeps both actors' heads and feet inside the vertical cone")
+                        assert(abs(f64(dot(d, right))) / depth < cone * 16.0 / 9.0, "paired lock keeps both actors inside the horizontal cone")
+            print("camera lock PASS {hz}Hz gap={gap:.0}m: boom={cam.dist_cur:.3}m fov={view_fov():.2} look={cam.target}")
+            cam.locked = false
+            loop k in [0..hz * 3):
+                last = view_pos()
+                camera_update(dt)
+                peak = max(peak, f64(length(view_pos() - last)) * f64(hz) / 60.0)
+            assert(cam.lock_frame == 0.0 and abs(cam.dist_cur - 5.3) < 0.01, "unlock returns to chase framing")
+    assert(peak < 0.35, "lock and release respect the existing ground-camera per-frame limit")
+    print("camera lock transition peak {peak:.3} m/60Hz frame")
+
+check_lock_camera()
+
+# Engaged combat without a selected target still needs two readable heads.
+check_unselected_camera = ():
+    use_terrain = false
+    enemies.clear()
+    e = spawn_enemy(.bokoblin,vec3(0,0,-3),"boko_club")
+    enemies[e].alert = 1.0
+    fight = Fight(weapon_out = true)
+    pl = Player(pos = vec3(0,0,0))
+    act = Actions()
+    cam = Cam()
+    aim_fov = 50.0
+    camera_snap()
+    loop frame in [0..120): camera_update(1.0/60.0)
+    eye = view_pos()
+    forward = normalize(view_target()-eye)
+    right = normalize(cross(forward,vec3(0,1,0)))
+    p = pl.pos+vec3(0,1.65,0)-eye
+    q = enemies[e].pos+vec3(0,1.65,0)-eye
+    separation = abs(f64(dot(p,right))/f64(dot(p,forward))-f64(dot(q,right))/f64(dot(q,forward))) / (tan(view_fov()*PI/360.0)*16.0/9.0)
+    assert(separation > 0.08,"unselected close foe cannot share Link's head centre")
+    act.look = vec2(0.005,0)
+    loop frame in [0..60): camera_update(1.0/60.0)
+    assert(abs(cam.combat_side) < 0.001,"manual camera pan releases automatic combat shoulder")
+    enemies.clear()
+    fight = Fight()
+    act = Actions()
+    print("unselected combat camera PASS: head separation {separation:.3}, manual pan releases shoulder")
+
+check_unselected_camera()

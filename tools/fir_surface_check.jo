@@ -1,0 +1,29 @@
+# Render the actual fir texture through the production crown-atlas shader.
+# Caller owns one flock /tmp/botw-render.lock.
+use '../game/vegetation.jo'
+use '../game/gfx.jo'
+from '../game/vegetation.jo' import __fir_tex
+window("Fir pigment and coverage", 32, 32)
+t = __fir_tex()
+assert(t.id != 0 and __fir_tex().id == t.id, "fir texture is allocated once")
+sh = make_sh(shader(crown_bake_vs, crown_bake_fs))
+col = vec4(1, 1, 1, 1)
+verts: Vertex3D[]
+loop p in [vec3(-1, -1, 0), vec3(3, -1, 0), vec3(-1, 3, 0)]:
+    verts.push(Vertex3D(p, vec3(0, 1, 0), vec2(0.5, 0.5), col))
+m = mesh(verts)
+b = inst_buffer([VInst(mat4(), vec4(1, 1, 1, 1))])
+rt = make_target(32, 32, false, false)
+bind_target(rt)
+glDisable(GL_DEPTH_TEST)
+glDisable(GL_CULL_FACE)
+glDisable(GL_BLEND)
+glClearColor(1, 0, 1, 0)
+glClear(GL_COLOR_BUFFER_BIT)
+draw_static(sh, m, b, CrownBakeU(mat4(), mat4(), t, vec3(0, 0, -1), 0.0))
+pixels = fill(u8(0), 32 * 32 * 4)
+gl_read_pixels(0, 0, 32, 32, data(pixels))
+loop k in [0..32 * 32):
+    assert(abs(int(pixels[k * 4]) - 51) <= 1 and abs(int(pixels[k * 4 + 1]) - 88) <= 1 and abs(int(pixels[k * 4 + 2]) - 0) <= 1, "atlas preserves the green fir pigment instead of sampling black texture zero")
+    assert(pixels[k * 4 + 3] == 255, "solid bough coverage survives leaf alpha testing")
+print("PASS fir material: cached opaque texture, production atlas pigment and coverage; 1024 GPU pixels")

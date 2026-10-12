@@ -1,0 +1,68 @@
+# Diagnostic only: drain GPU commands before swapping to distinguish queued GPU
+# backpressure from display/compositor pacing. Never used by the game or pooled
+# throughput captures. Caller owns the shared render lock.
+build:
+    opt = release
+use 'performance_motion.jo'
+use '../game/main.jo'
+use '../game/gfx.jo'
+# Benchmark-only X11 loop. The pinned runtime can retain a stale WM ConfigureNotify
+# size after withdrawal. Read the actual client before __gfx_begin_frame, so both
+# scene targets and screenshot dimensions agree with real drawable pixels.
+# The query is outside game update/draw timing, and inside the interval measurement.
+# Caller owns one /tmp/botw-render.lock; capture validates every batch + final PNG.
+@lib("libX11.so.6")
+@symbol("XGetGeometry")
+extern __finish_geometry = (d: *u8, w: int, root: *int, x: *i32, y: *i32, width: *u32, height: *u32, border: *u32, depth: *u32) -> i32
+
+@lib("libX11.so.6")
+@symbol("XResizeWindow")
+extern __finish_resize = (d: *u8, w: int, width: u32, height: u32) -> i32
+@lib("libX11.so.6")
+@symbol("XSync")
+extern __finish_sync = (d: *u8, discard: i32) -> i32
+
+__finish_resizes = 0
+performance_output_finish = (update: (f64) -> void, draw: () -> void):
+    window(__win_title, __win_w, __win_h)
+    assert(not __soft and not __wayland and __xdpy != null)
+    assert(env("SLOPPY_SCREENSHOT") != none)
+    requested = split(env("SLOPPY_WINDOW") ?? "1280x720", "x")
+    want_w = u32(to_int(requested[0]) ?? 1280)
+    want_h = u32(to_int(requested[1]) ?? 720)
+    __fixed_step = true
+    finish_lines = ""
+    loop not __win_close:
+        __platform_poll()
+        root: int = 0
+        x: i32 = 0
+        y: i32 = 0
+        w: u32 = 0
+        h: u32 = 0
+        border: u32 = 0
+        depth: u32 = 0
+        assert(__finish_geometry(__xdpy, __xwin, &root, &x, &y, &w, &h, &border, &depth) != 0)
+        if w != want_w or h != want_h:
+            __finish_resizes += 1
+            __finish_resize(__xdpy, __xwin, want_w, want_h)
+            __finish_sync(__xdpy, 0)
+            assert(__finish_geometry(__xdpy, __xwin, &root, &x, &y, &w, &h, &border, &depth) != 0)
+        assert(w == want_w and h == want_h)
+        if frame_number() % 120 == 0: eprint("benchmark viewport: frame {frame_number()} client {__xwin} {w}x{h} resizes {__finish_resizes}")
+        __win_w = int(w)
+        __win_h = int(h)
+        __run_frame(1.0 / 60.0, update, draw)
+        finish_start = time()
+        glFinish()
+        finish_ms = 1000.0 * (time() - finish_start)
+        started = time()
+        __platform_present()
+        __last_present = time() - started
+        __frame_present += __last_present
+        finish_lines += "gpu finish: frame {frame_number()-1} finish {finish_ms:.3} present {1000.0*__last_present:.3}\n"
+        if frame_number()%120==0:
+            eprint(finish_lines)
+            finish_lines = ""
+    exit(0)
+
+main = (): performance_output_finish(route_update, draw)

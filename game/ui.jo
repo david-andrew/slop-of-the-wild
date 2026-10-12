@@ -1,0 +1,548 @@
+use 'gfx.jo'
+use 'texture_assets.jo'
+use 'inventory.jo'
+use 'env.jo'
+use 'player.jo'
+use 'scene.jo'
+use 'input.jo'
+use 'items.jo'
+use 'combat.jo'
+use 'enemies.jo'
+
+# The HUD, kept as sparse as the original's: hearts, the stamina wheel beside the player,
+# the bound item slots, a small clock and thermometer, item pick-up and location banners.
+
+const UI_W = 1280.0
+const UI_H = 720.0
+
+struct Banner:
+    text: str
+    sub: str
+    t: f64
+    dur: f64
+    big: bool
+
+struct UIState:
+    banners: Banner[]
+    pickup_name = ""
+    pickup_t = 0.0
+    pickup_count = 0
+    hearts_flash = 0.0
+    location = ""
+    location_t = 0.0
+    hide = false
+    prompt = ""             # "Open", "Pick up", "Talk"... (the action under the right button)
+    temp = 0.5              # 0 freezing .. 1 hot
+    stamina_seen = -1.0     # detect another use while the wheel is already visible
+
+ui = UIState()
+
+ui_pickup = (name: str):
+    if ui.pickup_name == name and ui.pickup_t > 0.0: ui.pickup_count += 1
+    else: ui.pickup_count = 1
+    ui.pickup_name = name
+    ui.pickup_t = 2.6
+    clock_t = 3.0
+
+# place names set in the title's serif (tools/names_art.py): an atlas and where each name is
+__names_tex = Texture(0, 1, 1)
+__names_at: {str: vec4} = {}
+__names_ready = false
+ui_assets_init = ():
+    if __names_ready: return
+    __names_ready = true
+    started = time()
+    if let img = startup_image("assets/names.png"):
+        decoded = time()
+        __names_tex = texture(img, true)
+        if env("BOTW_LOADTIME") != none: eprint("  names_atlas decode {decoded - started:.3}s upload {time() - decoded:.3}s")
+    if let t = read_file("assets/names.txt"):
+        loop line in split(t, "\n"):
+            f = split(line, "\t")
+            if f.len() == 5: __names_at[f[0]] = vec4(f32(to_float(f[1]) ?? 0.0), f32(to_float(f[2]) ?? 0.0), f32(to_float(f[3]) ?? 0.0), f32(to_float(f[4]) ?? 0.0))
+
+# draw a name centered at c, h points tall; false if it is not in the atlas
+serif_name = (name: str, c: vec2, h: f64, col: vec4) -> bool:
+    ui_assets_init()
+    if __names_tex.width <= 1: return false
+    if let r = __names_at.get(name):
+        k = f32(h) / r.w
+        sprite_region(__names_tex, r, c, vec2(r.z * k, r.w * k), col)
+        return true
+    false
+
+__location_age = 0.0
+__location_shown: {str: f64} = {}
+
+ui_location = (name: str):
+    if ui.location == name and __location_age - __location_shown.get(name, -10000.0) < 600.0: return
+    ui.location = name
+    previous = __location_shown.get(name, -10000.0)
+    __location_shown[name] = __location_age
+    # Initial spawn/resume identifies where we stand without a discovery banner.
+    if __location_age < 2.0 or __location_age - previous < 600.0: return
+    ui.location_t = 3.6
+    clock_t = 3.0
+
+ui_update = (dt: f64):
+    __location_age += dt
+    if len(inv_full_name) > 0:
+        ui.pickup_name = "Can't carry any more: {inv_full_name}"
+        ui.pickup_count = 1
+        ui.pickup_t = 2.6
+        clock_t = 3.0
+        inv_full_name = ""
+    ui.pickup_t = max(0.0, ui.pickup_t - dt)
+    ui.location_t = max(0.0, ui.location_t - dt)
+    ui.hearts_flash = max(0.0, ui.hearts_flash - dt)
+    # Reveal bindings after a change or item use, then leave the landscape clear.
+    signature = "{equipped_weapon()}|{equipped_shield()}|{equipped_bow()}|{inv.arrows}"
+    loop id in inv.slots: signature += "|{id}:{count_of(id)}"
+    busy = fight.act != .idle
+    used = act.slot >= 0 and act.slot < inv.slots.len() and len(inv.slots[act.slot]) > 0
+    if used: slots_active = act.slot
+    if signature != slots_signature or used or (busy and not slots_busy) or in_combat(): slots_t = 2.5
+    # Wake the sensor area on a state change, then fade even while standing still.
+    # Track icon/temperature bands, not the continuously advancing clock hand.
+    temperature = if ui.temp < 0.3: 0 else: (if ui.temp > 0.7: 2 else: 1)
+    day_band = if env.hour >= 5.0 and env.hour < 7.0: 0 else: (if env.hour >= 7.0 and env.hour < 17.0: 1 else: (if env.hour >= 17.0 and env.hour < 19.0: 2 else: 3))
+    stamina_used = ui.stamina_seen >= 0.0 and pl.stamina < ui.stamina_seen - 0.001
+    ui.stamina_seen = pl.stamina
+    sensor = "{day_band}|{env.night > 0.5}|{env.clouds > 0.7}|{env.rain > 0.2}|{env.weather}|{temperature}|{pl.hp}|{pl.hp_max}|{pl.stamina < pl.stamina_max - 0.5}|{pl.stamina_max}|{ui.location}|{ui.pickup_name}:{ui.pickup_count}|{ui.prompt}"
+    if stamina_used or sensor != clock_signature or signature != slots_signature or used or (busy and not slots_busy) or act.inventory or act.pause or act.interact: clock_t = 3.0
+    clock_signature = sensor
+    clock_t = max(0.0, clock_t - dt)
+    want = clock_t > 0.0 or warm_t > 0.0
+    clock_a = approach(clock_a, (if want: 1.0 else: 0.0), (if want: 6.0 else: 1.2), dt)
+    slots_signature = signature
+    slots_busy = busy
+    slots_t = max(0.0, slots_t - dt)
+    slots_a = approach(slots_a, (if slots_t > 0.0: 1.0 else: 0.0), (if slots_t > 0.0: 8.0 else: 1.2), dt)
+
+heart = (c: vec2, s: f64, fill_q: int, col: vec4, empty: vec4):
+    # two lobes and a point; quarters fill clockwise from the top left
+    r = s * 0.28
+    lobe_l = c + vec2(f32(-s * 0.22), f32(-s * 0.1))
+    lobe_r = c + vec2(f32(s * 0.22), f32(-s * 0.1))
+    tip = c + vec2(0, f32(s * 0.42))
+    base_l = c + vec2(f32(-s * 0.48), f32(-s * 0.02))
+    base_r = c + vec2(f32(s * 0.48), f32(-s * 0.02))
+    outline = rgba(0.15, 0.08, 0.05, 0.6)
+    circle(lobe_l, r + 1.5, outline)
+    circle(lobe_r, r + 1.5, outline)
+    triangle(base_l + vec2(-1.5, 0), base_r + vec2(1.5, 0), tip + vec2(0, 2), outline)
+    loop q in [0..4):
+        cc = if q < fill_q: col else: empty
+        # quarters: TL, TR, BR, BL
+        if q == 0: circle(lobe_l, r, cc)
+        if q == 1: circle(lobe_r, r, cc)
+        if q == 2: triangle(c + vec2(0, f32(-s * 0.05)), base_r, tip, cc)
+        if q == 3: triangle(base_l, c + vec2(0, f32(-s * 0.05)), tip, cc)
+    triangle(base_l, base_r, c + vec2(0, f32(-s * 0.1)), if fill_q >= 2: col else: empty)
+
+# Opaque lost quarters cannot inherit fire flashes, sky colour or weather tint.
+const HEART_EMPTY = vec4(0.055,0.045,0.040,1)
+heart_filled_color = (invuln: f64, flash: f64) -> vec4:
+    col = rgba(0.86,0.16,0.14,1)
+    if flash > 0.0: col = lighten(col,f32(flash))
+    mix(col,rgba(1.0,0.08,0.035,1),f32(smoothstep(0.0,0.55,invuln)))
+
+# the HUD a little larger on the 720-point canvas than its layout numbers
+hud_k = () -> f64: clamp(f64(visible_rect().w) / 620.0, 1.0, 1.6)
+
+hearts_draw = ():
+    k = hud_k()
+    n = (pl.hp_max + 3) / 4
+    loop i in [0..n):
+        q = clamp(pl.hp - i * 4, 0, 4)
+        x = (40.0 + f64(i) * 30.0) * k
+        low = pl.hp <= 4 and q > 0
+        pulse = if low: 1.0 + 0.08 * sin(elapsed() * 8.0) else: 1.0
+        col = heart_filled_color(pl.invuln,ui.hearts_flash)
+        empty = HEART_EMPTY
+        damage = smoothstep(0.0, 0.55, pl.invuln)
+        if damage > 0.0:
+            pulse *= 1.0 + damage * 0.12
+
+        heart(vec2(f32(x), f32(40.0 * k)), 24.0 * pulse * k, q, col, empty)
+
+# an arc ring (stamina): a fraction of a full turn starting at the top, clockwise
+arc = (c: vec2, r: f64, w: f64, frac: f64, col: vec4):
+    if frac <= 0.0: return
+    seg = max(int(48.0 * frac), 2)
+    loop i in [0..seg):
+        a0 = -PI / 2.0 + TAU * frac * f64(i) / f64(seg)
+        a1 = -PI / 2.0 + TAU * frac * f64(i + 1) / f64(seg)
+        p0 = c + vec2(f32(cos(a0) * r), f32(sin(a0) * r))
+        p1 = c + vec2(f32(cos(a1) * r), f32(sin(a1) * r))
+        q0 = c + vec2(f32(cos(a0) * (r - w)), f32(sin(a0) * (r - w)))
+        q1 = c + vec2(f32(cos(a1) * (r - w)), f32(sin(a1) * (r - w)))
+        triangle(p0, p1, q1, col)
+        triangle(p0, q1, q0, col)
+
+# the screen position of a world point (2D units), or none behind the camera
+world_to_screen = (p: vec3) -> vec2?:
+    c = sc.vp * vec4(p, 1)
+    if c.w <= 0.01: return none
+    ndc = c.xyz / c.w
+    r = visible_rect()
+    vec2(f32(f64(r.x) + (f64(ndc.x) * 0.5 + 0.5) * f64(r.z)), f32(f64(r.y) + (0.5 - f64(ndc.y) * 0.5) * f64(r.w)))
+
+stamina_draw = ():
+    if pl.stamina_shown < 0.02: return
+    sp = world_to_screen(pl.pos + vec3(0, 1.3, 0))
+    if sp == none: return
+    c = sp! + vec2(52, -18)
+    a = f32(pl.stamina_shown)
+    wheels = max(1, int(ceil(pl.stamina_max / STAMINA_WHEEL - 0.001)))
+    frac = pl.stamina / STAMINA_WHEEL
+    green = rgba(0.45, 0.85, 0.25, 0.95 * a)
+    if pl.exhausted:
+        k = f32(0.5 + 0.5 * sin(elapsed() * 9.0))
+        green = rgba(0.9, 0.3 + 0.2 * k, 0.15, 0.95 * a)
+    # A narrow inner/outer ink rim separates green from sunlit foliage without
+    # filling the wheel's transparent centre. It follows the existing HUD fade.
+    arc(c, 18.0, 1.0, 1.0, rgba(0.035, 0.05, 0.025, 0.65 * a))
+    arc(c, 11.0, 1.0, 1.0, rgba(0.035, 0.05, 0.025, 0.65 * a))
+    arc(c, 17.0, 6.0, 1.0, rgba(0.1, 0.12, 0.08, 0.45 * a))
+    arc(c, 17.0, 6.0, min(frac, 1.0), green)
+    if wheels > 1:
+        loop k in [1..wheels):
+            f = clamp(frac - f64(k), 0.0, 1.0)
+            arc(c, 24.0 + f64(k - 1) * 7.0, 1.0, 1.0, rgba(0.035, 0.05, 0.025, 0.65 * a))
+            arc(c, 19.0 + f64(k - 1) * 7.0, 1.0, 1.0, rgba(0.035, 0.05, 0.025, 0.65 * a))
+            arc(c, 23.0 + f64(k - 1) * 7.0, 4.0, 1.0, rgba(0.1, 0.12, 0.08, 0.45 * a))
+            arc(c, 23.0 + f64(k - 1) * 7.0, 4.0, f, green)
+
+# the clock fades out while nothing changes (walking about) and back when it matters
+clock_a = 1.0
+clock_t = 3.0
+clock_signature = ""
+slots_active = -1
+slots_a = 0.0
+slots_t = 0.0
+slots_signature = ""
+slots_busy = false
+clock_draw = ():
+    # (not inside the shrines: no day or weather down there)
+    if clock_a < 0.02 or env.indoor > 0.5: return
+    r = visible_rect()
+    k = hud_k()
+    kk = f32(k)
+    c = vec2(r.x + r.z - f32(70.0 * k), r.y + r.w - f32(70.0 * k))
+    circle(c, 30.0 * k, rgba(0.05, 0.06, 0.08, 0.45 * f32(clock_a)))
+    a = env.hour / 24.0 * TAU + PI / 2.0
+    # day half light, night half dark
+    ca = f32(clock_a)
+    # the sun or moon rides the rim, half outside it (clear of the time in the middle)
+    p = c + vec2(f32(cos(a) * 31.0 * k), f32(sin(a) * 31.0 * k))
+    sunc = if env.night > 0.5: rgba(0.75, 0.82, 1.0, 0.9 * ca) else: rgba(1.0, 0.85, 0.35, 0.95 * ca)
+    if env.clouds > 0.7:
+        # overcast: a cloud where the sun would be, rain under it when it rains
+        cc = rgba(0.82, 0.84, 0.88, 0.95 * ca)
+        circle(p + vec2(-2.5, 1) * kk, 3.2 * k, cc)
+        circle(p + vec2(1.5, -1) * kk, 4.0 * k, cc)
+        circle(p + vec2(4, 1.5) * kk, 2.8 * k, cc)
+        if env.rain > 0.2:
+            loop j in [0..3): line(p + vec2(f32(-3 + j * 3), 5) * kk, p + vec2(f32(-4 + j * 3), 8) * kk, 1.2 * k, rgba(0.6, 0.75, 1.0, 0.9 * ca))
+    else: circle(p, 4.5 * k, sunc)
+    h = int(env.hour)
+    mm = int(fract(env.hour) * 60.0)
+    text_centered("{h:02}:{mm:02}", c + vec2(0, -7) * kk, 14.0 * k, rgba(1, 1, 1, 0.85 * ca))
+    # thermometer
+    tx = f64(c.x) - 52.0 * k
+    rect(tx, f64(c.y) - 22.0 * k, 6.0 * k, 44.0 * k, rgba(0.05, 0.06, 0.08, 0.45 * ca))
+    tc = mix(rgba(0.4, 0.65, 1.0, 0.9 * ca), rgba(1.0, 0.5, 0.2, 0.9 * ca), f32(ui.temp))
+    hh = 40.0 * ui.temp * k
+    rect(tx + k, f64(c.y) + 20.0 * k - hh, 4.0 * k, hh, tc)
+    # in the cold a snowflake beside it, in the heat a flame: what the bar means at a glance
+    sp_ = vec2(f32(tx + 3.0 * k), f32(f64(c.y) - 32.0 * k))
+    if ui.temp < 0.3:
+        fa = f32(clamp((0.3 - ui.temp) * 8.0, 0.0, 1.0)) * ca
+        loop q in [0..3):
+            an = f64(q) * PI / 3.0
+            dv = vec2(f32(cos(an) * 7.0 * k), f32(sin(an) * 7.0 * k))
+            line(sp_ - dv, sp_ + dv, 1.6 * k, rgba(0.7, 0.85, 1.0, fa))
+    else if ui.temp > 0.7:
+        fa = f32(clamp((ui.temp - 0.7) * 8.0, 0.0, 1.0)) * ca
+        triangle(sp_ + vec2(0, -7) * f32(k), sp_ + vec2(5, 5) * f32(k), sp_ + vec2(-5, 5) * f32(k), rgba(1.0, 0.55, 0.2, fa))
+
+    # Active spicy-food resistance stays beside the thermometer until it expires.
+    if warm_t > 0.0:
+        q = vec2(f32(tx - 22.0 * k), c.y)
+        triangle(q + vec2(0, -8) * kk, q + vec2(6, 5) * kk, q + vec2(-6, 5) * kk, rgba(1.0, 0.65, 0.25, ca))
+        seconds = int(ceil(warm_t))
+        text_centered("{seconds / 60}:{seconds % 60:02}", q + vec2(0, 14) * kk, 12.0 * k, rgba(1, 0.9, 0.65, ca))
+
+# item slots in the top-right corner: what is bound to 1, 2 and 3
+# a small vector picture of an item
+item_icon = (s: IShape, c: vec2, k: f64, col: vec4):
+    w = vec2(1, 1) * f32(k)
+    dark = darken(col, 0.4)
+    match s:
+        sword, broadsword, claymore:
+            line(c + vec2(-0.5, 0.5) * w, c + vec2(0.55, -0.55) * w, 6.0 * k / 40.0, rgba(0.82, 0.84, 0.88, col.w))
+            line(c + vec2(-0.35, 0.15) * w, c + vec2(-0.15, 0.35) * w, 5.0 * k / 40.0, rgba(0.6, 0.5, 0.35, col.w))
+            line(c + vec2(-0.6, 0.6) * w, c + vec2(-0.4, 0.4) * w, 5.0 * k / 40.0, rgba(0.4, 0.28, 0.2, col.w))
+        firewood:
+            loop x in [-0.22,0.0,0.22]:
+                line(c+vec2(f32(x)-0.25,0.4)*w,c+vec2(f32(x)+0.25,-0.4)*w,0.16*k,col)
+            line(c+vec2(-0.35,0.08)*w,c+vec2(0.35,-0.08)*w,0.06*k,dark)
+        branch, club, torch:
+            line(c + vec2(-0.5, 0.5) * w, c + vec2(0.45, -0.45) * w, (if s == .club: 9.0 else: 6.0) * k / 40.0, col)
+            if s == .torch: circle(c + vec2(0.45, -0.45) * w, 6.0 * k / 40.0, rgba(1.0, 0.6, 0.2, col.w))
+        axe:
+            line(c + vec2(-0.5, 0.5) * w, c + vec2(0.4, -0.4) * w, 5.0 * k / 40.0, rgba(0.5, 0.36, 0.22, col.w))
+            triangle(c + vec2(0.2, -0.5) * w, c + vec2(0.6, -0.2) * w, c + vec2(0.3, -0.1) * w, rgba(0.75, 0.75, 0.78, col.w))
+        spear:
+            line(c + vec2(-0.6, 0.6) * w, c + vec2(0.45, -0.45) * w, 4.0 * k / 40.0, col)
+            triangle(c + vec2(0.4, -0.6) * w, c + vec2(0.62, -0.62) * w, c + vec2(0.6, -0.4) * w, rgba(0.8, 0.8, 0.82, col.w))
+        lid:
+            circle(c, 0.55 * k, col)
+            ring(c, 0.55 * k, 0.07 * k, dark)
+            circle(c, 0.12 * k, dark)
+        boko_shield:
+            polygon([c + vec2(-0.4, -0.5) * w, c + vec2(0.25, -0.55) * w, c + vec2(0.48, -0.18) * w, c + vec2(0.35, 0.45) * w, c + vec2(-0.35, 0.5) * w, c + vec2(-0.5, 0.1) * w], col)
+            line(c + vec2(-0.2, -0.4) * w, c + vec2(-0.17, 0.4) * w, 0.04 * k, dark)
+            line(c + vec2(0.13, -0.4) * w, c + vec2(0.17, 0.4) * w, 0.04 * k, dark)
+            line(c + vec2(-0.4, -0.18) * w, c + vec2(0.4, -0.18) * w, 0.08 * k, dark)
+        shield:
+            # a heater shield: flat top, sides curving down to a point, a band across
+            ws = f32(k)
+            pts = [c + vec2(-0.42, -0.45) * ws, c + vec2(0.42, -0.45) * ws, c + vec2(0.4, 0.05) * ws, c + vec2(0.0, 0.52) * ws, c + vec2(-0.4, 0.05) * ws]
+            polygon(pts, col)
+            polyline(pts, 2.0, dark, true)
+            rect(f64(c.x) - 0.42 * k, f64(c.y) - 0.18 * k, 0.84 * k, 0.1 * k, dark)
+        bow:
+            polyline([loop i in [0..9): c + vec2(f32(-0.25 + 0.35 * sin(f64(i) / 8.0 * PI)), f32(-0.6 + 1.2 * f64(i) / 8.0)) * w], 4.0 * k / 40.0, col)
+            line(c + vec2(-0.25, -0.6) * w, c + vec2(-0.25, 0.6) * w, 1.0, rgba(0.9, 0.9, 0.85, col.w))
+        arrows:
+            line(c + vec2(-0.5, 0.5) * w, c + vec2(0.5, -0.5) * w, 2.0, rgba(0.6, 0.45, 0.3, col.w))
+            triangle(c + vec2(0.35, -0.5) * w, c + vec2(0.6, -0.6) * w, c + vec2(0.5, -0.35) * w, rgba(0.85, 0.85, 0.85, col.w))
+        pepper, roasted_pepper:
+            polygon([c + vec2(-0.26, -0.32) * w, c + vec2(0.2, -0.3) * w, c + vec2(0.3, 0.04) * w, c + vec2(0.12, 0.38) * w, c + vec2(-0.32, 0.55) * w, c + vec2(-0.06, 0.18) * w], col)
+            polyline([c + vec2(-0.05, -0.28) * w, c + vec2(0.02, -0.5) * w, c + vec2(0.2, -0.5) * w], 0.06 * k, rgba(0.3, 0.55, 0.2, col.w))
+        fish:
+            polygon([loop i in [0..16): c + vec2(f32(cos(TAU * f64(i) / 16.0) * 0.5), f32(sin(TAU * f64(i) / 16.0) * 0.24)) * w], col)
+            triangle(c + vec2(-0.32, 0.0) * w, c + vec2(-0.65, -0.28) * w, c + vec2(-0.65, 0.28) * w, dark)
+            circle(c + vec2(0.28, -0.04) * w, 0.045 * k, dark)
+        drumstick:
+            line(c + vec2(-0.5, 0.4) * w, c, 5.0 * k / 40.0, rgba(0.9, 0.85, 0.7, col.w))
+            circle(c + vec2(0.15, -0.12) * w, 0.32 * k, col)
+        orb:
+            circle_gradient(c, 0.55 * k, rgba(1, 0.95, 0.75, col.w), rgba(1, 0.65, 0.25, 0.0))
+        glider:
+            triangle(c + vec2(-0.6, 0.1) * w, c + vec2(0.0, -0.45) * w, c + vec2(0.6, 0.1) * w, col)
+            loop side in [-1.0, 1.0]: line(c + vec2(f32(side * 0.55), 0.1) * w, c + vec2(f32(side * 0.18), 0.5) * w, 0.04 * k, rgba(0.8, 0.7, 0.5, col.w))
+            line(c + vec2(-0.18, 0.5) * w, c + vec2(0.18, 0.5) * w, 0.06 * k, dark)
+        apple, baked_apple:
+            circle(c + vec2(-0.15, 0.04) * w, 0.3 * k, col)
+            circle(c + vec2(0.15, 0.04) * w, 0.3 * k, col)
+            triangle(c + vec2(-0.3, 0.15) * w, c + vec2(0.3, 0.15) * w, c + vec2(0, 0.45) * w, col)
+            line(c + vec2(0, -0.2) * w, c + vec2(0.05, -0.5) * w, 0.06 * k, dark)
+            triangle(c + vec2(0.05, -0.35) * w, c + vec2(0.4, -0.45) * w, c + vec2(0.2, -0.22) * w, rgba(0.3, 0.6, 0.2, col.w))
+        mushroom, roasted:
+            rect(f64(c.x) - 0.1 * k, f64(c.y) - 0.08 * k, 0.2 * k, 0.55 * k, rgba(0.88, 0.8, 0.63, col.w))
+            polygon([c + vec2(-0.5, 0.05) * w, c + vec2(-0.35, -0.32) * w, c + vec2(0, -0.48) * w, c + vec2(0.35, -0.32) * w, c + vec2(0.5, 0.05) * w], col)
+            circle(c + vec2(-0.2, -0.17) * w, 0.07 * k, dark)
+            circle(c + vec2(0.15, -0.27) * w, 0.08 * k, dark)
+        meat, steak:
+            polygon([c + vec2(-0.5, 0.25) * w, c + vec2(-0.42, -0.28) * w, c + vec2(0.12, -0.45) * w, c + vec2(0.5, -0.05) * w, c + vec2(0.3, 0.4) * w], col)
+            ring(c + vec2(0.1, -0.03) * w, 0.16 * k, 0.07 * k, rgba(0.95, 0.8, 0.65, col.w))
+            line(c + vec2(-0.35, 0.2) * w, c + vec2(-0.25, -0.2) * w, 0.06 * k, lighten(col, 0.4))
+        herb:
+            line(c + vec2(0, 0.55) * w, c + vec2(0, -0.45) * w, 0.04 * k, col)
+            loop side in [-1.0, 1.0]:
+                loop y in [-0.25, 0.15]:
+                    polygon([c + vec2(0, f32(y + 0.15)) * w, c + vec2(f32(side * 0.4), f32(y)) * w, c + vec2(f32(side * 0.3), f32(y - 0.22)) * w, c + vec2(0, f32(y - 0.06)) * w], col)
+        ore, rock:
+            pts = [c + vec2(-0.48, 0.15) * w, c + vec2(-0.3, -0.35) * w, c + vec2(0.15, -0.5) * w, c + vec2(0.5, -0.05) * w, c + vec2(0.3, 0.4) * w, c + vec2(-0.25, 0.4) * w]
+            polygon(pts, col)
+            line(pts[1], c, 0.04 * k, lighten(col, 0.3))
+            line(pts[2], c, 0.04 * k, lighten(col, 0.3))
+            line(c, pts[4], 0.04 * k, dark)
+        frog:
+            circle(c, 0.27 * k, col)
+            loop side in [-1.0, 1.0]:
+                eye = c + vec2(f32(side * 0.2), -0.25) * w
+                circle(eye, 0.12 * k, col)
+                circle(eye, 0.05 * k, rgba(0.05, 0.1, 0.05, col.w))
+                polyline([c + vec2(f32(side * 0.16), 0.1) * w, c + vec2(f32(side * 0.48), 0.25) * w, c + vec2(f32(side * 0.25), 0.46) * w], 0.12 * k, col)
+                line(c + vec2(f32(side * 0.15), 0) * w, c + vec2(f32(side * 0.42), -0.05) * w, 0.06 * k, col)
+        lizard:
+            polyline([c + vec2(-0.1, 0.22) * w, c + vec2(-0.23, 0.48) * w, c + vec2(0.1, 0.65) * w, c + vec2(0.35, 0.4) * w], 0.07 * k, col)
+            line(c + vec2(0, 0.22) * w, c + vec2(0, -0.35) * w, 0.18 * k, col)
+            triangle(c + vec2(-0.15, -0.27) * w, c + vec2(0.15, -0.27) * w, c + vec2(0, -0.52) * w, col)
+            loop side in [-1.0, 1.0]:
+                loop y in [-0.18, 0.17]:
+                    polyline([c + vec2(0, f32(y)) * w, c + vec2(f32(side * 0.3), f32(y + 0.06)) * w, c + vec2(f32(side * 0.4), f32(y - 0.1)) * w], 0.05 * k, col)
+        firefly:
+            loop side in [-1.0, 1.0]:
+                triangle(c + vec2(0, -0.1) * w, c + vec2(f32(side * 0.5), -0.4) * w, c + vec2(f32(side * 0.35), 0.15) * w, rgba(0.7, 0.85, 0.85, col.w * 0.8))
+            line(c + vec2(0, -0.35) * w, c + vec2(0, 0.3) * w, 0.13 * k, dark)
+            circle(c + vec2(0, 0.25) * w, 0.16 * k, col)
+        cloth:
+            polygon([c + vec2(-0.2, -0.5) * w, c + vec2(-0.55, -0.22) * w, c + vec2(-0.35, 0.05) * w, c + vec2(-0.25, -0.06) * w, c + vec2(-0.25, 0.5) * w, c + vec2(0.25, 0.5) * w, c + vec2(0.25, -0.06) * w, c + vec2(0.35, 0.05) * w, c + vec2(0.55, -0.22) * w, c + vec2(0.2, -0.5) * w], col)
+            line(c + vec2(-0.2, -0.5) * w, c + vec2(0, -0.3) * w, 0.05 * k, dark)
+            line(c + vec2(0, -0.3) * w, c + vec2(0.2, -0.5) * w, 0.05 * k, dark)
+        trousers:
+            polygon([c + vec2(-0.3, -0.5) * w, c + vec2(0.3, -0.5) * w, c + vec2(0.35, 0.5) * w, c + vec2(0.08, 0.5) * w, c + vec2(0, -0.05) * w, c + vec2(-0.08, 0.5) * w, c + vec2(-0.35, 0.5) * w], col)
+            line(c + vec2(-0.3, -0.38) * w, c + vec2(0.3, -0.38) * w, 0.06 * k, dark)
+        acorn:
+            triangle(c + vec2(-0.3, -0.1) * w, c + vec2(0.3, -0.1) * w, c + vec2(0, 0.5) * w, col)
+            line(c + vec2(-0.32, -0.13) * w, c + vec2(0.32, -0.13) * w, 0.2 * k, dark)
+            line(c + vec2(0, -0.22) * w, c + vec2(0.08, -0.46) * w, 0.06 * k, dark)
+        skewer:
+            line(c + vec2(-0.55, 0.55) * w, c + vec2(0.55, -0.55) * w, 0.05 * k, rgba(0.8, 0.7, 0.5, col.w))
+            loop t in [-0.25, 0.0, 0.25]:
+                q = c + vec2(f32(t), f32(-t)) * w
+                polygon([q + vec2(-0.22, -0.12) * w, q + vec2(0.12, -0.22) * w, q + vec2(0.22, 0.12) * w, q + vec2(-0.12, 0.22) * w], col)
+        dish:
+            loop x in [-0.25, 0.0, 0.25]: circle(c + vec2(f32(x), -0.15) * w, 0.18 * k, col)
+            polygon([c + vec2(-0.55, 0) * w, c + vec2(0.55, 0) * w, c + vec2(0.3, 0.4) * w, c + vec2(-0.3, 0.4) * w], rgba(0.8, 0.72, 0.55, col.w))
+
+
+struct SlotView:
+    label: str
+    shape: IShape
+    icon: vec4
+    count: int
+    key: str
+
+# what else is carried, shown small beside the buttons: the shield and the bow (set by the game)
+hud_gear: SlotView[]
+
+slots_draw = (views: SlotView[], equipped: str):
+    if slots_a < 0.02: return
+    r = visible_rect()
+    k = hud_k()
+    kk = f32(k)
+    x0 = f64(r.x + r.z) - (64.0 * 3.0 + 30.0) * k
+    gx = x0 - 8.0 * k
+    loop g in hud_gear:
+        if len(g.label) == 0: continue
+        gx -= 40.0 * k
+        gc = vec2(f32(gx + 16.0 * k), f32(46.0 * k))
+        sa = f32(slots_a)
+        circle(gc, 17.0 * k, rgba(0.05, 0.06, 0.08, 0.45 * sa))
+        ic = g.icon
+        ic.w = ic.w * sa * 0.9
+        item_icon(g.shape, gc, 20.0 * k, ic)
+        if g.count > 1: text_centered("{g.count}", gc + vec2(9, 10) * kk, 12.0 * k, rgba(1, 1, 1, 0.9 * sa))
+    loop i in 0.. and v in views:
+        # (an empty button is not shown at all)
+        if len(v.label) == 0: continue
+        c = vec2(f32(x0 + (f64(i) * 64.0 + 32.0) * k), f32(46.0 * k))
+        sa = f32(slots_a)
+        circle(c, 26.0 * k, rgba(0.05, 0.06, 0.08, 0.5 * sa))
+        active = i == slots_active
+        ring(c, 26.0 * k, (if active: 3.0 else: 2.0) * k, (if active: rgba(0.5, 0.85, 1.0, 0.95 * sa) else: rgba(0.9, 0.85, 0.7, 0.5 * sa)))
+        if active: circle(c, 23.0 * k, rgba(0.12, 0.38, 0.55, 0.22 * sa))
+        if len(v.label) > 0:
+            ic = v.icon
+            ic.w = ic.w * sa
+            item_icon(v.shape, c, 30.0 * k, ic)
+            if v.count > 1: text_centered("{v.count}", c + vec2(12, 6) * kk, 14.0 * k, rgba(1, 1, 1, 0.95 * sa))
+        label = if act.using_pad: ["Left", "Down", "Right"][i] else: input_key_name(8 + i)
+        button_glyph(label, c + vec2(0, 32) * kk, 9.0 * k, f64(sa))
+
+banners_draw = ():
+    if ui.pickup_t > 0.0:
+        a = f32(clamp(ui.pickup_t / 0.4, 0.0, 1.0))
+        r = visible_rect()
+        w = text_width(ui.pickup_name, 22) + 70.0
+        x = f64(r.x + r.z) / 2.0 - w / 2.0
+        y = f64(r.y + r.w) - 150.0
+        rect(x, y, w, 40.0, rgba(0.04, 0.05, 0.06, 0.62 * a))
+        nm = if ui.pickup_count > 1: "{ui.pickup_name} x{ui.pickup_count}" else: ui.pickup_name
+        text_centered(nm, vec2(f32(x + w / 2.0), f32(y + 8.0)), 22, rgba(1, 0.97, 0.88, a))
+    if ui.location_t > 0.0:
+        t = ui.location_t
+        a = f32(clamp(t / 1.0, 0.0, 1.0) * clamp((3.6 - t) / 0.8, 0.0, 1.0))
+        r = visible_rect()
+        cx = f64(r.x + r.z) / 2.0
+        if not serif_name(ui.location, vec2(f32(cx), 132), 44.0, rgba(1, 1, 1, a)): text_centered(ui.location, vec2(f32(cx), 120), 32, rgba(1, 0.98, 0.92, a))
+        w = text_width(ui.location, 32) * 0.6
+        rect(cx - w / 2.0, 162.0, w, 1.5, rgba(1, 0.98, 0.92, a * 0.7))
+    if len(ui.prompt) > 0:
+        r = visible_rect()
+        p = vec2(r.x + r.z / 2.0 + 90, r.y + r.w / 2.0 + 40)
+        label = input_action_label(3)
+        width = if act.using_pad: 26.0 else: max(26.0, text_width(label, 14.95) + 13.0)
+        button_glyph(label, p, 13.0)
+        text(ui.prompt, p + vec2(f32(width / 2.0 + 7.0), -10), 20, rgba(1, 1, 1, 0.92))
+
+# Pad prompts name the same face buttons as input.jo and distinguish sticks/triggers.
+# Keyboard prompts keep key caps.
+button_glyph = (label: str, c: vec2, r: f64, alpha: f64 = 1.0):
+    a = f32(alpha)
+    ink = rgba(0.96, 0.95, 0.89, a)
+    shade = rgba(0.04, 0.05, 0.06, 0.7 * a)
+    if act.using_pad:
+        match label:
+            "A", "B", "X", "Y":
+                circle(c, r, shade)
+                ring(c, r * 0.9, r * 0.1, ink)
+                text_centered(label, c + vec2(0, f32(-r * 0.15)), r * 1.35, ink)
+            "Lstick", "Rstick":
+                circle(c, r, shade)
+                ring(c, r * 0.8, r * 0.12, ink)
+                text_centered((if label == "Lstick": "L" else: "R"), c + vec2(0, f32(-r * 0.15)), r * 1.05, ink)
+                line(c + vec2(f32(-r * 0.4), f32(r)), c + vec2(f32(r * 0.4), f32(r)), r * 0.16, ink)
+            "LT", "RT":
+                k = f32(r)
+                polygon([c + vec2(-0.85, -0.9) * k, c + vec2(0.85, -0.9) * k, c + vec2(0.65, 0.9) * k, c + vec2(-0.5, 0.9) * k], shade)
+                polyline([c + vec2(-0.85, -0.9) * k, c + vec2(0.85, -0.9) * k, c + vec2(0.65, 0.9) * k, c + vec2(-0.5, 0.9) * k, c + vec2(-0.85, -0.9) * k], r * 0.1, ink)
+                text_centered(label, c + vec2(0, f32(-r * 0.1)), r * 0.9, ink)
+            "LB", "RB":
+                k = f32(r)
+                polyline([c + vec2(-1, 0.4) * k, c + vec2(-0.9, -0.3) * k, c + vec2(-0.6, -0.6) * k, c + vec2(0.6, -0.6) * k, c + vec2(0.9, -0.3) * k, c + vec2(1, 0.4) * k, c + vec2(-1, 0.4) * k], r * 0.12, ink)
+                text_centered(label, c + vec2(0, f32(-r * 0.1)), r * 0.85, ink)
+            "Start":
+                circle(c, r, shade)
+                loop i in [-1..2): line(c + vec2(f32(-r * 0.5), f32(f64(i) * r * 0.35)), c + vec2(f32(r * 0.5), f32(f64(i) * r * 0.35)), r * 0.12, ink)
+            "Back":
+                rect(f64(c.x) - r * 0.7, f64(c.y) - r * 0.5, r, r * 0.8, shade)
+                rect(f64(c.x) - r * 0.25, f64(c.y) - r * 0.15, r, r * 0.8, ink)
+            _:
+                # D-pad cross; a filled tip identifies the bound direction.
+                k = f32(r)
+                polygon([c + vec2(-0.3, -1) * k, c + vec2(0.3, -1) * k, c + vec2(0.3, -0.3) * k, c + vec2(1, -0.3) * k, c + vec2(1, 0.3) * k, c + vec2(0.3, 0.3) * k, c + vec2(0.3, 1) * k, c + vec2(-0.3, 1) * k, c + vec2(-0.3, 0.3) * k, c + vec2(-1, 0.3) * k, c + vec2(-1, -0.3) * k, c + vec2(-0.3, -0.3) * k], shade)
+                loop direction in ["Up", "Left", "Down", "Right"]:
+                    if label != "Dpad" and label != direction: continue
+                    d = match direction:
+                        "Up": vec2(0, -1)
+                        "Left": vec2(-1, 0)
+                        "Down": vec2(0, 1)
+                        _: vec2(1, 0)
+                    side = vec2(-d.y, d.x)
+                    triangle(c + d * k * 0.95, c + (d * 0.45 + side * 0.22) * k, c + (d * 0.45 - side * 0.22) * k, ink)
+    else:
+        w = max(r * 2.0, text_width(label, r * 1.15) + r)
+        rect(f64(c.x) - w / 2.0 - 1.5, f64(c.y) - r - 1.5, w + 3.0, r * 2.0 + 3.0, shade)
+        rect(f64(c.x) - w / 2.0, f64(c.y) - r, w, r * 2.0, rgba(0.93, 0.92, 0.88, 0.92 * a))
+        rect(f64(c.x) - w / 2.0, f64(c.y) + r * 0.55, w, r * 0.45, rgba(0.75, 0.74, 0.7, 0.92 * a))
+        # (centred on the cap's face, above its lower lip: text_centered centres the line itself;
+        # an extra lift had cut the top off every letter)
+        text_centered(label, c + vec2(0, f32(-r * 0.22)), r * 1.15, rgba(0.12, 0.12, 0.12, 0.95 * a))
+
+button_hint = (label: str, action: str, x: f64, y: f64, alpha: f64 = 1.0) -> f64:
+    width = if act.using_pad: 24.0 else: max(24.0, text_width(label, 13.2) + 12.0)
+    button_glyph(label, vec2(f32(x + width / 2.0), f32(y)), 12.0, alpha)
+    text(action, vec2(f32(x + width + 7.0), f32(y - 9.0)), 17.5, rgba(0.96, 0.96, 0.9, f32(0.96 * alpha)))
+    x + width + (if len(action) == 0: 7.0 else: 22.0 + text_width(action, 17.5))
+
+menu_navigation_hint = (x: f64, y: f64):
+    nx = button_hint("Lstick", "Choose / adjust", x, y)
+    nx = button_hint("B", "Select", nx, y)
+    nx = button_hint("LB", "", nx, y)
+    nx = button_hint("RB", "Tabs", nx, y)
+    nx = button_hint("Start", "Close", nx, y)
+
+hud_draw = (views: SlotView[], equipped: str):
+    if ui.hide or invui.open: return
+    hearts_draw()
+    stamina_draw()
+    clock_draw()
+    slots_draw(views, equipped)
+    banners_draw()

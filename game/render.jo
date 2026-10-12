@@ -1,0 +1,199 @@
+use 'gfx.jo'
+use 'gputime.jo'
+use 'cputime.jo'
+use 'shade.jo'
+use 'env.jo'
+use 'sky.jo'
+use 'malice.jo'
+use 'post.jo'
+use 'shadows.jo'
+use 'terrain.jo'
+use 'water_render.jo'
+use 'fx.jo'
+use 'grass.jo'
+use 'build.jo'
+use 'farland.jo'
+use 'scene.jo'
+use 'vegetation.jo'
+use 'interiors.jo'
+use 'player.jo'
+use 'structures.jo'
+
+# The frame: shadow maps, the opaque world, the sky, water and other transparent things, then
+# the watercolor post-processing. Game objects draw through the callbacks.
+
+struct RenderHooks:
+    opaque: () -> void          # characters, props (called for each shadow cascade too: check sc.shadow)
+    transparent: () -> void     # effects after the sky
+    glow = vec3(3.0, 1.2, 0.3)  # Sheikah glow color for static pieces
+    tower_lift = 0.0
+    named_glow: {str: vec3} = {}
+    named_hidden: {str: bool} = {}
+    named_char: {str: f64} = {}
+    named_collapse: {str: vec4} = {}
+    named_lift: {str: f64} = {}     # pieces rising out of the ground (the shrines)
+    swirl = 1.0
+    grass_player = vec3(0, -1000, 0)
+
+__noop = (): pass
+# a cave mouth: from inside within 45 m of it the world outside is drawn (the daylight at the end)
+see_out_from = vec3(0, -10000, 0)
+hooks = RenderHooks(__noop, __noop)
+
+terr_u = (vp: mat4, shadow: bool) -> TerrU:
+    TerrU(vp = vp, cam = sc.cam, origin = vec2(f32(hf.x0), f32(hf.z0)), cell = f32(hf.cell), nsamp = f32(hf.n),
+        heights = height_tex, normals = normal_tex, mats = mat_tex, sun_dir = env.light_dir,
+        sun_color = env.sun_color, sky = env.sky_amb, ground = env.ground_amb, haze = env.haze,
+        density = f32(env.density), falloff = 0.004, vp0 = cascades.vps[0], vp1 = cascades.vps[1], vp2 = cascades.vps[2],
+        sm0 = shadow_tex(0), sm1 = shadow_tex(1), sm2 = shadow_tex(2), time = f32(elapsed()), wet = f32(env.wet),
+        snow_line = 600.0, burn = burn_tex, shadow_pass = f32(int(shadow)), lp = sc_lp, lc = sc_lc, clouds = f32(env.clouds), water = water_bed_tex, has_water = (if water_bed_tex.id != 0: f32(1.0) else: f32(0.0)), noise = terrain_noise_tex, canopy = canopy_tex, has_canopy = (if canopy_tex.id != 0: f32(1.0) else: f32(0.0)))
+
+build_u = (vp: mat4, shadow: bool) -> BuildU:
+    BuildU(vp, sc.cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), 0.004,
+        cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), f32(elapsed()), f32(env.wet),
+        hooks.glow, f32(int(shadow)), vec3(0, 0, 0), sc_lp, sc_lc, f32(env.clouds), veg_player, fade_width = f32(if pl.state == .climb: 2.6 else: 1.0))
+
+__draw_named_all = (u0: BuildU):
+    loop k, m in named_meshes:
+        if hooks.named_hidden.get(k) ?? false: continue
+        u = u0
+        if let g = hooks.named_glow.get(k): u.glow_color = g
+        if k == "tower":
+            u.lift = vec3(0, f32(hooks.tower_lift), 0)
+            u.keep_center = TOWER.xz
+            u.keep_radius = 5.0
+        if let lf = hooks.named_lift.get(k): u.lift = vec3(0, f32(lf), 0)
+        u.char = f32(hooks.named_char.get(k, 0.0))
+        if let c = hooks.named_collapse.get(k):
+            u.base = c.xyz
+            u.collapse = c.w
+        # the castle and the far towers stand out of the haze (they are what the eye looks for)
+        if k == "castle" or k == "far_towers": u.density = u.density * 0.45
+        draw_named(k, u)
+
+render_world = (cam_pos: vec3, target: vec3, fov: f64):
+    flush()
+    veg_fade_width = if pl.state == .climb: 2.6 else: 1.0
+    # underground: the outdoor world is not drawn at all
+    # (underground the world outside is not drawn, except near a mouth that opens onto it)
+    under = zone_at(cam_pos) != "" and f64(length(cam_pos - see_out_from)) > 45.0
+    sc.cam = cam_pos
+    sc.fwd = normalize(target - cam_pos)
+    sc.fov = fov
+    sc.proj = perspective(radians(fov), aspect_ratio(), sc.near, sc.far)
+    sc.view = look_at(cam_pos, target, vec3(0, 1, 0))
+    sc.vp = sc.proj * sc.view
+    vp = sc.vp
+    cpu_mark("terrain_select")
+    terrain_select(cam_pos, vp)
+    cpu_mark("shadow_matrices")
+    shadow_matrices(cam_pos, sc.fwd, env.light_dir)
+    # shadows
+    loop k in [0..3):
+        if not shadow_due(k): continue
+        gpu_mark("shadow{k}")
+        shadow_begin(k)
+        sc.shadow = true
+        sc.shadow_k = k
+        svp = cascades.vps[k]
+        if not under: terrain_draw(terr_u(svp, true))
+        bu = build_u(svp, true)
+        build_draw(bu, svp, cam_pos, cascades.radii[k] * 2.5)
+        __draw_named_all(bu)
+        gpu_mark("sh-veg{k}")
+        if k < 2 and not under:
+            cpu_mark("veg_cull_sh{k}")
+            vegetation_cull(svp, cam_pos, cascades.radii[k] * (if k == 0: 1.6 else: 1.15), (if k == 0: 2.0 else: 6.0), k + 1, (if k == 0: 25.0 else: 0.0))
+            cpu_mark("veg_draw_sh{k}")
+            vegetation_draw(svp, true, k + 1)
+        cpu_mark("shadow_actors{k}")
+        gpu_mark("sh-chars{k}")
+        hooks.opaque()
+        shadow_end()
+    sc.shadow = false
+    # the opaque scene
+    target_rt = post_begin()
+    bind_target(target_rt)
+    glClearColor(0, 0, 0, 1)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    gl_opaque_state()
+    cpu_mark("farland_draw")
+    gpu_mark("farland")
+    if not under:
+        farland_draw(FarU(vp, cam_pos, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), f32(elapsed()), f32(env.clouds)))
+        gpu_mark("far-trees")
+        cpu_mark("farland_scatter_draw")
+        farland_scatter_draw()
+        # Resolve ground coverage cheaply before trees/buildings hide it. The lit pass
+        # follows those occluders and has no discard, so early depth testing rejects it.
+        cpu_mark("terrain_depth")
+        gpu_mark("terrain-depth")
+        glColorMask(0, 0, 0, 0)
+        terrain_draw(terr_u(vp, false), true)
+        glColorMask(1, 1, 1, 1)
+    cpu_mark("buildings_draw")
+    gpu_mark("buildings")
+    bu = build_u(vp, false)
+    build_draw(bu, vp, cam_pos, 5000.0)
+    __draw_named_all(bu)
+    gpu_mark("trees")
+    if not under:
+        cpu_mark("veg_cull_view")
+        vegetation_cull(vp, cam_pos, 1800.0)
+        cpu_mark("veg_draw_view")
+        vegetation_draw(vp, false)
+    cpu_mark("terrain_draw")
+    gpu_mark("terrain")
+    if not under:
+        glDepthFunc(GL_EQUAL)
+        glDepthMask(0)
+        terrain_draw(terr_u(vp, false))
+        glDepthFunc(GL_LEQUAL)
+        glDepthMask(1)
+    gpu_mark("chars")
+    hooks.opaque()
+    gl_opaque_state()
+    gpu_mark("grass")
+    cpu_mark("grass_select")
+    grass_select(cam_pos, vp)
+    cpu_mark("grass_draw")
+    if under:
+        gpatches.clear()
+        gpatches_far.clear()
+    if not under: grass_draw(GrassU(vp, cam_pos, vec2(f32(hf.x0), f32(hf.z0)), f32(hf.cell), f32(hf.n), height_tex, mat_tex, burn_tex, normal_tex, water_tex,
+        env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), 0.004,
+        cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), f32(elapsed()),
+        env.wind * f32(env.gust), f32(0.6 + env.rain * 0.8), hooks.grass_player, 600.0, 1.0, sc_lp, sc_lc, f32(env.wet), f32(env.clouds), canopy_tex))
+    cpu_mark("sky_draw")
+    gpu_mark("sky")
+    if not under: draw_sky(inverse(vp), cam_pos)
+    # The continuous depth-tested vortex owns the Castle effect; the legacy
+    # particle arms remain disabled so other fx work stays independent.
+    fx_set_malice(0.0)
+    if not under: draw_malice(vp, cam_pos, hooks.swirl)
+    # the opaque scene so far, for the water's reflections and soft particles
+    cpu_mark("water_draw")
+    gpu_mark("water")
+    post_copy_depth()
+    if not under: water_draw(WaterU(vp, cam_pos, vec2(f32(hf.x0), f32(hf.z0)), f32(hf.cell), height_tex, env.light_dir, env.sun_color,
+        env.zenith, env.horizon, env.haze, f32(env.density), 0.004, f32(elapsed()), f32(env.rain), cascades.vps[0], shadow_tex(0), f32(env.night), post.depth_copy.color, post.depth_copy.depth, f32(sc.near), f32(sc.far), water_tex, clouds = f32(env.clouds)))
+    cpu_mark("fx_draw")
+    gpu_mark("fx")
+    hooks.transparent()
+    # god rays: strongest with the sun low and ahead, gone under cloud, at night or underground
+    sp = vp * vec4(cam_pos + env.light_dir * 1000.0, 1.0)
+    post_rays = 0.0
+    if sp.w > 0.0 and not under and env.night < 0.5:
+        sun_uv = sp.xy / sp.w * 0.5 + vec2(0.5, 0.5)
+        post_sun_uv = sun_uv
+        low = 1.0 - clamp((f64(env.light_dir.y) - 0.05) / 0.45, 0.0, 1.0)
+        ahead = clamp(1.0 - f64(length(sun_uv - vec2(0.5, 0.5))) * 1.2, 0.0, 1.0)
+        post_rays = (0.25 + 0.75 * low) * ahead * (1.0 - env.dark) * 0.9
+        post_ray_color = env.sun_color * 0.7
+    cpu_mark("post_draw")
+    gpu_mark("post")
+    post_end(sc.near, sc.far)
+    gpu_mark("electric")
+    fx_electric_draw(sc.cam, sc.vp, sc.view)
+    gpu_frame_end()
+    gl_restore_2d()

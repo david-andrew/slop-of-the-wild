@@ -1,0 +1,91 @@
+# Where the CPU's time goes in a long frame (BOTW_CPU=1): cpu_mark("name") between the parts of a
+# frame, cpu_frame_end() at its end; a CPU-heavy frame prints its parts, longest first, including per-stage wall/thread CPU times and frame context; every
+# 240 frames the total and largest parts, with hero animation kept visible ("cpu avg ms").
+
+use 'frametime.jo'
+
+cpu_timing = env("BOTW_CPU") != none
+__cp_trace_ms = max(0.0, to_float(env("BOTW_CPU_TRACE_MS") ?? "10") ?? 10.0)
+__cp_names: str[]
+__cp_t: f64[]
+__cp_thread: f64[]
+__cp_thread_last = 0.0
+__cp_details = ""
+__cp_last = 0.0
+__cp_start = 0.0
+__cp_sum: {str: f64} = {}
+__cp_frames = 0
+__cp_return_trace = env("BOTW_CPU_RETURN_TRACE") != none
+__cp_finished = false
+
+cpu_mark = (name: str):
+    if not cpu_timing: return
+    if __cp_finished:
+        __cp_names.clear()
+        __cp_t.clear()
+        __cp_thread.clear()
+        __cp_details = ""
+        __cp_finished = false
+    now = time()
+    thread = frame_thread_time()
+    if __cp_names.len() == 0: __cp_start = now
+    else:
+        __cp_t[__cp_t.len() - 1] = now - __cp_last
+        __cp_thread[__cp_thread.len() - 1] = thread - __cp_thread_last
+    __cp_names.push(name)
+    __cp_t.push(0.0)
+    __cp_thread.push(0.0)
+    __cp_thread_last = thread
+    __cp_last = now
+
+cpu_detail = (detail: str):
+    if cpu_timing: __cp_details += " {detail}"
+
+cpu_frame_end = ():
+    if not cpu_timing or __cp_names.len() == 0: return
+    now = time()
+    __cp_t[__cp_t.len() - 1] = now - __cp_last
+    __cp_thread[__cp_thread.len() - 1] = frame_thread_time() - __cp_thread_last
+    total = now - __cp_start
+    # GPU-fence sleeps are wall time, not CPU work. Dumping their full trace on
+    # every mailbox frame inflated the profiler's allocation/I/O cost itself.
+    # Keep CPU-heavy frames (with a bookkeeping guard) and rare long waits.
+    thread_total = 0.0
+    loop t in __cp_thread: thread_total += t
+    if thread_total * 1000.0 > __cp_trace_ms or total > 0.025:
+        idx: int[]
+        loop i in [0..__cp_t.len()): idx.push(i)
+        sort_by(idx, (i: int) -> f64: -__cp_t[i])
+        # Joining once avoids repeatedly copying a growing trace (both 120 Hz
+        # simulation steps can contribute over a hundred stage entries).
+        parts: str[]
+        parts.reserve(idx.len())
+        loop j in [0..idx.len()): parts.push("{__cp_names[idx[j]]} {__cp_t[idx[j]] * 1000.0:.3}/{__cp_thread[idx[j]] * 1000.0:.3}")
+        eprint("long cpu {total * 1000.0:.1} ms: {join(parts, " ")}; frame {frame_number()}; wall/thread ms; voices={__voices.len()};{__cp_details}")
+    loop i in [0..__cp_t.len()): __cp_sum[__cp_names[i]] = __cp_sum.get(__cp_names[i], 0.0) + __cp_t[i]
+    __cp_frames += 1
+    if __cp_frames >= 240:
+        ks = __cp_sum.keys()
+        sort_by(ks, (k: str) -> f64: -__cp_sum.get(k, 0.0))
+        total_avg = 0.0
+        loop k in ks: total_avg += __cp_sum.get(k, 0.0)
+        line = "cpu avg ms: total {total_avg * 1000.0 / f64(__cp_frames):.2} hero_animate {__cp_sum.get("hero_animate", 0.0) * 1000.0 / f64(__cp_frames):.3} player_update {__cp_sum.get("player_update", 0.0) * 1000.0 / f64(__cp_frames):.3} camera_update {__cp_sum.get("camera_update", 0.0) * 1000.0 / f64(__cp_frames):.3}"
+        loop j in [0..min(10, ks.len())): line = "{line} {ks[j]} {__cp_sum.get(ks[j], 0.0) * 1000.0 / f64(__cp_frames):.2}"
+        eprint(line)
+        __cp_sum = {}
+        __cp_frames = 0
+    if __cp_return_trace: __cp_finished = true
+    else:
+        __cp_names.clear()
+        __cp_t.clear()
+        __cp_thread.clear()
+        __cp_details = ""
+
+# Called only after a measured long return. Retain existing stage storage until
+# the next mark, avoiding per-frame snapshots/string copies and tracing waits
+# that did not become a long interval. Normal profiling keeps its old lifecycle.
+cpu_return_trace = (n: int):
+    if not cpu_timing or not __cp_return_trace or not __cp_finished: return
+    parts: str[]
+    loop i in [0..__cp_names.len()): parts.push("{__cp_names[i]} {__cp_t[i] * 1000.0:.3}/{__cp_thread[i] * 1000.0:.3}")
+    eprint("tail cpu: frame {n} {join(parts, " ")};{__cp_details}")

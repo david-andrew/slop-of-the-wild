@@ -1,0 +1,63 @@
+build:
+    opt = release
+
+# Fixed-pose inspection of the actual ledge arm solve. VIEW_PHASE=0..1 selects the pull.
+use '../game/gfx.jo'
+use '../game/env.jo'
+use '../game/sky.jo'
+use '../game/post.jo'
+use '../game/shadows.jo'
+use '../game/charshade.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/player.jo'
+use '../game/hero_motion.jo'
+
+window("Mantle contacts", 1280, 720)
+model = load_model("assets/models/hero.mdl")
+lib = load_humanoid_anims()
+phase = to_float(env("VIEW_PHASE") ?? "0.35") ?? 0.35
+ledge = prop_boxes([PropBox(vec3(0, 0.8, -1.8), vec3(1.2, 0.8, 1.25), vec4(0.48, 0.46, 0.40, 1))], "ledge")
+platform = prop_boxes([PropBox(vec3(0, -0.1, 0), vec3(4, 0.1, 4), vec4(0.36, 0.44, 0.28, 1))], "ground")
+world = mat4()
+posed = Skin()
+env.hour = 10.0
+env.weather = .clear
+env.weather_t = 1e9
+env.time_scale = 0.0
+
+update = (dt: f64):
+    env_update(0.0, false)
+    pl = Player(state = .mantle, face = 0.0, mantle_from = vec3(0, 0, 0), mantle_to = vec3(0, 1.6, -0.9))
+    mantle_grips(vec3(0, 0, -0.55))
+    pl.st_t = phase * 0.55
+    pl.pos = v3(0.0, 1.65 * smooth01(phase / 0.65), -0.9 * smooth01((phase - 0.45) / 0.55))
+    pose = sample_clip(lib, clip_index(lib, "climb_up"), phase * clip_duration(lib, clip_index(lib, "climb_up")), false)
+    world = translation(pl.pos) * rotation_y(PI)
+    mantle_arms(model, lib, pose, world)
+    posed = skin(model, pose)
+
+draw = ():
+    flush()
+    camera = vec3(3.6, 2.8, 2.8)
+    target_ = vec3(0, 1.25, -0.55)
+    vp = perspective(radians(45.0), aspect_ratio(), 0.05, 100.0) * look_at(camera, target_, vec3(0, 1, 0))
+    shadow_matrices(camera, normalize(target_ - camera), env.light_dir)
+    scene = char_scene(vp, camera, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, env.density, 0.004,
+        cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), elapsed())
+    loop k in [0..3):
+        shadow_begin(k)
+        draw_character_shadow(model, world, posed, cascades.vps[k], CharParams(variant = 2))
+        draw_prop_shadow(ledge, mat4(), cascades.vps[k])
+        shadow_end()
+    bind_target(post_begin())
+    glClearColor(0.4, 0.6, 0.8, 1)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    gl_opaque_state()
+    draw_prop(platform, mat4(), scene)
+    draw_prop(ledge, mat4(), scene)
+    draw_character(model, world, posed, scene, CharParams(variant = 2))
+    draw_sky(inverse(vp), camera)
+    post_end(0.05, 100.0)
+    gl_restore_2d()
+    text("Ledge pull — hands fixed to the rim ({phase * 100.0:.0}%)", vec2(16, 16), 20, rgba(1, 1, 1, 1))

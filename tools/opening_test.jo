@@ -1,0 +1,97 @@
+# Wake contact/continuity and interrupted camera handoffs, without a graphics context.
+use '../game/hero_motion.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/physics.jo'
+use '../game/gfx.jo'
+
+lib = load_humanoid_anims()
+loop model in ["hero_bare", "hero"]:
+    m = load_model("assets/models/{model}.mdl")
+    hand = bone_index(m, "hand_l")
+    pelvis = bone_index(m, "pelvis")
+    points = ["head", "pelvis", "hand_l", "hand_r", "ball_l", "ball_r"]
+    last = wake_pose(m, lib, 0.0)
+    anchor = motion_point(m, wake_pose(m, lib, 1.6), hand)
+    drift = 0.0
+    step = 0.0
+    loop frame in [1..350):
+        t = f64(frame) / 60.0
+        p = wake_pose(m, lib, t)
+        if t >= 1.6 and t <= 2.1: drift = max(drift, f64(length(motion_point(m, p, hand) - anchor)))
+        loop bone in points:
+            b = bone_index(m, bone)
+            step = max(step, f64(length(motion_point(m, p, b) - motion_point(m, last, b))))
+        last = p
+    print("wake {model}: support drift {drift:.5} m, largest joint step {step:.5} m")
+    assert(drift < 0.005)
+    assert(step < 0.065)
+    assert(motion_point(m, wake_pose(m, lib, 0.0), pelvis).y < 0.15)
+    assert(motion_point(m, wake_pose(m, lib, 5.8), pelvis).y > 0.75)
+    idle = sample_clip(lib, clip_index(lib, "idle"), 5.8 - 4.35, true)
+    loop bone in points:
+        b = bone_index(m, bone)
+        assert(length(motion_point(m, last, b) - motion_point(m, idle, b)) < 0.01)
+
+check_camera = (edge_dt: f64):
+    use_terrain = false
+    pl = Player(pos = vec3(0, 0, 0))
+    act = Actions()
+    cam = Cam()
+    camera_snap()
+    camera_update(1.0 / 60.0)
+    initial = view_pos()
+    initial_target = view_target()
+    initial_fov = view_fov()
+    chase = cam.pos
+    yaw = cam.yaw
+    cam.override = true
+    cam.o_pos = vec3(10, 5, -8)
+    cam.o_target = vec3(0, 1, 0)
+    cam.o_fov = 40.0
+    # An entry captured from the displayed view cannot jump, even if the script forces blend.
+    cam.blend = 1.0
+    camera_update(edge_dt)
+    assert(length(view_pos() - initial) < 0.0001)
+    assert(length(view_target() - initial_target) < 0.0001)
+    assert(abs(view_fov() - initial_fov) < 0.0001)
+    assert(cam.pos == chase and cam.yaw == yaw, "handoff capture must not advance the chase simulation")
+    loop frame in [0..20):
+        cam.blend = 1.0
+        camera_update(1.0 / 60.0)
+    # A moving cutscene may render a new endpoint without a simulation tick.
+    # Exit must capture that displayed frame, not the last integrated tick.
+    cam.o_pos += vec3(0.12, 0.03, 0.06)
+    cam.o_target += vec3(0.02, 0.01, 0.0)
+    cam.o_fov += 1.0
+    camera_update(0.0)
+    partial = view_pos()
+    partial_target = view_target()
+    partial_fov = view_fov()
+    cam.override = false
+    camera_update(edge_dt)
+    assert(length(view_pos() - partial) < 0.0001)
+    assert(length(view_target() - partial_target) < 0.0001)
+    assert(abs(view_fov() - partial_fov) < 0.0001)
+    loop frame in [0..10): camera_update(1.0 / 60.0)
+    interrupted = view_pos()
+    cam.override = true
+    cam.o_pos = vec3(-8, 3, 5)
+    camera_update(edge_dt)
+    assert(length(view_pos() - interrupted) < 0.0001)
+    loop frame in [0..50): camera_update(1.0 / 60.0)
+    assert(length(view_pos() - cam.o_pos) < 0.0001)
+    cam.override = false
+    camera_update(edge_dt)
+    loop frame in [0..50): camera_update(1.0 / 60.0)
+    assert(length(view_pos() - cam.pos) < 0.0001)
+    assert(cam.blend == 0.0)
+
+# d380717 moved override capture behind the 120 Hz early return. Both a zero-dt
+# frame and a real render frame shorter than one physics tick must retain the
+# displayed view when a cutscene starts, ends or interrupts another handoff.
+loop edge_dt in [0.0, 1.0 / 480.0]: check_camera(edge_dt)
+print("opening: wake support/continuity and camera entry/exit/interruption PASS")

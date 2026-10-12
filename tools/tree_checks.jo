@@ -1,0 +1,307 @@
+use '../game/matter.jo'
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/trees.jo'
+use '../game/vegetation.jo'
+use '../game/elements.jo'
+use '../game/element_puzzles.jo'
+use '../game/physics.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/water.jo'
+use '../game/save.jo'
+use '../game/player.jo'
+use '../game/combat.jo'
+use '../game/items.jo'
+use '../game/env.jo'
+use '../game/fx.jo'
+use '../game/enemies.jo'
+use '../game/wildlife.jo'
+
+__tree_checks=0
+__tree_check = (ok: bool, name: str, note: str=""):
+    if not ok:
+        eprint("FAIL tree/log {name}: {note}")
+        exit(1)
+    __tree_checks += 1
+    print("PASS tree/log {name}: {note}")
+
+__tree_course = ():
+    trees_restore([])
+    tree_colliders.clear()
+    places.clear()
+    vmodels=[VModel("CommonTree",[],8.0,4.0),VModel("Bush_Common",[],2.0,1.0),VModel("Pine_Snow",[],8.0,2.0)]
+    loop mut c in colliders: c.active=false
+    player_hits.clear()
+    enemies.clear()
+    animals.clear()
+    witems.clear()
+    barrels.clear()
+    bonfires.clear()
+    tree_fire.clear()
+    arrows.clear()
+    element_puzzles.clear()
+    hf.n=64
+    hf.cell=1.0
+    hf.x0=-32.0
+    hf.z0=-32.0
+    hf.h=fill(f32(0),4096)
+    hf.mat=fill(u8(0),16384)
+    areas=fill(u8(46),4096)
+    edge_sd=fill(f32(-100),4096)
+    burn_px=fill(u8(0),BURN_N*BURN_N*4)
+    water_grid_set(fill(f32(-10000),4096),64,-32.0,-32.0,1.0)
+    use_terrain=true
+    env=Env(rain=0.0)
+    inv=Inventory()
+    inv_add("axe")
+    fight=Fight()
+    pl=Player(pos=vec3(0,0,2),face=0.0)
+    loop mut f in flames: f.life=0.0
+    elements_update(1.0/60.0,pl.pos)
+
+__plant_tree = ():
+    root=vec3(0,0,0)
+    c=add_cyl(root-vec3(0,1,0),0.3,4.0,true,.wood)
+    places.push(VPlace(0,translation(root),vec4(1,1,1,0),root,4.0,8.0,true,col=c))
+    tree_colliders[c]=0
+    branch_m=translation(vec3(0,4,0))
+    places.push(VPlace(1,branch_m,vec4(1,1,1,0),vec3(0,4,0),1.0,4.0,false,owner=0))
+
+__tree_blade = (id: int, z: f64=0.0) -> PHit:
+    PHit(v3(0.0,1.0,z),pl.pos,vec3(0,0,-1),3.0,1.0,false,id,v3(0.0,1.0,z+1.0),v3(0.0,1.0,z-0.4))
+
+__tree_chop = (id: int):
+    player_hits=[__tree_blade(id)]
+    elements_update(1.0/60.0,pl.pos)
+    player_hits.clear()
+
+__tree_log = ():
+    tree_fell(tree_record(0),pl.pos)
+    pl.pos=vec3(20,0,20)
+    loop k in [0..90): trees_update(1.0/60.0,pl.pos)
+    __tree_check(tree_states[0].phase==2,"fall settles to log")
+
+trees_test_suite = ():
+    __tree_checks=0
+    __tree_course()
+    __plant_tree()
+    __tree_check(tree_states.len()==0,"standing trees have no frame state")
+    __tree_check(tree_suitable(places[0]) and not tree_suitable(places[1]) and not tree_suitable(VPlace(2,mat4(),vec4(1,1,1,0.7),vec3(0,0,0),2.0,8.0,true)),"only suitable rooted trunk models")
+    loop w in ["branch","torch","travelers_sword","boko_spear","boko_club"]:
+        inv=Inventory()
+        inv_add(w)
+        __tree_chop(1)
+        __tree_check(tree_states.len()==0,"wrong weapon")
+    inv=Inventory()
+    inv_add("axe")
+    wall=add_box(vec3(0,0,0.65),vec3(1,2,0.08),0.0,false,.stone)
+    __tree_chop(8)
+    __tree_check(tree_states.len()==0,"cover rejects chop")
+    colliders[wall].active=false
+    __tree_chop(10)
+    __tree_chop(10)
+    __tree_check(tree_states[0].hits==1 and tree_states[0].phase==0,"blade subsamples count once per swing")
+    __tree_chop(11)
+    __tree_check(tree_states[0].hits==2 and tree_states[0].phase==0,"N minus one hits keep trunk")
+    apple=spawn_item("apple",vec3(0,3,0))
+    witems[apple].hang=true
+    __tree_chop(12)
+    t=tree_states[0]
+    __tree_check(t.phase==1 and t.hits==TREE_CHOPS,"N hits fell", "hits={t.hits}")
+    __tree_check(dot(v3(sin(t.yaw),0.0,cos(t.yaw)),t.root-pl.pos)>0.0,"fall away from attacker","yaw={t.yaw:.3}")
+    __tree_check(not witems[apple].hang,"hanging apple drops")
+    __tree_check(colliders[places[0].col].half.y==0.16,"root collider becomes stump")
+    pl.pos=vec3(20,0,20)
+    loop k in [0..30): trees_update(1.0/60.0,pl.pos)
+    __tree_check(tree_states[0].phase==1 and abs(places[1].m[3].z)>0.2,"whole crown follows fall")
+    loop k in [0..90): trees_update(1.0/60.0,pl.pos)
+    t=tree_states[0]
+    __tree_check(t.phase==2 and places[0].felled and places[1].felled,"land hides trunk and attached crown")
+    hit=raycast(t.pos+vec3(2,0,0),vec3(-1,0,0),4.0)
+    __tree_check(hit.hit and hit.collider==t.col,"log blocks ray")
+    feet=t.pos-v3(0.0,t.radius,0.0)+vec3(0.1,0,0)
+    push=push_out(feet,0.3,1.8)
+    __tree_check(length(push)>0.2,"log blocks capsule")
+    ground=ground_at(f64(t.pos.x),f64(t.pos.z),f64(t.pos.y)+t.radius+0.1,0.5)
+    __tree_check(ground.collider==t.col and ground.surf==.wood,"log has walkable bridge top")
+    # The rigid span rests on both banks of a narrow terrain cut.
+    loop z in [0..64):
+        if abs((f64(z)-32.0)-f64(t.pos.z))<1.1:
+            loop x in [0..64): hf.h[z*64+x]=-4.0
+    tree_states[0].vel=vec3(0,0,0)
+    loop k in [0..60): trees_update(1.0/60.0,pl.pos)
+    t=tree_states[0]
+    __tree_check(abs(f64(t.pos.y)-t.radius)<0.02 and ground_at(f64(t.pos.x),f64(t.pos.z),f64(t.pos.y)+1.0,0.0).collider==t.col,"physical log bridges narrow terrain gap")
+    hf.h=fill(f32(0),4096)
+    # Standing on a moving log carries the player's feet with it.
+    pl.state=.ground
+    pl.ground.collider=t.col
+    pl.pos=t.pos+v3(0.0,t.radius,0.0)
+    x0=pl.pos.x
+    tree_states[0].vel=vec3(1,0,0)
+    trees_update(1.0/60.0,pl.pos)
+    __tree_check(pl.pos.x>x0,"log carries standing player")
+    pl.pos=vec3(20,0,20)
+    pl.ground.collider=-1
+    t=tree_states[0]
+    # Move across a grid boundary; no stale membership remains at the old site.
+    old=t.pos
+    tree_states[0].pos=vec3(20,0.3,20)
+    log_step(tree_states[0],1.0/60.0)
+    __tree_check(nearby(20.0,20.0,0.1).contains(t.col) and not nearby(f64(old.x),f64(old.z),0.1).contains(t.col),"moving collider reindexes without stale cells")
+    tree_states[0]=t
+    log_step(tree_states[0],1.0/60.0)
+    # Two accepted axe swings produce three collectable material bundles.
+    pl.pos=t.pos+vec3(0,0,1.0)
+    player_hits=[PHit(t.pos,pl.pos,vec3(0,0,-1),3.0,1.0,false,30,t.pos+vec3(0,0,0.8),t.pos-vec3(0,0,0.8))]
+    trees_hits()
+    trees_hits()
+    __tree_check(tree_states[0].cuts==1 and tree_states[0].phase==2,"one swing cannot split log twice")
+    player_hits[0].id=31
+    trees_hits()
+    woods=0
+    loop w in witems:
+        if w.alive and w.id=="firewood": woods += 1
+    __tree_check(tree_states[0].phase==3 and not colliders[t.col].active and woods==3,"two chops drop three firewood bundles","bundles={woods}")
+    # Heavy claymore accepted through the same swept-contact path.
+    __tree_course()
+    __plant_tree()
+    inv=Inventory()
+    inv_add("travelers_claymore")
+    loop id in [1..3]: __tree_chop(id)
+    __tree_check(tree_states[0].phase==1,"heavy two handed weapon fells")
+    # A barrel blast fells a visible trunk, while the intervening wall protects it.
+    __tree_course()
+    __plant_tree()
+    wall=add_box(vec3(0,0,1),vec3(2,2,0.1),0.0,false,.stone)
+    trees_blast(vec3(0,0.8,2))
+    __tree_check(tree_states.len()==0,"blast cover protects tree")
+    colliders[wall].active=false
+    barrels=[Barrel(vec3(0,0,2),true,fuse=0.01)]
+    elements_update(1.0/60.0,pl.pos)
+    __tree_check(tree_states.len()==1 and tree_states[0].phase==1,"production barrel explosion fells")
+    # Falling trunk uses accepted enemy damage and releases the solid log on impact.
+    __tree_course()
+    __plant_tree()
+    enemy=spawn_enemy(.bokoblin,vec3(0,0,-3),"boko_club")
+    before=enemies[enemy].hp
+    __tree_log()
+    __tree_check(enemies[enemy].hp<before,"landing damages enemy","before={before} after={enemies[enemy].hp}")
+    loop hz in [30,60,120]:
+        __tree_course()
+        __plant_tree()
+        __tree_log()
+        t=tree_states[0]
+        water_grid_set(fill(f32(1),4096),64,-32.0,-32.0,1.0)
+        tree_states[0].pos.y=0.5
+        tree_states[0].vel=vec3(0,0,0)
+        loop k in [0..hz*5): trees_update(1.0/f64(hz),pl.pos)
+        t=tree_states[0]
+        __tree_check(abs(f64(t.pos.y)-(1.0+t.radius*0.25))<0.015 and colliders[t.col].active,"log floats at 30/60/120Hz","y={t.pos.y:.4} radius={t.radius}")
+        __tree_check(ground_at(f64(t.pos.x),f64(t.pos.z),f64(t.pos.y)+1.0,0.0).collider==t.col,"floating log supports feet at 30/60/120Hz")
+        tree_states[0].el=Elem(burning=5.0)
+        tree_states[0].pos.y=-0.5
+        trees_update(1.0/f64(hz),pl.pos)
+        __tree_check(not burning(tree_states[0].el) and tree_states[0].el.wet==1.0,"submersion douses log at 30/60/120Hz")
+        water_grid_set(fill(f32(-10000),4096),64,-32.0,-32.0,1.0)
+        loop z in [0..64):
+            loop x in [0..64): hf.h[z*64+x]=f32((f64(x)-32.0)*0.3)
+        tree_states[0].pos=vec3(0,0.3,-3)
+        tree_states[0].vel=vec3(0,0,0)
+        loop k in [0..hz*2): trees_update(1.0/f64(hz),pl.pos)
+        t=tree_states[0]
+        __tree_check(t.pos.x < -0.5 and abs(t.roll)>1.0,"log rolls downhill at 30/60/120Hz","x={t.pos.x:.3} roll={t.roll:.3}")
+        wall=add_box(vec3(-3, -3,-3),vec3(0.25,3,7),0.0,false,.stone)
+        loop k in [0..hz*4): trees_update(1.0/f64(hz),pl.pos)
+        __tree_check(tree_states[0].pos.x > -3.0,"rolling log collides with wall at 30/60/120Hz","x={tree_states[0].pos.x:.3}")
+        # A lit bonfire heats the physical log through the material system.
+        __tree_course()
+        __plant_tree()
+        __tree_log()
+        t=tree_states[0]
+        bonfires=[Bonfire(t.pos+vec3(1,0,0))]
+        loop k in [0..hz*2): elements_update(1.0/f64(hz),pl.pos)
+        __tree_check(burning(tree_states[0].el),"bonfire ignites log at 30/60/120Hz","burn={tree_states[0].el.burning:.3}")
+        t=tree_states[0]
+        __tree_check(log_heat(t.pos+v3(0.0,t.radius+0.3,0.0))>0.0,"burning log heats surroundings at 30/60/120Hz")
+        loop k in [0..hz*14): elements_update(1.0/f64(hz),pl.pos)
+        __tree_check(tree_states[0].phase==3 and not colliders[t.col].active,"log burns away at 30/60/120Hz")
+    # Material bundles + struck flint become an ordinary lit bonfire.
+    __tree_course()
+    pl.pos=vec3(0,0,1)
+    spawn_item("flint",vec3(0,0.1,0))
+    spawn_item("firewood",vec3(0.4,0.1,0))
+    player_hits=[PHit(vec3(0,0.1,0),pl.pos,vec3(0,0,-1),3.0,1.0,false,80,vec3(0,0.1,0.7),vec3(0,0.1,-0.3))]
+    elements_update(1.0/60.0,pl.pos)
+    player_hits.clear()
+    __tree_check(bonfires.len()==1 and bonfires[0].lit and not witems[1].alive and not witems[0].alive,"metal strike on flint lights wood")
+    __tree_course()
+    inv=Inventory()
+    inv_add("branch")
+    spawn_item("flint",vec3(0,0.1,0))
+    spawn_item("firewood",vec3(0.4,0.1,0))
+    pl.pos=vec3(0,0,1)
+    player_hits=[PHit(vec3(0,0.1,0),pl.pos,vec3(0,0,-1),3.0,1.0,false,81,vec3(0,0.1,0.7),vec3(0,0.1,-0.3))]
+    elements_update(1.0/60.0,pl.pos)
+    __tree_check(bonfires.len()==0 and witems[0].alive,"wooden weapon cannot spark flint")
+    __tree_check(inv_add("firewood") and count_of("firewood")==1,"wood bundles use material inventory")
+    # Text round trip and actual world restore: roots are matched even after IDs shift.
+    __tree_course()
+    __plant_tree()
+    __tree_log()
+    tree_states[0].el=Elem(burning=6.0,wet=0.3,heat=0.2)
+    tree_states[0].cuts=1
+    fixture=PlateauSave(awake=true,activated=fill(false,4),completed=fill(false,4),trees=tree_states)
+    text_=save_encode(fixture)
+    decoded=save_decode(text_)
+    __tree_check(decoded!=none and decoded!.trees.len()==1,"save text tree record round trip")
+    oldcol=tree_states[0].col
+    fruit=spawn_item("apple",vec3(0,3,0))
+    witems[fruit].hang=true
+    save_apply(decoded!)
+    __tree_check(not witems[fruit].alive,"restored felled crown cannot leave floating or duplicate apples")
+    t=tree_states[0]
+    __tree_check(t.phase==2 and t.cuts==1 and t.el.burning==6.0 and t.el.wet==0.3 and places[0].felled and colliders[t.col].active and not colliders[oldcol].active,"restore log collision and material state")
+    saved=tree_states
+    trees_restore([])
+    # Density edits can shift place IDs; roots, not the saved tree index, select state.
+    places=[places[1],places[0]]
+    places[0].owner=1
+    tree_colliders.clear()
+    tree_colliders[places[1].col]=1
+    trees_restore(saved)
+    __tree_check(tree_states[0].tree==1 and places[1].felled and places[0].felled,"restore matches coordinates after instance IDs shift")
+    trees_restore([])
+    places=[places[1],places[0]]
+    places[1].owner=0
+    tree_colliders.clear()
+    tree_colliders[places[0].col]=0
+    saved[0].phase=3
+    trees_restore(saved)
+    __tree_check(tree_states[0].phase==3 and tree_states[0].col<0 and places[0].felled,"consumed log stays gone")
+    saved[0].phase=1
+    trees_restore(saved)
+    __tree_check(tree_states[0].phase==2 and colliders[tree_states[0].col].active,"mid fall resume settles safely")
+    trees_restore([])
+    __tree_check(not places[0].felled and not places[1].felled and colliders[places[0].col].half.y>1.0,"empty restore resets trunks and crowns")
+    pl.pos=vec3(0,0,2)
+    inv_add("axe")
+    __tree_chop(91)
+    record=tree_states[0]
+    trees_restore([record])
+    __tree_check(tree_states[0].hits==1 and tree_states[0].phase==0,"partially chopped tree persists")
+    fixture.trees=[record,record]
+    __tree_check(save_decode(save_encode(fixture))==none,"duplicate roots rejected")
+    fixture.trees=[record]
+    fixture.trees[0].radius=-1.0
+    __tree_check(save_decode(save_encode(fixture))==none,"malformed dimensions rejected")
+    __tree_course()
+    __plant_tree()
+    __tree_log()
+    tree_states[0].pos.x=30.9
+    tree_states[0].vel=vec3(10,0,0)
+    log_step(tree_states[0],0.1)
+    __tree_check(tree_states[0].phase==3 and not colliders[tree_states[0].col].active and tree_record_valid(tree_states[0]),"log leaving heightfield cannot invalidate journey save")
+    __tree_course()
+    print("trees: {__tree_checks}/{__tree_checks} passed; chops={TREE_CHOPS} log_chops={LOG_CHOPS} bundles=3 fall={TREE_FALL_TIME}s; rates=30/60/120Hz")

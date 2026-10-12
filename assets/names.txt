@@ -1,0 +1,18 @@
+Grate Plateau	484	24	434	69
+Temple of Thyme	423	124	551	76
+Forest of Sprites	442	224	517	76
+Eastern Abbey	467	324	468	76
+Mount Jolia	513	424	373	76
+River of the Dread	409	524	583	69
+Grate Plateau Tower	377	624	649	69
+Hopper Pond	488	724	425	76
+Shrine of Reheating	387	824	628	76
+Woodcutter's House	382	924	634	69
+Ohman Ow Shrine	409	1024	583	69
+Jaba Badge Shrine	408	1124	580	76
+Owa Dime Shrine	423	1224	555	69
+Kay Nomut Shrine	409	1324	581	76
+Magnet Trial	569	1417	261	60
+Bomb Trial	587	1517	226	50
+Pause Trial	584	1617	231	50
+Ice Block Trial	556	1717	287	50

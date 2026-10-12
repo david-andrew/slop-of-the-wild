@@ -1,0 +1,390 @@
+from '../game/save.jo' import __save_age, __save_poll, __save_mark, __save_file, __milestones
+use '../game/hero_motion.jo'
+use '../game/talus.jo'
+from '../game/water.jo' import __wg_n, __wg_x0, __wg_z0, __wg_cell
+from '../game/enemies.jo' import __thrown_prev, __swing_lock
+from '../game/chars.jo' import __clip_time, __last_upper, __upper_t, __guard_weight, __walk_arms_weight
+# Runs the actual main update, not an extracted subsystem sequence.
+loop_fixture_reset = ():
+    invui.open = false
+    inv = Inventory()
+    fight = Fight()
+    hitstop = 0.0
+    story.beat = .explore
+    story.title_done = true
+    env.hour = 12.0
+    env.time_scale = 1.0
+    env.weather = .clear
+    env.weather_t = 1000.0
+    env.rain = 0.0
+    warm_t = 10.0
+    __cook_t = 0.0
+    pl = Player(pos = vec3(-1030, 1000, 1805), last_safe = vec3(-1030, 1000, 1805))
+    add_box(pl.pos - vec3(0, 0.5, 0), vec3(20, 0.5, 20))
+    pl.ground = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.5, RADIUS)
+    witems.clear()
+    arrows.clear()
+    enemies.clear()
+    flames.clear()
+    brands.clear()
+    barrels.clear()
+    __loop_last = 0.0
+    __scripted = false
+    __fixed_step = false
+    save_enabled = true
+    __save_age = 0.0
+    __save_poll = 0.0
+    __save_mark = __milestones()
+    __save_file = "build/production-loop-check/test-save"
+    __key_event(int(Key.e), false)
+    __key_event(int(Key.w), false)
+    __key_event(int(Key.j), false)
+
+loop_assert_time = (seconds: f64):
+    assert(abs(__loop_accounted - seconds) < 0.00001 and __loop_steps <= 60, "production accounts elapsed time in at most sixty steps")
+    assert(abs((env.hour - 12.0) * 60.0 - seconds) < 0.00001, "production world clock accounts elapsed time")
+    assert(abs((10.0 - warm_t) - seconds) < 0.00001, "production material/status timer accounts elapsed time")
+    assert(abs(pl.anim_t - seconds) < 0.00001, "production traversal simulation accounts elapsed time")
+    assert(abs(__save_age - seconds) < 0.00001, "production autosave timer accounts elapsed time")
+
+update = (dt: f64):
+    if frame_number() != 2:
+        production_update(dt)
+        return
+    loop_fixture_reset()
+    # Fresh callback supplied 500ms: the critic's original failure case.
+    # A moving item meets a 4cm wall, and two overlapping hostile arrows test
+    # invulnerability across all substeps instead of damaging sixty times.
+    add_box(pl.pos + vec3(0, 0, -2), vec3(3, 2, 0.02))
+    wi = spawn_item("travelers_sword", pl.pos + vec3(0, 1, 0), vec3(0, 0, -40))
+    loop k in [0..2): arrows.push(Arrow(pl.pos + vec3(0, 1, 0), vec3(0, 0, 0), hostile = true, damage = 2.0))
+    production_update(0.5)
+    loop_assert_time(0.5)
+    assert(witems[wi].pos.z > 1803.1, "production hitch cannot tunnel through thin cover")
+    assert(pl.hp == 10, "production hitch applies overlapping arrow damage once")
+    print("PASS production supplied 500ms = 500ms simulation/clock/status/save; thin cover and single damage")
+    loop_fixture_reset()
+    # Recover 500ms from monotonic time even when the native loop supplied 100ms.
+    __loop_last = time() - 0.5
+    production_update(0.1)
+    loop_assert_time(0.5)
+    print("PASS production recovers 500ms wall interval from a 100ms native callback")
+    loop_fixture_reset()
+    __loop_last = time() - 2.0
+    production_update(0.1)
+    loop_assert_time(0.5)
+    # No catch-up debt: the next callback consumes only the next 1/120 s.
+    __loop_last = 0.0
+    production_update(1.0 / 120.0)
+    assert(__loop_steps == 1 and abs(__loop_accounted - 1.0 / 120.0) < 0.00001)
+    print("PASS production 2s stall caps at 0.5s/60 ticks and leaves no simulation backlog")
+    loop_fixture_reset()
+    # Two pickups occupy the same spot. One physical E press is consumed once.
+    a = spawn_item("apple", pl.pos + vec3(0, 0.3, 0), resting = true)
+    b = spawn_item("apple", pl.pos + vec3(0, 0.3, 0), resting = true)
+    __key_event(int(Key.e), true)
+    production_update(0.5)
+    assert(count_of("apple") == 1 and (witems[a].alive or witems[b].alive), "one interaction pulse across sixty ticks")
+    print("PASS production one pickup pulse across sixty catch-up ticks")
+    loop_fixture_reset()
+    invui.open = true
+    __loop_last = time() - 2.0
+    production_update(0.1)
+    assert(env.hour == 12.0 and warm_t == 10.0 and __save_age == 0.0)
+    invui.open = false
+    __key_event(int(Key.e), false)
+    __loop_last = 0.0
+    production_update(1.0 / 120.0)
+    assert(abs((env.hour - 12.0) * 60.0 - 1.0 / 120.0) < 0.00001)
+    print("PASS production pause consumes wall time without catch-up on resume")
+    loop_fixture_reset()
+    __fixed_step = true
+    __loop_last = time() - 0.5
+    production_update(0.5)
+    loop_assert_time(1.0 / 60.0)
+    print("PASS production capture clock remains 1/60s without scripted input despite 500ms wall time")
+    loop_probe_suite()
+    loop_fixture_reset()
+    __win_close = true
+    production_update(0.5)
+    assert(file_exists(__save_file) and env.hour == 12.0 and warm_t == 10.0 and pl.anim_t == 0.0, "native close saves without advancing catch-up")
+    __win_close = false
+    print("PASS production native close/F10 saves as one frame transaction before simulation")
+    save_enabled = false
+    __scripted = true
+    __fixed_step = true
+
+# These probes drive native key edges and the complete main.update callback.
+# Smooth callbacks and stalled callbacks have the same 1/120 s simulation ticks;
+# no controls are injected into a catch-up loop and no subsystem is called here.
+struct LoopProbe:
+    ticks = 0
+    swings = 0
+    hits = 0
+    wounds = 0
+    parries = 0
+    blocks = 0
+    flurries = 0
+    throws = 0
+    thunder = 0
+    first_contact = -1
+    hp = 0
+    enemy_hp = 0.0
+    pos = vec3(0, 0, 0)
+    enemy_pos = vec3(0, 0, 0)
+    strike = vec3(0, 0, 0)
+    action = Act.idle
+    phase = 0.0
+    slowmo = 0.0
+    weapons = 0
+    shields = 0
+    live_arrows = 0
+    live_throws = 0
+    hit_ids: int[]
+    contacts = ""
+
+loop_probe = LoopProbe()
+loop_probe_active = false
+loop_probe_hp = 12
+loop_probe_enemy_hp = 0.0
+
+# Inserted before play_events by the wrapper; read-only observation of each tick.
+loop_probe_observe = ():
+    if not loop_probe_active: return
+    loop_probe.ticks += 1
+    loop event in pl.events:
+        match event:
+            "swing": loop_probe.swings += 1
+            "parry": loop_probe.parries += 1
+            "block": loop_probe.blocks += 1
+            "flurry": loop_probe.flurries += 1
+            "throw": loop_probe.throws += 1
+            _: pass
+        if event == "swing" or event == "parry" or event == "block" or event == "flurry" or event == "throw":
+            loop_probe.contacts += "{event}@{loop_probe.ticks};"
+    loop event in elem_events:
+        if event.kind == "thunder":
+            loop_probe.thunder += 1
+            loop_probe.strike = event.pos
+            loop_probe.contacts += "thunder@{loop_probe.ticks};"
+    if pl.hp < loop_probe_hp:
+        loop_probe.wounds += 1
+        loop_probe.contacts += "wound@{loop_probe.ticks};"
+        if loop_probe.first_contact < 0: loop_probe.first_contact = loop_probe.ticks
+    loop_probe_hp = pl.hp
+    if enemies.len() > 0:
+        if enemies[0].hp < loop_probe_enemy_hp:
+            loop_probe.hits += 1
+            loop_probe.hit_ids.push(enemies[0].last_swing)
+            loop_probe.contacts += "hit{enemies[0].last_swing}@{loop_probe.ticks};"
+            if loop_probe.first_contact < 0: loop_probe.first_contact = loop_probe.ticks
+        loop_probe_enemy_hp = enemies[0].hp
+
+loop_probe_reset = ():
+    loop_probe_active = false
+    loop_fixture_reset()
+    __input_end_frame()
+    loop key in input_keys: __key_event(int(key), false)
+    __input_end_frame()
+    # Keep cached production collider IDs valid, while isolating the course.
+    loop mut c in colliders: c.active = false
+    # The map's baked cliff mesh belongs to its original (unflattened) terrain.
+    # This course uses the flat heightfield and explicit test cover instead.
+    surface_ray = (o: vec3, d: vec3, distance: f64) -> Hit: Hit()
+    surface_push = (p: vec3, radius: f64, height: f64) -> vec3: vec3(0, 0, 0)
+    __thrown_prev = {}
+    __swing_lock = 0.0
+    animals.clear()
+    particles.clear()
+    player_hits.clear()
+    elem_events.clear()
+    eanims.clear()
+    # Preserve the production grid dimensions and cached shrine cell indices.
+    # Only the empty 96 m test square gets a flat, dry supporting surface.
+    loop z in [int((-48.0 - hf.z0) / hf.cell)..int((48.0 - hf.z0) / hf.cell) + 1):
+        loop x in [int((-48.0 - hf.x0) / hf.cell)..int((48.0 - hf.x0) / hf.cell) + 1):
+            c = z * hf.n + x
+            hf.h[c] = 0.0
+            areas[c] = 46
+            edge_sd[c] = -100.0
+            loop k in [0..4): hf.mat[c * 4 + k] = 0
+    loop z in [int((-48.0 - __wg_z0) / __wg_cell)..int((48.0 - __wg_z0) / __wg_cell) + 1):
+        loop x in [int((-48.0 - __wg_x0) / __wg_cell)..int((48.0 - __wg_x0) / __wg_cell) + 1):
+            water_grid[z * __wg_n + x] = -10000.0
+    env = Env(hour = 12.0, weather_t = 1000.0)
+    # The isolated course is outside Plateau bounds; a glider disables its
+    # safety-return transaction while the rest of story_update still runs.
+    pl = Player(has_glider = true)
+    post.fade = 0.0
+    cam = Cam()
+    hero_anim = Animator()
+    hero_motion = HeroMotion()
+    __clip_time = 0.0
+    __last_upper = -1
+    __upper_t = 0.0
+    __guard_weight = 0.0
+    __walk_arms_weight = 0.0
+    hero_wet = 0.0
+    combat_moving = false
+    lock_hops = false
+    lightning_warn = 0.0
+    lightning_gear = GearTrace()
+    inv_add("travelers_sword")
+    inv_add("travelers_shield")
+    loop_probe = LoopProbe()
+    loop_probe_hp = pl.hp
+    seed_random(7301)
+    loop_probe_active = true
+
+loop_probe_step = (ticks: int):
+    # Supply an exact elapsed interval, independent of fixture CPU/render time.
+    # __loop_last=0 uses dt0 while keeping the interactive catch-up path enabled.
+    __loop_last = 0.0
+    production_update(f64(ticks) / 120.0)
+    assert(__loop_steps == ticks and abs(__loop_accounted - f64(ticks) / 120.0) < 0.0000001)
+    __input_end_frame()
+
+loop_probe_interval = (ticks: int, stalled: bool):
+    if stalled: loop_probe_step(ticks)
+    else:
+        loop k in [0..ticks): loop_probe_step(1)
+
+loop_probe_enemy = (pos: vec3, weapon: str = "boko_club") -> int:
+    e = spawn_enemy(.blue_bokoblin, pos, weapon)
+    # A long recovery keeps the target available without another random attack.
+    enemies[e].state = .recover
+    enemies[e].t = -10.0
+    enemies[e].alert = 1.0
+    enemies[e].face = PI
+    loop_probe_enemy_hp = enemies[e].hp
+    e
+
+loop_probe_run = (name: str, ticks: int, stalled: bool) -> LoopProbe:
+    loop_probe_reset()
+    if name == "combo":
+        # A decayed Guardian provides a stationary body across all four swings;
+        # a Bokoblin's recoil/spacing can legitimately evade a later short cut.
+        e = spawn_enemy(.guardian, vec3(0, 0, -1.35))
+        enemies[e].state = .recover
+        enemies[e].t = -10.0
+        loop_probe_enemy_hp = enemies[e].hp
+        __key_event(int(Key.k), true)
+        __key_event(int(Key.j), true)
+        loop_probe_step(1)
+        __key_event(int(Key.j), false)
+        loop step in [0..4):
+            n = 0
+            loop fight.act == .swing and fight.combo == step and fight.t < 0.15 and n < 240:
+                loop_probe_step(1)
+                n += 1
+            assert(fight.act == .swing and fight.combo == step, "combo reaches each swing")
+            if step < 3: __key_event(int(Key.j), true)
+            # Stall mid-cut, straddling blade contacts and the combo hand-off.
+            loop_probe_interval(ticks, stalled)
+            __key_event(int(Key.j), false)
+            n = 0
+            loop fight.act == .swing and fight.combo == step and n < 240:
+                loop_probe_step(1)
+                n += 1
+        loop_probe_interval(120, false)
+        assert(loop_probe.swings == 4 and fight.swing_id == 4, "four input-queued sword swings without duplicate edges")
+        assert(loop_probe.hits == 4 and enemies[e].hp == 477.5, "all four sword contacts exactly once, including finisher")
+        loop i in [0..4): assert(loop_probe.hit_ids[i] == i + 1, "one damage transaction per combo swing")
+    else if name == "arrow" or name == "arrow-cover" or name == "throw" or name == "throw-cover":
+        covered = ends_with(name, "cover")
+        pl.pos = vec3(0, 0, 10)
+        e = loop_probe_enemy(vec3(0, 0, -2))
+        if covered: add_box(vec3(0, 0, -0.3), vec3(2, 2, 0.02))
+        if starts_with(name, "arrow"):
+            arrows.push(Arrow(vec3(0, 1, 8), vec3(0, 0, -135), 5.0, prev = vec3(0, 1, 8)))
+        else:
+            wi = spawn_item("travelers_sword", vec3(0, 1, 8), vec3(0, 0, -135))
+            witems[wi].thrown_by_player = true
+            witems[wi].damage = 5
+        loop_probe_interval(3, false)
+        assert(loop_probe.hits == 0, "hitch begins in flight before contact")
+        loop_probe_interval(ticks, stalled)
+        loop_probe_interval(120 - 3 - ticks, false)
+        assert(enemies[e].hp == (if covered: 72.0 else: 67.0) and loop_probe.hits == (if covered: 0 else: 1), "flight contacts exactly once or stops at thin cover")
+    else if name == "fist" or name == "guard" or name == "late-guard" or name == "dodge":
+        e = spawn_enemy(.talus, vec3(0, 0, 0))
+        enemies[e].state = .attack
+        enemies[e].move = 0
+        enemies[e].face = 0.0
+        sample = enemies[e]
+        sample.t = 0.48
+        fist = talus_part(sample, 5).pos
+        pl.pos = vec3(fist.x, 0, fist.z)
+        pl.face = yaw_of(vec3(-fist.x, 0, -fist.z))
+        cam.yaw = pl.face
+        loop_probe_enemy_hp = enemies[e].hp
+        if name == "guard" or name == "late-guard" or name == "dodge":
+            __key_event(int(Key.k), true)
+            fight.act = .guard
+            if name == "late-guard": __key_event(int(Key.e), true)
+        # Approach the fist's descent with real simulation, before its contact.
+        loop_probe_interval(30, false)
+        assert(not enemies[e].talus_contact and pl.hp == 12, "stall begins before fist contact")
+        if name == "guard": __key_event(int(Key.e), true)
+        if name == "dodge":
+            __key_event(int(Key.k), true)
+            __key_event(int(Key.d), true)
+            __key_event(int(Key.space), true)
+        loop_probe_interval(ticks, stalled)
+        __key_event(int(Key.e), false)
+        __key_event(int(Key.d), false)
+        __key_event(int(Key.space), false)
+        loop_probe_interval(120 - ticks, false)
+        if name == "fist": assert(pl.hp == 4 and loop_probe.wounds == 1 and enemies[e].talus_contact, "swept Talus fist wounds once")
+        if name == "guard": assert(pl.hp == 12 and loop_probe.parries == 1 and loop_probe.blocks == 0, "perfect guard pulse survives catch-up and parries once")
+        if name == "late-guard": assert(pl.hp == 12 and loop_probe.parries == 0 and loop_probe.blocks == 1, "expired parry window only blocks")
+        if name == "dodge":
+            assert(pl.hp == 12 and loop_probe.flurries == 1 and loop_probe.wounds == 0, "native side-hop catches perfect dodge window")
+            assert(loop_probe.hits == 3 and enemies[e].hp == 298.5, "three flurry body contacts without missed or double damage")
+            loop i in [0..3): assert(loop_probe.hit_ids[i] == i, "one body contact per flurry swing")
+    else if name == "lightning":
+        pl.hp = 40
+        pl.hp_max = 40
+        loop_probe_hp = 40
+        # Armed warning follows a real throw from equipped metal into its flight.
+        lightning_gear = GearTrace(id = "travelers_sword", kind = .weapon, index = inv.weapon)
+        lightning_warn = 0.40
+        __key_event(int(Key.g), true)
+        loop_probe_interval(32, false)
+        __key_event(int(Key.g), false)
+        assert(loop_probe.throws == 1 and lightning_gear.world >= 0 and lightning_warn > 0.0, "lightning target transfers to launched weapon before hitch")
+        loop_probe_interval(ticks, stalled)
+        loop_probe_interval(120 - 32 - ticks, false)
+        assert(loop_probe.thunder == 1 and lightning_warn <= 0.0 and lightning_gear.world < 0, "moving metal target struck once and warning consumed")
+        assert(length(loop_probe.strike - pl.pos) > 2.0, "strike follows the thrown weapon instead of old equipped socket")
+    else: assert(false, "unknown production probe")
+    loop_probe.hp = pl.hp
+    loop_probe.pos = pl.pos
+    if enemies.len() > 0:
+        loop_probe.enemy_hp = enemies[0].hp
+        loop_probe.enemy_pos = enemies[0].pos
+    loop_probe.action = fight.act
+    loop_probe.phase = fight.t
+    loop_probe.slowmo = fight.slowmo
+    loop_probe.weapons = inv.weapons.len()
+    loop_probe.shields = inv.shields.len()
+    loop a in arrows:
+        if a.alive and a.stuck <= 0.0: loop_probe.live_arrows += 1
+    loop w in witems:
+        if w.alive and w.thrown_by_player: loop_probe.live_throws += 1
+    loop_probe_active = false
+    loop_probe
+
+loop_probe_suite = ():
+    loop name in ["combo", "dodge", "guard", "late-guard", "arrow", "arrow-cover", "throw", "throw-cover", "fist", "lightning"]:
+        loop ticks in [30, 60]:
+            smooth = loop_probe_run(name, ticks, false)
+            stalled = loop_probe_run(name, ticks, true)
+            assert(smooth.ticks == stalled.ticks and smooth.first_contact == stalled.first_contact, "identical contact tick through main.update")
+            assert(smooth.contacts == stalled.contacts, "identical full sequence of contact/window/launch ticks through main.update")
+            assert(smooth.hp == stalled.hp and abs(smooth.enemy_hp - stalled.enemy_hp) < 0.00001, "smooth/hitch damage identical")
+            assert(smooth.swings == stalled.swings and smooth.hits == stalled.hits and smooth.wounds == stalled.wounds and smooth.parries == stalled.parries and smooth.blocks == stalled.blocks and smooth.flurries == stalled.flurries and smooth.throws == stalled.throws and smooth.thunder == stalled.thunder, "no missed contacts, duplicate hits or skipped windows")
+            assert(smooth.action == stalled.action and abs(smooth.phase - stalled.phase) < 0.00001 and abs(smooth.slowmo - stalled.slowmo) < 0.00001, "smooth/hitch action and window timers identical")
+            assert(length(smooth.pos - stalled.pos) < 0.002 and length(smooth.enemy_pos - stalled.enemy_pos) < 0.002 and length(smooth.strike - stalled.strike) < 0.002, "smooth/hitch actor and lightning positions within 2 mm")
+            assert(smooth.weapons == stalled.weapons and smooth.shields == stalled.shields and smooth.live_arrows == stalled.live_arrows and smooth.live_throws == stalled.live_throws, "smooth/hitch gear and projectile retirement identical")
+            print("PASS production {name} {ticks * 1000 / 120}ms hitch: ticks={stalled.ticks} hits={stalled.hits} wounds={stalled.wounds} parries={stalled.parries} flurries={stalled.flurries} thunder={stalled.thunder}")

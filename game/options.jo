@@ -1,0 +1,247 @@
+use 'gfx.jo'
+use 'input.jo'
+use 'music.jo'
+use 'ui.jo'
+
+# Options live separately from journey progress, in ~/.botw-clone-options.
+struct Options:
+    mouse = 1.0
+    stick = 1.0
+    invert_y = false
+    invert_x = false
+    volume = 0.8
+    music = 1.0
+    swap_jump_sprint = false
+
+opts = Options()
+opt_rows = ["Camera speed (mouse)", "Camera speed (stick)", "Invert vertical", "Invert horizontal", "Volume", "Music", "Gamepad: swap jump / sprint", "Defaults", "Start over"]
+opt_sel = 0
+opt_binding = -1
+opt_first = 0
+opt_message = ""
+options_new_game: () -> void = (): pass
+__new_armed = 0.0
+__new_game = ():
+    if time() < __new_armed:
+        options_new_game()
+        __new_armed = 0.0
+    else: __new_armed = time() + 4.0
+
+__opt_path = () -> str: "{env("HOME") ?? "."}/.botw-clone-options"
+options_apply = ():
+    mouse_sens = 0.0026 * opts.mouse
+    pad_sens = 3.2 * opts.stick
+    invert_x = opts.invert_x
+    invert_y = opts.invert_y
+    input_swap_jump_sprint = opts.swap_jump_sprint
+    master_volume(opts.volume)
+    music_vol = opts.music
+
+options_decode = (s: str):
+    opts = Options()
+    input_bindings_decode(s)
+    loop line in split(s, "\n"):
+        kv = split(line, "=")
+        if kv.len() != 2: continue
+        if let v = to_float(kv[1]):
+            if v != v or abs(v) > 1e30: continue
+            match kv[0]:
+                "mouse": opts.mouse = clamp(v, 0.2, 3.0)
+                "stick": opts.stick = clamp(v, 0.2, 3.0)
+                "invert_y": opts.invert_y = v > 0.5
+                "invert_x": opts.invert_x = v > 0.5
+                "volume": opts.volume = clamp(v, 0.0, 1.0)
+                "music": opts.music = clamp(v, 0.0, 1.0)
+                "swap_jump_sprint": opts.swap_jump_sprint = v > 0.5
+                _: pass
+    options_apply()
+options_encode = () -> str:
+    b = (x: bool) -> int: if x: 1 else: 0
+    "mouse={opts.mouse:.2}\nstick={opts.stick:.2}\ninvert_y={b(opts.invert_y)}\ninvert_x={b(opts.invert_x)}\nvolume={opts.volume:.2}\nmusic={opts.music:.2}\nswap_jump_sprint={b(opts.swap_jump_sprint)}\n" + input_bindings_encode()
+options_load = (path: str = ""):
+    options_decode(read_file((if len(path) > 0: path else: __opt_path())) ?? "")
+options_save = (path: str = ""):
+    # Scripted checks always use default controls and never rewrite personal preferences.
+    if not input_scripted: write_file((if len(path) > 0: path else: __opt_path()), options_encode())
+options_controls_defaults = ():
+    input_controls_defaults()
+    opts.swap_jump_sprint = false
+    options_apply()
+    options_save()
+
+__opt_value = (i: int) -> f64:
+    match i:
+        0: (opts.mouse - 0.2) / 2.8
+        1: (opts.stick - 0.2) / 2.8
+        2: if opts.invert_y: 1.0 else: 0.0
+        3: if opts.invert_x: 1.0 else: 0.0
+        4: opts.volume
+        5: opts.music
+        _: if opts.swap_jump_sprint: 1.0 else: 0.0
+__opt_set = (i: int, v0: f64):
+    v = clamp(v0, 0.0, 1.0)
+    match i:
+        0: opts.mouse = 0.2 + v * 2.8
+        1: opts.stick = 0.2 + v * 2.8
+        2: opts.invert_y = v > 0.5
+        3: opts.invert_x = v > 0.5
+        4: opts.volume = v
+        5: opts.music = v
+        6: opts.swap_jump_sprint = v > 0.5
+        _: pass
+    options_apply()
+    options_save()
+__opt_toggle = (i: int) -> bool: i == 2 or i == 3 or i == 6
+
+const OPT_KEY_ROW = 9
+const OPT_KEY_ROWS = 13
+# Display order is separate from persisted action IDs and fixed recovery keys.
+opt_key_order = [13,14,15,16,0,1,6,21,17,18,19,20,2,3,4,5,7,8,9,10,11,12,22,23,24]
+opt_key_group = (row: int) -> int: if row < 8: 0 else: (if row < 12: 1 else: (if row < 20: 2 else: 3))
+opt_key_header = (row: int) -> bool: row == opt_first or opt_key_group(row) != opt_key_group(row - 1)
+options_scroll_sync = ():
+    if opt_sel >= OPT_KEY_ROW:
+        row = opt_sel - OPT_KEY_ROW
+        if row < opt_first: opt_first = row
+        if row >= opt_first + OPT_KEY_ROWS: opt_first = row - OPT_KEY_ROWS + 1
+    opt_first = clamp(opt_first, 0, max(0, input_action_ids.len() - OPT_KEY_ROWS))
+options_row_visible = (i: int) -> bool:
+    i < OPT_KEY_ROW or (i - OPT_KEY_ROW >= opt_first and i - OPT_KEY_ROW < opt_first + OPT_KEY_ROWS)
+const OPT_LEFT_W = 360.0
+const OPT_KEY_X = 410.0
+const OPT_BAR_X = 215.0
+const OPT_BAR_W = 132.0
+__opt_row_y = (oy: f64, i: int) -> f64:
+    if i < OPT_KEY_ROW: oy + 34.0 + f64(i) * 42.0
+    else:
+        row = i - OPT_KEY_ROW
+        headers = 0
+        loop k in [opt_first..row]:
+            if opt_key_header(k): headers += 1
+        oy + 34.0 + f64(row - opt_first) * 24.0 + f64(headers) * 20.0
+__opt_activate = (i: int):
+    opt_message = ""
+    if i == 8: __new_game()
+    else if i == 7:
+        options_controls_defaults()
+        opt_message = "Defaults"
+    else if i >= OPT_KEY_ROW:
+        opt_binding = opt_key_order[i - OPT_KEY_ROW]
+        input_capture = true
+    else if __opt_toggle(i): __opt_set(i, 1.0 - __opt_value(i))
+
+# Capture runs before pause-screen close/tab handling, including Escape and Tab.
+options_capture_update = ():
+    if opt_binding < 0: return
+    if key_pressed(.escape):
+        opt_binding = -1
+        input_capture = false
+        opt_message = "Canceled"
+        return
+    loop k in input_keys:
+        if not key_pressed(k): continue
+        if input_rebind(opt_binding, k):
+            opt_message = "{input_action_names[opt_binding]}: {input_key_label(k)}"
+            opt_binding = -1
+            input_capture = false
+            options_save()
+        else: opt_message = "Reserved"
+        return
+
+# False leaves the top row for the other inventory tabs.
+options_update = (ox: f64, oy: f64) -> bool:
+    if opt_binding >= 0:
+        options_capture_update()
+        return true
+    count = OPT_KEY_ROW + input_action_ids.len()
+    mp = mouse_pos()
+    if mouse_wheel() != 0.0 and f64(mp.x) >= ox + OPT_KEY_X - 8.0 and f64(mp.x) <= ox + OPT_KEY_X + 300.0:
+        opt_first = clamp(opt_first - int(mouse_wheel()) * 3, 0, max(0, input_action_ids.len() - OPT_KEY_ROWS))
+        if opt_sel >= OPT_KEY_ROW: opt_sel = OPT_KEY_ROW + clamp(opt_sel - OPT_KEY_ROW, opt_first, opt_first + OPT_KEY_ROWS - 1)
+    if act.nav.y < 0.0:
+        if opt_sel == 0: return false
+        opt_sel -= 1
+    if act.nav.y > 0.0: opt_sel = min(opt_sel + 1, count - 1)
+    options_scroll_sync()
+    if act.nav.x != 0.0 and opt_sel < 7:
+        if __opt_toggle(opt_sel): __opt_set(opt_sel, 1.0 - __opt_value(opt_sel))
+        else: __opt_set(opt_sel, __opt_value(opt_sel) + f64(act.nav.x) * 0.05)
+    if act.confirm and not mouse_pressed(.left):
+        __opt_activate(opt_sel)
+        if input_capture: return true
+    loop i in [0..count):
+        if not options_row_visible(i): continue
+        y = __opt_row_y(oy, i)
+        x = ox + (if i < OPT_KEY_ROW: 0.0 else: OPT_KEY_X)
+        w = if i < OPT_KEY_ROW: OPT_LEFT_W else: 300.0
+        h = if i < OPT_KEY_ROW: 34.0 else: 23.0
+        if f64(mp.y) > y - 4.0 and f64(mp.y) < y + h - 4.0 and f64(mp.x) > x - 8.0 and f64(mp.x) < x + w:
+            if length(mouse_delta()) > 0.0: opt_sel = i
+            if i >= 7 or __opt_toggle(i):
+                if mouse_pressed(.left):
+                    opt_sel = i
+                    __opt_activate(i)
+            else if mouse_down(.left) and f64(mp.x) > ox + OPT_BAR_X - 10.0:
+                opt_sel = i
+                __opt_set(i, (f64(mp.x) - ox - OPT_BAR_X) / OPT_BAR_W)
+    true
+
+options_draw = (ox: f64, oy: f64):
+    options_scroll_sync()
+    muted = rgba(0.75, 0.75, 0.7, 0.7)
+    text("Camera, sound & controls", vec2(f32(ox), f32(oy + 4.0)), 16, muted)
+    text("Keyboard", vec2(f32(ox + OPT_KEY_X), f32(oy + 4.0)), 16, muted)
+    loop i in [0..OPT_KEY_ROW + input_action_ids.len()):
+        if not options_row_visible(i): continue
+        y = __opt_row_y(oy, i)
+        x = ox + (if i < OPT_KEY_ROW: 0.0 else: OPT_KEY_X)
+        on = i == opt_sel
+        keyboard = i >= OPT_KEY_ROW
+        h = if keyboard: 23.0 else: 34.0
+        w = if keyboard: 300.0 else: OPT_LEFT_W
+        if on: rect(x - 8.0, y - 4.0, w, h, rgba(0.95, 0.88, 0.6, 0.18))
+        name = if keyboard: input_action_names[opt_key_order[i - OPT_KEY_ROW]] else: opt_rows[i]
+        text(name, vec2(f32(x), f32(y)), (if i == 6: 14 else: 16), (if on: rgba(1, 0.95, 0.8, 1) else: rgba(0.9, 0.9, 0.85, 0.8)))
+        if keyboard:
+            row = i - OPT_KEY_ROW
+            if opt_key_header(row):
+                text(["Movement", "Camera", "Combat", "Menus"][opt_key_group(row)], vec2(f32(x), f32(y - 20.0)), 15, rgba(0.98, 0.87, 0.62, 0.95))
+                rect(x + 94.0, y - 11.0, 194.0, 1.0, rgba(0.78, 0.78, 0.72, 0.25))
+            key_ = opt_key_order[i - OPT_KEY_ROW]
+            label = if key_ == opt_binding: "..." else: input_key_name(key_)
+            # Keyboard bindings stay key caps even when the selection came from a gamepad.
+            using_pad = act.using_pad
+            act.using_pad = false
+            button_glyph(label, vec2(f32(x + 252.0), f32(y + 10.0)), 9.0)
+            act.using_pad = using_pad
+        else if i == 8:
+            text((if time() < __new_armed: "Press again to erase progress" else: "New journey"), vec2(f32(x + 112.0), f32(y + 1.0)), 13, rgba(1, 0.85, 0.45, 1))
+        else if i == 7: text("Restore controls", vec2(f32(x + OPT_BAR_X), f32(y + 1.0)), 14, muted)
+        else:
+            v = __opt_value(i)
+            bx = x + (if i == 6: 315.0 else: OPT_BAR_X)
+            if __opt_toggle(i):
+                text((if v > 0.5: "On" else: "Off"), vec2(f32(bx), f32(y)), 16, (if v > 0.5: rgba(1, 0.85, 0.45, 1) else: muted))
+            else:
+                rect(bx, y + 9.0, OPT_BAR_W, 4.0, rgba(0.5, 0.5, 0.48, 0.6))
+                rect(bx, y + 9.0, OPT_BAR_W * v, 4.0, rgba(1, 0.85, 0.45, 0.9))
+                circle(vec2(f32(bx + OPT_BAR_W * v), f32(y + 11.0)), 6, rgba(1, 0.95, 0.8, 1))
+    # A full-height rail and explicit range make the hidden Combat/Menus rows
+    # discoverable without adding rows or borrowing the inventory tab bumpers.
+    rail_y = oy + 54.0
+    rail_h = 330.0
+    thumb_h = rail_h * f64(OPT_KEY_ROWS) / f64(input_action_ids.len())
+    thumb_y = rail_y + (rail_h - thumb_h) * f64(opt_first) / f64(input_action_ids.len() - OPT_KEY_ROWS)
+    rect(ox + OPT_KEY_X + 302.0, rail_y, 5.0, rail_h, rgba(0.75, 0.75, 0.7, 0.2))
+    rect(ox + OPT_KEY_X + 302.0, thumb_y, 5.0, thumb_h, rgba(0.98, 0.87, 0.62, 0.8))
+    text("Scroll: wheel / Up / Down   {opt_first + 1}-{opt_first + OPT_KEY_ROWS}/{input_action_ids.len()}", vec2(f32(ox + OPT_KEY_X), f32(oy + 420.0)), 13, muted)
+    if opt_first > 0:
+        triangle(vec2(f32(ox + OPT_KEY_X + 284), f32(oy + 18)), vec2(f32(ox + OPT_KEY_X + 292), f32(oy + 18)), vec2(f32(ox + OPT_KEY_X + 288), f32(oy + 12)), muted)
+    if opt_first + OPT_KEY_ROWS < input_action_ids.len():
+        triangle(vec2(f32(ox + OPT_KEY_X + 284), f32(oy + 404)), vec2(f32(ox + OPT_KEY_X + 292), f32(oy + 404)), vec2(f32(ox + OPT_KEY_X + 288), f32(oy + 410)), muted)
+    if opt_binding >= 0:
+        text("{input_action_names[opt_binding]} ...", vec2(f32(ox), f32(oy + 420.0)), 16, rgba(1, 0.9, 0.55, 1))
+    else:
+        if act.using_pad: menu_navigation_hint(ox, oy + 427.0)
+        else: text("Up / Down   Left / Right   {input_key_name(3)} / Enter   Esc", vec2(f32(ox), f32(oy + 420.0)), 15, muted)
+    if len(opt_message) > 0: text(opt_message, vec2(f32(ox), f32(oy + 454.0)), 14, muted)

@@ -1,0 +1,33 @@
+use 'asset_stream.jo'
+use 'mesh_assets.jo'
+use 'terrain.jo'
+use 'worldgen.jo'
+terrain_asset_key = () -> int:
+    asset_key(["game/terrain_assets.jo", "game/mesh_assets.jo"]) xor world_asset_key()
+terrain_asset_write = (path: str = "assets/prepared/terrain.bin") -> bool:
+    s = pack_create(path, terrain_asset_key())
+    pack_array(s, terrain_normal_pixels, true)
+    pack_array(s, terrain_material_pixels, true)
+    pack_array(s, hf.hmin, true)
+    pack_array(s, hf.hmax, true)
+    pack_publish(s, path)
+terrain_asset_load = () -> bool:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_NO_PREPARED_ASSETS") != none: return false
+    s = pack_open("assets/prepared/terrain.bin", terrain_asset_key())
+    defer asset_close(s)
+    if not s.ok: return false
+    pixels: u8[]
+    materials: u8[]
+    lo: f32[]
+    hi: f32[]
+    pack_array(s, pixels, false)
+    pack_array(s, materials, false)
+    pack_array(s, lo, false)
+    pack_array(s, hi, false)
+    if not s.ok or s.left != 0 or pixels.len() != hf.n * hf.n * 4 or materials.len() != hf.n * hf.n * 4 or lo.len() != (hf.n / 64) ^ 2 or hi.len() != lo.len(): return false
+    terrain_normal_pixels = pixels
+    terrain_material_pixels = materials
+    hf.hmin = lo
+    hf.hmax = hi
+    if env("BOTW_LOADTIME") != none: eprint("prepared terrain: hit")
+    true

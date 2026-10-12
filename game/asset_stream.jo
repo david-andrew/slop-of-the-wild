@@ -1,0 +1,82 @@
+# Linux asset I/O directly into final arrays. The runtime's read_bytes/write_bytes
+# converts through strings, temporarily holding a second complete copy.
+# Unsupported targets use the ordinary generation path instead of this optimization.
+struct AssetStream:
+    fd = -1
+    left = 0
+    ok = true
+
+asset_open = (path: str) -> AssetStream:
+    when TARGET == "linux":
+        fd = syscall(2, data(path + "\0"), 0, 0)
+        if fd < 0: return AssetStream(ok = false)
+        size = syscall(8, fd, 0, 2)
+        syscall(8, fd, 0, 0)
+        return AssetStream(fd, size, size >= 0 and size <= 512 * 1024 * 1024)
+    else: return AssetStream(ok = false)
+
+asset_create = (path: str) -> AssetStream:
+    when TARGET == "linux":
+        fd = syscall(2, data(path + "\0"), 0x241, 0x1A4)
+        return AssetStream(fd, 0, fd >= 0)
+    else: return AssetStream(ok = false)
+
+asset_close = (s: mut AssetStream):
+    when TARGET == "linux":
+        if s.fd >= 0: syscall(3, s.fd)
+    s.fd = -1
+
+asset_read = (s: mut AssetStream, p: *u8, n: int):
+    when TARGET == "linux":
+        if not s.ok or n < 0 or n > s.left:
+            s.ok = false
+            return
+        at = 0
+        loop at < n:
+            got = syscall(0, s.fd, p + at, n - at)
+            if got <= 0:
+                s.ok = false
+                return
+            at += got
+        s.left -= n
+    else: s.ok = false
+
+asset_write = (s: mut AssetStream, p: *u8, n: int):
+    when TARGET == "linux":
+        if not s.ok: return
+        at = 0
+        loop at < n:
+            got = syscall(1, s.fd, p + at, n - at)
+            if got <= 0:
+                s.ok = false
+                return
+            at += got
+    else: s.ok = false
+
+asset_int = (s: mut AssetStream) -> int:
+    v = u64(0)
+    asset_read(s, (&v) as *u8, 8)
+    int(v)
+asset_put_int = (s: mut AssetStream, n: int):
+    v = u64(n)
+    asset_write(s, (&v) as *u8, 8)
+
+# Cheap local dependency stamps. Version, file size and nanosecond mtime reject
+# stale sources/inputs without reading or hashing their payloads. Preparation after
+# copying is intentional: these packs describe the current local input revision.
+# Linux x86-64 struct stat layout; other targets keep the generation fallback.
+__asset_keys: {str: int} = {}
+asset_key = (paths: str[]) -> int:
+    name = join(paths, "|")
+    if let cached = __asset_keys.get(name): return cached
+    key = "asset-stream-stat-v2"
+    loop path in paths:
+        when TARGET == "linux":
+            st = fill(u64(0), 18)
+            if syscall(4, data(path + "\0"), data(st)) == 0:
+                key += "|{path}:{st[6]}:{st[11]}:{st[12]}"
+            else: key += "|{path}:missing"
+        else: key += "|{path}:unsupported"
+    value = int(__str_hash(key))
+    __asset_keys[name] = value
+    value

@@ -1,0 +1,125 @@
+# Accelerated 30 minutes at the game's scripted 60 Hz; native mixer, no GPU/device.
+from '../../game/shrines.jo' import __start_trans
+from '../../game/sfx.jo' import __echoes
+use '../../game/chars.jo'
+use '../../game/music.jo'
+
+session_memory = (path: str, field: str) -> int:
+    # procfs reports size zero: read it directly rather than read_file's seek.
+    fd = syscall(2, data(path + "\0"), 0, 0)
+    if fd < 0: return -1
+    buffer = fill(u8(0), 8192)
+    n = syscall(0, fd, data(buffer), buffer.len())
+    syscall(3, fd)
+    if n <= 0: return -1
+    text_ = str_from_bytes(buffer[..n])
+    loop line in split(text_, "\n"):
+        if starts_with(line, field + ":"):
+            return to_int(trim(split(split(line, ":")[1], "kB")[0])) ?? -1
+    -1
+
+long_session = ():
+    __fixed_step = true
+    __frame_count = 0
+    seed_random(6617)
+    shrines_build()
+    shrines_setup()
+    chars_init()
+    sfx_init()
+    piano_init()
+    inv_add("travelers_sword")
+    inv_add("pot_lid")
+    inv_add("travelers_bow")
+    inv.arrows = 1000
+    env = Env(hour = 6.0, weather_t = 100000.0)
+    bonfires.push(Bonfire(vec3(5, 0, 4), pot = true))
+    e = spawn_enemy(.blue_bokoblin, vec3(0, 0, -5), "boko_club")
+    enemies[e].state = .chase
+    enemies[e].alert = 1.0
+    enemies[e].hp = 100000.0
+    enemies[e].hp_max = 100000.0
+    spawn_enemy(.guardian, vec3(14, 0, -10))
+    __time0 = time()
+    peak_particles = 0
+    peak_voices = 0
+    peak_echoes = 0
+    peak_items = 0
+    peak_arrows = 0
+    combat_events = 0
+    shots = 0
+    entered = 0
+    returned = 0
+    start = time_ns()
+    session_started = time()
+    session_minutes = to_int(if args().len() > 2: args()[2] else: "30") ?? 30
+    assert(session_minutes >= 30 and session_minutes <= 120)
+    loop frame in [0..session_minutes * 3600):
+        __frame_count = frame
+        cycle = frame % 3600
+        minute = frame / 3600
+        if cycle == 0:
+            env.weather = [Weather.clear, Weather.rain, Weather.storm, Weather.cloudy][minute % 4]
+            env.weather_t = 100000.0
+        keys()
+        if cycle < 1200:
+            __key_down[int(Key.w)] = cycle < 240
+            __key_down[int(Key.s)] = cycle >= 240 and cycle < 480
+            __key_down[int(Key.j)] = cycle < 600 and cycle % 120 < 15
+            __key_pressed[int(Key.j)] = cycle < 600 and cycle % 120 == 0
+            __key_down[int(Key.l)] = cycle >= 600 and cycle % 120 < 60
+        input_update(DT, false)
+        if cycle == 1200:
+            __start_trans(1, minute % 4)
+            entered += 1
+        if cycle == 2400:
+            __start_trans(2, minute % 4)
+            returned += 1
+        use_terrain = zone_at(pl.pos + vec3(0, 1, 0)) == ""
+        env_update(DT, false)
+        shrines_update(DT)
+        player_update(DT)
+        combat_update(DT, enemy_pos, enemies.len())
+        hero_animate(DT, 0.0)
+        hero_blade_hits()
+        lit = false
+        player_torch_update(DT, lit)
+        enemies_update(DT, env.night > 0.5)
+        arrows_update(DT)
+        items_physics(DT)
+        elements_update(DT, pl.pos)
+        fx_update(DT)
+        camera_update(DT)
+        loop event in pl.events:
+            if event == "shoot": shots += 1
+        # Consume event sounds through production spatial mixing, including room echoes.
+        sfx_room = env.indoor
+        loop ev in enemy_events:
+            combat_events += 1
+            sfx_at(sfx.hit_wood, ev.pos, pl.pos, vec3(1, 0, 0), 0.2)
+        if frame % 90 == 0: sfx_at(sfx.step_stone[0], pl.pos, pl.pos, vec3(1, 0, 0), 0.3)
+        ambient_update(DT, env.indoor, f64(pl.pos.y), fire_audio_level(pl.pos))
+        seq.want = if env.indoor > 0.5: Mood.shrine else: (if in_combat(): Mood.combat else: (if env.night > 0.5: Mood.field_night else: Mood.field_day))
+        jingles_update(DT)
+        music_update(DT)
+        __mix(800)
+        # Refill test vitality without resetting timers, entities, particles or audio pools.
+        pl.hp = pl.hp_max
+        if pl.state == .dead: set_state(.ground)
+        peak_particles = max(peak_particles, particles.len())
+        peak_voices = max(peak_voices, __voices.len())
+        peak_echoes = max(peak_echoes, __echoes.len())
+        peak_items = max(peak_items, witems.len())
+        peak_arrows = max(peak_arrows, arrows.len())
+        if cycle == 3599:
+            wall_ms = f64(time_ns() - start) / 1000000.0
+            rss = session_memory("/proc/self/status", "VmRSS")
+            virtual = session_memory("/proc/self/status", "VmSize")
+            huge = session_memory("/proc/self/smaps_rollup", "AnonHugePages")
+            print("SESSION minute={minute + 1} update_us={wall_ms / 3.6:.3} allocations={alloc_count()} wall_s={time() - session_started:.6} rss_kib={rss} virtual_kib={virtual} huge_kib={huge} particles={particles.len()} voices={__voices.len()} echoes={__echoes.len()} items={witems.len()} arrows={arrows.len()} enemies={enemies.len()} colliders={colliders.len()}")
+            start = time_ns()
+    check(combat_events > 30 and peak_echoes > 0, "long session exercises fights and indoor audio echoes")
+    check(entered == session_minutes and returned == session_minutes and shr_cur < 0, "{session_minutes}-minute session completes {session_minutes} shrine entry/return cycles")
+    check(env.day == 1 + (6 + session_minutes) / 24 and abs(env.hour - f64((6 + session_minutes) % 24)) < 0.001, "{session_minutes}-minute session advances day and night without timer drift")
+    check(peak_particles <= 6001 and peak_echoes <= 40 and peak_voices < 128, "particle and native sound pools stay bounded")
+    check(peak_arrows < 30 and enemies.len() == 2, "projectile and enemy counts stay bounded")
+    print("SESSION peaks particles={peak_particles} voices={peak_voices} echoes={peak_echoes} items={peak_items} arrows={peak_arrows} combat_events={combat_events} shots={shots}")

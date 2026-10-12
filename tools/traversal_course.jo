@@ -1,0 +1,353 @@
+# Shared deterministic course for headless trajectories and rendered sequences.
+# Only initial fixtures are presets; every subsequent traversal uses input_update.
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/camera.jo'
+use '../game/chars.jo'
+use '../game/items.jo'
+use '../game/skel.jo'
+use '../game/hero_motion.jo'
+use '../game/combat.jo'
+use '../game/env.jo'
+use '../game/shrines.jo'
+from '../game/physics.jo' import __col_grid, __to_local
+from '../game/shrines.jo' import __ride
+
+tr_name = ""
+tr_hz = 60
+tr_frame = 0
+tr_time = 0.0
+tr_schedule = 0
+tr_rng = 12345
+tr_jump_inputs = 0
+tr_attack_inputs = 0
+tr_substeps = 0
+tr_phase = 0
+tr_phase_t = 0.0
+tr_lift = -1
+tr_drop = false
+tr_exhaust = false
+tr_land = -1.0
+tr_sprint = -1.0
+tr_events = ""
+tr_rows = ""
+tr_boxes: PropBox[]
+tr_step = 0.0
+tr_camera_step = 0.0
+tr_penetration = 0.0
+tr_air_contacts = 0
+tr_cancelled = false
+tr_mantle = false
+tr_slips = 0
+tr_lift_depart = false
+tr_keys: Key[] = [Key.w, Key.a, Key.s, Key.d, Key.alt, Key.shift, Key.space, Key.e, Key.right, Key.left, Key.j]
+
+tr_box = (p: vec3, half: vec3, climbable: bool = false, surf: Surf = .stone) -> int:
+    tr_boxes.push(PropBox(p + vec3(0, half.y, 0), half * 2.0, vec4(0.46, 0.48, 0.40, 1)))
+    add_box(p, half, 0.0, climbable, surf)
+
+tr_reset = (name: str, hz: int):
+    tr_name = name
+    tr_hz = hz
+    tr_frame = 0
+    tr_time = 0.0
+    tr_schedule = 0
+    tr_rng = 12345
+    tr_jump_inputs = 0
+    tr_attack_inputs = 0
+    tr_substeps = 0
+    tr_phase = 0
+    tr_phase_t = 0.0
+    tr_lift = -1
+    tr_drop = false
+    tr_exhaust = false
+    tr_land = -1.0
+    tr_sprint = -1.0
+    tr_step = 0.0
+    tr_camera_step = 0.0
+    tr_penetration = 0.0
+    tr_air_contacts = 0
+    tr_cancelled = false
+    tr_mantle = false
+    tr_slips = 0
+    tr_lift_depart = false
+    tr_events = ""
+    tr_rows = "t,x,y,z,vx,vy,vz,speed,stamina,state,grounded,land_t,sprinting,cx,cy,cz,tx,ty,tz,yaw,pitch,boom,player_step,camera_step,penetration,drift,sole,gap,contacts,landing_pose,active_contacts,hand_gap,events,dt,jump_inputs,attack_inputs,swings,substeps,min_substep_z,camera_idle\n"
+    colliders.clear()
+    __col_grid = {}
+    tr_boxes.clear()
+    use_terrain = true
+    hf.n = 128
+    hf.cell = 0.5
+    hf.x0 = -32.0
+    hf.z0 = -32.0
+    hf.h = fill(f32(100), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    hf.hmin = fill(f32(99), 64)
+    hf.hmax = fill(f32(108), 64)
+    seed_random(12345)
+    env.rain = 0.0
+    pl = Player(pos = vec3(0, 100, 6), face = 0.0, has_glider = true)
+    if starts_with(name, "slope"):
+        loop z in [0..hf.n):
+            loop x in [0..hf.n):
+                wz = hf.z0 + f64(z) * hf.cell
+                hf.h[z * hf.n + x] = f32(100.0 + sin(wz * 0.7) * 0.35 + cos(wz * 0.23) * 0.6)
+        pl.pos.y = f32(height_at(0.0, 6.0))
+    else if starts_with(name, "mantle"):
+        tr_box(vec3(0, 100, 0), vec3(3, 2, 1), true)
+        pl.pos.z = 2.0
+        if name == "mantle_stamina": pl.stamina = 155.0
+    else if name == "corner" or name == "corner_press":
+        tr_box(vec3(-1.3, 100, 0), vec3(0.3, 3, 6))
+        tr_box(vec3(1.3, 100, 0), vec3(0.3, 3, 6))
+        # Narrow door and a right turn beyond it.
+        tr_box(vec3(-2.5, 100, -6), vec3(1.5, 3, 0.3))
+        tr_box(vec3(2.5, 100, -6), vec3(1.5, 3, 0.3))
+        tr_box(vec3(0, 100, -9), vec3(4, 3, 0.3))
+        pl.pos = vec3(0.7, 100, 5)
+        cam_open_ground = false
+    else if name == "hitch_wall":
+        # Four centimetres thick: a 100 ms sprint displacement exceeds wall + capsule.
+        tr_box(vec3(0, 100, 0), vec3(5, 3, 0.02))
+    else if name == "jump_sprint": pass
+    else if name == "fall_sprint":
+        pl.pos = vec3(0, 110, 6)
+        pl.state = .air
+        pl.grounded = false
+        pl.air_peak = 110.0
+    else if name == "chain" or name == "rain":
+        tr_box(vec3(0, 100, 0), vec3(4, 10, 1), true)
+        pl.pos = vec3(0, 108, 1.4)
+        pl.state = .climb
+        pl.grounded = false
+        if name == "rain": env.rain = 1.0
+    else if name == "lift":
+        tr_lift = tr_box(vec3(0, 103, 0), vec3(1.5, 0.3, 1.5), false, .metal)
+        pl.pos = vec3(0, 103.6, 0)
+    pl.last_safe = pl.pos
+    pl.ground = ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.5, RADIUS)
+    fight = Fight()
+    inv = Inventory()
+    lock_hops = false
+    combat_moving = false
+    if starts_with(name, "temporal"):
+        inv_add("travelers_sword")
+    hero_anim = Animator()
+    hero_motion = HeroMotion()
+    hero_contacts = false
+    cam_open_ground = name != "corner" and name != "corner_press"
+    cam_yaw_global = 0.0
+    cam = Cam(yaw = 0.0)
+    camera_snap()
+    act = Actions()
+    camera_update(1.0 / 120.0)
+    # Initial view evaluation must not advance only the camera simulation clock.
+    cam.step_remaining = 0.0
+    loop k in tr_keys:
+        __key_down[int(k)] = false
+        __key_pressed[int(k)] = false
+    __pad_on = false
+
+tr_key = (key: Key, on: bool):
+    __key_pressed[int(key)] = on and not __key_down[int(key)]
+    __key_down[int(key)] = on
+
+# Independent sphere-vs-solid distance oracle; no call to the camera resolver.
+tr_lens_overlap = (p: vec3) -> f64:
+    overlap = 0.0
+    loop c in colliders:
+        if not c.active: continue
+        l = __to_local(c, p)
+        y = f64(l.y)
+        top = 2.0 * f64(c.half.y)
+        dy = max(max(-y, y - top), 0.0)
+        if c.kind == 0:
+            dr = f64(length(l.xz)) - f64(c.half.x)
+            outside = hypot(max(dr, 0.0), dy)
+            inside = if dr < 0.0 and y > 0.0 and y < top: min(-dr, min(y, top - y)) else: 0.0
+            overlap = max(overlap, 0.35 - outside + inside)
+        else:
+            dx = abs(f64(l.x)) - f64(c.half.x)
+            dz = abs(f64(l.z)) - f64(c.half.z)
+            outside = sqrt(pow(max(dx, 0.0), 2.0) + dy * dy + pow(max(dz, 0.0), 2.0))
+            inside = if dx < 0.0 and dz < 0.0 and y > 0.0 and y < top: min(min(-dx, -dz), min(y, top - y)) else: 0.0
+            overlap = max(overlap, 0.35 - outside + inside)
+    overlap
+
+# Events are delivered at exact observation times, on either side of a physics
+# boundary. Split only at an input transition; never turn jitter/hitches into
+# small integration calls. The reference sees the identical keyboard timeline.
+tr_next_dt = () -> f64:
+    dt = 1.0 / f64(tr_hz)
+    if tr_schedule == 1: dt = if tr_frame % 2 == 0: 0.008 else: 0.025
+    else if tr_schedule == 2 or tr_schedule == 3:
+        tr_rng = (tr_rng * 48271) % 2147483647
+        dt = 0.005 + f64(tr_rng % 45001) / 1000000.0
+        if tr_schedule == 3 and tr_frame % 7 == 0: dt = 0.1
+    else if tr_schedule == 4:
+        dt = [0.0082, 0.0002, 0.0081, 0.0003][tr_frame % 4]
+    if tr_schedule == 6 or tr_schedule == 7:
+        if abs(tr_time - 0.75) < 1e-9: dt = if tr_schedule == 6: 0.25 else: 0.5
+        else if tr_time < 0.75: dt = min(dt, 0.75 - tr_time)
+    if tr_schedule > 0:
+        loop edge in [0.4999, 0.5001, 1.5, 1.5001, 2.4999, 2.5001, 2.5082, 2.5084, 3.0, 3.0001, 4.4999, 4.5001, 4.5251, 5.0, 6.0, 12.0]:
+            if edge > tr_time + 1e-9: dt = min(dt, edge - tr_time)
+    min(dt, 12.0 - tr_time)
+
+tr_tick = ():
+    dt = tr_next_dt()
+    t = if tr_schedule == 0: f64(tr_frame) / f64(tr_hz) else: tr_time
+    # Course input changes use one 30 Hz observation clock in every run. Otherwise
+    # a response to a state transition can itself arrive 25 ms later at 30 Hz.
+    control_tick = tr_frame % max(1, tr_hz / 30) == 0
+    w = false
+    d = false
+    a = false
+    slow = false
+    sprint = false
+    jump = false
+    drop = false
+    if tr_name == "temporal_run":
+        w = t < 1.5 or (t >= 3.0001 and t < 5.0)
+        d = t >= 1.5001 and t < 3.0
+        sprint = t < 1.5
+    else if tr_name == "temporal_jump":
+        w = t < 6.0
+        jump = (t >= 0.4999 - 1e-9 and t < 0.5001 - 1e-9) or (t >= 2.5001 - 1e-9 and t < 2.5082 - 1e-9) or (t >= 4.4999 - 1e-9 and t < 4.5251 - 1e-9)
+    else if tr_name == "temporal_attack":
+        tr_key(.j, (t >= 0.4999 - 1e-9 and t < 0.5001 - 1e-9) or (t >= 2.4999 - 1e-9 and t < 2.5001 - 1e-9) or (t >= 4.5001 - 1e-9 and t < 4.5251 - 1e-9))
+    else if tr_name == "temporal_camera":
+        __key_down[int(Key.right)] = t >= 0.5001 - 1e-9 and t < 2.4999 - 1e-9
+        __key_down[int(Key.left)] = t >= 3.0001 - 1e-9 and t < 4.4999 - 1e-9
+    else if tr_name == "hitch_wall":
+        w = t < 6.0
+        sprint = w
+    else if starts_with(tr_name, "slope"):
+        w = t < 2.5
+        slow = tr_name == "slope_walk"
+        sprint = tr_name == "slope_sprint" and w
+    else if starts_with(tr_name, "mantle"):
+        w = not tr_drop and not tr_exhaust and t < 7.0
+        if pl.state == .mantle:
+            tr_mantle = true
+            if tr_name == "mantle_release" and pl.st_t >= 0.2 - 0.000001 and not tr_drop and control_tick:
+                drop = true
+                tr_drop = true
+        if pl.exhausted: tr_exhaust = true
+        w = not tr_drop and not tr_exhaust and t < 7.0
+    else if tr_name == "corner_press":
+        # Keep moving while turning too early: wall pressure and an abrupt reversal
+        # exercise contacts that an unobstructed doorway turn does not reach.
+        w = t < 2.1
+        d = t >= 2.1 and t < 3.4
+        __key_down[int(Key.right)] = t >= 1.4 and t < 2.0
+    else if tr_name == "corner":
+        w = t < 2.4 or (t >= 3.0 and t < 4.0)
+        d = false
+        # Rotate deliberately while walking the corner, then hold still to settle.
+        if t >= 2.4 and t < 3.0: __key_down[int(Key.right)] = true
+        else: __key_down[int(Key.right)] = false
+    else if tr_name == "jump_sprint":
+        w = t < 2.5
+        sprint = t >= 0.5 and w
+        jump = tr_frame == tr_hz / 2
+    else if tr_name == "fall_sprint":
+        w = t < 2.5
+        sprint = w
+    else if tr_name == "chain":
+        # Phase changes are observations, never state/position shortcuts.
+        w = tr_phase == 0 or tr_phase == 3
+        if tr_phase == 0 and pl.state == .climb and pl.st_t >= 0.3 - 0.000001 and control_tick:
+            drop = true
+            tr_phase = 1
+            tr_phase_t = t
+        else if tr_phase == 1 and pl.state == .air and pl.st_t >= 0.2 - 0.000001 and control_tick:
+            jump = true
+            tr_phase = 2
+            tr_phase_t = t
+        else if tr_phase == 2 and pl.state == .glide and pl.st_t >= 0.15 - 0.000001 and control_tick:
+            tr_phase = 3
+            tr_phase_t = t
+        else if tr_phase == 3 and pl.state == .climb and control_tick:
+            tr_phase = 4
+        w = tr_phase == 0 or tr_phase == 3
+    else if tr_name == "rain": w = t < 6.0
+    else if tr_name == "lift":
+        p = colliders[tr_lift].pos
+        q = vec3(0, f32(103.0 + sin(t + dt) * 1.2), 0)
+        colliders[tr_lift].pos = q
+        # Same carry callback/order as shrine float/bridge mechanisms.
+        __ride(tr_lift, q - p)
+        tr_boxes[0].center = q + vec3(0, 0.3, 0)
+        w = t >= 0.8 and t < 2.5
+    tr_key(.w, w)
+    tr_key(.d, d)
+    tr_key(.a, a)
+    tr_key(.alt, slow)
+    tr_key(.shift, sprint)
+    tr_key(.space, jump)
+    tr_key(.e, drop)
+    input_update(dt, false)
+    if act.jump: tr_jump_inputs += 1
+    if act.attack: tr_attack_inputs += 1
+    old = pl.pos
+    oldcam = cam.pos
+    before = pl.state
+    player_update(dt)
+    tr_substeps += player_view_steps.len()
+    min_z = f64(pl.pos.z)
+    loop sample in player_view_steps: min_z = min(min_z, f64(sample.pos.z))
+    if tr_name == "temporal_attack": combat_update(dt, (i: int) -> vec3: vec3(0, -10000, 0), 0)
+    camera_update(dt)
+    hero_animate(dt, 0.0)
+    # Final drawn toe/sole positions; measure the skin after the production solve.
+    loop side in [0..2):
+        toe = transform_point(hero_world, bone_world(hero_m, hero_skin, hero_motion.legs[side * 4 + 3])[3].xyz)
+        if hero_motion.feet[side].planted:
+            hero_motion.drift = max(hero_motion.drift, f64(length(toe - hero_motion.feet[side].anchor)))
+            hero_motion.samples += 1
+        if pl.state == .ground:
+            loop k in [2..4):
+                bone = hero_motion.legs[side * 4 + k]
+                bw = bone_world(hero_m, hero_skin, bone)
+                offset = if k == 2: vec3(0, -0.07, -0.02) else: vec3(0, -0.01, 0)
+                sole = transform_point(hero_world, bw[3].xyz + transform_dir(bw * hero_m.ibm[bone], offset))
+                hero_motion.sole = min(hero_motion.sole, f64(sole.y) - motion_floor(sole))
+    if pl.state == .ground:
+        left = bone_world(hero_m, hero_skin, hero_motion.legs[3])[3].x
+        right = bone_world(hero_m, hero_skin, hero_motion.legs[7])[3].x
+        hero_motion.separation = min(hero_motion.separation, f64(left - right))
+    step = f64(length(pl.pos - old))
+    camera_step = f64(length(cam.pos - oldcam))
+    tr_step = max(tr_step, step)
+    tr_camera_step = max(tr_camera_step, camera_step)
+    penetration = tr_lens_overlap(cam.pos)
+    tr_penetration = max(tr_penetration, penetration)
+    events = ""
+    loop e in pl.events:
+        events += e + ";"
+        tr_events += "{t + dt:.6}:{e};"
+        if e == "slip": tr_slips += 1
+    if pl.landed and tr_land < 0.0: tr_land = t + dt
+    if tr_land >= 0.0 and pl.sprinting and pl.speed > 7.0 and tr_sprint < 0.0: tr_sprint = t + dt
+    if before == .mantle and pl.state == .air: tr_cancelled = true
+    if tr_name == "lift" and before == .ground and pl.state == .air: tr_lift_depart = true
+    if pl.state != .ground:
+        loop foot in hero_motion.feet:
+            if foot.planted or foot.weight > 0.0: tr_air_contacts += 1
+    active_contacts = 0
+    loop foot in hero_motion.feet:
+        if foot.planted or foot.weight > 0.0: active_contacts += 1
+    hand_gap = 0.0
+    if pl.state == .mantle and pl.st_t / MANTLE_TIME < 0.5:
+        loop side in [0..2):
+            bone = bone_index(hero_m, if side == 0: "hand_l" else: "hand_r")
+            wrist = transform_point(hero_world, bone_world(hero_m, hero_skin, bone)[3].xyz)
+            hand_gap = max(hand_gap, f64(length(wrist - pl.mantle_hands[side])))
+    tr_rows += "{t + dt:.6},{pl.pos.x:.6},{pl.pos.y:.6},{pl.pos.z:.6},{pl.vel.x:.6},{pl.vel.y:.6},{pl.vel.z:.6},{pl.speed:.6},{pl.stamina:.6},{pl.state},{pl.grounded},{pl.land_t:.6},{pl.sprinting},{cam.pos.x:.6},{cam.pos.y:.6},{cam.pos.z:.6},{cam.target.x:.6},{cam.target.y:.6},{cam.target.z:.6},{cam.yaw:.6},{cam.pitch:.6},{length(cam.pos - cam.target):.6},{step:.6},{camera_step:.6},{penetration:.6},{hero_motion.drift:.6},{hero_motion.sole:.6},{hero_motion.separation:.6},{hero_motion.samples},{hero_motion.landing_t:.6},{active_contacts},{hand_gap:.6},{events},{dt:.9},{tr_jump_inputs},{tr_attack_inputs},{fight.swing_id},{tr_substeps},{min_z:.6},{cam.idle_t:.6}\n"
+    tr_time += dt
+    tr_frame += 1

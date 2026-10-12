@@ -1,0 +1,111 @@
+use 'player.jo'
+use 'gfx.jo'
+use 'wildlife.jo'
+use 'physics.jo'
+from 'physics.jo' import __ray_collider
+use 'terrain.jo'
+use 'water.jo'
+
+# Conservative body clearance, sampled more closely than the radius so even a
+# thin wall cannot be crossed. Probe before moving rather than pushing through
+# the nearest side of an obstacle. Used for steering and every accepted step.
+wild_path_clear = (from: vec3, to: vec3, radius: f64) -> bool:
+    delta = to - from
+    distance = f64(length(delta))
+    if distance > 0.00001:
+        # Sweep the expanded body against solids exactly. Endpoint samples can
+        # miss a shallow chord through a trunk and choose an unusable tangent.
+        mid = (from + to) * 0.5
+        loop id in nearby(f64(mid.x), f64(mid.z), distance * 0.5 + radius):
+            c = colliders[id]
+            if not c.active or f64(c.pos.y + c.half.y * 2.0) <= min(f64(from.y), f64(to.y)) + 0.20: continue
+            c.half.x += f32(radius)
+            if c.kind == 1: c.half.z += f32(radius)
+            c.pos.y -= 0.9
+            c.half.y += 0.45
+            if __ray_collider(c, from, delta / f32(distance), distance).hit: return false
+    steps = max(1, int(ceil(f64(length(to.xz - from.xz)) / 0.25)))
+    previous = f64(from.y)
+    loop k in [1..steps]:
+        q = mix(from, to, f32(f64(k) / f64(steps)))
+        x = f64(q.x)
+        z = f64(q.z)
+        if not in_bounds(x, z): return false
+        g = ground_at(x, z, previous, 0.20)
+        if g.y - previous > 0.20 or g.y - previous < -0.30 or g.normal.y < 0.78: return false
+        if water_depth(x, z) > 0.12 and g.collider < 0: return false
+        q.y = f32(g.y)
+        pushed = q
+        push_out(pushed, radius, 0.9)
+        if length(pushed - q) > 0.001: return false
+        previous = g.y
+    true
+
+wild_ground_move = (a: mut Animal, dir: vec3, speed: f64, dt: f64, turn: f64):
+    radius = wild_body_clearance(a)
+    a.nav_t -= dt
+    if a.nav_t <= 0.0:
+        a.nav_t = 0.18 + fract(a.seed * 0.37) * 0.05
+        desired = yaw_of(dir)
+        reach = max(1.2, min(3.0, a.speed * 0.38))
+        best = -1000.0
+        previous_heading = a.nav_face
+        # Test both sides, favouring the last chosen side to avoid a left/right
+        # oscillation at trunks. Never choose a backwards route into the threat.
+        loop offset in [0.0, -0.45, 0.45, -0.90, 0.90, -1.35, 1.35, -1.57, 1.57]:
+            heading = desired + offset
+            target = a.pos + forward_of(heading) * f32(reach)
+            if not wild_path_clear(a.pos, target, radius): continue
+            score = cos(offset) + cos(wrap_angle(heading - previous_heading)) * 0.28
+            if score > best:
+                best = score
+                a.nav_face = heading
+            if offset == 0.0: break
+        if best < -999.0:
+            a.speed = approach(a.speed, 0.0, 16.0, dt)
+            a.nav_t = 0.0
+            return
+    a.face = turn_toward(a.face, a.nav_face, turn * dt)
+    # Turn on the spot first when alarmed facing Link; running in the old
+    # direction during the turn used to make a startled animal charge at him.
+    alignment = max(0.0, cos(wrap_angle(a.nav_face - a.face)))
+    a.speed = approach(a.speed, speed * alignment * alignment, 4.0, dt)
+    before = a.pos
+    next = before + forward_of(a.face) * f32(a.speed * dt)
+    if wild_path_clear(before, next, radius):
+        next.y = f32(ground_at(f64(next.x), f64(next.z), f64(before.y), 0.20, details = false).y)
+        a.pos = next
+    else:
+        a.speed = 0.0
+        # Finish the chosen turn while planted instead of selecting opposite
+        # tangents every substep at the edge of a trunk.
+        a.nav_t = max(a.nav_t, abs(wrap_angle(a.nav_face - a.face)) / turn)
+    # Gait follows travelled distance, including collision stops and shelter
+    # walks, independent of whether a render/animation update was culled.
+    if a.kind == .boar:
+        shape = boar_shape(if a.appearance >= 0.0: a.appearance / 0.173 else: a.seed)
+        a.gait += f64(length(a.pos.xz - before.xz)) * (if a.state == .walk: 15.0 else: 6.5) / f64(shape.z)
+
+# Both quadrupeds follow the local supporting plane; the fox previously stayed
+# world-upright on slopes, burying one pair of paws and floating the other.
+wild_ground_tilt = (a: Animal) -> mat4:
+    normal = transform_dir(rotation_y(a.face - PI), normal_at(f64(a.pos.x), f64(a.pos.z)))
+    rotation_z(-atan2(f64(normal.x), f64(normal.y))) * rotation_x(atan2(f64(normal.z), f64(normal.y)))
+
+# Median planted-paw speeds measured from the baked Walk/Gallop tracks.
+# The previous fixed playback rates dragged walking paws at 1.6 m/s and
+# galloping paws at 9.5 m/s regardless of their actual stride or a blocked path.
+wild_fox_rate = (a: Animal) -> f64:
+    a.speed / (if a.state == .flee: 1.879 else: 0.581)
+
+# Include the snout/tusks of a heavy boar, not just its narrow torso capsule.
+wild_body_clearance = (a: Animal) -> f64:
+    if a.kind != .boar: return 0.9
+    shape = boar_shape(if a.appearance >= 0.0: a.appearance / 0.173 else: a.seed)
+    f64(shape.z) * 1.20
+
+wild_place_clear = (a: mut Animal):
+    if a.kind != .boar and a.kind != .fox: return
+    loop attempt in [0..3): push_out(a.pos, wild_body_clearance(a), 0.9)
+    a.pos.y = f32(height_at(f64(a.pos.x), f64(a.pos.z)))
+    a.home = a.pos

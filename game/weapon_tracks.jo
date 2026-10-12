@@ -1,0 +1,90 @@
+use 'gfx.jo'
+use 'skel.jo'
+use 'clips.jo'
+use 'items.jo'
+
+# Socket paths baked once from the same attack clips used by the hero. A unit blade
+# direction lets every weapon use its own mesh length, without reskinning four times a frame.
+struct BladePose:
+    grip: vec3
+    axis: vec3
+
+struct WeaponTracks:
+    model = ""
+    paths: BladePose[][]
+
+weapon_tracks = WeaponTracks()
+const BLADE_CLIPS = ["slash1", "slash2", "slash3", "attack", "heavy", "punch", "air_attack", "combo"]
+# Long source clips include extra swings or a long held recovery; play the first blow.
+const BLADE_TIMES = [0.433333, 0.533333, 0.80, 0.75, 1.25, 0.40, 1.20, 0.90]
+
+weapon_tracks_init = (m: Model, lib: AnimLib):
+    if weapon_tracks.model == m.name: return
+    weapon_tracks = WeaponTracks(model = m.name)
+    mask = bone_mask(lib, "spine_01")
+    loop k in [0..BLADE_CLIPS.len()):
+        path: BladePose[]
+        loop frame in [0..121):
+            top = sample_clip(lib, clip_index(lib, BLADE_CLIPS[k]), BLADE_TIMES[k] * f64(frame) / 120.0, false)
+            p = top
+            if k != 6:
+                p = sample_clip(lib, clip_index(lib, "sword_idle"), 0.0, true)
+                weapon_layer(m, lib, p, top, mask)
+            if k == 5: spear_grip(m, p)
+            attack_key_pose(m, lib, p, k, f64(frame) / 120.0)
+            socket = socket_world(m, mat4(), skin(m, p), SOCKET_HAND_R)
+            path.push(BladePose(transform_point(socket, vec3(0, 0, 0)), normalize(transform_dir(socket, vec3(0, 1, 0)))))
+        weapon_tracks.paths.push(path)
+
+blade_pose = (clip: int, phase: f64) -> BladePose:
+    path = weapon_tracks.paths[clip]
+    t = clamp(phase, 0.0, 1.0) * 120.0
+    i = min(int(t), 119)
+    w = f32(t - f64(i))
+    BladePose(lerp(path[i].grip, path[i + 1].grip, w), normalize(lerp(path[i].axis, path[i + 1].axis, w)))
+
+# The source punch has a closed fist. Orient the spear-bearing wrist along its jab,
+# so the rendered shaft and the baked socket both extend toward the target.
+spear_grip = (m: Model, p: mut Pose):
+    hand = bone_index(m, "hand_r")
+    if hand < 0: return
+    socket = socket_world(m, mat4(), skin(m, p), SOCKET_HAND_R)
+    from = normalize(transform_dir(socket, vec3(0, 1, 0)))
+    to = vec3(0, 0, 1)
+    axis = cross(from, to)
+    if length(axis) < 0.00001: return
+    parent = bone_world(m, p, m.parent[hand])
+    local = normalize(transform_dir(inverse(parent), axis))
+    angle = acos(clamp(f64(dot(from, to)), -1.0, 1.0))
+    p.r[m.canon[hand]] = normalize(quat_mul(quat_axis_angle(local, angle), p.r[m.canon[hand]]))
+
+# Keep the supporting legs and pelvis height, but carry the source clip's hip yaw
+# into the upper-body attack. Full root pitch/roll in these imported clips tips a
+# grounded hero almost horizontal; dropping the hip yaw makes the blade miss forward.
+weapon_layer = (m: Model, lib: AnimLib, base: mut Pose, top: Pose, mask: f32[]):
+    pelvis = bone_index(m, "pelvis")
+    if pelvis >= 0:
+        delta = bone_world(m, top, pelvis) * inverse(bone_world(m, base, pelvis))
+        forward = transform_dir(delta, vec3(0, 0, 1))
+        yaw = atan2(f64(forward.x), f64(forward.z))
+        parent = bone_world(m, base, m.parent[pelvis])
+        axis = normalize(transform_dir(inverse(parent), vec3(0, 1, 0)))
+        canon = m.canon[pelvis]
+        base.r[canon] = normalize(quat_mul(quat_axis_angle(axis, yaw), base.r[canon]))
+    layer_into(base, top, mask, 1.0)
+
+# Loaded shoulder and an open off arm at the two ends of a swing. These keys
+# are baked into the blade track and applied to the live pose on the same phase.
+# The cutting interval and its authored wrist path retain their original clock.
+attack_key_pose = (m: Model, lib: AnimLib, p: mut Pose, clip: int, phase: f64, gain: f64 = 1.0):
+    wind = (1.0 - smoothstep(0.10, 0.27, phase)) * gain
+    follow = smoothstep(0.78, 0.88, phase) * (1.0 - smoothstep(0.92, 1.0, phase)) * gain
+    if wind <= 0.0 and follow <= 0.0: return
+    side = if clip == 1 or clip == 3: -1.0 else: 1.0
+    heavy = clip == 4 or clip == 6
+    rotate_bone(lib, p, lib_bone(lib, "spine_01"), vec3(0, 1, 0), side * (wind * -0.42 + follow * 0.34))
+    rotate_bone(lib, p, lib_bone(lib, "spine_02"), vec3(1, 0, 0), wind * (if heavy: -0.22 else: -0.12) + follow * 0.24)
+    rotate_bone(lib, p, lib_bone(lib, "spine_03"), vec3(0, 0, 1), side * (wind * -0.12 + follow * 0.18))
+    rotate_bone(lib, p, lib_bone(lib, "upperarm_r"), vec3(1, 0, 0), wind * -0.38 + follow * 0.28)
+    rotate_bone(lib, p, lib_bone(lib, "upperarm_l"), vec3(0, 0, 1), wind * 0.38 + follow * 0.48)
+    rotate_bone(lib, p, lib_bone(lib, "lowerarm_l"), vec3(1, 0, 0), wind * -0.24 + follow * 0.22)

@@ -1,0 +1,2 @@
+use 'enemy_spacing_checks.jo'
+enemy_spacing_test_suite()

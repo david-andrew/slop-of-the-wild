@@ -1,0 +1,450 @@
+use 'gfx.jo'
+use 'env.jo'
+use 'vegetation.jo'
+use 'physics.jo'
+use 'terrain.jo'
+use 'water.jo'
+use 'items.jo'
+use 'combat.jo'
+use 'elements.jo'
+use 'matter.jo'
+use 'player.jo'
+use 'enemies.jo'
+use 'wildlife.jo'
+use 'fx.jo'
+use 'scene.jo'
+use 'sfx.jo'
+
+# Standing trees own no simulation state. Only accepted chops create a record;
+# collider-cell queries find trunks, and only falling trees / logs advance.
+const TREE_CHOPS = 3
+const LOG_CHOPS = 2
+const TREE_FALL_TIME = 1.25
+struct TreeRecord:
+    root: vec3
+    pos: vec3
+    vel = vec3(0, 0, 0)
+    yaw = 0.0
+    radius = 0.3
+    length_ = 5.0
+    phase = 0                 # 0 chopped trunk, 1 falling, 2 log, 3 consumed
+    age = 0.0
+    hits = 0
+    cuts = 0
+    roll = 0.0
+    pitch = 0.0
+    char = 0.0
+    el = Elem()
+    tree = -1
+    col = -1
+    stump = -1
+    last_hit = -1
+    root_m = mat4()
+    branches: int[]
+    branch_m: mat4[]
+
+# Root position is the save identity: foliage-density changes cannot shift IDs.
+tree_states: TreeRecord[]
+tree_colliders: {int: int} = {}
+__tree_state: {int: int} = {}
+trees_revision = 0
+__tree_active: int[]
+__tree_felled: int[]
+
+tree_suitable = (p: VPlace) -> bool:
+    if not p.collide or p.height < 3.5 or p.tint.w > 0.15 or not in_bounds(f64(p.pos.x),f64(p.pos.z)): return false
+    nm = vmodels[p.model].name
+    starts_with(nm, "CommonTree") or starts_with(nm, "TwistedTree") or starts_with(nm, "Pine_")
+
+tree_chopper = (d: ItemDef) -> bool:
+    d.kind == .weapon and (d.shape == .axe or (d.two_handed and not d.spear and d.power >= 8))
+
+tree_record = (i: int) -> int:
+    if let n = __tree_state.get(i): return n
+    p = places[i]
+    n = tree_states.len()
+    tree_states.push(TreeRecord(p.pos, p.pos, tree=i, root_m=p.m,
+        radius=clamp(p.radius * 0.07, 0.25, 0.65), length_=clamp(p.height * 0.65, 3.0, 8.0)))
+    loop j in 0.. and branch in places:
+        if branch.owner==i:
+            tree_states[n].branches.push(j)
+            tree_states[n].branch_m.push(branch.m)
+    __tree_state[i] = n
+    n
+
+__tree_sound = (s: Sound, p: vec3, vol: f64, pitch: f64):
+    # Headless integration checks have no audio device or decoded sounds.
+    if not veg_ready: return
+    sfx_at(s,p,sc.cam,normalize(cross(sc.fwd,vec3(0,1,0))),vol,pitch,55.0)
+
+__creak_ready=false
+__creak=Sound()
+__tree_creak = (p: vec3):
+    if not veg_ready: return
+    if not __creak_ready:
+        __creak_ready=true
+        samples=fill(f32(0),int(f64(MIX_RATE)*1.1)*2)
+        phase=0.0
+        noise=0.0
+        loop i in [0..samples.len()/2):
+            t=f64(i)/f64(MIX_RATE)
+            phase += TAU*(145.0-65.0*t+9.0*sin(t*39.0))/f64(MIX_RATE)
+            noise += (random(-1.0,1.0)-noise)*0.11
+            rasp=pow(0.5+0.5*sin(t*TAU*(21.0+17.0*t)),5.0)
+            envelope=smoothstep(0.0,0.08,t)*(1.0-smoothstep(0.65,1.1,t))
+            value=(sin(phase)*0.13+sin(phase*2.8)*0.055+noise*rasp*0.38)*envelope
+            samples[i*2]=f32(value)
+            samples[i*2+1]=f32(value)
+        __creak=Sound(samples)
+    __tree_sound(__creak,p,0.75,1.0)
+
+tree_fell = (n: int, from: vec3):
+    t = tree_states[n]
+    if t.phase != 0: return
+    away = t.root - from
+    t.yaw = atan2(f64(away.x),f64(away.z))
+    t.phase = 1
+    __tree_active.push(n)
+    __tree_felled.push(n)
+    t.age = 0.0
+    t.hits = TREE_CHOPS
+    # The rooted trunk becomes a low stump, retaining its original grid cells.
+    t.stump = places[t.tree].col
+    if t.stump >= 0:
+        colliders[t.stump].pos = t.root
+        colliders[t.stump].half.y = 0.16
+        colliders[t.stump].climbable = false
+    t.el = tree_fire.get(t.tree) ?? Elem()
+    tree_fire.remove(t.tree)
+    loop mut w in witems:
+        if w.hang and length(w.pos.xz-t.root.xz) < f32(places[t.tree].radius+1.0):
+            w.hang=false
+            w.resting=false
+            w.vel=vec3(0,0.5,0)
+    __tree_creak(t.root)
+    tree_states[n] = t
+    trees_revision += 1
+
+tree_is_falling = (i: int) -> bool:
+    if let n=__tree_state.get(i): return tree_states[n].phase>0
+    false
+log_submerged = (t: TreeRecord) -> bool:
+    wl=water_level(f64(t.pos.x),f64(t.pos.z))
+    wl!=none and f64(t.pos.y)+t.radius*0.7<wl!
+
+# Accepted swept blade contacts only; repeated sub-samples share the swing ID.
+trees_hits = ():
+    if player_hits.len()==0: return
+    w = equipped_weapon()
+    if w == "" or not tree_chopper(item(w)): return
+    loop h in player_hits:
+        loop c in nearby(f64(h.from.x),f64(h.from.z),4.0):
+            if let i = tree_colliders.get(c):
+                if places[i].felled: continue
+                p = places[i].pos + vec3(0,clamp(h.pos.y-places[i].pos.y,0.35,1.9),0)
+                if not blade_touches(h,p,f64(colliders[c].half.x),c): continue
+                n = tree_record(i)
+                if tree_states[n].phase != 0 or tree_states[n].last_hit == h.id: continue
+                tree_states[n].last_hit=h.id
+                tree_states[n].hits += 1
+                trees_revision += 1
+                __tree_sound(sfx.hit_wood,p,0.7,0.85)
+                fx_sparks(p,5,rgb(0.65,0.43,0.2))
+                if tree_states[n].hits >= TREE_CHOPS: tree_fell(n,h.from)
+        loop n in __tree_active:
+            t = tree_states[n]
+            if t.phase != 2 or t.last_hit == h.id: continue
+            near = log_nearest(t,h.pos)
+            if not blade_touches(h,near,t.radius,t.col): continue
+            t.last_hit=h.id
+            t.cuts += 1
+            __tree_sound(sfx.hit_wood,near,0.7,0.7)
+            if t.cuts >= LOG_CHOPS:
+                t.phase=3
+                colliders[t.col].active=false
+                loop k in [0..3): spawn_item("firewood",t.pos+v3(0.0,0.3,f64(k-1)*0.25),v3(f64(k-1)*0.7,2.0,0.0))
+                fx_poof(t.pos)
+            tree_states[n]=t
+            trees_revision += 1
+
+log_axis = (t: TreeRecord) -> vec3: v3(sin(t.yaw)*cos(t.pitch),sin(t.pitch),cos(t.yaw)*cos(t.pitch))
+log_nearest = (t: TreeRecord, p: vec3) -> vec3:
+    a = log_axis(t)
+    t.pos+a*clamp(dot(p-t.pos,a),f32(-t.length_*0.5),f32(t.length_*0.5))
+
+__log_collider = (t: mut TreeRecord):
+    half = v3(t.radius,t.radius+abs(sin(t.pitch))*t.length_*0.5,t.length_*0.5)
+    base = t.pos-vec3(0,half.y,0)
+    if t.col < 0: t.col=add_box(base,half,t.yaw,false,.wood)
+    else: collider_relocate(t.col,base,half,t.yaw)
+
+# Buoyancy acts on submerged wood; the upper bark remains an exposed fire source.
+log_step = (t: mut TreeRecord, dt: f64):
+    old = t.pos
+    colliders[t.col].active=false
+    wl = water_level(f64(t.pos.x),f64(t.pos.z))
+    floating = wl != none and water_depth(f64(t.pos.x),f64(t.pos.z)) > t.radius*1.5 and f64(t.pos.y) < wl!+t.radius
+    a = log_axis(t)
+    g = ground_at(f64(t.pos.x),f64(t.pos.z),f64(t.pos.y)+2.0,0.0)
+    ends: f64[]
+    loop side in [-1.0,1.0]:
+        q=t.pos+a*f32(side*t.length_*0.47)
+        ends.push(ground_at(f64(q.x),f64(q.z),f64(q.y)+2.0,0.0).y)
+    support = max(g.y,(ends[0]+ends[1])*0.5)+t.radius
+    if floating:
+        target=wl!+t.radius*0.25
+        t.vel.y += f32(((target-f64(t.pos.y))*22.0-f64(t.vel.y)*5.0)*dt)
+        flow=water_flow(f64(t.pos.x),f64(t.pos.z))
+        t.vel.x=f32(approach(f64(t.vel.x),f64(flow.x)*0.5,1.5,dt))
+        t.vel.z=f32(approach(f64(t.vel.z),f64(flow.y)*0.5,1.5,dt))
+        t.pitch=approach(t.pitch,0.0,3.0,dt)
+    else:
+        t.vel.y -= f32(18.0*dt)
+        if f64(t.pos.y) <= support+0.08:
+            t.pos.y=f32(support)
+            t.vel.y=max(0.0,-t.vel.y*0.15)
+            # Gravity projected onto the ground; friction damps without frame-rate dependence.
+            slope=vec3(g.normal.x,0,g.normal.z)
+            t.vel += slope*f32(9.0*dt)
+            t.vel.x *= f32(exp(-1.4*dt))
+            t.vel.z *= f32(exp(-1.4*dt))
+            t.pitch=approach(t.pitch,atan2(ends[1]-ends[0],t.length_*0.94),5.0,dt)
+            if g.normal.y > 0.995 and length(t.vel.xz)<0.08: t.vel=vec3(0,0,0)
+    t.pos += t.vel*f32(dt)
+    # Three capsule probes across the log prevent it rolling through solid world props.
+    loop side in [-0.46,0.0,0.46]:
+        q=t.pos+log_axis(t)*f32(side*t.length_)-v3(0.0,t.radius,0.0)
+        push=push_out(q,t.radius,t.radius*2.0)
+        if length(push)>0.0:
+            t.pos += push
+            n=normalize(push)
+            t.vel -= n*min(dot(t.vel,n),0.0)*1.4
+    if not in_bounds(f64(t.pos.x),f64(t.pos.z)):
+        t.phase=3
+        t.pos=t.root
+        t.vel=vec3(0,0,0)
+        colliders[t.col].active=false
+        trees_revision += 1
+        return
+    t.roll += f64(dot(t.vel,v3(cos(t.yaw),0.0,-sin(t.yaw))))*dt/t.radius
+    __log_collider(t)
+    colliders[t.col].active=true
+    if pl.state==.ground and pl.ground.collider==t.col: pl.pos += t.pos-old
+
+# Bombs/barrel blasts use the same cover rule as actors and barrels.
+trees_blast = (source: vec3):
+    loop c in nearby(f64(source.x),f64(source.z),7.0):
+        if let i = tree_colliders.get(c):
+            if places[i].felled: continue
+            if blast_reaches(source,places[i].pos+vec3(0,0.9,0),7.0,c): tree_fell(tree_record(i),source)
+    loop mut t in tree_states:
+        if t.phase!=2 or not blast_reaches(source,t.pos,7.0,t.col): continue
+        t.vel += normalize(t.pos-source+vec3(0,0.5,0))*5.0
+        t.el.heat += 1.5
+
+__tree_land = (t: mut TreeRecord):
+    places[t.tree].felled=true
+    vegetation_changed()
+    loop i in t.branches: places[i].felled=true
+    a=v3(sin(t.yaw),0.0,cos(t.yaw))
+    t.pos=t.root+a*f32(t.length_*0.5+0.45)+v3(0.0,t.radius,0.0)
+    t.vel=a*1.5
+    t.phase=2
+    if not in_bounds(f64(t.pos.x),f64(t.pos.z)):
+        t.phase=3
+        t.pos=t.root
+        trees_revision += 1
+        return
+    __log_collider(t)
+    # A trunk landing damages along its physical span, once through accepted actor paths.
+    loop mut e in enemies:
+        if e.state==.gone or e.state==.dead or e.kind==.talus: continue
+        if length(log_nearest(t,e.pos+vec3(0,0.7,0))-(e.pos+vec3(0,0.7,0)))<f32(t.radius+1.0): enemy_damage(e,20.0,t.root,4.0)
+    loop mut a_ in animals:
+        if length(log_nearest(t,wildlife_hit_center(a_))-wildlife_hit_center(a_))<f32(t.radius+0.7): wildlife_damage(a_,20.0,t.root,true,4.0)
+    if length(log_nearest(t,pl.pos+vec3(0,0.7,0))-(pl.pos+vec3(0,0.7,0)))<f32(t.radius+0.5): hit_player(4,t.root,4.0)
+    __tree_sound(sfx.hit_wood,t.pos,0.9,0.45)
+    fx_dust(t.pos,12)
+    trees_revision += 1
+
+trees_update = (dt: f64, cam: vec3):
+    if not use_terrain: return
+    trees_hits()
+    if __tree_active.len()==0: return
+    loop n in __tree_active:
+        t=tree_states[n]
+        if t.phase==0 or t.phase==3: continue
+        if t.phase==1:
+            t.age += dt
+            angle=smooth01(clamp(t.age/TREE_FALL_TIME,0.0,1.0))*PI*0.5
+            pivot=translation(t.root)*rotation_y(t.yaw)*rotation_x(angle)*rotation_y(-t.yaw)*translation(-t.root)
+            vegetation_pose(t.tree,pivot*t.root_m)
+            loop k in 0.. and i in t.branches: vegetation_pose(i,pivot*t.branch_m[k])
+            if t.age>=TREE_FALL_TIME: __tree_land(t)
+        else:
+            steps=max(1,int(ceil(dt*60.0)))
+            loop k in [0..steps):
+                if t.phase==2: log_step(t,dt/f64(steps))
+            if t.phase==3:
+                tree_states[n]=t
+                continue
+            top=t.pos+v3(0.0,t.radius+0.05,0.0)
+            ex=Exposure(heat=heat_at(top,t.col),rain=(if rain_exposed(top):env.rain else:0.0),water=log_submerged(t))
+            loop side in [-0.4,0.4]:
+                ex.heat=max(ex.heat,heat_at(top+log_axis(t)*f32(side*t.length_),t.col))
+            loop h in player_hits:
+                if h.fire and blade_touches(h,log_nearest(t,h.pos),t.radius,t.col): ex.heat += 30.0
+            r=react(WOOD,t.el,ex,dt)
+            if r==.ignited: t.el.heat=0.0
+            if r==.put_out: fx_steam(top,5)
+            if r==.burnt_up:
+                t.phase=3
+                colliders[t.col].active=false
+                fx_poof(t.pos)
+                trees_revision += 1
+            if burning(t.el):
+                t.char=max(t.char,1.0-t.el.burning/WOOD.burn_time)
+                if length(t.pos-cam)<100.0:
+                    first=particles.len()
+                    loop k in [-1.0,0.0,1.0]: fx_fire(t.pos+log_axis(t)*f32(k*t.length_*0.32)+v3(0.0,t.radius,0.0),0.6,dt)
+                    # A moving fire gives new tongues its initial velocity. Otherwise
+                    # downhill logs outrun their flames and appear to leave a grass fire.
+                    loop i in [first..particles.len()): particles[i].vel += t.vel
+                if length(log_nearest(t,pl.pos+vec3(0,0.5,0))-(pl.pos+vec3(0,0.5,0)))<f32(t.radius+0.6): damage_player(1,t.pos,2.0)
+        tree_states[n]=t
+    live: int[]
+    loop n in __tree_active:
+        if tree_states[n].phase==1 or tree_states[n].phase==2: live.push(n)
+    __tree_active=live
+
+log_heat = (p: vec3, target_col: int = -1) -> f64:
+    h=0.0
+    loop n in __tree_active:
+        t=tree_states[n]
+        if t.phase!=2 or not burning(t.el) or t.col==target_col: continue
+        q=log_nearest(t,p)+v3(0.0,t.radius+0.05,0.0)
+        if blast_reaches(q,p,2.0,target_col): h += 1.5
+    h
+
+# mb_cyl is deliberately open-ended. Cut wood needs solid end-grain discs.
+__wood_disk = (b: mut MeshB, center: vec3, normal: vec3, radius: f64, col: vec4):
+    u=vec3(1,0,0)
+    v=cross(normal,u)
+    loop k in [0..16):
+        a=f64(k)*TAU/16.0
+        aa=f64(k+1)*TAU/16.0
+        base=u32(b.vs.len())
+        loop p in [center,center+(u*f32(cos(a))+v*f32(sin(a)))*f32(radius),center+(u*f32(cos(aa))+v*f32(sin(aa)))*f32(radius)]:
+            b.vs.push(Vertex3D(p,normal,vec2(0,0),col))
+        loop i in [base,base+1,base+2]: b.idx.push(i)
+
+__log_mesh=Mesh()
+__stump_mesh=Mesh()
+__logs_ready=false
+trees_draw = (cam: vec3):
+    if __tree_felled.len()==0: return
+    if not __logs_ready:
+        __logs_ready=true
+        b=MeshB()
+        # Broad grey-brown bark plates follow the source trunks' painted values.
+        # Local geometry/colour stays attached while a physical log rolls or floats.
+        loop k in [0..16):
+            a=f64(k)*TAU/16.0
+            aa=f64(k+1)*TAU/16.0
+            loop j in [0..6):
+                z=-0.5+f64(j)/6.0
+                zz=-0.5+f64(j+1)/6.0
+                r=1.0-(z+0.5)*0.12
+                rr=1.0-(zz+0.5)*0.12
+                wash=hash2(f64(k/3),2.0)*0.78+hash2(f64(k),f64(j))*0.22
+                col=mix(rgb(0.135,0.115,0.080),rgb(0.32,0.27,0.17),f32(wash))
+                n=v3(cos((a+aa)*0.5),sin((a+aa)*0.5),0.0)
+                base=u32(b.vs.len())
+                loop q in [v3(cos(a)*r,sin(a)*r,z),v3(cos(aa)*r,sin(aa)*r,z),v3(cos(a)*rr,sin(a)*rr,zz),v3(cos(aa)*rr,sin(aa)*rr,zz)]:
+                    b.vs.push(Vertex3D(q,n,vec2(0,0),col))
+                loop i in [base,base+1,base+2,base+1,base+3,base+2]: b.idx.push(i)
+                # Broken furrows, with unequal lengths instead of twelve straight rails.
+                if (k+j)%3!=0:
+                    mb_cyl(b,v3(cos(a)*r,sin(a)*r,z+0.01),v3(cos(a+0.035)*rr,sin(a+0.035)*rr,zz-0.01),0.025,0.014,rgb(0.095,0.075,0.048),4)
+        loop side in [-1.0,1.0]:
+            radius=if side<0.0:1.0 else:0.88
+            __wood_disk(b,v3(0.0,0.0,side*0.501),v3(0.0,0.0,side),radius,rgb(0.16,0.125,0.075))
+            # Narrow growth rings in pale sapwood, an off-centre warm heart.
+            loop k in [0..12):
+                rr=(0.87-f64(k/2)*0.135-(if k%2==1:0.022 else:0.0))*radius
+                col=if k%2==0:rgb(0.34,0.235,0.125) else:rgb(0.60,0.46,0.275)
+                __wood_disk(b,v3(0.055,0.03,side*(0.502+f64(k)*0.001)),v3(0.0,0.0,side),rr,col)
+        mb_cyl(b,vec3(0.7,0,0.07),vec3(1.2,0.1,0.09),0.20,0.13,rgb(0.20,0.16,0.095),7)
+        __log_mesh=mesh(b.vs,b.idx)
+        b=MeshB()
+        mb_cyl(b,vec3(0,0,0),vec3(0,0.32,0),1.12,1.0,rgb(0.29,0.19,0.10),12)
+        __wood_disk(b,vec3(0,0.321,0),vec3(0,1,0),1.0,rgb(0.29,0.19,0.10))
+        __wood_disk(b,vec3(0,0.325,0),vec3(0,1,0),0.86,rgb(0.66,0.46,0.26))
+        __wood_disk(b,vec3(0,0.328,0),vec3(0,1,0),0.44,rgb(0.53,0.34,0.17))
+        __stump_mesh=mesh(b.vs,b.idx)
+    loop n in __tree_felled:
+        t=tree_states[n]
+        if length(t.root-cam)<180.0: draw_prop(__stump_mesh,translation(t.root)*scaling(v3(t.radius,1.0,t.radius)),vec4(1,1,1,1),0.0,0.0)
+        if t.phase!=2 or length(t.pos-cam)>180.0: continue
+        m=translation(t.pos)*rotation_y(t.yaw)*rotation_x(-t.pitch)*rotation_z(t.roll)*scaling(v3(t.radius,t.radius,t.length_))
+        tint=mix(vec4(1,1,1,1),vec4(0.16,0.13,0.11,1),f32(t.char))
+        draw_prop(__log_mesh,m,tint,0.0,0.0)
+
+# Save restore does not replay chops, impacts, apples or bundle drops.
+trees_restore = (records: TreeRecord[]):
+    loop old in tree_states:
+        if old.col>=0: colliders[old.col].active=false
+        if old.tree<0 or old.tree>=places.len(): continue
+        p=places[old.tree]
+        places[old.tree].felled=false
+        vegetation_pose(old.tree,old.root_m)
+        loop k in 0.. and j in old.branches:
+            places[j].felled=false
+            vegetation_pose(j,old.branch_m[k])
+        if p.col>=0:
+            colliders[p.col].pos=p.pos-vec3(0,1,0)
+            colliders[p.col].half.y=f32(p.height*0.225)
+            colliders[p.col].climbable=true
+    __tree_active.clear()
+    __tree_felled.clear()
+    tree_states.clear()
+    __tree_state.clear()
+    loop r in records:
+        i=-1
+        loop j in 0.. and p in places:
+            if tree_suitable(p) and length(p.pos-r.root)<0.08:
+                i=j
+                break
+        if i<0: continue
+        n=tree_record(i)
+        t=r
+        t.branches=tree_states[n].branches
+        t.branch_m=tree_states[n].branch_m
+        t.tree=i
+        t.root_m=tree_states[n].root_m
+        t.last_hit=-1
+        t.col=-1
+        t.stump=places[i].col
+        if t.phase>0:
+            __tree_felled.push(n)
+            places[i].felled=true
+            loop j in t.branches: places[j].felled=true
+            # Authored fruit is rebuilt before save_apply. Remove hanging fruit from
+            # a missing crown without replaying the already-earned apple drop.
+            loop mut w in witems:
+                if w.hang and length(w.pos.xz-t.root.xz)<f32(places[i].radius+1.0): w.alive=false
+            if t.stump>=0:
+                colliders[t.stump].pos=t.root
+                colliders[t.stump].half.y=0.16
+                colliders[t.stump].climbable=false
+            if t.phase==1:
+                t.phase=2
+                t.pos=t.root+v3(sin(t.yaw),0.0,cos(t.yaw))*f32(t.length_*0.5+0.45)+v3(0.0,t.radius,0.0)
+            if t.phase==2:
+                __log_collider(t)
+                __tree_active.push(n)
+        tree_states[n]=t
+    vegetation_changed()
+
+tree_record_valid = (r: TreeRecord) -> bool:
+    in_bounds(f64(r.root.x),f64(r.root.z)) and in_bounds(f64(r.pos.x),f64(r.pos.z)) and r.phase>=0 and r.phase<=3 and r.radius>=0.25 and r.radius<=0.65 and r.length_>=3.0 and r.length_<=8.0 and r.hits>=0 and r.hits<=TREE_CHOPS and r.cuts>=0 and r.cuts<=LOG_CHOPS and r.age>=0.0 and r.age<10000.0 and abs(r.pitch)<1.6 and r.char>=0.0 and r.char<=1.0 and r.el.wet>=0.0 and r.el.wet<=1.0 and r.el.burning>=0.0 and r.el.burning<=WOOD.burn_time and r.el.heat>=0.0 and r.el.heat<10000.0 and length(r.vel)<100.0

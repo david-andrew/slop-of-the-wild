@@ -1,0 +1,54 @@
+Round 66 landscape art
+Baseline: master 48285bf. Branch: sol3/work. No push or merge.
+
+Ranked critique and implemented changes:
+1. Bare glide cliff
+   Heightfield ribs and recessed gullies break the off-route shoulder; cool mineral washes and broader relief shading carry its exposed rock.
+2. Stripy west cliff strata
+   Closer stone values, broad cross-bed stains and broken lip highlights let buttress lighting lead. The waterfall remains the focal light shape.
+3. Evenly bright Temple slopes
+   Baked damp hollows separate cool swathes from warm dry lawns. Existing shrubs form longer uneven groups and remain visible from the overview.
+4. Blobby snow boundary
+   Wind tongues, baked ridge exposure and stronger mixed-margin scour reveal rock/tundra between drifts. Deep snow stays continuous.
+5. Repeated procedural slope texture
+   Distant comb and small-stroke contrast is reduced. Broader meadow masses read first; some evenly scattered original trees remain.
+
+Validation:
+weather_silhouette_check: 12/12 at or above 12%; minimum 19.0750%.
+daylight_check: 7/7 dawn/dusk sequences.
+journey_check: 67,374 frames, 1122.90 seconds, 4851.34 m; no stuck points.
+traversal_check: 997/997 checks at 30/60/120 Hz and irregular updates.
+prepare_assets and prepared_assets_check: complete byte equivalence.
+GPU: eight paired view/resolution budgets, three alternating runs per pair;
+1280x720 and 2133x1200, scene scale 1; baseline*1.03+0.10 ms limit.
+See gpu-summary.json, summary.json, each capture's JSON/log and report.html.
+
+Visual evidence:
+All ten requested views are saved in before/ and after/. The glide has frames
+200,260,330. The waterfall uses -1660,175,1888,1.24,-0.05. Golden hour is 6.4.
+The HTML gallery uses JPEG display copies in display/; all measurements and
+capture-size checks use the original PNGs, which remain in before/ and after/.
+Fixed camera views align exactly. Glide captures use identical input/frame
+counts; the terrain ribs change the actual descent and following camera.
+The Temple meadow and snow margin are best judged in the overview; their
+requested player views show the close masonry and deep snow respectively.
+
+Remaining limitations:
+The snow margin is a modest refinement; the large underlying snowfield shape
+still needs a later geometry pass. Original saplings remain sparsely scattered,
+and the overlook shoulder is less developed than the authored west cliff mesh.
+No new art scores are claimed; this is a direct implementation-agent critique.
+
+Reproduction (run from the repository; render scripts own their locks):
+python3 tools/round66_landscape_check.py prepare before
+python3 tools/round66_landscape_check.py capture before
+python3 tools/round66_landscape_check.py prepare after
+python3 tools/round66_landscape_check.py capture after
+tools/prepare_assets.sh > build/round66/prepare-assets.log 2>&1
+tools/prepared_assets_check.sh > build/round66/prepared-assets-check.log 2>&1
+tools/journey_check.sh > build/round66/journey-check.log 2>&1
+tools/traversal_check --headless --out build/round66/traversal > build/round66/traversal-check.log 2>&1
+python3 tools/weather_silhouette_check.py --output build/round66/weather > build/round66/weather-check.log 2>&1
+BOTW_DAYLIGHT_OUTPUT=build/round66/daylight tools/daylight_check.sh > build/round66/daylight-check.log 2>&1
+python3 tools/round66_landscape_check.py gpu > build/round66/gpu-check.log 2>&1
+python3 tools/round66_landscape_check.py report

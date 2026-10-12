@@ -1,0 +1,78 @@
+# CPU approach -> alarm -> obstacle detour -> distant feeding, using the live AI.
+use '../game/wildlife.jo'
+use '../game/wildlife_motion.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+use '../game/combat.jo'
+use '../game/input.jo'
+use '../game/elements.jo'
+
+hf.n = 256
+hf.x0 = -128.0
+hf.z0 = -128.0
+hf.cell = 1.0
+hf.h = fill(f32(0), hf.n * hf.n)
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+env.hour = 8.0
+env.rain = 0.0
+loop kind in [WKind.boar, WKind.fox]:
+    loop hz in [30, 60, 120]:
+        loop course in ["open", "trunk", "rock", "wall", "slope"]:
+            loop mut c in colliders: c.active = false
+            hf.h = fill(f32(0), hf.n * hf.n)
+            if course == "trunk": add_cyl(vec3(4, -0.1, 0), 0.7, 7.0)
+            if course == "rock": add_box(vec3(4, -0.1, 0), vec3(1.5, 1.0, 1.6), 0.35)
+            if course == "wall": add_box(vec3(4, -0.1, 0), vec3(0.025, 1.0, 3.5))
+            if course == "slope":
+                loop z in [0..hf.n):
+                    loop x in [0..hf.n): hf.h[z * hf.n + x] = f32((f64(x) + hf.x0) * 0.20)
+            pl = Player(pos = vec3(-30, -6, 0), state = .ground)
+            fight = Fight()
+            act = Actions()
+            animals = [Animal(kind, vec3(0, 0, 0), vec3(0, 0, 0), face = -PI * 0.5, t = -2.0, hp = 8.0, seed = 1.73)]
+            loop f in [0..hz): wildlife_update(1.0 / f64(hz))
+            assert(not animals[0].danger, "undisturbed before approach")
+            pl.pos = vec3(-6, -1.2, 0)
+            pl.vel = vec3(6, 0, 0)
+            alerted = -1.0
+            resumed = -1.0
+            min_distance = 1000.0
+            max_step = 0.0
+            side = 0.0
+            loop f in [0..hz * 20):
+                before = animals[0].pos
+                wildlife_update(1.0 / f64(hz))
+                a = animals[0]
+                time = f64(f + 1) / f64(hz)
+                if a.state == .flee and alerted < 0.0: alerted = time
+                if alerted > 0.0 and a.state == .graze and resumed < 0.0: resumed = time
+                min_distance = min(min_distance, f64(length(a.pos.xz - pl.pos.xz)))
+                max_step = max(max_step, f64(length(a.pos.xz - before.xz)))
+                side = max(side, abs(f64(a.pos.z)))
+                probe = a.pos
+                push_out(probe, wild_body_clearance(a) - 0.01, 0.9)
+                assert(length(probe - a.pos) < 0.002, "every path sample clears solid body radius")
+                assert(abs(f64(a.pos.y) - height_at(f64(a.pos.x), f64(a.pos.z))) < 0.002, "feet remain grounded on slopes")
+                assert(f64(length(a.pos.xz - before.xz)) < 10.0 / f64(hz) + 0.002, "no collision teleport")
+            print("path {kind} {hz}Hz {course}: alert={alerted:.3}s resume={resumed:.3}s min-threat={min_distance:.3}m detour={side:.3}m max-step={max_step:.4}m end={animals[0].pos}")
+            assert(alerted > 0.0 and alerted < 0.4, "prompt wildlife startle")
+            assert(resumed > alerted and resumed < 14.0, "resumes grazing after a bounded flight")
+            assert(min_distance > 5.8 and animals[0].pos.x > 15.0, "escapes away and stays at safe feeding patch")
+            if course == "trunk" or course == "rock" or course == "wall": assert(side > 1.3, "steers around obstacle")
+print("PASS wildlife approach/flee/resume: 30 courses, all steps clear and grounded")
+
+# Production placement must resolve authored roots/family offsets inside props.
+from '../game/wildlife.jo' import __add
+hf.h = fill(f32(0), hf.n * hf.n)
+loop kind in [WKind.boar, WKind.fox]:
+    loop mut c in colliders: c.active = false
+    add_cyl(vec3(0, -0.1, 0), 0.7, 7.0)
+    animals.clear()
+    __add(kind, vec3(0.2, 0, 0))
+    q = animals[0].pos
+    push_out(q, wild_body_clearance(animals[0]), 0.9)
+    assert(length(q - animals[0].pos) < 0.001 and animals[0].home == animals[0].pos, "spawn/home clear the trunk before first update")
+print("PASS quadruped placement clears intersecting props")

@@ -1,0 +1,438 @@
+from 'input.jo' import __input_pad_pressed
+use 'gfx.jo'
+use 'input.jo'
+use 'items.jo'
+use 'matter.jo'
+use 'player.jo'
+use 'combat.jo'
+use 'ui.jo'
+use 'options.jo'
+use 'slate_map.jo'
+
+# The inventory: a pause screen in the spirit of the older games — pick a thing, then equip it,
+# eat it, drop it, or bind it to one of the three item buttons (1 2 3 / the d-pad).
+
+struct InvUI:
+    open = false
+    tab = 0
+    sel = 0
+    first_row = 0
+    tab_t = 0.0
+    t = 0.0
+    msg = ""
+    msg_t = 0.0
+
+invui = InvUI()
+inv_tabs = ["Weapons", "Shields", "Bows", "Materials", "Key Items", "Map", "Options"]
+const MAP_TAB = 5
+const OPTIONS_TAB = 6
+
+__tab_items = (tab: int) -> str[]:
+    match tab:
+        0: inv.weapons
+        1: inv.shields
+        2:
+            out = inv.bows
+            if inv.arrows > 0: out = out + ["arrow"]
+            out
+        3: [loop id in inv.stacks.keys(): if item(id).kind != .key: id]
+        4: inv.keys
+        _: []
+
+const INV_COLS = 6
+const INV_ROWS = 3
+inventory_cols = (tab: int) -> int: if tab < 3: 4 else: INV_COLS
+inventory_capacity = (tab: int) -> int:
+    match tab:
+        0: inv.max_weapons
+        1: inv.max_shields
+        2: inv.max_bows + (if inv.arrows > 0: 1 else: 0)
+        _: __tab_items(tab).len()
+inventory_pitch = (tab: int) -> f64: if tab < 3: 92.0 else: 110.0
+
+# Keep the selected cell in the viewport; details always live below these three rows.
+inventory_scroll_sync = ():
+    n = __tab_items(invui.tab).len()
+    invui.sel = clamp(invui.sel, 0, max(0, n - 1))
+    cols = inventory_cols(invui.tab)
+    row = invui.sel / cols
+    if row < invui.first_row: invui.first_row = row
+    if row >= invui.first_row + INV_ROWS: invui.first_row = row - INV_ROWS + 1
+    invui.first_row = clamp(invui.first_row, 0, max(0, (n + cols - 1) / cols - INV_ROWS))
+
+inventory_can_use = (d: ItemDef) -> bool: d.kind == .weapon or d.kind == .shield or d.kind == .bow or d.kind == .food
+inventory_can_bind = (d: ItemDef) -> bool: inventory_can_use(d)
+inventory_can_drop = (d: ItemDef) -> bool: d.kind != .key and d.kind != .arrows
+inventory_cell_equipped = (tab: int, index: int) -> bool:
+    index >= 0 and ((tab == 0 and index == inv.weapon) or (tab == 1 and index == inv.shield) or (tab == 2 and index < inv.bows.len() and index == inv.bow))
+
+inv_opens = 0           # (the tab and close keys are shown the first few times only)
+inv_toggle = ():
+    invui.open = not invui.open
+    if invui.open: inv_opens += 1
+    map_hint_update(invui.open and invui.tab == MAP_TAB, 0.0)
+    invui_open_hint = invui.open
+    invui.t = 0.0
+    invui.tab_t = 0.0
+
+__bind = (k: int, id: str, index: int = -1):
+    if k < 0 or k >= inv.slots.len() or not inv_owns(id) or not inventory_can_bind(item(id)): return
+    kind = item(id).kind
+    gear = if kind == .weapon: inv.weapons else: (if kind == .shield: inv.shields else: (if kind == .bow: inv.bows else: []))
+    chosen = if index >= 0: index else: gear.index_of(id)
+    uid = if gear.len() > 0: gear_instance(kind, chosen) else: 0
+    if gear.len() > 0 and (chosen < 0 or chosen >= gear.len() or gear[chosen] != id): return
+    loop i in [0..3):
+        if inv.slots[i] == id and inv.slot_instances[i] == uid:
+            inv.slots[i] = ""
+            inv.slot_instances[i] = 0
+    inv.slots[k] = id
+    inv.slot_instances[k] = uid
+    slots_active = k
+    slots_t = 2.5
+    clock_t = 3.0
+    invui.msg = item(id).name
+    invui.msg_t = 1.5
+
+# eat a food: hearts back, and a spicy dish's warmth, from the inventory or an item button alike
+# (eaten from the inventory a spicy dish gave no warmth)
+eat_food = (id: str) -> bool:
+    if not has_item_def(id): return false
+    d = item(id)
+    if d.kind != .food or not inv_take(id): return false
+    heal_player(d.heal)
+    if d.warm > 0.0: warm_t = max(warm_t, d.warm)
+    if d.heal > 0: ui.hearts_flash = 0.5
+    true
+
+# returns true while the screen is open (the game is paused)
+inventory_update = (dt: f64) -> bool:
+    map_hint_update(invui.open and invui.tab == MAP_TAB, 0.0)
+    invui_open_hint = invui.open
+    if invui.open and invui.tab == OPTIONS_TAB and opt_binding >= 0:
+        options_capture_update()
+        return true
+    if act.inventory and (not invui.open or invui.t > 0.1): inv_toggle()
+    # the map button (M, Esc, the pad's back): straight to the map, and again to put it away
+    else if act.pause and not invui.open:
+        inv_toggle()
+        invui.tab = MAP_TAB
+    else if act.pause and invui.open and invui.tab == MAP_TAB and invui.t > 0.1:
+        inv_toggle()
+        return true
+    if not invui.open: return false
+    invui.t += dt
+    invui.msg_t = max(0.0, invui.msg_t - dt)
+    if act.back and invui.t > 0.1:
+        if inv.held.len() > 0:
+            inv_cancel_hold()
+            return true
+        inv_toggle()
+        return true
+    tab0 = invui.tab
+    map_bumper = invui.tab == MAP_TAB and (__input_pad_pressed(.lb) or __input_pad_pressed(.rb)) and not key_pressed(.q) and not key_pressed(.c)
+    tab_step = if map_bumper: 0 else: act.tab
+    # The map gives bumpers to zoom; its unused d-pad pair still reaches other tabs.
+    if invui.tab == MAP_TAB:
+        if __input_pad_pressed(.left): tab_step = -1
+        if __input_pad_pressed(.right): tab_step = 1
+    if tab_step != 0:
+        invui.tab = (invui.tab + tab_step + inv_tabs.len()) % inv_tabs.len()
+        invui.sel = 0
+        play(sfx_click(), 0.15)
+    items_ = __tab_items(invui.tab)
+    cols = inventory_cols(invui.tab)
+    if invui.tab != OPTIONS_TAB and invui.tab != MAP_TAB and act.slot < 0 and (act.nav.x != 0.0 or act.nav.y != 0.0):
+        n = items_.len()
+        if act.nav.y < 0.0 and invui.sel < cols:
+            pass
+        nx = invui.sel + int(act.nav.x) + int(act.nav.y) * cols
+        if n == 0 or nx < 0 or nx >= n:
+            # off the edge of the grid: the next tab
+            if act.nav.x > 0.0 and (n == 0 or invui.sel == n - 1):
+                invui.tab = (invui.tab + 1) % inv_tabs.len()
+                invui.sel = 0
+            else if act.nav.x < 0.0 and invui.sel == 0:
+                invui.tab = (invui.tab + inv_tabs.len() - 1) % inv_tabs.len()
+                invui.sel = 0
+        else: invui.sel = nx
+        play(sfx_click(), 0.15)
+    # the mouse: hover and click
+    mp = mouse_pos()
+    r = visible_rect()
+    ox = f64(r.x) + f64(r.z) / 2.0 - 330.0
+    oy = f64(r.y) + (if invui.tab == MAP_TAB: 110.0 else: 170.0)
+    loop i in [0..inv_tabs.len()):
+        tx = ox - 18.0 + f64(i) * 116.0
+        if mouse_pressed(.left) and f64(mp.x) > tx and f64(mp.x) < tx + 112.0 and f64(mp.y) > oy - 58.0 and f64(mp.y) < oy - 26.0:
+            invui.tab = i
+            invui.sel = 0
+    map_hint_update(invui.tab == MAP_TAB, dt)
+    invui.tab_t = if invui.tab != tab0: 0.0 else: invui.tab_t + dt
+    if invui.tab == OPTIONS_TAB:
+        if tab0 == OPTIONS_TAB and not options_update(ox, oy):
+            invui.tab = OPTIONS_TAB - 1
+            invui.sel = 0
+        return true
+    if invui.tab == MAP_TAB:
+        map_cursor_update(dt)
+        if tab0 == MAP_TAB and invui.t > 0.1 and act.confirm:
+            if map_pin_toggle(): play(sfx_click(), 0.15)
+        return true
+    items_ = __tab_items(invui.tab)
+    if invui.tab != tab0: invui.first_row = 0
+    inventory_scroll_sync()
+    cols = inventory_cols(invui.tab)
+    clicked = false
+    loop i in [invui.first_row * cols..min(items_.len(), (invui.first_row + INV_ROWS) * cols)):
+        cx = ox + f64(i % cols) * inventory_pitch(invui.tab) + (if invui.tab < 3: 44.0 else: 50.0)
+        cy = oy + f64(i / cols - invui.first_row) * inventory_pitch(invui.tab) + (if invui.tab < 3: 44.0 else: 50.0)
+        hit = if invui.tab < 3: abs(f64(mp.x) - cx) <= 41 and abs(f64(mp.y) - cy) <= 41 else: hypot(f64(mp.x) - cx, f64(mp.y) - cy) < 44.0
+        if hit and length(mouse_delta()) > 0.0: invui.sel = i
+        if hit and mouse_pressed(.left):
+            invui.sel = i
+            clicked = true
+    if items_.len() == 0: return true
+    invui.sel = clamp(invui.sel, 0, items_.len() - 1)
+    id = items_[invui.sel]
+    d = item(id)
+    use_ = (act.interact or key_pressed(.enter) or clicked) and invui.t > 0.1
+    # One mutation per frame, regardless of keyboard, pointer or pad source:
+    # use/equip > bind > hold > drop. Gameplay does not advance while this screen is open.
+    if use_ and inventory_can_use(d) and inv_owns(id) and (d.kind != .food or available_of(id) > 0):
+        match invui.tab:
+            0:
+                inv.weapon = if inv.weapon == invui.sel: -1 else: invui.sel
+                fight.weapon_out = inv.weapon >= 0
+            1: inv.shield = if inv.shield == invui.sel: -1 else: invui.sel
+            2:
+                if id != "arrow": inv.bow = if inv.bow == invui.sel: -1 else: invui.sel
+            3:
+                if d.kind == .food:
+                    if eat_food(id):
+                        invui.msg = "{d.name}"
+                        invui.msg_t = 1.2
+            _: pass
+        play(sfx_click(), 0.3)
+    # bind to a button
+    else if act.slot >= 0 and inventory_can_bind(d): __bind(act.slot, id, if invui.tab < 3: invui.sel else: -1)
+    # Hold uses the rebound Attack control (the bumpers remain tab controls).
+    else if act.attack and invui.t > 0.1 and can_hold(d):
+        if inv_hold(id): play(sfx_click(), 0.3)
+    # drop
+    else if act.drop and invui.t > 0.1:
+        f = forward_of(pl.face)
+        removed = ""
+        match invui.tab:
+            0: drop_gear(.weapon, invui.sel, pl.pos + vec3(0, 1.2, 0) + f * 0.8, f * 1.5 + vec3(0, 2, 0))
+            1: drop_gear(.shield, invui.sel, pl.pos + vec3(0, 1.2, 0) + f * 0.8, f * 1.5 + vec3(0, 2, 0))
+            # (bows too, as the screen says: the arrows stay in the quiver)
+            2:
+                if id != "arrow":
+                    drop_gear(.bow, invui.sel, pl.pos + vec3(0, 1.2, 0) + f * 0.8, f * 1.5 + vec3(0, 2, 0))
+                    if invui.sel >= inv.bows.len() and invui.sel > 0: invui.sel -= 1
+            3:
+                if inv_take(id): removed = id
+            _: pass
+        if len(removed) > 0: spawn_item(removed, pl.pos + vec3(0, 1.2, 0) + f * 0.8, f * 1.5 + vec3(0, 2, 0), dropped = true)
+    combat_revalidate_equipment()
+    inventory_scroll_sync()
+    true
+
+# Inventory weapon icons retain each class's outline and the item's material tint.
+inventory_item_icon = (d: ItemDef, c: vec2, k: f64):
+    if d.kind != .weapon:
+        item_icon(d.shape, c, k, d.color)
+        return
+    p = (x: f64, y: f64) -> vec2: c + vec2(f32((x + y) * k), f32((x - y) * k))
+    col = d.color
+    wood = rgba(0.46, 0.3, 0.16, col.w)
+    edge = lighten(col, 0.25)
+    dark = darken(col, 0.4)
+    match d.shape:
+        sword, broadsword, claymore:
+            wide = if d.shape == .sword: 0.055 else: (if d.shape == .broadsword: 0.13 else: 0.17)
+            base = if d.shape == .claymore: -0.04 else: -0.2
+            tip = if d.shape == .claymore: 0.67 else: 0.55
+            shoulder = if d.shape == .sword: 0.42 else: 0.27
+            pts = [p(-wide, base), p(wide, base), p(wide, shoulder), p(0.0, tip), p(-wide, shoulder)]
+            if d.id == "rusty_broadsword": pts = [p(-wide, base), p(wide, base), p(wide, 0.03), p(-wide * 0.15, 0.13), p(wide, 0.23), p(wide, shoulder), p(0.0, tip), p(-wide, shoulder)]
+            polygon(pts, col)
+            line(p(-wide, base), p(-wide, shoulder), 0.035 * k, edge)
+            line(p(0.0, base + 0.06), p(0.0, shoulder + 0.06), 0.035 * k, dark)
+            guard = if d.shape == .claymore: 0.3 else: (if d.shape == .broadsword: 0.24 else: 0.18)
+            gold = rgba(0.73, 0.6, 0.3, col.w)
+            polyline([p(-guard, base - 0.05), p(-guard * 0.6, base), p(guard * 0.6, base), p(guard, base - 0.05)], 0.06 * k, gold)
+            line(p(0.0, base - 0.06), p(0.0, -0.53), 0.095 * k, (if d.id == "soldiers_broadsword": rgba(0.18, 0.3, 0.45, col.w) else: wood))
+            loop y in [base - 0.12, base - 0.2, -0.45]: line(p(-0.045, y), p(0.045, y + 0.025), 0.022 * k, darken(wood, 0.3))
+            circle(p(0.0, -0.57), (if d.shape == .claymore: 0.08 else: 0.055) * k, gold)
+            if d.id == "rusty_broadsword":
+                loop q in [p(0.06, 0.0), p(-0.04, 0.22)]: circle(q, 0.05 * k, rgba(0.36, 0.2, 0.12, col.w))
+        spear:
+            line(p(0.0, -0.65), p(0.0, 0.37), 0.07 * k, wood)
+            polygon([p(0.0, 0.7), p(0.11, 0.43), p(0.07, 0.32), p(-0.07, 0.32), p(-0.11, 0.43)], (if d.metal: col else: rgba(0.54, 0.48, 0.38, col.w)))
+            line(p(0.0, 0.38), p(0.0, 0.61), 0.025 * k, edge)
+            loop y in [0.24, 0.29, 0.34]: line(p(-0.055, y), p(0.055, y), 0.025 * k, dark)
+        axe:
+            line(p(0.0, -0.6), p(0.0, 0.53), 0.085 * k, wood)
+            polygon([p(-0.04, 0.44), p(0.2, 0.56), p(0.36, 0.49), p(0.38, 0.18), p(0.28, 0.07), p(0.08, 0.2), p(-0.04, 0.2)], col)
+            polyline([p(0.36, 0.49), p(0.38, 0.18), p(0.28, 0.07)], 0.045 * k, edge)
+        branch:
+            polyline([p(0.02, -0.58), p(-0.06, -0.1), p(0.04, 0.22), p(-0.03, 0.57)], 0.09 * k, col)
+            line(p(0.03, 0.15), p(0.21, 0.36), 0.045 * k, col)
+            line(p(-0.02, 0.42), p(-0.18, 0.51), 0.04 * k, col)
+            triangle(p(0.2, 0.31), p(0.29, 0.45), p(0.12, 0.4), rgba(0.3, 0.5, 0.18, col.w))
+        club:
+            polygon([p(-0.045, -0.56), p(0.045, -0.56), p(0.1, 0.04), p(0.2, 0.42), p(0.12, 0.57), p(-0.12, 0.57), p(-0.19, 0.38), p(-0.08, 0.0)], col)
+            loop y in [0.12, 0.27]: line(p(-0.13, y), p(0.14, y + 0.025), 0.06 * k, wood)
+            if d.id == "spiked_club":
+                loop side in [-1.0, 1.0]:
+                    loop y in [0.26, 0.43]: triangle(p(side * 0.13, y - 0.06), p(side * 0.31, y + 0.04), p(side * 0.17, y + 0.09), rgba(0.86, 0.83, 0.68, col.w))
+        torch:
+            line(p(0.0, -0.6), p(0.0, 0.32), 0.09 * k, col)
+            polygon([p(-0.12, 0.25), p(0.12, 0.25), p(0.15, 0.52), p(-0.15, 0.52)], rgba(0.67, 0.58, 0.4, col.w))
+            loop y in [0.29, 0.37, 0.45]: line(p(-0.12, y), p(0.13, y + 0.04), 0.035 * k, dark)
+        _: item_icon(d.shape, c, k, col)
+
+# Small per-copy state marks; shape and color both survive the dim inventory backdrop.
+inventory_cell_element = (tab: int, index: int) -> Elem:
+    if tab < 0 or tab > 2: return Elem()
+    gear_element([IKind.weapon, IKind.shield, IKind.bow][tab], index)
+
+# Identical definitions retain separate copy identities. A compact ordinal gives
+# the player the same reference in the cell and selected detail, without exposing UIDs.
+inventory_copy_label = (tab: int, index: int) -> str:
+    if tab < 0 or tab > 2: return ""
+    gear = [inv.weapons, inv.shields, inv.bows][tab]
+    if index < 0 or index >= gear.len(): return ""
+    total = 0
+    ordinal = 0
+    loop i in [0..gear.len()):
+        if gear[i] != gear[index]: continue
+        total += 1
+        if i <= index: ordinal += 1
+    if total > 1: "{ordinal}/{total}" else: ""
+
+inventory_cell_bound = (k: int, tab: int, index: int, id: str) -> bool:
+    inv.slots[k] == id and (tab >= 3 or slot_gear_index(k) == index)
+
+inventory_draw = ():
+    if not invui.open: return
+    r = visible_rect()
+    rect(f64(r.x), f64(r.y), f64(r.z), f64(r.w), rgba(0.03, 0.04, 0.05, 0.72 * f32(smooth01(invui.t / 0.18))))
+    ox = f64(r.x) + f64(r.z) / 2.0 - 330.0
+    oy = f64(r.y) + (if invui.tab == MAP_TAB: 110.0 else: 170.0)
+    a = f32(smooth01(min(invui.t, invui.tab_t) / 0.18))
+    # tabs
+    loop i in 0.. and name in inv_tabs:
+        x = ox - 18.0 + f64(i) * 116.0
+        on = i == invui.tab
+        rect(x, oy - 58.0, 112.0, 32.0, (if on: rgba(0.85, 0.78, 0.55, 0.9 * a) else: rgba(0.2, 0.22, 0.24, 0.6 * a)))
+        text_centered(name, vec2(f32(x + 56.0), f32(oy - 40.0)), 16, (if on: rgba(0.1, 0.1, 0.1, a) else: rgba(0.9, 0.9, 0.85, 0.8 * a)))
+    if invui.tab == OPTIONS_TAB:
+        options_draw(ox, oy)
+        return
+    if invui.tab == MAP_TAB:
+        map_draw(f64(r.x) + 48.0, oy - 10.0, f64(r.z) - 96.0, f64(r.y) + f64(r.w) - oy - 42.0)
+        return
+    items_ = __tab_items(invui.tab)
+    cols = inventory_cols(invui.tab)
+    inventory_scroll_sync()
+    cells = max(items_.len(), inventory_capacity(invui.tab))
+    loop i in [invui.first_row * cols..min(cells, (invui.first_row + INV_ROWS) * cols)):
+        cx = ox + f64(i % cols) * inventory_pitch(invui.tab) + (if invui.tab < 3: 44.0 else: 50.0)
+        cy = oy + f64(i / cols - invui.first_row) * inventory_pitch(invui.tab) + (if invui.tab < 3: 44.0 else: 50.0)
+        if invui.tab < 3:
+            rect(cx - 41, cy - 41, 82, 82, rgba(0.45, 0.49, 0.49, 0.20 * a))
+            rect(cx - 40, cy - 40, 80, 80, rgba(0.07, 0.10, 0.12, 0.50 * a))
+        if i >= items_.len(): continue
+        id = items_[i]
+        d = item(id)
+        sel = i == invui.sel
+        if invui.tab < 3:
+            if sel:
+                rect(cx - 42, cy - 42, 84, 84, rgba(1, 0.9, 0.55, a))
+                rect(cx - 39, cy - 39, 78, 78, rgba(0.28, 0.27, 0.19, a))
+        else:
+            circle(vec2(f32(cx), f32(cy)), 44, (if sel: rgba(0.95, 0.88, 0.6, 0.35) else: rgba(0.15, 0.17, 0.19, 0.75)))
+            ring(vec2(f32(cx), f32(cy)), 44, (if sel: 3.0 else: 1.5), (if sel: rgba(1, 0.9, 0.55, 1) else: rgba(0.6, 0.6, 0.55, 0.5)))
+        inventory_item_icon(d, vec2(f32(cx), f32(cy)), 40.0)
+        el = inventory_cell_element(invui.tab, i)
+        mark = vec2(f32(cx + 29.0), f32(cy + 27.0))
+        if burning(el) or el.wet > 0.05:
+            # Opaque ink separates the mark from every icon; pale rim survives greyscale.
+            circle(mark, 11, rgba(0.025, 0.035, 0.045, a))
+            ring(mark, 10, 1.5, rgba(0.95, 0.94, 0.85, a))
+            if burning(el):
+                polygon([mark + vec2(-5, 4), mark + vec2(-6, 0), mark + vec2(-2, -4), mark + vec2(0, -8), mark + vec2(5, -1), mark + vec2(4, 4)], rgba(1, 0.48, 0.12, a))
+                triangle(mark + vec2(-2, 3), mark + vec2(0, -3), mark + vec2(3, 3), rgba(1, 0.94, 0.67, a))
+            else:
+                circle(mark + vec2(0, 2), 4.5, rgba(0.74, 0.90, 1, a))
+                triangle(mark + vec2(-4.5, 2), mark + vec2(0, -7), mark + vec2(4.5, 2), rgba(0.74, 0.90, 1, a))
+        equipped = inventory_cell_equipped(invui.tab, i)
+        if equipped: circle(vec2(f32(cx + 30.0), f32(cy - 30.0)), 7, rgba(0.4, 0.8, 1.0, 1))
+        n = if invui.tab == 3 or invui.tab == 4: available_of(id) else: (if id == "arrow": inv.arrows else: 0)
+        if n > 1: text("x{n}", vec2(f32(cx + 14.0), f32(cy + 18.0)), 16, rgba(1, 1, 1, 0.95))
+        loop k in [0..3):
+            if inventory_cell_bound(k, invui.tab, i, id): button_glyph((if act.using_pad: ["Left", "Down", "Right"][k] else: input_key_name(8 + k)), vec2(f32(cx - 30.0), f32(cy - 32.0)), 9.0)
+    rows = (items_.len() + cols - 1) / cols
+    if rows > INV_ROWS:
+        scroll_y = if invui.tab < 3: 280.0 else: 330.0
+        text("Rows {invui.first_row + 1}-{min(rows, invui.first_row + INV_ROWS)} / {rows}", vec2(f32(ox), f32(oy + scroll_y)), 16, rgba(0.8, 0.8, 0.75, 0.9))
+        button_hint((if act.using_pad: "Lstick" else: "Up / Down"), "Scroll", ox + 240.0, oy + scroll_y + 8.0)
+    detail_y = if invui.tab < 3: f64(min(INV_ROWS, max(1, (cells + cols - 1) / cols))) * 92.0 + 24.0 else: 354.0
+    # A separate detail region: no grid cell can extend into this panel.
+    rect(ox - 10.0, oy + detail_y, 680.0, 116.0, rgba(0.06, 0.08, 0.1, 0.8))
+    # Five item silhouettes make the selection visible without another text panel.
+    if invui.tab == 3 and inv.held.len() > 0:
+        loop i in [0..5):
+            c = vec2(f32(ox + 448.0 + f64(i) * 43.0), f32(oy + 334.0))
+            ring(c, 18, 1.5, rgba(0.9, 0.85, 0.65, 0.65))
+            if i < inv.held.len():
+                d = item(inv.held[i])
+                item_icon(d.shape, c, 22, d.color)
+    # what is selected (or that there is nothing here yet)
+    if items_.len() == 0 and invui.tab != OPTIONS_TAB:
+        text("Nothing yet.", vec2(f32(ox), f32(oy + detail_y + 30.0)), 22, rgba(0.85, 0.85, 0.8, 0.7))
+        inventory_hint(ox, oy + detail_y + 94.0, "")
+    if items_.len() > 0:
+        d = item(items_[clamp(invui.sel, 0, items_.len() - 1)])
+        y = oy + detail_y + 6.0
+        copy = inventory_copy_label(invui.tab, invui.sel)
+        name = d.name + (if len(copy) > 0: "  {copy}" else: "")
+        text(name, vec2(f32(ox), f32(y)), 30, rgba(1, 0.97, 0.88, 1))
+        desc = ""
+        match d.kind:
+            weapon:
+                desc = "Attack {d.power}"
+                if d.two_handed: desc += "   two-handed"
+            shield: desc = "Guard {d.power}"
+            bow: desc = "Attack {d.power}"
+            food:
+                hh = f64(d.heal) / 4.0
+                desc = "Restores {hh:.2} hearts"
+                if d.warm > 0.0: desc += "   Cold resistance {int(d.warm) / 60}:{int(d.warm) % 60:02}"
+                if len(d.cooks_to) > 0: desc += "   cooks in fire"
+            key: desc = "Key item   x{count_of(d.id)}"
+            material: desc = "Material   x{count_of(d.id)}"
+            arrows: desc = "Ammunition   x{inv.arrows}"
+        text(desc, vec2(f32(ox), f32(y + 40.0)), 18, rgba(0.85, 0.85, 0.8, 0.9))
+        inventory_hint(ox, y + 88.0, d.id)
+    if invui.msg_t > 0.0: text_centered(invui.msg, vec2(r.x + r.z / 2.0, f32(oy - 86.0)), 18, rgba(1, 0.9, 0.6, f32(min(invui.msg_t, 1.0))))
+
+# Keep prompt labels short and draw every pad control through the same glyph renderer.
+inventory_hint = (x: f64, y: f64, id: str):
+    nx = x
+    if len(id) > 0:
+        d = item(id)
+        if inventory_can_use(d) and (d.kind != .food or available_of(id) > 0): nx = button_hint((if act.using_pad: "B" else: input_key_name(3)), (if d.kind == .food: "Eat" else: (if inventory_cell_equipped(invui.tab, invui.sel): "Unequip" else: "Equip")), nx, y)
+        if inventory_can_bind(d): nx = button_hint((if act.using_pad: "Dpad" else: "{input_key_name(8)} {input_key_name(9)} {input_key_name(10)}"), "Bind", nx, y)
+        if can_hold(d) and available_of(id) > 0 and inv.held.len() < 5: nx = button_hint(input_action_label(2), "Hold", nx, y)
+        if inventory_can_drop(d) and (invui.tab != 3 or available_of(id) > 0): nx = button_hint((if act.using_pad: input_pad_label(input_pad_jump()) else: input_key_name(22)), "Drop", nx, y)
+    if inv.held.len() > 0: nx = button_hint((if act.using_pad: input_pad_label(input_pad_sprint()) else: "Esc"), "Cancel", nx, y)
+    if inv_opens > 5: return
+    if act.using_pad:
+        nx = button_hint("LB", "", nx, y)
+        nx = button_hint("RB", "Tabs", nx, y)
+    else: nx = button_hint("Q C", "Tabs", nx, y)
+    nx = button_hint((if act.using_pad: "Start" else: input_key_name(11)), "Close", nx, y)

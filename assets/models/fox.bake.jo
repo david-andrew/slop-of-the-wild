@@ -1,0 +1,193 @@
+# Bake rest clips and continuous lower-leg contacts; run from the repository root:
+# sloppy/bin/sloppy assets/models/fox.bake.jo
+# Source clips and rig are retained; generated clips and their aliases are replaced.
+use '../../game/skel.jo'
+use '../../game/gfx.jo'
+
+r = BinR(read_bytes("assets/models/fox.mdl") ?? [])
+r_u32(r)
+r_u32(r)
+m = Model(name = r_str(r), skeleton = r_str(r))
+n = r_u32(r)
+loop i in [0..n):
+    m.bones.push(r_str(r))
+    m.parent.push(r_i32(r))
+    m.canon.push(r_i32(r))
+    m.use_t.push(r_u8(r) != 0)
+    m.rest_t.push(r_v3(r))
+    m.rest_r.push(r_v4(r))
+    m.rest_s.push(r_v3(r))
+    m.ibm.push(r_m4(r))
+m.tscale = f64(r_f32(r))
+lib = load_anims("assets/models/fox.anim")
+# Trim only our trailing clips and keys for repeatable rebakes.
+original = lib.clips.len()
+loop original > 0 and contains(["sit", "curl", "walk_contact", "run_contact", "graze_contact"], lib.clips[original - 1].name): original -= 1
+lib.clips = lib.clips[0..original)
+nq = 0
+nt = 0
+ns = 0
+loop c in lib.clips:
+    loop i in [0..n):
+        nq += c.rn[i]
+        nt += c.tn[i]
+        ns += c.sn[i]
+lib.rq = lib.rq[0..nq * 4)
+lib.tv = lib.tv[0..nt)
+lib.sv = lib.sv[0..ns)
+
+turn = (p: mut Pose, bone: int, from: vec3, to: vec3):
+    a = normalize(from)
+    b = normalize(to)
+    axis = cross(a, b)
+    if length(axis) < 0.00001: return
+    rotate_bone(lib, p, bone, axis, acos(clamp(f64(dot(a, b)), -1.0, 1.0)))
+
+# The source rig uses detached IK feet. Solve to those stationary markers offline,
+# keeping their translations and sole rotations unchanged in the baked rest clips.
+plant_error = 0.0
+plant_errors = fill(0.0, 4)
+plant = (p: mut Pose, upper: int, lower: int, foot: int, base: Pose):
+    h0 = bone_world(m, base, upper)[3].xyz
+    k0 = bone_world(m, base, lower)[3].xyz
+    f0 = bone_world(m, base, foot)[3].xyz
+    u = f64(length(k0 - h0))
+    l = f64(length(f0 - k0))
+    hip = bone_world(m, p, upper)[3].xyz
+    target = bone_world(m, p, foot)[3].xyz
+    dir = normalize(target - hip)
+    reach = clamp(f64(length(target - hip)), abs(u - l) + 0.0001, u + l - 0.0001)
+    pole = normalize(vec3(0, 0, -1) - dir * dot(vec3(0, 0, -1), dir))
+    along = (u * u + reach * reach - l * l) / (2.0 * reach)
+    knee = hip + dir * f32(along) + pole * f32(sqrt(max(0.0, u * u - along * along)))
+    now = bone_world(m, p, lower)[3].xyz
+    # Carry the virtual end of the shin through the changed upper-leg transform.
+    local_end = transform_point(inverse(bone_world(m, base, lower)), f0)
+    turn(p, upper, now - hip, knee - hip)
+    lower_world = bone_world(m, p, lower)
+    turn(p, lower, transform_point(lower_world, local_end) - lower_world[3].xyz, target - lower_world[3].xyz)
+    error = f64(length(transform_point(bone_world(m, p, lower), local_end) - target))
+    plant_error = max(plant_error, error)
+    slot = if upper == 20: 0 else: (if upper == 23: 1 else: (if upper == 27: 2 else: 3))
+    plant_errors[slot] = max(plant_errors[slot], error)
+
+# Keep the authored body, ears and tail motion; independently controlled source
+# paws need a lower-leg correction during gallop as well as the new resting clips.
+loop name in ["sit", "curl", "walk_contact", "run_contact", "graze_contact"]:
+    frames: Pose[]
+    contact = ends_with(name, "_contact")
+    source_name = if name == "walk_contact": "Walk" else: (if name == "run_contact": "Gallop" else: "Idle_2_HeadLow")
+    source_clip = lib.clips[clip_index(lib, source_name)]
+    duration = if contact: source_clip.duration else: 7.0
+    fps = if contact: 120.0 else: 30.0
+    loop f in [0..int(round(duration * fps)) + 1):
+        t = f64(f) / fps
+        base = sample_clip(lib, clip_index(lib, "idle"), 0.0, true)
+        p = sample_clip(lib, clip_index(lib, "idle"), 0.0, true)
+        if contact:
+            p = sample_clip(lib, clip_index(lib, source_name), t, false)
+            loop lower, foot in [(21, 47), (24, 51), (28, 45), (32, 49)]:
+                local_end = transform_point(inverse(bone_world(m, base, lower)), bone_world(m, base, foot)[3].xyz)
+                lower_world = bone_world(m, p, lower)
+                joint = lower_world[3].xyz
+                target = bone_world(m, p, foot)[3].xyz
+                endpoint = transform_point(lower_world, local_end)
+                turn(p, lower, endpoint - joint, target - joint)
+                # The imported IK target occasionally lies beyond the authored shin.
+                # A small baked stretch closes that seam; paws and their motion stay exact.
+                reach = f64(length(target - joint)) / f64(length(endpoint - joint))
+                p.s[lower] *= f32(reach)
+                error = f64(length(transform_point(bone_world(m, p, lower), local_end) - target))
+                plant_error = max(plant_error, error)
+        else:
+            # Sit after a short sniff; rise again before the seven-second walking transition.
+            sit = smoothstep(0.7, 1.6, t) * (1.0 - smoothstep(5.9, 6.9, t))
+            if name == "curl": sit = 1.0
+            parent = bone_world(m, p, m.parent[2])
+            offset = v3(0.0, -0.32 * sit + sin(t * TAU / 7.0) * 0.003 * sit, -0.055 * sit)
+            p.t[2] += transform_dir(inverse(parent), offset) / f32(m.tscale)
+            rotate_bone(lib, p, 3, vec3(1, 0, 0), (if name == "curl": -0.65 else: -0.78) * sit)
+            rotate_bone(lib, p, 7, vec3(1, 0, 0), (if name == "curl": 0.30 else: 0.42) * sit)
+            rotate_bone(lib, p, 10, vec3(1, 0, 0), (if name == "curl": 0.25 else: 0.32) * sit + (1.0 - sit) * sin(t * PI / 0.7) * 0.08)
+            rotate_bone(lib, p, 9, vec3(0, 1, 0), sin(t * TAU / 7.0) * 0.24 * sit)
+            if name == "curl":
+                rotate_bone(lib, p, 4, vec3(0, 1, 0), 0.3)
+                rotate_bone(lib, p, 7, vec3(1, 0, 0), 0.5)
+                rotate_bone(lib, p, 9, vec3(0, 1, 0), 0.7)
+            # Hocks tuck beneath the haunches; paws remain at the ground markers.
+            rotate_bone(lib, p, 26, vec3(1, 0, 0), -0.6 * sit)
+            rotate_bone(lib, p, 30, vec3(1, 0, 0), -0.6 * sit)
+            plant(p, 20, 21, 47, base)
+            plant(p, 23, 24, 51, base)
+            plant(p, 27, 28, 45, base)
+            plant(p, 31, 32, 49, base)
+            # Counter the seated spine so the tail wraps above the ground instead of
+            # following the lowered haunches through it.
+            rotate_bone(lib, p, 33, vec3(1, 0, 0), (if name == "curl": 1.10 else: 1.20) * sit)
+            loop i in [33..41):
+                rotate_bone(lib, p, i, vec3(0, 1, 0), sit * (0.25 + sin(t * TAU / 7.0 + f64(i) * 0.35) * 0.025))
+            loop i in [11, 15]:
+                rotate_bone(lib, p, i, vec3(0, 0, 1), sit * pow(max(0.0, sin(t * TAU / 7.0 + f64(i))), 16.0) * 0.25)
+        frames.push(p)
+    c = Clip(name = name, fps = fps, frames = frames.len(), duration = duration, looping = true)
+    loop i in [0..n):
+        c.roff.push(lib.rq.len() / 4)
+        nr = 1
+        nt = 1
+        ns = 1
+        loop p in frames:
+            if length(p.r[i] - frames[0].r[i]) > 0.00001: nr = frames.len()
+            if length(p.t[i] - frames[0].t[i]) > 0.000001: nt = frames.len()
+            if length(p.s[i] - frames[0].s[i]) > 0.000001: ns = frames.len()
+        c.rn.push(nr)
+        c.toff.push(lib.tv.len())
+        c.tn.push(nt)
+        c.soff.push(lib.sv.len())
+        c.sn.push(ns)
+        loop f in [0..nr):
+            q = frames[f].r[i]
+            loop v in [q.x, q.y, q.z, q.w]: lib.rq.push(i16(clamp(f64(v) * 32767.0, -32767.0, 32767.0)))
+        loop f in [0..nt): lib.tv.push(frames[f].t[i])
+        loop f in [0..ns): lib.sv.push(frames[f].s[i])
+    print("{name} paw gaps {plant_errors}")
+    plant_errors = fill(0.0, 4)
+    lib.index[name] = lib.clips.len()
+    lib.clips.push(c)
+
+loop alias, target in [("walk", "walk_contact"), ("run", "run_contact"), ("graze", "graze_contact")]:
+    loop i in [0..lib.aliases.len()):
+        if lib.aliases[i] == alias: lib.alias_clip[i] = clip_index(lib, target)
+assert(plant_error < 0.002)
+w = BinW()
+w_u32(w, ANM_MAGIC)
+w_u32(w, ANM_VERSION)
+w_str(w, lib.name)
+w_u32(w, n)
+loop i in [0..n):
+    w_str(w, lib.bones[i])
+    w_u32(w, lib.parent[i])
+    w_v3(w, lib.rest_t[i])
+    w_v4(w, lib.rest_r[i])
+    w_v3(w, lib.rest_s[i])
+w_f32(w, lib.hip)
+w_u32(w, lib.clips.len())
+loop c in lib.clips:
+    w_str(w, c.name)
+    w_f32(w, c.fps)
+    w_u32(w, c.frames)
+    w_u8(w, if c.looping: 1 else: 0)
+    w_v3(w, c.motion)
+    loop i in [0..n):
+        w_u32(w, c.rn[i])
+        w_u32(w, c.tn[i])
+        w_u32(w, c.sn[i])
+w_raw(w, lib.rq)
+w_raw(w, lib.tv)
+w_raw(w, lib.sv)
+w_u32(w, lib.aliases.len())
+loop i in [0..lib.aliases.len()):
+    w_str(w, lib.aliases[i])
+    w_u32(w, lib.alias_clip[i])
+write_bytes("assets/models/fox.anim", w.b)
+print("fox: maximum leg-to-paw gap {plant_error:.5} m")
+print("fox: baked sit, curl and three contact-corrected motion clips ({w.b.len()} bytes)")

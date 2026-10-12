@@ -1,0 +1,51 @@
+# Ray-test the visible architecture with production winding/culling. Every
+# arrival pad must see into a real ceiling aperture, then a dark closed shaft.
+use '../game/shrines.jo'
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+use '../game/items.jo'
+from '../game/build.jo' import __bchunks, __named_b
+
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+find_shrines()
+shrines_build()
+
+nearest = (b: Builder, eye: vec3, direction: vec3, limit: f64) -> f64:
+    best = limit
+    loop j in [0..b.idx.len()/3):
+        a = b.verts[int(b.idx[j*3])].pos
+        bb = b.verts[int(b.idx[j*3+1])].pos
+        c = b.verts[int(b.idx[j*3+2])].pos
+        e1 = bb-a
+        e2 = c-a
+        p = cross(direction,e2)
+        det = f64(dot(e1,p))
+        if det < 0.000001: continue
+        s = eye-a
+        u = f64(dot(s,p))/det
+        if u < 0.0 or u > 1.0: continue
+        q = cross(s,e1)
+        v = f64(dot(direction,q))/det
+        if v < 0.0 or u+v > 1.0: continue
+        t = f64(dot(e2,q))/det
+        if t > 0.001: best = min(best,t)
+    best
+
+checks = 0
+loop id in [0..4):
+    loop x in [-1.5,0.0,1.5]:
+        loop z in [-1.5,0.0,1.5]:
+            eye = srec[id].o+v3(x,3.5,z)
+            distance = 20.0
+            loop key,b in __bchunks: distance = nearest(b,eye,vec3(0,1,0),distance)
+            loop key,b in __named_b:
+                if contains(key,srec[id].key): distance = nearest(b,eye,vec3(0,1,0),distance)
+            assert(abs(distance-12.5) < 0.01,"pad must see through ceiling opening to closed shaft cap")
+            checks += 1
+    print("PASS {srec[id].name}: nine upward sightlines clear room roof and meet shaft cap")
+print("PASS shrine descent shafts: {checks} culled mesh rays")

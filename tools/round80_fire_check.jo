@@ -1,0 +1,63 @@
+# Near flames must remain raised and readable from a steep gameplay camera.
+use '../game/fx.jo'
+use '../game/gfx.jo'
+
+loop size in [0.08, 0.15, 0.3, 0.6]:
+    loop k in [0..20):
+        seed = f32(k) * 0.317
+        loop age in [0.0, 0.5, 0.95]:
+            top = flame_front_corner(vec2(0, 1), f32(size), seed, f32(age))
+            near = flame_near_corner(top, vec2(0, 1), 1)
+            assert(near.y >= 0.48 and near.y <= 0.96, "close flames have low, visible height rather than a flat crown")
+            foot = flame_near_corner(flame_front_corner(vec2(-1, -1), f32(size), seed, f32(age)), vec2(-1, -1), 1)
+            assert(foot.y == 0, "raised flame roots stay on the ember bed")
+            assert(flame_near_corner(top, vec2(0, 1), 0) == top, "distant flame front is retained")
+            loop pitch in [0.22, 0.62, 1.1, 1.35]:
+                up = vec3(0, f32(cos(pitch)), f32(sin(pitch)))
+                rise = flame_near_up(up, 1)
+                assert(rise.y > 0.70, "close flame cards remain upright")
+                assert(dot(rise, up) * near.y >= 0.23, "steep views preserve flame height on screen")
+print("PASS near fire: 240 size/shape/age cases; terrain roots, 0.48–0.96m card height; four camera pitches; distant front retained")
+
+# Exercise the production fragment response without GPU/depth softening.
+u = PartU(mat4(), vec3(1,0,0), vec3(0,1,0), vec3(0,0,10), vec3(0,0,0), 0, near = 0)
+ember = (x: f32, y: f32) -> vec4:
+    part_fs(PartO(vec4(), vec2(x,y), vec4(1,0.5,0.1,1), vec4(0.3,-5,1,-1.25), vec4(0,0,0,10), 0.3), u)
+center = ember(0.5,0.5)
+shoulder = ember(0.75,0.5)
+edge = ember(0.99,0.5)
+assert(center.w > shoulder.w and shoulder.w > edge.w, "ember bed feathers outward rather than a solid decal")
+assert(edge.w < 0.01, "ember bed perimeter dissolves")
+assert(center.x > center.y and center.y > center.z, "ember overlap stays warm rather than white")
+print("PASS ember bed: soft gradient from glowing center to transparent edge; warm bounded colour")
+
+# The emission tag must decode to the original far-smoke angle; nearby smoke
+# rises as a narrow wisp without changing its instance or simulation lifetime.
+plain = PInst(vec4(0,0,0,0.5), vec4(0.3,0.3,0.32,0.35), vec4(0.3,1,1.3,0))
+wisp = plain
+wisp.data.z += 1024
+u.cam = vec3(0,0,30)
+loop x in [-1.0,1.0]:
+    loop y in [-1.0,1.0]:
+        corner = QuadV(vec2(f32(x),f32(y)))
+        plain_vertex = part_vs(corner,plain,u)
+        wisp_vertex = part_vs(corner,wisp,u)
+        assert(length(plain_vertex.pos.xyz - wisp_vertex.pos.xyz) < 0.0001, "tagged far smoke retains its original card")
+        assert(abs(plain_vertex.data.z - wisp_vertex.data.z) < 0.0001, "fire-smoke tag decodes before fragment shading")
+u.cam = vec3(0,0,5)
+bottom_vertex = part_vs(QuadV(vec2(-1,-1)),wisp,u).pos
+top_vertex = part_vs(QuadV(vec2(1,1)),wisp,u).pos
+assert(top_vertex.y-bottom_vertex.y > (top_vertex.x-bottom_vertex.x)*2, "near fire smoke reads as a rising wisp")
+print("PASS fire smoke: distant angle/card retained; nearby wisp has vertical extent; existing instance reused")
+
+# Small source particles must no longer all clamp to the same crown height.
+low = f32(1e9)
+high = f32(0)
+loop k in [0..80):
+    seed = f32(k) * 0.317
+    top = flame_front_corner(vec2(0, 1), 0.15, seed, 0.35)
+    rise = flame_near_corner(top, vec2(0, 1), 1).y
+    low = min(low, rise)
+    high = max(high, rise)
+assert(high - low > 0.24, "small flames retain unequal heights at normal near-fire distance")
+print("PASS flame diversity: small-particle crowns {low:.3}..{high:.3}m using existing cards")

@@ -1,0 +1,38 @@
+build:
+    opt = release
+use '../game/mesh_assets.jo'
+use '../game/asset_stream.jo'
+assert(mkdir("build/prepared-check"))
+path = "build/prepared-check/header.bin"
+s = pack_create(path, 123)
+xs = [u32(4), u32(7), u32(9)]
+pack_array(s, xs, true)
+assert(pack_publish(s, path))
+s = pack_open(path, 123)
+assert(s.ok)
+ys: u32[]
+pack_array(s, ys, false)
+assert(s.ok and s.left == 0 and xs == ys)
+asset_close(s)
+s = pack_open(path, 124)
+assert(not s.ok, "stale dependency/version header must reject")
+asset_close(s)
+raw = read_bytes(path)!
+assert(write_bytes(path, raw[..raw.len() - 1)))
+s = pack_open(path, 123)
+assert(not s.ok, "truncated total size must reject before decoding")
+asset_close(s)
+raw.push(u8(0))
+assert(write_bytes(path, raw))
+s = pack_open(path, 123)
+assert(not s.ok, "trailing bytes must reject")
+asset_close(s)
+# Even a valid-length outer header cannot allocate an unbounded inner record.
+s = pack_create(path, 123)
+asset_put_int(s, 1000000000)
+assert(pack_publish(s, path))
+s = pack_open(path, 123)
+pack_array(s, ys, false)
+assert(not s.ok)
+asset_close(s)
+print("PASS mesh pack: lossless roundtrip, stale version, truncation, trailing bytes, bounded counts")

@@ -1,0 +1,94 @@
+use 'gfx.jo'
+use 'env.jo'
+use 'shade.jo'
+use 'fx.jo'
+
+# A single continuous coil climbs round the keep. Actual world depth puts its
+# far half behind the masonry and its near half across the castle's face.
+use 'malice_shape.jo'
+
+struct MaliceV:
+    phase: f32
+    cross_section: vec2
+struct MaliceU:
+    vp: mat4
+    center: vec3
+    cam: vec3
+    time: f32
+    night: f32
+    amount: f32
+    side: f32
+struct MaliceO:
+    pos: vec4
+    phase: f32
+    cross_section: vec2
+    facing: f32
+    surface: f32
+
+malice_vs = (v: MaliceV, u: MaliceU) -> MaliceO:
+    q = malice_spine(v.phase, u.time)
+    outward = normalize(vec3(q.x, 0, q.z))
+    thickness = malice_thickness(v.phase)
+    # Uneven density folds break the tube edge without breaking the helix.
+    ripple = 1.0 + sin(v.phase * 173.0 + v.cross_section.y * 5.0) * 0.10
+    world = u.center + q + (outward * v.cross_section.x + vec3(0, v.cross_section.y, 0)) * thickness * ripple
+    facing = dot(outward, normalize(vec3(u.cam.x - u.center.x, 0, u.cam.z - u.center.z)))
+    normal = normalize(outward * v.cross_section.x + vec3(0, v.cross_section.y, 0))
+    surface = abs(dot(normal, normalize(u.cam - world)))
+    MaliceO(u.vp * vec4(world, 1), v.phase, v.cross_section, facing, surface)
+
+malice_fs = (i: MaliceO, u: MaliceU) -> vec4:
+    # Back and front halves draw separately, sharing exactly the same geometry.
+    side = step(0.0, i.facing * u.side)
+    ends = smoothstep(0.0, 0.025, i.phase) * (1.0 - smoothstep(0.975, 1.0, i.phase))
+    flow = vec2(i.phase * 96.0 - u.time * 0.04, i.cross_section.y * 2.6 - i.phase * 22.0 + sin(i.phase * 31.0) * 0.8)
+    billow = vnoise(flow)
+    fold = smoothstep(0.20, 0.80, billow)
+    lit = smoothstep(-0.5, 0.85, i.cross_section.y + (billow - 0.5) * 0.6)
+    shade = vec3(0.060, 0.008, 0.065)
+    light = mix(vec3(0.23, 0.014, 0.070), vec3(0.17, 0.016, 0.16), fold * 0.7)
+    color = mix(shade, light, 0.20 + lit * 0.80)
+    # A narrow crimson current follows the same continuous coil under the smoke.
+    current = smoothstep(0.38, 0.05, abs(i.cross_section.y + sin(i.phase * 23.0 - u.time * 0.08) * 0.48 + (billow - 0.5) * 0.55))
+    color = color + vec3(0.09, 0.003, 0.012) * current * fold
+    # Night keeps a dim crimson current instead of amplifying violet to pink.
+    night_color = mix(vec3(0.095, 0.001, 0.004), vec3(0.42, 0.005, 0.014), lit * 0.7 + fold * 0.3)
+    night_color = night_color + vec3(0.08, 0.001, 0.003) * current * fold
+    color = mix(color, night_color, u.night)
+    # Fade at the true tube silhouette, with unequal turbulent erosion. This
+    # gives the connected mass a smoky edge without a screen-space blur pass.
+    edge = smoothstep(0.05 + fold * 0.13, 0.55, i.surface)
+    density = 0.28 + fold * 0.45
+    vec4(color, u.amount * side * ends * edge * density)
+
+__malice_ready = false
+__malice_mesh: Mesh
+__malice_sh: Shader
+
+draw_malice = (vp: mat4, cam: vec3, amount: f64):
+    if amount <= 0.0: return
+    if not __malice_ready:
+        __malice_ready = true
+        vs: MaliceV[]
+        idx: u32[]
+        loop k in [0..MALICE_SEGMENTS + 1):
+            loop j in [0..9):
+                angle = f32(j) * 0.785398
+                vs.push(MaliceV(f32(k) / f32(MALICE_SEGMENTS), vec2(cos(angle), sin(angle))))
+        loop k in [0..MALICE_SEGMENTS):
+            loop j in [0..8):
+                a = u32(k * 9 + j)
+                loop n in [a, a + 9, a + 1, a + 1, a + 9, a + 10]: idx.push(n)
+        __malice_mesh = mesh(vs, idx)
+        __malice_sh = make_sh(shader(malice_vs, malice_fs))
+    glEnable(GL_DEPTH_TEST)
+    glDepthMask(0)
+    glDisable(GL_CULL_FACE)
+    glEnable(GL_BLEND)
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    u = MaliceU(vp, malice_center, cam, f32(elapsed()), f32(smoothstep(0.3, 0.85, env.night)), f32(amount), -1)
+    draw_fast(__malice_sh, __malice_mesh, u)
+    u.side = 1.0
+    draw_fast(__malice_sh, __malice_mesh, u)
+    glDepthMask(1)
+    glDisable(GL_BLEND)

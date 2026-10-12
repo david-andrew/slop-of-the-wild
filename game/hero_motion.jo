@@ -1,0 +1,506 @@
+use 'gfx.jo'
+use 'skel.jo'
+use 'player.jo'
+use 'physics.jo'
+use 'input.jo'
+use 'combat.jo'
+
+struct FootContact:
+    planted = false
+    ready = true
+    weight = 0.0
+    anchor = vec3(0, 0, 0)
+    normal = vec3(0, 1, 0)
+    heading = 0.0
+
+struct HeroMotion:
+    model = ""
+    legs: int[8]
+    pelvis = -1
+    spine = -1
+    feet: FootContact[2]
+    sink = 0.0
+    last_speed = 0.0
+    last_face = 0.0
+    initialized = false
+    brake_t = 0.0
+    brake_side = 0
+    brake_start = vec3(0, 0, 0)
+    brake_anchor = vec3(0, 0, 0)
+    brake_face = 0.0
+    brake_normal = vec3(0, 1, 0)
+    brake_hard = false
+    landing_t = 0.0
+    air_lean = 0.0
+    turn = 0.0
+    drift = 0.0
+    lowest = 1000.0
+    sole = 1000.0
+    separation = 1000.0
+    samples = 0
+    ground_col = -1
+    ground_pos = vec3(0, 0, 0)
+    ground_yaw = 0.0
+
+motion_init = (h: mut HeroMotion, m: Model, lib: AnimLib):
+    h = HeroMotion(model = m.name)
+    loop side in [0..2):
+        suffix = if side == 0: "_l" else: "_r"
+        loop k in [0..4): h.legs[side * 4 + k] = bone_index(m, ["thigh", "calf", "foot", "ball"][k] + suffix)
+    h.pelvis = lib_bone(lib, "pelvis")
+    h.spine = lib_bone(lib, "spine_01")
+
+motion_point = (m: Model, p: Pose, bone: int) -> vec3:
+    transform_point(bone_world(m, p, bone), vec3(0, 0, 0))
+
+motion_turn = (lib: AnimLib, p: mut Pose, bone: int, from: vec3, to: vec3):
+    if length(from) < 0.0001 or length(to) < 0.0001: return
+    a = normalize(from)
+    b = normalize(to)
+    axis = cross(a, b)
+    if length(axis) > 0.00001: rotate_bone(lib, p, bone, normalize(axis), acos(clamp(f64(dot(a, b)), -1.0, 1.0)))
+
+# Solve with the animated knee as the pole, preserving the boot's orientation.
+motion_leg = (h: HeroMotion, m: Model, lib: AnimLib, p: mut Pose, side: int, target: vec3):
+    u = h.legs[side * 4]
+    l = h.legs[side * 4 + 1]
+    f = h.legs[side * 4 + 2]
+    toe = motion_point(m, p, h.legs[side * 4 + 3])
+    a = motion_point(m, p, u)
+    b = motion_point(m, p, l)
+    c = motion_point(m, p, f)
+    boot = pose_rot(lib, p, m.canon[f])
+    desired = c + target - toe
+    upper = f64(length(b - a))
+    lower = f64(length(c - b))
+    delta = desired - a
+    d = clamp(f64(length(delta)), abs(upper - lower) + 0.001, upper + lower - 0.001)
+    axis = normalize(delta + vec3(0, 0.000001, 0))
+    desired = a + axis * f32(d)
+    pole = b - a - axis * dot(b - a, axis)
+    if length(pole) < 0.001: pole = vec3(0, 0, 1) - axis * axis.z
+    pole = normalize(pole)
+    along = (upper * upper - lower * lower + d * d) / (2.0 * d)
+    knee = a + axis * f32(along) + pole * f32(sqrt(max(upper * upper - along * along, 0.0)))
+    motion_turn(lib, p, m.canon[u], b - a, knee - a)
+    b = motion_point(m, p, l)
+    c = motion_point(m, p, f)
+    motion_turn(lib, p, m.canon[l], c - b, desired - b)
+    par = pose_rot(lib, p, lib.parent[m.canon[f]])
+    p.r[m.canon[f]] = normalize(quat_mul(quat_conj(par), boot))
+
+motion_reaches = (h: HeroMotion, m: Model, p: Pose, side: int, target: vec3) -> bool:
+    hip = motion_point(m, p, h.legs[side * 4])
+    knee = motion_point(m, p, h.legs[side * 4 + 1])
+    ankle = motion_point(m, p, h.legs[side * 4 + 2])
+    toe = motion_point(m, p, h.legs[side * 4 + 3])
+    length(ankle + target - toe - hip) <= length(knee - hip) + length(ankle - knee) - 0.002
+
+motion_floor = (point: vec3) -> f64:
+    ground_at(f64(point.x), f64(point.z), f64(pl.pos.y), 0.5, 0.0, false).y
+
+motion_normal = (point: vec3) -> vec3:
+    dx = motion_floor(point + vec3(0.13, 0, 0)) - motion_floor(point - vec3(0.13, 0, 0))
+    dz = motion_floor(point + vec3(0, 0, 0.13)) - motion_floor(point - vec3(0, 0, 0.13))
+    n = normalize(v3(-dx, 0.26, -dz))
+    # Across a stair edge the two heights describe a riser, not a boot-sized plane.
+    if n.y < 0.62: return vec3(0, 1, 0)
+    n
+
+motion_boot = (h: HeroMotion, m: Model, lib: AnimLib, p: mut Pose, side: int, normal: vec3, weight: f64):
+    f = h.legs[side * 4 + 2]
+    b = h.legs[side * 4 + 3]
+    up = normalize(transform_dir(bone_world(m, p, f) * m.ibm[f], vec3(0, 1, 0)))
+    motion_turn(lib, p, m.canon[f], up, normalize(lerp(up, normal, f32(weight))))
+    up = normalize(transform_dir(bone_world(m, p, b) * m.ibm[b], vec3(0, 1, 0)))
+    motion_turn(lib, p, m.canon[b], up, normalize(lerp(up, normal, f32(weight))))
+
+motion_sole = (h: HeroMotion, m: Model, p: Pose, side: int, world: mat4) -> f64:
+    lowest = 1000.0
+    loop k in [2..4):
+        bone = h.legs[side * 4 + k]
+        matrix = bone_world(m, p, bone)
+        offset = if k == 2: vec3(0, -0.07, -0.02) else: vec3(0, -0.01, 0)
+        sole = transform_point(world, matrix[3].xyz + transform_dir(matrix * m.ibm[bone], offset))
+        lowest = min(lowest, f64(sole.y) - motion_floor(sole))
+    lowest
+
+motion_shift = (h: HeroMotion, m: Model, lib: AnimLib, p: mut Pose, amount: f64):
+    par = lib.parent[h.pelvis]
+    q = if par >= 0: pose_rot(lib, p, par) else: QUAT_ID
+    p.t[h.pelvis] += quat_rotate(quat_conj(q), v3(0.0, amount / m.tscale, 0.0))
+
+hero_motion_apply = (h: mut HeroMotion, m: Model, lib: AnimLib, p: mut Pose, world: mat4, dt: f64, allowed: bool):
+    if h.model != m.name: motion_init(h, m, lib)
+    if h.pelvis < 0 or h.legs[0] < 0 or h.legs[7] < 0: return
+    # Sample the flinch immediately; the locomotion crossfade otherwise leaves
+    # a struck hero looking idle through the first visible knockback frames.
+    if fight.act == .hit or pl.state == .hurt:
+        time_ = if fight.act == .hit: fight.t else: pl.st_t
+        weight = 1.0 - smoothstep(0.24, 0.45, time_)
+        hit = clip_index(lib, "hit")
+        if hit >= 0: blend_into(p, sample_clip(lib, hit, 0.10 + time_ * 0.75, false), weight)
+        rotate_bone(lib, p, h.spine, vec3(1, 0, 0), (if fight.hit_rear: 0.38 else: -0.08) * weight)
+        rotate_bone(lib, p, lib_bone(lib, "spine_02"), vec3(0, 0, 1), -fight.hit_side * 0.14 * weight)
+    speed = f64(length(vec3(pl.vel.x, 0, pl.vel.z)))
+    valid = allowed and pl.state == .ground and pl.grounded
+    # A planted contact belongs to the supporting collider, not to world space.
+    # Carry its anchors by the same rigid motion as a shrine lift/turning bar.
+    col = if valid: pl.ground.collider else: -1
+    if col >= 0:
+        c = colliders[col]
+        if h.ground_col == col:
+            delta = translation(c.pos) * rotation_y(c.yaw) * rotation_y(-h.ground_yaw) * translation(h.ground_pos * -1.0)
+            angle = wrap_angle(c.yaw - h.ground_yaw)
+            loop side in [0..2):
+                h.feet[side].anchor = transform_point(delta, h.feet[side].anchor)
+                h.feet[side].normal = transform_dir(delta, h.feet[side].normal)
+                h.feet[side].heading -= angle
+            h.brake_start = transform_point(delta, h.brake_start)
+            h.brake_anchor = transform_point(delta, h.brake_anchor)
+            h.brake_normal = transform_dir(delta, h.brake_normal)
+            h.brake_face -= angle
+        h.ground_pos = c.pos
+        h.ground_yaw = c.yaw
+    h.ground_col = col
+    inv_world = inverse(world)
+    toes: vec3[2]
+    floors: f64[2]
+    loop side in [0..2):
+        toes[side] = motion_point(m, p, h.legs[side * 4 + 3])
+        floors[side] = if valid: motion_floor(transform_point(world, toes[side])) else: f64(pl.pos.y)
+    h.brake_t = max(0.0, h.brake_t - dt)
+    if valid and h.initialized and h.brake_t <= 0.0 and h.last_speed > 3.0 and h.last_speed - speed > dt * 8.0 and length(act.move) < 0.05 and pl.skid_t <= 0.0:
+        h.brake_t = 0.24
+        h.brake_side = if toes[0].y < toes[1].y: 0 else: 1
+        h.brake_start = transform_point(world, toes[h.brake_side])
+        h.brake_anchor = transform_point(world, v3((if h.brake_side == 0: 0.17 else: -0.17), 0.0, 0.24))
+        h.brake_anchor.y = f32(motion_floor(h.brake_anchor) + 0.035)
+        h.brake_face = pl.face
+        h.brake_normal = motion_normal(h.brake_anchor)
+        h.brake_hard = h.last_speed > 7.0
+    if not valid or abs(wrap_angle(pl.face - h.brake_face)) > 0.5 or speed > h.last_speed + 0.05: h.brake_t = 0.0
+    h.landing_t = max(0.0, h.landing_t - dt)
+    if valid and pl.landed and not pl.land_hard: h.landing_t = 0.28
+    if not valid: h.landing_t = 0.0
+    turn = if h.initialized: wrap_angle(pl.face - h.last_face) else: 0.0
+    if valid and pl.skid_t <= 0.0 and abs(turn) < 1.1: h.turn = clamp(h.turn + turn * 0.65, -0.4, 0.4)
+    h.turn *= max(0.0, 1.0 - dt * (if valid: 14.0 else: 20.0))
+    air = if allowed and pl.state == .air and pl.jump_t < 0.6: min(speed / 5.2, 1.0) * 0.17 else: 0.0
+    h.air_lean = lerp(h.air_lean, air, min(1.0, dt * 16.0))
+    brake = if h.brake_t > 0.0: smoothstep(0.0, 0.10, 0.24 - h.brake_t) * smoothstep(0.0, 0.08, h.brake_t) else: 0.0
+    if allowed and (pl.state == .ground or pl.state == .air):
+        rotate_bone(lib, p, h.pelvis, vec3(1, 0, 0), h.air_lean + brake * 0.09)
+    if valid: rotate_bone(lib, p, h.spine, vec3(0, 1, 0), h.turn)
+    sink = 0.0
+    if valid:
+        loop floor_ in floors:
+            diff = floor_ - f64(pl.pos.y)
+            if diff > -0.45: sink = min(sink, diff)
+    h.sink = if valid: lerp(h.sink, clamp(sink, -0.30, 0.0), min(1.0, dt * 18.0)) else: 0.0
+    compression = if h.landing_t > 0.0: sin((0.28 - h.landing_t) / 0.28 * PI) * 0.16 else: 0.0
+    motion_shift(h, m, lib, p, h.sink - compression - brake * (if h.brake_hard: 0.12 else: 0.035))
+    loop side in [0..2):
+        foot = h.feet[side]
+        toe = motion_point(m, p, h.legs[side * 4 + 3])
+        point = transform_point(world, toe)
+        height = f64(toes[side].y)
+        target = transform_point(inv_world, foot.anchor)
+        crossed = (side == 0 and target.x < 0.04) or (side == 1 and target.x > -0.04)
+        turned = abs(wrap_angle(pl.face - foot.heading)) > 0.5
+        behind = dot(foot.anchor - pl.pos, forward_of(pl.face)) < -0.28 and speed > 0.2
+        if not valid or height > 0.13 or turned or length(foot.anchor - pl.pos) > 1.25 or behind or crossed or not motion_reaches(h, m, p, side, target):
+            foot.planted = false
+        if not valid or height > 0.13 or turned: foot.ready = true
+        if turned or crossed: foot.weight = 0.0
+        if valid and speed < 0.15 and h.brake_t <= 0.0: foot.ready = true
+        if valid and foot.ready and not foot.planted and height < 0.075:
+            candidate = point
+            candidate.y = f32(motion_floor(candidate) + 0.035)
+            local = transform_point(inv_world, candidate)
+            correct_side = if side == 0: local.x > 0.04 else: local.x < -0.04
+            if correct_side and motion_reaches(h, m, p, side, local):
+                foot.planted = true
+                foot.ready = false
+                foot.weight = 1.0
+                foot.anchor = candidate
+                foot.heading = pl.face
+                foot.normal = motion_normal(candidate)
+        if not foot.planted: foot.weight = max(0.0, foot.weight - dt * 10.0)
+        if not valid: foot.weight = 0.0
+        if valid:
+            alignment = max(foot.weight, clamp((0.16 - f64(point.y) + floors[side]) / 0.085, 0.0, 1.0))
+            if alignment > 0.0:
+                normal = if foot.weight > 0.0: foot.normal else: motion_normal(point)
+                if h.brake_t > 0.0 and side == h.brake_side: normal = h.brake_normal
+                local_normal = v3(f64(dot(world[0].xyz, normal)), f64(dot(world[1].xyz, normal)), f64(dot(world[2].xyz, normal)))
+                motion_boot(h, m, lib, p, side, normalize(local_normal), alignment)
+            if foot.planted and not motion_reaches(h, m, p, side, transform_point(inv_world, foot.anchor)):
+                foot.planted = false
+                foot.ready = false
+                foot.weight = max(0.0, foot.weight - dt * 10.0)
+            target = lerp(toe, transform_point(inv_world, foot.anchor), f32(foot.weight))
+            floor_ = if foot.weight > 0.0: motion_floor(transform_point(world, target)) else: floors[side]
+            target.y = max(target.y, f32(floor_ + 0.025 - f64(pl.pos.y)))
+            if h.brake_t > 0.0 and side == h.brake_side:
+                acquire = smoothstep(0.0, 0.10, 0.24 - h.brake_t)
+                release = smoothstep(0.0, 0.08, h.brake_t)
+                anchor = lerp(h.brake_start, h.brake_anchor, f32(acquire))
+                target = lerp(target, transform_point(inv_world, anchor), f32(release))
+                foot.planted = brake > 0.999 and motion_reaches(h, m, p, side, target)
+                foot.anchor = h.brake_anchor
+                foot.weight = brake
+                foot.ready = false
+            # A sharp animated turn can cross an unplanted toe through the other
+            # foot even after its old anchor was released. Enforce the same side
+            # clearance used when acquiring a contact on the final solve target.
+            safe_x = if side == 0: max(target.x, 0.04) else: min(target.x, -0.04)
+            if safe_x != target.x:
+                target.x = safe_x
+                foot.planted = false
+                foot.ready = false
+                foot.weight = 0.0
+            motion_leg(h, m, lib, p, side, target)
+            loop correction in [0..2):
+                clearance = motion_sole(h, m, p, side, world)
+                if clearance >= 0.0: break
+                # A heel can meet the next tread while its toe is still over the lower one.
+                target = motion_point(m, p, h.legs[side * 4 + 3]) + transform_dir(inv_world, v3(0.0, 0.005 - clearance, 0.0))
+                motion_leg(h, m, lib, p, side, target)
+                foot.planted = false
+                foot.ready = false
+                foot.weight = max(0.0, foot.weight - dt * 10.0)
+        h.feet[side] = foot
+    h.last_speed = speed
+    h.last_face = pl.face
+    h.initialized = true
+
+# Use the final pose and the same world matrix as drawing, including the bare body's scale.
+hero_motion_measure = (h: mut HeroMotion, m: Model, p: Pose, world: mat4):
+    points: vec3[2]
+    loop side in [0..2):
+        points[side] = motion_point(m, p, h.legs[side * 4 + 3])
+        actual = transform_point(world, points[side])
+        if h.feet[side].planted:
+            h.drift = max(h.drift, f64(length(actual - h.feet[side].anchor)))
+            h.samples += 1
+        if pl.state == .ground:
+            h.lowest = min(h.lowest, f64(actual.y) - motion_floor(actual))
+            h.sole = min(h.sole, motion_sole(h, m, p, side, world))
+    if pl.state == .ground: h.separation = min(h.separation, f64(points[0].x - points[1].x))
+
+# Two-bone arm solve, using the animated elbow as the pole. The hands stay on the
+# ledge through the pull, then release smoothly into climb_up's planted upper body.
+mantle_arms = (m: Model, lib: AnimLib, p: mut Pose, world: mat4):
+    phase = clamp(pl.st_t / MANTLE_TIME, 0.0, 1.0)
+    # The animation caller still samples the legacy shortened pull. Keep the
+    # underlying body pose on this clock too, so the feet do not stand on the
+    # ledge while the root is still moving over it. This is the final mantle solve.
+    clip = clip_index(lib, "climb_up")
+    if clip >= 0: sample_into(lib, clip, phase * clip_duration(lib, clip), false, p)
+    release = smoothstep(0.50, 0.73, phase)
+    if release >= 1.0: return
+    root = inverse(world)
+    # Pull the torso over the fixed grips; otherwise the root's upward mantle arc
+    # leaves the ledge outside arm reach before the hands are ready to release.
+    shoulders = [bone_index(m, "upperarm_l"), bone_index(m, "upperarm_r")]
+    pelvis = bone_index(m, "pelvis")
+    if shoulders[0] >= 0 and shoulders[1] >= 0 and pelvis >= 0:
+        center = (motion_point(m, p, shoulders[0]) + motion_point(m, p, shoulders[1])) * 0.5
+        grips = (pl.mantle_hands[0] + pl.mantle_hands[1]) * 0.5
+        desired = grips + vec3(0, f32(lerp(-0.24, 0.20, clamp(phase / 0.5, 0.0, 1.0))), 0) - forward_of(pl.face) * 0.22
+        offset = (transform_point(root, desired) - center) * f32(1.0 - release)
+        parent = bone_world(m, p, m.parent[pelvis])
+        p.t[m.canon[pelvis]] += transform_dir(inverse(parent), offset) / f32(m.tscale)
+    loop side in [0..2):
+        suffix = if side == 0: "_l" else: "_r"
+        u = bone_index(m, "upperarm" + suffix)
+        l = bone_index(m, "lowerarm" + suffix)
+        h = bone_index(m, "hand" + suffix)
+        if u < 0 or l < 0 or h < 0: continue
+        target = lerp(transform_point(root, pl.mantle_hands[side]), motion_point(m, p, h), f32(release))
+        motion_arm(m, lib, p, u, l, h, target)
+
+# Shared two-bone hand contact; preserve the animated elbow pole by default.
+# Wake bracing can supply an outward bend direction without changing the grip.
+motion_arm = (m: Model, lib: AnimLib, p: mut Pose, u: int, l: int, h: int, target: vec3, pole_hint: vec3 = vec3(0, 0, 0)):
+    let target = target
+    a = motion_point(m, p, u)
+    b = motion_point(m, p, l)
+    c = motion_point(m, p, h)
+    upper = f64(length(b - a))
+    lower = f64(length(c - b))
+    delta = target - a
+    reach = clamp(f64(length(delta)), abs(upper - lower) + 0.001, upper + lower - 0.001)
+    axis = normalize(delta + vec3(0, 0.00001, 0))
+    target = a + axis * f32(reach)
+    bend = if length(pole_hint) > 0.001: pole_hint else: b - a
+    pole = bend - axis * dot(bend, axis)
+    if length(pole) < 0.001: pole = vec3(0, 0, -1) + axis * axis.z
+    pole = normalize(pole)
+    along = (upper * upper - lower * lower + reach * reach) / (2.0 * reach)
+    elbow = a + axis * f32(along) + pole * f32(sqrt(max(0.0, upper * upper - along * along)))
+    loop joint in [(u, b - a, elbow - a), (l, vec3(0, 0, 0), vec3(0, 0, 0))]:
+        from = joint.1
+        to = joint.2
+        if joint.0 == l:
+            b = motion_point(m, p, l)
+            c = motion_point(m, p, h)
+            from = c - b
+            to = target - b
+        turn = cross(normalize(from), normalize(to))
+        if length(turn) > 0.00001:
+            parent = bone_world(m, p, m.parent[joint.0])
+            local = normalize(transform_dir(inverse(parent), turn))
+            angle = acos(clamp(f64(dot(normalize(from), normalize(to))), -1.0, 1.0))
+            canon = m.canon[joint.0]
+            p.r[canon] = normalize(quat_mul(quat_axis_angle(local, angle), p.r[canon]))
+
+# Remove axial roll left by the retargeted wake clip, without moving its IK
+# joints. Swing the relaxed arm into the solved direction, then blend only
+# the remaining twist. Restore each child's world rotation after its parent
+# changes: elbow, wrist, palm and grip vertices keep their contact transforms.
+wake_deformation_weight = (t: f64) -> f64: smoothstep(0.85,1.5,t)*(1.0-smoothstep(3.5,4.4,t))
+
+wake_arm_deformation = (m: Model, lib: AnimLib, p: mut Pose, t: f64):
+    weight = wake_deformation_weight(t)
+    if weight<=0.0: return
+    relaxed = sample_clip(lib,clip_index(lib,"idle"),0.0,true)
+    loop side in ["l","r"]:
+        u=bone_index(m,"upperarm_"+side)
+        l=bone_index(m,"lowerarm_"+side)
+        h=bone_index(m,"hand_"+side)
+        if u<0 or l<0 or h<0: continue
+        wrist=pose_rot(lib,p,m.canon[h])
+        forearm=pose_rot(lib,p,m.canon[l])
+        loop pair in [(u,l,0.70),(l,h,0.40)]:
+            joint=pair.0
+            child=pair.1
+            axis=motion_point(m,p,child)-motion_point(m,p,joint)
+            original=p.r[m.canon[joint]]
+            p.r[m.canon[joint]]=relaxed.r[m.canon[joint]]
+            from=motion_point(m,p,child)-motion_point(m,p,joint)
+            motion_turn(lib,p,m.canon[joint],from,axis)
+            p.r[m.canon[joint]]=quat_nlerp(original,p.r[m.canon[joint]],f32(weight*pair.2))
+            if joint==u:
+                parent=pose_rot(lib,p,lib.parent[m.canon[l]])
+                p.r[m.canon[l]]=normalize(quat_mul(quat_conj(parent),forearm))
+        parent=pose_rot(lib,p,lib.parent[m.canon[h]])
+        p.r[m.canon[h]]=normalize(quat_mul(quat_conj(parent),wrist))
+
+# LayToIdle carries the pelvis from supine through sitting and a planted left hand,
+# one knee under the body, and finally both feet. Retiming gives each weight transfer room.
+wake_pose = (m: Model, lib: AnimLib, t: f64) -> Pose:
+    sleeping = sample_clip(lib, clip_index(lib, "Sleeping"), t, true)
+    time = 0.0
+    if t < 1.6: time = lerp(0.0, 0.38, smooth01((t - 0.45) / 1.15))
+    # Sit into the support before the hips follow. The second, slower push
+    # gathers the legs; only then does the body extend over the feet.
+    else if t < 2.2: time = lerp(0.38, 0.50, smooth01((t - 1.6) / 0.6))
+    else if t < 3.05: time = lerp(0.50, 0.86, smooth01((t - 2.2) / 0.85))
+    else: time = lerp(0.86, 1.533333, smooth01((t - 3.05) / 1.4))
+    rising = sample_clip(lib, clip_index(lib, "LayToIdle"), time, false)
+    p = blend_pose(sleeping, rising, smoothstep(0.3, 0.85, t))
+    # Keep the lumbar/chest arc broad during the push instead of inheriting
+    # the source clip's sharp lower-back kink. Legs/root retain their keys.
+    recovery = smoothstep(2.35, 3.1, t) * (1.0 - smoothstep(3.8, 4.4, t))
+    relaxed = sample_clip(lib, clip_index(lib, "idle"), 0.0, true)
+    loop name in ["spine_01", "spine_02", "spine_03"]:
+        b = lib_bone(lib, name)
+        if b >= 0: p.r[b] = quat_nlerp(p.r[b], relaxed.r[b], f32(0.40 * recovery))
+    # Load the planted shoulder before the pelvis rises; then shift toward the
+    # slab lip as the knees gather. Ease the compression out onto the feet.
+    load = smoothstep(1.35, 1.95, t) * (1.0 - smoothstep(2.55, 3.2, t))
+    rotate_bone(lib, p, lib_bone(lib, "spine_01"), vec3(0, 0, 1), -0.11 * load)
+    transfer = smoothstep(2.05, 2.55, t) * (1.0 - smoothstep(2.85, 3.85, t))
+    # The chest stays over the knees while the pelvis leaves the support; it
+    # straightens after the feet take the weight, rather than rising as one block.
+    press = smoothstep(2.15, 2.7, t) * (1.0 - smoothstep(3.15, 4.2, t))
+    rotate_bone(lib, p, lib_bone(lib, "spine_01"), vec3(1, 0, 0), 0.12 * press)
+    rotate_bone(lib, p, lib_bone(lib, "spine_02"), vec3(1, 0, 0), 0.06 * press)
+    # The loaded shoulder stays low while the free shoulder follows the gaze.
+    # Breath and a delayed chest/head recovery break up the clip's rigid rise.
+    seated = smoothstep(1.05, 1.65, t) * (1.0 - smoothstep(2.6, 3.15, t))
+    breath = sin(t * 2.5 - 0.6) * (1.0 - smoothstep(4.8, 5.8, t))
+    rotate_bone(lib, p, lib_bone(lib, "spine_02"), vec3(1, 0, 0), 0.09 * seated + 0.012 * breath)
+    rotate_bone(lib, p, lib_bone(lib, "spine_03"), vec3(0, 0, 1), 0.035 * load)
+    rotate_bone(lib, p, lib_bone(lib, "clavicle_l"), vec3(0, 0, 1), -0.06 * load)
+    rotate_bone(lib, p, lib_bone(lib, "clavicle_r"), vec3(0, 0, 1), 0.08 * seated)
+    look = smoothstep(1.45, 1.9, t) * (1.0 - smoothstep(2.3, 2.85, t))
+    rotate_bone(lib, p, lib_bone(lib, "spine_03"), vec3(0, 1, 0), -0.075 * look)
+    rotate_bone(lib, p, lib_bone(lib, "neck_01"), vec3(0, 1, 0), -0.10 * look)
+    rotate_bone(lib, p, lib_bone(lib, "head"), vec3(0, 1, 0), -0.26 * look)
+    nod = smoothstep(0.85, 1.3, t) * (1.0 - smoothstep(3.35, 4.25, t))
+    rotate_bone(lib, p, lib_bone(lib, "head"), vec3(1, 0, 0), 0.12 * nod + 0.009 * breath)
+    pelvis = bone_index(m, "pelvis")
+    if pelvis >= 0:
+        offset = v3(0.055 * transfer + 0.030 * load, -0.095 * transfer - 0.018 * load, 0.055 * transfer)
+        parent = bone_world(m, p, m.parent[pelvis])
+        p.t[m.canon[pelvis]] += transform_dir(inverse(parent), offset) / f32(m.tscale)
+    # Rest the free palm on the raised thigh, then press on it as the legs
+    # gather. An outward elbow pole keeps the upper arm clear of the ribs.
+    # Release into a hanging arm only once the pelvis is over the feet.
+    brace = smoothstep(1.25, 1.85, t) * (1.0 - smoothstep(3.45, 4.25, t))
+    ru = bone_index(m, "upperarm_r")
+    rl = bone_index(m, "lowerarm_r")
+    rh = bone_index(m, "hand_r")
+    knee = bone_index(m, "calf_r")
+    thigh = bone_index(m, "thigh_r")
+    if brace > 0.0 and ru >= 0 and rl >= 0 and rh >= 0 and knee >= 0 and thigh >= 0:
+        target = lerp(motion_point(m, p, thigh), motion_point(m, p, knee), 0.68) + v3(-0.025, 0.10, -0.025)
+        pole = lerp(motion_point(m, p, rl) - motion_point(m, p, ru), vec3(-0.22, -0.066, -0.044), f32(brace))
+        motion_arm(m, lib, p, ru, rl, rh, lerp(motion_point(m, p, rh), target, f32(brace)), pole)
+        # The palm faces the thigh, with fingers following the knee rather
+        # than the source clip's upturned wrist beside the face.
+        palm = normalize(transform_dir(bone_world(m, p, rh) * m.ibm[rh], vec3(0, 1, 0)))
+        motion_turn(lib, p, m.canon[rh], palm, normalize(lerp(palm, vec3(0, 1, 0), f32(brace))))
+    # The bare body's x scale puts this wrist over the lip at x=0.516 m.
+    # Its top is 0.22 m above the basin; allow 25 mm for the palm below the wrist.
+    support = smoothstep(1.25, 1.6, t) * (1.0 - smoothstep(2.55, 3.15, t))
+    u = bone_index(m, "upperarm_l")
+    l = bone_index(m, "lowerarm_l")
+    h = bone_index(m, "hand_l")
+    if support > 0.0 and u >= 0 and l >= 0 and h >= 0:
+        reference = sample_clip(lib, clip_index(lib, "LayToIdle"), 0.38, false)
+        anchor = motion_point(m, reference, h)
+        anchor.x = 0.60
+        anchor.y = 0.135
+        target = lerp(motion_point(m, p, h), anchor, f32(support))
+        # Lift off before drawing the hand inward; a straight blend toward the
+        # rising clip swept the palm down through the slab's bevel on release.
+        clear = smoothstep(2.55, 2.75, t) * (1.0 - smoothstep(2.9, 3.15, t))
+        target.y += f32(0.045 * clear)
+        motion_arm(m, lib, p, u, l, h, target)
+        # Flatten the palm onto the slab, then keep its orientation through the
+        # push. The reference wrist has a slight roll that lifted its outer edge.
+        wrist = quat_nlerp(pose_rot(lib, p, m.canon[h]), pose_rot(lib, reference, m.canon[h]), f32(support))
+        palm_up = normalize(transform_dir(bone_world(m, reference, h) * m.ibm[h], vec3(0, 1, 0)))
+        axis = cross(palm_up, vec3(0, 1, 0))
+        if length(axis) > 0.00001:
+            wrist = quat_mul(quat_axis_angle(normalize(axis), acos(clamp(f64(palm_up.y), -1.0, 1.0)) * support), wrist)
+        parent = pose_rot(lib, p, lib.parent[m.canon[h]])
+        p.r[m.canon[h]] = normalize(quat_mul(quat_conj(parent), wrist))
+    idle = sample_clip(lib, clip_index(lib, "idle"), max(t - 4.35, 0.0), true)
+    blend_into(p, idle, smoothstep(4.4, 4.8, t))
+    # A small overshoot and recovery after standing; feet keep the authored
+    # base while chest and shoulders catch the weight on alternating sides.
+    settle = smoothstep(4.15, 4.55, t) * (1.0 - smoothstep(5.2, 5.8, t))
+    sway = sin((t - 4.15) * 5.0) * settle
+    rotate_bone(lib, p, lib_bone(lib, "spine_01"), vec3(0, 0, 1), 0.055 * sway)
+    rotate_bone(lib, p, lib_bone(lib, "spine_03"), vec3(0, 0, 1), -0.025 * sway)
+    rotate_bone(lib, p, lib_bone(lib, "clavicle_r"), vec3(0, 0, 1), 0.045 * settle)
+    rotate_bone(lib, p, lib_bone(lib, "head"), vec3(1, 0, 0), 0.055 * settle)
+    glance = smoothstep(4.5, 4.85, t) * (1.0 - smoothstep(5.1, 5.7, t))
+    rotate_bone(lib, p, lib_bone(lib, "neck_01"), vec3(0, 1, 0), -0.10 * glance)
+    rotate_bone(lib, p, lib_bone(lib, "head"), vec3(0, 1, 0), -0.35 * glance)
+    p
+
+# The off hand follows the actual weapon socket, giving heavy sweeps and spear
+# jabs a supported grip without changing the right hand's drawn/contact path.
+weapon_support_grip = (m: Model, lib: AnimLib, p: mut Pose, offset: f64):
+    socket = socket_world(m, mat4(), skin_cpu(m, p), SOCKET_HAND_R)
+    target = transform_point(socket, v3(0.0, offset, 0.0))
+    u = bone_index(m, "upperarm_l")
+    l = bone_index(m, "lowerarm_l")
+    h = bone_index(m, "hand_l")
+    if u >= 0 and l >= 0 and h >= 0: motion_arm(m, lib, p, u, l, h, target)

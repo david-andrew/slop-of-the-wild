@@ -1,0 +1,111 @@
+# CPU latency check for every placed gathering: direct sight, noise, night noise.
+use '../game/gfx.jo'
+use '../game/enemies.jo'
+use '../game/enemy_camp.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/player.jo'
+use '../game/elements.jo'
+use '../game/items.jo'
+use '../game/physics.jo'
+use '../game/combat.jo'
+use '../game/input.jo'
+
+items_init()
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+enemies_place()
+loop a in actors:
+    if a.name == "FireWood":
+        p = a.pos
+        p.y = f32(height_at(f64(p.x), f64(p.z)))
+        bonfires.push(Bonfire(p, lit = false))
+loop mut e in enemies:
+    if e.kind != .bokoblin and e.kind != .blue_bokoblin: continue
+    loop b in bonfires:
+        if length(e.pos - b.pos) < 23.0 and not e.lookout and not e.archer: e.camp = 1
+enemy_camp_roles()
+# Isolate perception from missing GPU-built structure decks in this CPU fixture.
+# Production placement and sightline terrain remain; ground actors start supported.
+loop mut e in enemies:
+    if not e.lookout:
+        e.pos.y = f32(height_at(f64(e.pos.x), f64(e.pos.z)))
+        e.home.y = e.pos.y
+original = enemies
+camps = 0
+worst = 0.0
+loop bi in 0.. and b in bonfires:
+    members: int[]
+    loop i in 0.. and e in original:
+        if (e.kind == .bokoblin or e.kind == .blue_bokoblin) and length(e.home - b.pos) < 28.0: members.push(i)
+    if members.len() < 2: continue
+    camps += 1
+    spotter = members[0]
+    loop i in members:
+        if original[i].lookout: spotter = i
+    loop mode in ["sight", "noise", "night-noise"]:
+        enemies = original
+        seen = fill(-1.0, members.len())
+        pl = Player(state = .ground, invuln = 1000.0)
+        fight = Fight()
+        act = Actions()
+        found = false
+        loop k in [0..16):
+            q = enemies[spotter].pos + forward_of(f64(k) * TAU / 16.0) * 16.0
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            if length(q - enemies[spotter].pos) > 19.0: continue
+            eye = enemies[spotter].pos + vec3(0, 1.4, 0)
+            if raycast(eye, q + vec3(0, 1.2, 0) - eye, f64(length(q - eye)), false).hit: continue
+            pl.pos = q
+            found = true
+            break
+        assert(found, "camp has an unobstructed approach")
+        pl.noise = if mode == "sight": 0.0 else: 20.0
+        loop i in members:
+            enemies[i].alert = 0.0
+            enemies[i].state = if mode == "night-noise" and not enemies[i].lookout: EState.sleep else: EState.idle
+            enemies[i].t = 0.0
+            enemies[i].face = yaw_of(pl.pos - enemies[i].pos) + (if mode == "sight" and i == spotter: 0.0 else: PI)
+        loop f in [0..120):
+            enemies_update(1.0 / 120.0, mode == "night-noise")
+            loop n in 0.. and i in members:
+                if enemies[i].alert >= 1.0 and seen[n] < 0.0: seen[n] = f64(f + 1) / 120.0
+        latest = 0.0
+        loop n in 0.. and i in members:
+            assert(seen[n] > 0.0 and seen[n] <= 1.0, "every camp member alerts within one second")
+            latest = max(latest, seen[n])
+            print("camp {bi} {mode} member={i} role={enemies[i].camp_role} alert={seen[n]:.4}s")
+        worst = max(worst, latest)
+        print("PASS camp {bi} {mode}: {members.len()} members latest={latest:.4}s")
+assert(camps >= 2, "all placed group camps measured")
+print("PASS {camps} camp gatherings, sight/noise/night-noise; worst alert={worst:.4}s")
+
+# The alarm is also a visible, prop-connected pose, using the production rig.
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/enemy_footing.jo'
+hf.n = 64
+hf.x0 = -32.0
+hf.z0 = -32.0
+hf.cell = 1.0
+hf.h = fill(f32(0), hf.n * hf.n)
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+m = load_model("assets/models/bokoblin.mdl")
+lib = load_humanoid_anims()
+loop role in [CampRole.sitter, CampRole.club, CampRole.spear, CampRole.lookout]:
+    e = Enemy(.bokoblin, vec3(0, 0, 0), vec3(0, 0, 0), state = .notice, camp_role = role, archer = role == .lookout, weapon = "boko_club")
+    footing = BokoFooting()
+    previous = vec3(0, 0, 0)
+    step = 0.0
+    pickup = 0.0
+    loop f in [0..85):
+        e.t = f64(f) / 120.0
+        p = Pose()
+        camp_notice_pose(m, lib, p, e)
+        boko_footing(m, p, e, footing, translation(e.pos) * rotation_y(PI - e.face) * scaling(e.contact_scale))
+        grip = (bone_world(m, p, bone_index(m, "hand_r")) * SOCKET_HAND_R.offset)[3].xyz
+        if f > 0: step = max(step, f64(length(grip - previous)))
+        if f == 22 and role == .sitter: pickup = f64(length(grip - vec3(-0.44, 0.15, 0.38)))
+        previous = grip
+    print("alert pose {role}: max 120Hz grip step={step:.4}m pickup gap={pickup:.4}m raised={previous.y:.3}m")
+    assert(step < 0.08 and pickup < 0.04 and previous.y > 1.15, "continuous pickup and raised alarm hand")

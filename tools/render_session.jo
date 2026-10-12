@@ -1,0 +1,203 @@
+build:
+    opt = release
+use '../game/main.jo'
+use '../game/gfx.jo'
+use '../game/frametime.jo'
+use '../game/cputime.jo'
+use '../game/player.jo'
+use '../game/camera.jo'
+use '../game/combat.jo'
+use '../game/enemies.jo'
+use '../game/terrain.jo'
+use '../game/elements.jo'
+use '../game/fx.jo'
+use '../game/env.jo'
+use '../game/worldgen.jo'
+from '../game/shrines.jo' import __teleport
+
+# Observational window loop matching __game_run, with timestamps immediately after
+# __platform_present. No runtime edit, extra GPU fence, or compositor feedback.
+# The long route uses wall time and real production dt, never screenshot fixed dt.
+probe_start = 0.0
+probe_phase = -1
+probe_attack = -1
+probe_distance = 0.0
+probe_engaged = 0
+probe_swing = 0
+probe_fire = 0
+probe_rain = 0
+probe_snow = 0
+probe_callback_start = 0.0
+probe_thread_start = 0.0
+probe_callback_ms = 0.0
+probe_thread_ms = 0.0
+probe_soak = env("PROBE_SECONDS") != none
+probe_stages = env("PROBE_STAGES") != none
+probe_draw_end = 0.0
+probe_draw_thread_end = 0.0
+probe_pre_ms = 0.0
+probe_pre_thread_ms = 0.0
+probe_run_start = 0.0
+probe_run_thread_start = 0.0
+probe_route_name = env("PROBE_ROUTE") ?? "mixed"
+probe_waypoint = 0
+probe_waypoint_t = 0.0
+probe_waypoints = [vec2(-1140, 1610), vec2(-1030, 1730), vec2(-1000, 1815), vec2(-975, 1750), vec2(-1050, 1640), vec2(-1140, 1500)]
+
+probe_key = (k: Key, down: bool): __key_event(int(k), down)
+probe_route = ():
+    elapsed = time() - probe_start
+    if probe_route_name == "forest":
+        goal = probe_waypoints[probe_waypoint]
+        delta = goal - vec2(pl.pos.x, pl.pos.z)
+        # Production movement/collision and stamina; only scripted camera/input.
+        # A blocked leg times out, preserving bounded continuous traversal.
+        if length(delta) < 5.0 or elapsed - probe_waypoint_t > 40.0:
+            probe_waypoint = (probe_waypoint + 1) % probe_waypoints.len()
+            probe_waypoint_t = elapsed
+            eprint("forest waypoint: {probe_waypoint} elapsed {elapsed:.3} pos {pl.pos.x:.2},{pl.pos.z:.2} distance {probe_distance:.3}")
+            delta = probe_waypoints[probe_waypoint] - vec2(pl.pos.x, pl.pos.z)
+        cam.yaw = atan2(f64(delta.x), -f64(delta.y))
+        cam.idle_t = 0.0
+        cam_yaw_global = cam.yaw
+        if frame_number() % 120 == 0: eprint("forest pose: goal {goal.x:.1},{goal.y:.1} delta {delta.x:.2},{delta.y:.2} yaw {cam.yaw:.3} global {cam_yaw_global:.3}")
+        probe_key(.w, true)
+        probe_key(.shift, int(elapsed) % 12 < 3)
+        return
+    if probe_route_name != "mixed": return
+    phase = int(elapsed / 60.0)
+    local = elapsed - f64(phase) * 60.0
+    kind = phase % 5
+    if phase != probe_phase:
+        probe_phase = phase
+        loop k in [Key.w, .right, .shift, .k, .j]: probe_key(k, false)
+        x = if kind == 1: -1439.0 else if kind == 4: -1060.0 else: -1000.0
+        z = if kind == 1: 1614.0 else if kind == 4: 2230.0 else: 1620.0
+        yaw = if kind == 1: 0.0 else if kind == 4: 2.0 else: 3.14
+        __teleport(v3(x, height_at(x,z), z), yaw, false)
+        pl.state = .ground
+        pl.hp_max = 1200
+        pl.hp = pl.hp_max
+        pl.stamina = pl.stamina_max
+        fight = Fight()
+        if kind == 1: fight.weapon_out = true
+        env.weather = if kind == 3: Weather.storm else: Weather.clear
+        env.weather_t = 1e9
+        if kind == 2:
+            loop k in [0..5):
+                q = pl.pos + vec3(f32(k-2), 0, -9)
+                q.y = f32(height_at(f64(q.x), f64(q.z)) + 0.3)
+                ignite_at(q)
+        eprint("session phase: {phase} kind {kind} elapsed {elapsed:.3}")
+    probe_key(.w, kind != 1 and local < 50.0)
+    probe_key(.right, kind != 1 and local < 50.0)
+    probe_key(.shift, kind == 0 and int(local) % 12 < 3)
+    probe_key(.k, kind == 1)
+    attack = int(elapsed / 0.75)
+    probe_key(.j, kind == 1 and attack != probe_attack)
+    probe_attack = attack
+
+probe_update = (dt: f64):
+    probe_callback_start = time()
+    probe_thread_start = frame_thread_time()
+    if probe_stages:
+        probe_pre_ms = (probe_callback_start-probe_run_start)*1000.0
+        probe_pre_thread_ms = (probe_thread_start-probe_run_thread_start)*1000.0
+    if probe_soak: probe_route()
+    before = pl.pos
+    update(dt)
+    if probe_soak:
+        probe_distance += f64(length(pl.pos - before))
+        if fight.act == .swing: probe_swing += 1
+        if particles.len() > 0: probe_fire += 1
+        if env.rain > 0.2: probe_rain += 1
+        if is_snow_area(f64(pl.pos.x), f64(pl.pos.z)): probe_snow += 1
+        loop e in enemies:
+            if length(e.pos-pl.pos) < 40.0 and (e.state == .chase or e.state == .attack or e.state == .windup or e.state == .recover):
+                probe_engaged += 1
+                break
+probe_draw = ():
+    draw()
+    probe_callback_ms = (time()-probe_callback_start)*1000.0
+    probe_thread_ms = (frame_thread_time()-probe_thread_start)*1000.0
+    if probe_stages:
+        probe_draw_end = time()
+        probe_draw_thread_end = frame_thread_time()
+
+probe_memory = (minute: int):
+    # alloc_count aggregates all Sloppy allocator threads. Retained-big bytes is
+    # only the allocator's large-block reuse cache, not total live heap bytes.
+    live = alloc_count()
+    kept = 0
+    if __tstate != null:
+        loop t in [0..__MAX_THREADS + 1): kept += __tstate[t*__TS_WORDS + __TS_BIG + 1]
+    fd = syscall(2, data("/proc/self/status\0"), 0, 0)
+    assert(fd >= 0)
+    buffer = fill(u8(0), 8192)
+    count = syscall(0, fd, data(buffer), buffer.len())
+    syscall(3, fd)
+    assert(count > 0)
+    status = str_from_bytes(buffer[..count])
+    rss = 0
+    virtual = 0
+    loop line in split(status, "\n"):
+        words = split(replace(line, "\t", " "), " ").filter((s: str) -> bool: len(s)>0)
+        if words.len() >= 2:
+            if words[0] == "VmRSS:": rss = to_int(words[1]) ?? 0
+            if words[0] == "VmSize:": virtual = to_int(words[1]) ?? 0
+    eprint("session minute: {minute} elapsed {time()-probe_start:.3} rss_kib {rss} virtual_kib {virtual} heap_allocations {live} heap_cached_big_bytes {kept} distance {probe_distance:.3} engaged {probe_engaged} swing {probe_swing} fx {probe_fire} rain {probe_rain} snow {probe_snow}")
+
+main = ():
+    window(__win_title, __win_w, __win_h)
+    assert(__wayland and not __soft)
+    eprint("probe pid: {syscall(39)}")
+    __fixed_step = not probe_soak or env("PROBE_FIXED") != none
+    duration = to_float(env("PROBE_SECONDS") ?? "0") ?? 0.0
+    frames = to_int(env("PROBE_FRAMES") ?? "2400") ?? 2400
+    last = time()
+    returned = 0.0
+    minute = 0
+    lines = ""
+    loop not __win_close:
+        loop_start = if probe_stages: time() else: 0.0
+        loop_thread = if probe_stages: frame_thread_time() else: 0.0
+        __platform_poll()
+        polled = if probe_stages: time() else: 0.0
+        poll_thread = if probe_stages: frame_thread_time() else: 0.0
+        now = time()
+        dt = clamp(now-last, 0.0, 0.1)
+        last = now
+        if __fixed_step: dt = 1.0/60.0
+        if probe_start == 0.0: probe_start = now
+        __gl_screen_resize(__win_w, __win_h)
+        probe_run_start = if probe_stages: time() else: 0.0
+        probe_run_thread_start = if probe_stages: frame_thread_time() else: 0.0
+        __run_frame(dt, probe_update, probe_draw)
+        started = time()
+        submitted_thread = if probe_stages: frame_thread_time() else: 0.0
+        __platform_present()
+        done = time()
+        present_thread = if probe_stages: frame_thread_time() else: 0.0
+        __last_present = done-started
+        __frame_present += __last_present
+        n = frame_number()-1
+        interval = if returned > 0.0: (done-returned)*1000.0 else: 0.0
+        returned = done
+        if probe_stages and interval > 17.5 and n > 240:
+            prior = if n > 0: (loop_start - (done - interval/1000.0))*1000.0 else: 0.0
+            eprint("return stages: frame {n} interval {interval:.3} prior {prior:.3} poll {(polled-loop_start)*1000.0:.3}/{(poll_thread-loop_thread)*1000.0:.3} resize {(probe_run_start-polled)*1000.0:.3}/{(probe_run_thread_start-poll_thread)*1000.0:.3} runtime_pre {probe_pre_ms:.3}/{probe_pre_thread_ms:.3} callback {probe_callback_ms:.3}/{probe_thread_ms:.3} runtime_post {(started-probe_draw_end)*1000.0:.3}/{(submitted_thread-probe_draw_thread_end)*1000.0:.3} present {__last_present*1000.0:.3}/{(present_thread-submitted_thread)*1000.0:.3}")
+            cpu_return_trace(n)
+        lines += "present return: {n} {done-probe_start:.6} {interval:.6} {__last_present*1000.0:.6} {probe_callback_ms:.6} {probe_thread_ms:.6} {__win_w} {__win_h}\n"
+        finished = if probe_soak: done-probe_start >= duration else: n >= frames
+        if frame_number()%120 == 0 or finished:
+            eprint(lines)
+            lines = ""
+        if probe_soak and int((done-probe_start)/60.0) > minute:
+            minute = int((done-probe_start)/60.0)
+            probe_memory(minute)
+        if finished:
+            eprint("probe presentation: {__present_how()}")
+            if let path = env("PROBE_PNG"): save_png(screenshot(), path)
+            eprint("probe complete: frames {frame_number()} elapsed {done-probe_start:.6}")
+            exit(0)
+    panic("rendered probe closed before completion")

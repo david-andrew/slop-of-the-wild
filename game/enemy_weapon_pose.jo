@@ -1,0 +1,113 @@
+use 'gfx.jo'
+use 'skel.jo'
+use 'hero_motion.jo'
+
+# The attack track and the live windup use the same raised-hand overlay.
+# Work entirely on the CPU; baking it must not create a palette or depend on visibility.
+enemy_weapon_pose = (m: Model, lib: AnimLib, p: mut Pose, move: int, time_: f64, windup: bool, recovery: bool = false, spear: bool = false):
+    # A raised, backward-loaded chest tells a blow; the low forward chest and
+    # splayed off arm hold its follow-through. Active contacts still use the bake.
+    load = if windup: smooth01(time_ / 0.14) else: 0.0
+    settle = if recovery: 1.0 - smoothstep(0.18, 0.65, time_) else: 0.0
+    if windup or recovery:
+        rotate_bone(lib, p, lib_bone(lib, "spine_01"), vec3(1, 0, 0), -0.24 * load + 0.38 * settle)
+        rotate_bone(lib, p, lib_bone(lib, "spine_02"), vec3(0, 1, 0), -0.32 * load + 0.28 * settle)
+        rotate_bone(lib, p, lib_bone(lib, "upperarm_l"), vec3(0, 0, 1), 0.52 * load + 0.65 * settle)
+    if move == 3:
+        leg = HeroMotion()
+        motion_init(leg, m, lib)
+        toe = bone_index(m, "ball_r")
+        if toe < 0: return
+        reach = if windup: smooth01(time_ / 0.25) * 0.22 else: sin(clamp(time_ / 0.48, 0.0, 1.0) * PI)
+        pelvis = bone_index(m, "pelvis")
+        if pelvis >= 0:
+            parent = bone_world(m, p, m.parent[pelvis])
+            p.t[m.canon[pelvis]] += transform_dir(inverse(parent), v3(0.0, 0.0, reach * 0.14)) / f32(m.tscale)
+        target = motion_point(m, Pose(), toe) + v3(0.0, reach * 0.42, reach * 1.02)
+        motion_leg(leg, m, lib, p, 1, target)
+        return
+    if move == 2 and windup: return
+    u = bone_index(m, "upperarm_r")
+    l = bone_index(m, "lowerarm_r")
+    h = bone_index(m, "hand_r")
+    if u < 0 or l < 0 or h < 0: return
+    raised = v3(-0.38, 1.58, -0.23)
+    if not windup: raised = v3(-0.28, 1.43, -0.08)
+    fall = if move == 2: 1.0 else: (if windup: 0.0 else: smooth01(time_ / (if move == 1: 0.5 else: 0.18)))
+    target = lerp(raised, v3(-0.12, 0.82, 0.68), f32(fall))
+    # The armed shove stays low and pushes the held weapon toward the guard.
+    if move == 2: target = lerp(motion_point(m, p, h), target, f32(smooth01(time_ / 0.12)))
+    if windup: target = lerp(motion_point(m, p, h), raised, f32(smooth01(time_ / 0.16)))
+    if move == 4:
+        raised = v3(-0.32, 1.35, -0.38)
+        target = if windup: lerp(motion_point(m, p, h), raised, f32(smooth01(time_ / 0.3))) else: lerp(raised, v3(-0.16, 1.0, 0.75), f32(smooth01(time_ / 0.22)))
+    if windup and spear:
+        target = lerp(motion_point(m, p, h), v3(-0.40, 0.99, -0.22), f32(load))
+    if recovery:
+        # Club hangs beyond the lead knee; spear retracts low under the armpit.
+        rest = motion_point(m, p, h)
+        end = if spear: v3(-0.40, 0.75, 0.10) else: v3(-0.40, 0.58, 0.62)
+        target = lerp(rest, end, f32(settle))
+    motion_arm(m, lib, p, u, l, h, target)
+    socket = bone_world(m, p, h) * SOCKET_HAND_R.offset
+    from = normalize(transform_dir(socket, vec3(0, 1, 0)))
+    to = normalize(lerp(vec3(0, 1, -0.15), vec3(0, -0.25, 1), f32(fall)))
+    if windup and spear: to = normalize(vec3(0.03, 0.04, 1))
+    if recovery: to = normalize(lerp(from, (if spear: vec3(0.0, 0.04, 1.0) else: vec3(-0.25, -0.6, 0.8)), f32(settle)))
+    axis = cross(from, to)
+    if length(axis) > 0.00001:
+        parent = bone_world(m, p, m.parent[h])
+        local = normalize(transform_dir(inverse(parent), axis))
+        angle = acos(clamp(f64(dot(from, to)), -1.0, 1.0))
+        p.r[m.canon[h]] = normalize(quat_mul(quat_axis_angle(local, angle), p.r[m.canon[h]]))
+
+# Planted feet can lower the pelvis after the contact socket was baked. Lean the
+# chest toward that fixed socket so the arm follows it without stretching;
+# pinning only the wrist otherwise leaves it far ahead of the forearm's end.
+enemy_contact_reach = (m: Model, lib: AnimLib, p: mut Pose, target: vec3):
+    u = bone_index(m, "upperarm_r")
+    l = bone_index(m, "lowerarm_r")
+    h = bone_index(m, "hand_r")
+    spine = bone_index(m, "spine_01")
+    if u < 0 or l < 0 or h < 0 or spine < 0: return
+    a = motion_point(m, p, u)
+    b = motion_point(m, p, l)
+    c = motion_point(m, p, h)
+    upper = f64(length(b - a))
+    lower = f64(length(c - b))
+    near = abs(upper - lower) + 0.004
+    far = upper + lower - 0.004
+    gap = f64(length(target - a))
+    if gap >= near and gap <= far: return
+    reach = if gap < near: near else: far
+    pivot = motion_point(m, p, spine)
+    from = a - pivot
+    to = target - pivot
+    radius = f64(length(from))
+    distance = f64(length(to))
+    if radius < 0.001 or distance < 0.001: return
+    current = acos(clamp(f64(dot(normalize(from), normalize(to))), -1.0, 1.0))
+    desired = acos(clamp((radius * radius + distance * distance - reach * reach) / (2.0 * radius * distance), -1.0, 1.0))
+    axis = cross(from, to)
+    if abs(current - desired) < 0.00001 or length(axis) < 0.00001: return
+    parent = bone_world(m, p, m.parent[spine])
+    local = normalize(transform_dir(inverse(parent), axis))
+    p.r[m.canon[spine]] = normalize(quat_mul(quat_axis_angle(local, current - desired), p.r[m.canon[spine]]))
+
+# Ring participants carry at hip height with the tip down, even during a taunt.
+# Feet/locomotion remain in the clip; a windup immediately switches to the attack overlay.
+enemy_waiting_weapon_pose = (m: Model, lib: AnimLib, p: mut Pose, spear: bool = false):
+    u = bone_index(m, "upperarm_r")
+    l = bone_index(m, "lowerarm_r")
+    h = bone_index(m, "hand_r")
+    if u < 0 or l < 0 or h < 0: return
+    motion_arm(m, lib, p, u, l, h, v3(-0.45, 0.68, 0.05))
+    socket = bone_world(m, p, h) * SOCKET_HAND_R.offset
+    from = normalize(transform_dir(socket, vec3(0, 1, 0)))
+    to = normalize(if spear: vec3(-0.16, -0.20, 1.0) else: vec3(-0.72, -0.30, 0.60))
+    axis = cross(from, to)
+    if length(axis) > 0.00001:
+        parent = bone_world(m, p, m.parent[h])
+        local = normalize(transform_dir(inverse(parent), axis))
+        angle = acos(clamp(f64(dot(from, to)), -1.0, 1.0))
+        p.r[m.canon[h]] = normalize(quat_mul(quat_axis_angle(local, angle), p.r[m.canon[h]]))

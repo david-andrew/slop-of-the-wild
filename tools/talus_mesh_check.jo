@@ -1,0 +1,37 @@
+# Intersect the actual production triangles with every collision section.
+# This supplements talus_skin_check: a correct envelope alone cannot catch
+# a coarse triangle cutting across a bevel or the wrong vertex deformation.
+use '../game/talus.jo'
+use '../game/enemies.jo'
+use '../game/build.jo'
+use '../game/gfx.jo'
+course=talus_course_mesh()
+worst=0.0
+samples=0
+loop state in [EState.sleep,EState.notice,EState.chase,EState.attack,EState.celebrate]:
+    e=Enemy(kind=.talus,state=state,t=0.48,anim_t=5.2)
+    loop g in [0..TALUS_BOULDERS):
+        b=talus_boulder(e,g)
+        wide=max(f64(b.half.x),f64(b.half.z))
+        spine=talus_part(e,g)
+        size=v3(wide,f64(b.half.y),wide)
+        inst=TalusRockI(translation(b.pos)*scaling(size),vec4(1,1,1,1),vec4(0,0,0,0),center=v3(f64(g),f64(b.half.z)/wide,f64(spine.half.x)/wide),radius=size)
+        points: vec3[]
+        loop v in course.vs: points.push(talus_rock_vs(BVert(v.pos,v.normal,v.color,vec4(0,0,0,0)),inst,BuildU()).world)
+        loop slice in [0..TALUS_SLICES):
+            c=talus_part(e,TALUS_BOULDERS+g*TALUS_SLICES+slice)
+            y=c.pos.y+c.half.y
+            loop tri in [0..course.idx.len()/3):
+                hits: vec3[]
+                loop k in [0..3):
+                    a=points[int(course.idx[tri*3+k])]
+                    d=points[int(course.idx[tri*3+(k+1)%3])]
+                    if (a.y<y and d.y>=y) or (d.y<y and a.y>=y): hits.push(mix(a,d,(y-a.y)/(d.y-a.y)))
+                if hits.len()!=2: continue
+                loop t in [0.0,0.5,1.0]:
+                    p=mix(hits[0],hits[1],f32(t))
+                    gap=abs(hypot(f64(p.x-c.pos.x),f64(p.z-c.pos.z))-f64(c.half.x))
+                    worst=max(worst,gap)
+                    samples+=1
+print("mesh {course.vs.len()} vertices {course.idx.len()/3} triangles; {samples} section/triangle samples; worst {worst:.5}")
+assert(worst<0.16,"actual faceted mesh follows the collision sections")

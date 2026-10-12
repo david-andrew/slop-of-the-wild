@@ -1,0 +1,107 @@
+# Production player + element integration: normal jump/open-glider inputs over
+# grass fire, ordinary sink away from it, dousing and cover, accepted burn/shock.
+# Headless: sloppy/bin/sloppy tools/round71_elements_check.jo
+use 'tree_checks.jo'
+from 'tree_checks.jo' import __tree_course
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/player.jo'
+use '../game/elements.jo'
+use '../game/combat.jo'
+use '../game/input.jo'
+use '../game/fx.jo'
+use '../game/physics.jo'
+use '../game/env.jo'
+use '../game/items.jo'
+use '../game/water.jo'
+
+const DT = 1.0 / 120.0
+checks = 0
+check = (ok: bool, name: str):
+    assert(ok, name)
+    checks += 1
+    print("PASS {name}")
+
+run = ():
+    __audio_state = 2
+    items_init()
+    seed_random(71)
+    __tree_course()
+    # Several live patches form a fire broad enough for the forward-moving glider.
+    loop z in [-4..6]:
+        loop x in [-3..3]: assert(ignite_at(v3(f64(x) + 0.5, 0.1, f64(z) + 0.5)))
+    pl = Player(pos=vec3(0.5,0,5.5), face=0.0, has_glider=true, invuln=2.0)
+    pl.ground = ground_at(0.5,5.5,0.0,0.5,RADIUS)
+    act = Actions()
+    act.jump = true
+    act.jump_held = true
+    player_update(DT)
+    elements_update(DT, pl.pos)
+    check(pl.state == .air, "standing jump over a live grass fire")
+    act.jump = false
+    loop k in [0..32):
+        player_update(DT)
+        elements_update(DT, pl.pos)
+    act.jump = true
+    player_update(DT)
+    elements_update(DT, pl.pos)
+    check(pl.state == .glide, "second jump input opens paraglider")
+    act.jump = false
+    start = pl.pos.y
+    loop k in [0..240):
+        player_update(DT)
+        elements_update(DT, pl.pos)
+    check(pl.state == .glide and pl.vel.y > 7.0 and pl.pos.y > start + 8.0, "fire column lifts Link through production movement")
+    print("updraft rise {pl.pos.y - start:.3}m, velocity {pl.vel.y:.3}m/s")
+    pl.pos = vec3(25,10,25)
+    loop k in [0..120):
+        player_update(DT)
+        elements_update(DT, pl.pos)
+    check(pl.vel.y < -2.5 and pl.updraft == 0.0, "leaving the column restores glide sink")
+    pl.pos.y = 20
+    env.wind = vec2(-3,0)
+    env.gust = 2.0
+    loop k in [0..120): player_update(DT)
+    check(pl.glide_lean < -0.18, "glider banks with a crosswind")
+    env.wind = vec2(3,0)
+    loop k in [0..120): player_update(DT)
+    check(pl.glide_lean > 0.18, "reversing wind reverses glider bank")
+    env.wind = vec2(1,0.35)
+    env.gust = 1.0
+    check(fire_updraft_at(vec3(0.5,41,0.5)) == 0.0 and fire_updraft_at(vec3(0.5,-1,0.5)) == 0.0, "fire column has finite height and no lift below ground")
+    add_box(vec3(0.5,3,0.5), vec3(8,0.25,8))
+    check(fire_updraft_at(vec3(0.5,5,0.5)) == 0.0, "roof blocks hot air")
+    loop mut c in colliders: c.active = false
+    loop mut f in flames: f.life = 0.0
+    elements_update(DT, pl.pos)
+    check(fire_updraft_at(vec3(0.5,2,0.5)) == 0.0, "extinguished grass stops lift")
+    bonfires = [Bonfire(vec3(0.5,0,0.5))]
+    check(fire_updraft_at(vec3(0.5,2,0.5)) == 7.0, "lit campfire supplies a column")
+    bonfires[0].lit = false
+    check(fire_updraft_at(vec3(0.5,2,0.5)) == 0.0, "doused campfire stops lift")
+
+    __tree_course()
+    pl = Player(pos=vec3(0.5,0,0.5))
+    fight = Fight()
+    assert(ignite_at(pl.pos + vec3(0,0.1,0)))
+    elements_update(DT, pl.pos)
+    check(pl.hp == 11 and pl.state == .hurt and fight.act == .hit and player_burn_t > 0.8, "stationary fire contact damages, recoils and attaches body flames")
+    burn_player(pl.pos, 3.0)
+    check(pl.hp == 11, "invulnerability prevents duplicate burn damage")
+    fx_update(0.9)
+    check(player_burn_t == 0.0, "body flames expire")
+
+    # A bolt entering the connected pond uses its accepted water flood hit path.
+    loop mut f in flames: f.life = 0.0
+    elements_update(DT, pl.pos)
+    water_grid_set(fill(f32(1.0),4096),64,-32.0,-32.0,1.0)
+    pl = Player(pos=vec3(5,0.5,0),state=.swim,grounded=false)
+    fight = Fight()
+    strike_at(vec3(0,1,0))
+    check(pl.hp == 8 and player_shock_t > 0.3 and fight.act == .hit, "water conducts bolt to Link with body filaments and flinch")
+    shock_player(4, vec3(0,1,0), 3.0)
+    check(pl.hp == 8, "same bolt cannot damage invulnerable Link twice")
+    print("{checks} round71 element integration checks passed")
+
+run()

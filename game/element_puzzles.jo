@@ -1,0 +1,189 @@
+use 'gfx.jo'
+use 'audio_cache.jo'
+use 'physics.jo'
+use 'terrain.jo'
+use 'water.jo'
+use 'matter.jo'
+use 'elements.jo'
+use 'interact.jo'
+use 'items.jo'
+use 'combat.jo'
+use 'env.jo'
+use 'fx.jo'
+use 'scene.jo'
+use 'structures.jo'
+use 'talus.jo'
+use 'render.jo'
+from 'elements.jo' import __exposure, __in_water, __fire_reaches
+
+# Small wordless field beats: dry thorns at the forest's west edge, cracked
+# rubble above the eastern River of the Dead bank. The chest survives the heat.
+struct ElementPuzzle:
+    pos: vec3
+    thorn: bool
+    cols: int[]
+    chest: int
+    opened = false
+    el = Elem()
+    marker = -1
+    hint_t = 0.0
+
+element_puzzles: ElementPuzzle[]
+const THORNS = Matter(flammable=true,burn_time=3.0,ignite_at=0.6)
+thorn_mesh: Mesh
+thorn_ready = false
+
+element_puzzle_boulder = (p: vec3, k: int) -> TalusPart:
+    wide=[0.72,0.84,0.75][k]
+    height=[1.25,1.75,1.10][k]
+    TalusPart(p+v3(f64(k-1)*1.0,0.0,[0.15,-0.08,0.10][k]),v3(wide,height*0.5,wide),0.0)
+
+# Barrier solids are also the render transforms; no invisible gate remains.
+element_puzzle_add = (p: vec3, thorn: bool) -> int:
+    ci = add_chest(p+vec3(0,0,-1.4),0.0,(if thorn:"arrow" else:"amber"),(if thorn:5 else:2))
+    cols: int[]
+    if thorn:
+        cols.push(add_box(p,v3(1.55,0.85,0.16),climbable=false,surf=.wood))
+    else:
+        loop k in [0..3):
+            b=element_puzzle_boulder(p,k)
+            loop slice in [-1..8):
+                base=b.pos
+                half=b.half.y
+                radius=f64(b.half.x)*0.33
+                if slice>=0:
+                    y=(f64(slice)+0.5)/8.0
+                    radius=f64(b.half.x)*sqrt(max(0.0,1.0-pow(y*2.0-1.0,2.0)))*(0.93+0.04*sin(f64(k*5+slice)*1.9))
+                    base.y+=b.half.y*f32(f64(slice)*0.25)
+                    half/=8.0
+                    base.x+=f32(sin(f64(k*7+slice))*radius*0.04)
+                cols.push(add_cyl(base,radius,f64(half)*2.0,climbable=true,surf=.rock))
+    # Existing once-used save records remember opening even before collection.
+    marker = add_usable(p,0.0,"",():pass)
+    usables[marker].enabled = false
+    usables[chests[ci].usable].enabled = false
+    element_puzzles.push(ElementPuzzle(p,thorn,cols,ci,marker=marker))
+    element_puzzles.len()-1
+
+element_puzzles_place = ():
+    loop xy in [FOREST_THORNS,RIVER_CRACKS]:
+        p = v3(f64(xy.x),height_at(f64(xy.x),f64(xy.y)),f64(xy.y))
+        thorn = xy == FOREST_THORNS
+        element_puzzle_add(p,thorn)
+        if not thorn:
+            q = p+vec3(1.8,0,1.6)
+            q.y = f32(height_at(f64(q.x),f64(q.z)))
+            id = add_cyl(q,0.35,0.9,false,.wood)
+            barrels.push(Barrel(q,true,col=id))
+
+element_puzzle_open = (i: int):
+    p = element_puzzles[i]
+    element_puzzles[i].opened = true
+    element_puzzles[i].el = Elem()
+    usables[p.marker].used = true
+    usables[chests[p.chest].usable].enabled = true
+    loop col in p.cols: colliders[col].active = false
+    # Reward location survives the dissolving obstacle: a warm rising ring and
+    # a single resolve chime lead the eye to the newly accessible chest.
+    play(cached_chime(), 0.4, 0.0, 1.25)
+    reward = chests[p.chest].pos + vec3(0, 0.8, 0)
+    loop k in [0..16):
+        a = TAU * f64(k) / 16.0
+        fx_feedback(.glow, reward + v3(cos(a) * 0.5, 0.0, sin(a) * 0.5),
+            v3(cos(a) * 0.35, 0.6, sin(a) * 0.35), 1.5, 0.07, rgba(1.0, 0.8, 0.35, 0.9))
+
+# Evaluate all blast exposure before removing any cover, as with shrine cracks.
+element_puzzles_blast = (source: vec3):
+    exposed: int[]
+    loop i in 0.. and p in element_puzzles:
+        if p.thorn or p.opened: continue
+        loop col in p.cols:
+            c = colliders[col]
+            if blast_reaches(source,c.pos+vec3(0,c.half.y,0),6.0,col):
+                exposed.push(i)
+                break
+    loop i in exposed:
+        element_puzzle_open(i)
+        fx_poof(element_puzzles[i].pos+vec3(0,0.7,0))
+
+# Called during restore as well as update so collision/access agree immediately.
+element_puzzles_sync = ():
+    loop i in 0.. and p in element_puzzles:
+        opened = usables[p.marker].used
+        element_puzzles[i].opened = opened
+        loop col in p.cols: colliders[col].active = not opened
+        usables[chests[p.chest].usable].enabled = opened
+
+element_puzzles_update = (dt: f64, cam: vec3):
+    element_puzzles_sync()
+    loop i in [0..element_puzzles.len()):
+        p = element_puzzles[i]
+        if p.opened or not p.thorn or length(p.pos-cam)>150.0: continue
+        # Sample across the wall: a torch/fire arrow at either edge can ignite it.
+        ex = Exposure()
+        loop dx in [-1.1,0.0,1.1]:
+            q = p.pos+v3(dx,0.85,0.0)
+            sample = __exposure(q,__in_water(q,0.1),p.cols[0])
+            ex.heat = max(ex.heat,sample.heat)
+            ex.water = ex.water or sample.water
+            ex.rain = max(ex.rain,sample.rain)
+            loop h in player_hits:
+                if h.fire and blade_touches(h,q,0.5,p.cols[0]): ex.heat += 30.0
+        # A lit brand close to dry stems teases smoke/embers before ignition.
+        # Distance and cover are visual hints only; chemistry still owns burning.
+        hint = false
+        hint_pos = p.pos + vec3(0,0.8,0.2)
+        if equipped_weapon()=="torch" and p.el.wet<0.4 and ex.rain<0.25:
+            loop dx in [-1.1,0.0,1.1]:
+                stem = p.pos+v3(dx,0.85,0.0)
+                if length(torch_tip-stem)<3.5 and __fire_reaches(torch_tip,stem,3.5,p.cols[0]):
+                    hint = true
+                    hint_pos = stem+vec3(0,0,0.2)
+        if hint and not burning(p.el):
+            element_puzzles[i].hint_t -= dt
+            if element_puzzles[i].hint_t <= 0.0:
+                element_puzzles[i].hint_t = 0.24
+                fx_feedback(.smoke, hint_pos, vec3(0, 0.55, 0), 1.1, 0.24, rgba(0.62, 0.54, 0.42, 0.65))
+                fx_feedback(.ember, hint_pos+vec3(0,0.05,0), vec3(0.1, 0.65, 0), 0.8, 0.07, rgba(1.0, 0.48, 0.12, 0.9))
+        else: element_puzzles[i].hint_t = 0.0
+        if react(THORNS,element_puzzles[i].el,ex,dt)==.burnt_up:
+            element_puzzle_open(i)
+            fx_poof(p.pos+vec3(0,0.7,0))
+        else if burning(element_puzzles[i].el):
+            loop dx in [-1.1,0.0,1.1]: fx_fire(p.pos+v3(dx,0.5,0.0),0.7,dt)
+
+# Twisted dead stems, angular thorns and rusty leaves fill the solid wall's bounds.
+element_thorn_init = ():
+    if thorn_ready: return
+    thorn_ready = true
+    b = MeshB()
+    loop k in [0..19):
+        x = -1.48+f64(k)*0.164
+        prev = v3(x,0.0,0.02*sin(f64(k)))
+        loop j in [1..6):
+            next = v3(clamp(x+sin(f64(k*3+j))*0.28,-1.52,1.52),f64(j)*0.31+sin(f64(k+j))*0.06,0.10*cos(f64(k+j)))
+            mb_cyl(b,prev,next,0.032,0.025,rgb(0.27,0.19,0.10),5)
+            tip = next+v3((if j%2==0:0.11 else:-0.11),0.09,0.015)
+            mb_cyl(b,next,tip,0.025,0.002,rgb(0.34,0.24,0.13),4)
+            if j%2==0: mb_sphere(b,next+vec3(0.06,0,0),vec3(0.09,0.025,0.05),rgb(0.35,0.27,0.11),4)
+            prev=next
+    loop j in [0..6):
+        y = 0.12+f64(j)*0.28
+        loop k in [0..6):
+            a = -1.5+f64(k)*0.5
+            mb_cyl(b,v3(a,y+sin(f64(j+k))*0.13,0.02),v3(a+0.5,y+cos(f64(j+k))*0.16,0.07),0.025,0.020,rgb(0.25,0.19,0.12),5)
+    thorn_mesh = mesh(b.vs,b.idx)
+
+element_puzzles_draw = (cam: vec3):
+    element_thorn_init()
+    rocks: TalusRockI[]
+    loop p in element_puzzles:
+        if p.opened or length(p.pos-cam)>120.0: continue
+        if p.thorn:
+            draw_prop(thorn_mesh,translation(p.pos),vec4(1,1,1,1),(if burning(p.el):0.15 else:0.0),0.0)
+        else:
+            loop j in 0.. and col in p.cols:
+                c = colliders[col]
+                b=element_puzzle_boulder(p.pos,j/9)
+                rocks.push(TalusRockI(translation(c.pos)*rotation_y(c.yaw)*scaling(c.half),rgb(0.25,0.23,0.20),vec4(0,0,0,3),center=b.pos+vec3(0,b.half.y,0),radius=b.half))
+    if rocks.len()>0: talus_draw_rocks(rocks)

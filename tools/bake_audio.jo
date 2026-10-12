@@ -1,0 +1,20 @@
+build:
+    opt = release
+use '../game/sfx.jo'
+use '../game/audio_cache.jo'
+use '../game/music.jo'
+use '../game/audio_assets.jo'
+# Run with BOTW_BAKE_ASSETS=1: generate exact float samples using production code.
+# Prepared assets are optional; source/input fingerprint changes regenerate normally.
+assert(env("BOTW_BAKE_ASSETS") != none, "run through tools/prepare_assets.sh")
+assert(mkdir("assets/prepared"))
+t = time()
+sfx_init()
+assert(audio_asset_write("assets/prepared/sfx.bin", audio_asset_key(["game/sfx.jo"]), sfx_asset()))
+print("baked SFX {time() - t:.3}s")
+t = time()
+piano_init()
+assert(audio_asset_write("assets/prepared/piano.bin", audio_asset_key(["game/music.jo"]), piano_asset()))
+print("baked piano {time() - t:.3}s")
+audio_cache_init()
+assert(audio_asset_write("assets/prepared/chime.bin", audio_asset_key(["game/audio_cache.jo"]), chime_asset()))

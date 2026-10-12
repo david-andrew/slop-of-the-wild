@@ -1,0 +1,32 @@
+# Run through tools/traversal_check; emits every frame, including transition events.
+use 'traversal_course.jo'
+use '../game/gfx.jo'
+use '../game/items.jo'
+use '../game/chars.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/camera.jo'
+use '../game/hero_motion.jo'
+use '../game/combat.jo'
+
+__audio_state = 2
+__input_init()
+items_init()
+chars_init()
+loop hz in [20, 30, 60, 120, 240]:
+    loop name in ["slope_walk", "slope_run", "slope_sprint", "mantle_complete", "mantle_release", "mantle_stamina", "corner", "corner_press", "jump_sprint", "fall_sprint", "chain", "rain", "lift"]:
+        tr_reset(name, hz)
+        loop k in [0..hz * 12): tr_tick()
+        out = env("TRAVERSAL_OUT") ?? "build/traversal-check"
+        write_file("{out}/{name}-{hz}.csv", tr_rows)
+        print("{name} {hz}Hz step={tr_step:.4} camera_step={tr_camera_step:.4} penetration={tr_penetration:.4} drift={hero_motion.drift:.5} sole={hero_motion.sole:.5} gap={hero_motion.separation:.5} contacts={hero_motion.samples} airborne_contacts={tr_air_contacts} mantle={tr_mantle} cancelled={tr_cancelled} land={tr_land:.4} sprint={tr_sprint:.4} chain={tr_phase} slips={tr_slips} departed={tr_lift_depart}; {tr_events}")
+
+# Irregular displayed frames, with a common timestamped production-input course.
+loop name in ["temporal_run", "temporal_jump", "temporal_attack", "temporal_camera", "hitch_wall"]:
+    loop schedule in [1, 2, 3, 4, 5, 6, 7]:
+        tr_reset(name, 120)
+        tr_schedule = schedule
+        loop tr_time < 12.0 - 1e-9: tr_tick()
+        out = env("TRAVERSAL_OUT") ?? "build/traversal-check"
+        write_file("{out}/{name}-irregular-{schedule}.csv", tr_rows)
+        print("{name} schedule={schedule} frames={tr_frame} substeps={tr_substeps} jump_inputs={tr_jump_inputs} attack_inputs={tr_attack_inputs} swings={fight.swing_id}")

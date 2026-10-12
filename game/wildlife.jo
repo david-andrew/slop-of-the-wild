@@ -1,0 +1,1601 @@
+use 'gfx.jo'
+use 'env.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'water.jo'
+use 'worldgen.jo'
+use 'scene.jo'
+use 'skel.jo'
+use 'charshade.jo'
+use 'chars.jo'
+use 'player.jo'
+use 'camera.jo'
+use 'combat.jo'
+use 'items.jo'
+use 'fx.jo'
+use 'input.jo'
+use 'interact.jo'
+use 'ui.jo'
+use 'vegetation.jo'
+use 'elements.jo'
+use 'structures.jo'
+use 'matter.jo'
+use 'sfx.jo'
+use 'wildlife_motion.jo'
+
+# Animals where the original puts them: woodland boars in the Forest of Spirits (they graze,
+# startle and bolt, and charge when cornered), flocks of sparrows and pigeons that burst into
+# the air as you come near, hawks wheeling over the cliffs, bass in the ponds, butterflies over
+# the meadows by day and fireflies by Hopper Pond at dusk; red foxes slinking along the woods'
+# edges, and crows picking round the Bokoblin camps and the dead Guardians.
+
+enum WKind: boar, sparrow, pigeon, hawk, fish, fox, crow
+
+enum WState: graze, walk, flee, charge, fly, land, dead, gone
+
+struct Animal:
+    kind: WKind
+    pos: vec3
+    home: vec3
+    face = 0.0
+    state = WState.graze
+    t = 0.0
+    speed = 0.0
+    hp = 3.0
+    vy = 0.0
+    anim: Animator
+    skin: Skin
+    seed = 0.0
+    appearance = -1.0      # herd-spaced visual trait, independent of behaviour RNG
+    last_swing = -1
+    respawn = 0.0
+    gait = 0.0             # where the legs are in their stride (radians)
+    refuge = vec3(0, 0, 0)
+    scare = vec3(0, 0, 0)
+    startle = 0.0
+    sense = 0.0
+    danger = false
+    resting = false
+    nav_t = 0.0
+    nav_face = 0.0
+    flock = -1
+    idle = 0.0
+    landing = vec3(0, 0, 0)
+    el = Elem()
+    impulse = vec3(0, 0, 0)
+    voice_t = 4.0
+    voice_state = WState.graze
+
+animals: Animal[]
+# where a crow cawed this frame (the game plays them)
+wild_calls: vec3[]
+
+struct WildVoice:
+    kind: str
+    pos: vec3
+wild_voices: WildVoice[]
+
+wild_voice = (a: mut Animal, kind: str):
+    if a.voice_t > 0.0 and kind == "boar_graze": return
+    # At most one event per animal/state edge, with a cooldown on incidental calls.
+    pos = wildlife_hit_center(a)
+    wild_voices.push(WildVoice(kind, pos))
+    a.voice_t = 8.0 + fract(a.seed * 0.713) * 9.0
+    sound = match kind:
+        "boar_graze": sfx.boar_grunt
+        "boar_alarm": sfx.boar_alarm
+        "boar_charge": sfx.boar_snort
+        "fox_yip": sfx.fox_yip
+        _: sfx.bird_scatter
+    # Stable identity changes breath and attack as well as pitch, without sample work
+    # or gameplay RNG consumption when a creature calls.
+    voice_kind = match kind:
+        "boar_graze": 0
+        "boar_alarm": 1
+        "boar_charge": 2
+        "fox_yip": 3
+        _: 4
+    if sfx.ready and sfx.individuals.len() == 5:
+        sound = sfx.individuals[voice_kind][int(fract(a.seed * 0.613) * 4.0)]
+    saved_rng = __global_rng
+    defer __global_rng = saved_rng
+    sfx_at(sound, pos, sc.cam, normalize(cross(sc.fwd, vec3(0, 1, 0))), (if kind == "boar_graze": 0.38 else: 0.6), 0.94 + fract(a.seed * 0.37) * 0.12, (if kind == "boar_graze": 24.0 else: 40.0))
+
+wild_voice_update = (a: mut Animal, dt: f64):
+    a.voice_t = max(0.0, a.voice_t - dt)
+    if a.state == .dead or a.state == .gone: return
+    if a.kind == .boar:
+        if a.state == .charge and a.voice_state != .charge: wild_voice(a, "boar_charge")
+        else if a.state == .flee and a.voice_state != .flee and a.voice_state != .charge: wild_voice(a, "boar_alarm")
+        else if a.state == .graze and not a.resting and not a.danger and a.voice_t <= 0.0: wild_voice(a, "boar_graze")
+    else if a.kind == .fox and a.state == .flee and a.voice_state != .flee: wild_voice(a, "fox_yip")
+    else if (a.kind == .sparrow or a.kind == .pigeon) and a.state == .fly and a.voice_state != .fly and (a.danger or a.startle > 0.0):
+        # One in three flock members chirps, avoiding a dense unison burst.
+        if a.flock < 0 or fract(a.seed * 0.73) < 0.34: wild_voice(a, "bird_scatter")
+    a.voice_state = a.state
+
+eagle_m = Model()
+fox_m = Model()
+fox_lib = AnimLib()
+gull_m = Model()
+bird_lib = AnimLib()
+fish_m: Model[]
+fish_libs: AnimLib[]
+wild_ready = false
+
+struct Bug:
+    pos: vec3
+    home: vec3
+    phase: f64
+    firefly: bool
+    fleeing = 0.0
+    hide = 0.0
+
+bugs: Bug[]
+
+wildlife_init = ():
+    eagle_m = load_model("assets/models/eagle.mdl")
+    fox_m = load_model("assets/models/fox.mdl")
+    fox_lib = load_anims("assets/models/fox.anim")
+    gull_m = load_model("assets/models/seagull.mdl")
+    bird_lib = load_anims("assets/models/bird.anim")
+    loop k in [1..3]:
+        fish_m.push(load_model("assets/models/fish{k}.mdl"))
+        fish_libs.push(load_anims("assets/models/fish{k}.anim"))
+    wild_ready = eagle_m.ok
+    seed_random(17)
+    loop a in actors:
+        x = f64(a.pos.x)
+        z = f64(a.pos.z)
+        if not in_bounds(x, z) or edge_at(x, z) > -3.0: continue
+        g = height_at(x, z)
+        p = v3(x, g, z)
+        n = a.name
+        if n == "Animal_Boar_A":
+            __add(.boar, p)
+            # Loose family patches, with room between bodies rather than a square cluster.
+            herd_start = animals.len() - 1
+            animals[herd_start].flock = herd_start + 5
+            loop k in [0..random_int(1, 3)):
+                loop attempt in [0..8):
+                    angle = random(0.0, TAU)
+                    radius = random(2.4, 7.5)
+                    q = p + v3(cos(angle) * radius, 0.0, sin(angle) * radius)
+                    if not in_bounds(f64(q.x), f64(q.z)) or water_depth(f64(q.x), f64(q.z)) > 0.1 or normal_at(f64(q.x), f64(q.z)).y < 0.8: continue
+                    clear = true
+                    loop j in [herd_start..animals.len()):
+                        if length(vec2(q.x - animals[j].pos.x, q.z - animals[j].pos.z)) < 2.3: clear = false
+                    if not clear: continue
+                    q.y = f32(height_at(f64(q.x), f64(q.z)))
+                    __add(.boar, q)
+                    member = animals.len() - 1
+                    animals[member].flock = animals[herd_start].flock
+                    animals[member].appearance = fract(animals[herd_start].appearance + f64(k + 1) * 0.381966)
+                    animals[member].idle = animals[herd_start].idle + f64(k + 1) * 3.4
+                    animals[member].face = animals[herd_start].face + 1.1 + f64(k) * 2.1 + (fract(animals[member].seed * 0.91) - 0.5) * 0.6
+                    break
+        else if n == "Animal_LittleBird_A":
+            loop k in [0..5): __add(.sparrow, p + v3(random(-2.0, 2.0), 0.0, random(-2.0, 2.0)))
+        else if n == "Animal_Pigeon_A":
+            loop k in [0..4): __add(.pigeon, p + v3(random(-2.0, 2.0), 0.0, random(-2.0, 2.0)))
+        else if n == "Animal_Fish_A" or n == "SmallFishes1":
+            if let wl = water_level(x, z): __add(.fish, v3(x, wl - 0.6, z))
+        else if n == "Butterfly":
+            loop k in [0..2): bugs.push(Bug(p + v3(random(-3.0, 3.0), 1.0, random(-3.0, 3.0)), p, random(0.0, 50.0), false))
+        else if starts_with(n, "Animal_Insect_E"):
+            loop k in [0..8): bugs.push(Bug(p + v3(random(-4.0, 4.0), 1.0, random(-4.0, 4.0)), p, random(0.0, 50.0), true))
+    # hawks over the cliffs and the forest
+    loop c in [(-1200.0, 1700.0), (-700.0, 1600.0), (-1000.0, 2100.0), (-600.0, 2000.0), (-1000.0, 1780.0)]:
+        __add(.hawk, v3(c.0, height_at(c.0, c.1) + 60.0, c.1))
+    # sparrows in the grass along the way from the cave to the overlook: the first life you meet
+    loop c in [(-1062.0, 1842.0), (-1041.0, 1818.0), (-1028.0, 1793.0), (-958.0, 1868.0)]:
+        loop k in [0..6): __add(.sparrow, v3(c.0 + random(-2.5, 2.5), height_at(c.0, c.1), c.1 + random(-2.5, 2.5)))
+    # Feeding flocks on the opening meadow, Temple lawn and the old man's hill.
+    # Some birds make short ordinary flights even when Link is standing still.
+    loop fi in 0.. and c in [(-1018.0, 1805.0), (-1024.0, 1792.0), (-942.0, 1874.0), (-846.0, 1958.0), (-802.0, 1944.0)]:
+        loop k in [0..10):
+            q = v3(c.0 + random(-3.0, 3.0), 0.0, c.1 + random(-3.0, 3.0))
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            __add((if k % 4 == 0: WKind.pigeon else: WKind.sparrow), q)
+            a = animals.len() - 1
+            animals[a].flock = fi
+            animals[a].landing = q
+            if k < 3:
+                animals[a].state = .fly
+                animals[a].pos.y += f32(2.0 + f64(k) * 0.4)
+                animals[a].vy = 1.0
+                animals[a].t = 1.0 + f64(k) * 0.25
+        # A few butterflies at each meadow; flower placements below supply the rest.
+        loop k in [0..5):
+            q = v3(c.0 + random(-3.0, 3.0), 0.0, c.1 + random(-3.0, 3.0))
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            bugs.push(Bug(q, q, random(0.0, 50.0), false))
+    nflower = 0
+    loop p in places:
+        if nflower >= 64: break
+        if not starts_with(vmodels[p.model].name, "Flower_"): continue
+        near = min(hypot(f64(p.pos.x) + 1020.0, f64(p.pos.z) - 1805.0), min(hypot(f64(p.pos.x) + 946.0, f64(p.pos.z) - 1883.5), hypot(f64(p.pos.x) + 818.0, f64(p.pos.z) - 1950.0)))
+        if near > 45.0: continue
+        bugs.push(Bug(p.pos, p.pos, random(0.0, 50.0), false))
+        nflower += 1
+    # foxes in the open country away from the camps (a few, spread out)
+    tries = 0
+    nfox = 0
+    loop nfox < 8 and tries < 400:
+        tries += 1
+        cx = random(-1300.0, -620.0)
+        cz = random(1480.0, 2350.0)
+        if not in_bounds(cx, cz) or edge_at(cx, cz) > -12.0 or water_level(cx, cz) != none or is_snow_area(cx, cz) or normal_at(cx, cz).y < 0.88: continue
+        ok = true
+        loop e in actors:
+            if starts_with(e.name, "Enemy_") and hypot(f64(e.pos.x) - cx, f64(e.pos.z) - cz) < 30.0: ok = false
+        loop o in animals:
+            if o.kind == .fox and hypot(f64(o.pos.x) - cx, f64(o.pos.z) - cz) < 90.0: ok = false
+        if not ok: continue
+        __add(.fox, v3(cx, height_at(cx, cz), cz))
+        nfox += 1
+    # crows: round the Bokoblin camps' fires and on the dead Guardians
+    loop a in actors:
+        cx = f64(a.pos.x)
+        cz = f64(a.pos.z)
+        if cx < -1600.0 or cx > -350.0 or cz < 1400.0 or cz > 2420.0: continue
+        if a.name == "FldObj_RuinGuardian_A_01" and random() < 0.5 or a.name == "FireWood" and random() < 0.6:
+            flock = animals.len() + 5
+            loop k in [0..random_int(2, 4)):
+                angle = random(0.0, TAU)
+                # Camp foragers feed outside the fire's eight-metre alarm radius;
+                # placing them at the fire itself sent every crow straight into flight.
+                radius = if a.name == "FireWood": random(10.0, 14.0) else: random(2.0, 5.0)
+                q = v3(cx + cos(angle) * radius, 0.0, cz + sin(angle) * radius)
+                if not in_bounds(f64(q.x), f64(q.z)) or water_depth(f64(q.x), f64(q.z)) > 0.1 or normal_at(f64(q.x), f64(q.z)).y < 0.8: continue
+                q.y = f32(height_at(f64(q.x), f64(q.z)))
+                __add(.crow, q)
+                animals[animals.len() - 1].flock = flock
+    # fireflies around Hopper Pond too
+    loop k in [0..40):
+        p = v3(-1230.0 + random(-40.0, 40.0), 0.0, 1650.0 + random(-30.0, 30.0))
+        p.y = f32(height_at(f64(p.x), f64(p.z)) + 1.0)
+        bugs.push(Bug(p, p, random(0.0, 50.0), true))
+    loop mut a in animals:
+        # Family appearance is assigned after creation; clear its final size too.
+        wild_place_clear(a)
+        a.refuge = a.home
+        if a.kind == .fish: continue
+        best = if a.kind == .hawk: 80.0 else: 24.0
+        loop tree in places:
+            if tree.height < 5.0 or not tree.collide: continue
+            d = f64(length(vec2(tree.pos.x - a.home.x, tree.pos.z - a.home.z)))
+            if d >= best: continue
+            away = normalize(vec3(a.home.x - tree.pos.x, 0, a.home.z - tree.pos.z) + vec3(0.001, 0, 0))
+            q = tree.pos + away * f32(max(1.5, tree.radius * 0.3))
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            if water_depth(f64(q.x), f64(q.z)) > 0.1 or normal_at(f64(q.x), f64(q.z)).y < 0.8: continue
+            if a.kind == .hawk: q.y += f32(tree.height * 0.72)
+            a.refuge = q
+            best = d
+    nf = 0
+    loop a in animals:
+        if a.kind == .fox: nf += 1
+    eprint("wildlife: {animals.len()} animals ({nf} foxes), {bugs.len()} insects")
+
+__add = (k: WKind, p: vec3):
+    hp = if k == .boar: 8.0 else: (if k == .fox: 2.0 else: 1.0)
+    animals.push(Animal(k, p, p, face = random(0.0, TAU), hp = hp, anim = Animator(), skin = Skin(), seed = random(0.0, 100.0), t = random(0.0, 5.0)))
+    animals[animals.len()-1].voice_t = 3.0 + fract(animals[animals.len()-1].seed * 0.713) * 10.0
+    if k == .boar:
+        i = animals.len() - 1
+        animals[i].appearance = fract(animals[i].seed * 0.173)
+        animals[i].idle = fract(animals[i].seed * 0.61) * 30.0
+        animals[i].gait = fract(animals[i].seed * 0.29) * TAU
+        animals[i].landing = p + forward_of(animals[i].face) * 8.0
+        if fract(animals[i].seed * 0.83) < 0.4: animals[i].state = .walk
+    if k == .crow:
+        i = animals.len() - 1
+        animals[i].idle = fract(animals[i].seed * 0.61) * 6.0
+        animals[i].t = fract(animals[i].seed * 0.43) * 1.8
+
+    wild_place_clear(animals[animals.len() - 1])
+
+__ground = (a: mut Animal):
+    a.pos.y = f32(if a.kind == .boar or a.kind == .fox: ground_at(f64(a.pos.x), f64(a.pos.z), f64(a.pos.y), 0.20, details = false).y else: height_at(f64(a.pos.x), f64(a.pos.z)))
+
+__go = (a: mut Animal, dir: vec3, speed: f64, dt: f64, turn: f64):
+    if a.kind == .boar or a.kind == .fox:
+        wild_ground_move(a, dir, speed, dt, turn)
+        return
+    a.face = turn_toward(a.face, yaw_of(dir), turn * dt)
+    a.speed = approach(a.speed, speed, 4.0, dt)
+    a.pos += forward_of(a.face) * f32(a.speed * dt)
+    push_out(a.pos, 0.5, 1.0)
+
+wild_hearing = (speed: f64, rain: f64, sneaking: bool) -> f64:
+    (8.0 + 1.2 * speed) * (1.0 - 0.3 * rain) * (if sneaking: 0.42 else: 1.0)
+
+wild_retreat = (kind: WKind, hour: f64, rain: f64) -> bool:
+    if kind == .fish: return false
+    rain > 0.65 or (if kind == .fox: hour > 10.0 and hour < 16.0 else: hour < 6.0 or hour > 19.0)
+
+__wild_fires: vec3[]
+__wild_fire_t = 0.0
+__wild_heat = (dt: f64):
+    __wild_fire_t -= dt
+    if __wild_fire_t > 0.0: return
+    __wild_fire_t = 0.2
+    __wild_fires.clear()
+    loop b in bonfires:
+        if b.lit: __wild_fires.push(b.pos)
+    loop f in flames: __wild_fires.push(cell_pos(f.cell))
+    loop i, tree in tree_fire:
+        if burning(tree): __wild_fires.push(places[i].pos)
+    loop i in 0.. and t in tent_fire:
+        if t > 0.0: __wild_fires.push(camp_tents[i])
+    if torch_tip.y > -1000.0: __wild_fires.push(torch_tip)
+    loop w in witems:
+        if w.alive and (w.burning > 0.0 or w.lit): __wild_fires.push(w.pos)
+
+__wild_sense = (a: mut Animal, dist: f64, dt: f64):
+    a.startle = max(0.0, a.startle - dt)
+    a.sense -= dt
+    if a.sense > 0.0: return
+    a.sense = 0.16 + fract(a.seed) * 0.08
+    hearing = wild_hearing(f64(length(vec2(pl.vel.x, pl.vel.z))), env.rain, pl.sneaking)
+    if a.kind == .fox: hearing *= 1.2
+    if a.kind == .sparrow or a.kind == .pigeon: hearing *= 0.65
+    danger = dist < hearing or dist < 2.5
+    fire_danger = false
+    source = pl.pos
+    nearest = 8.0
+    loop fire in __wild_fires:
+        d = f64(length(fire - a.pos))
+        if d < nearest:
+            nearest = d
+            fire_danger = true
+            danger = true
+            source = fire
+    if danger:
+        a.resting = false
+        a.scare = source
+        if not a.danger and a.state != .flee and a.state != .fly and a.state != .charge: a.startle = 0.12
+    a.danger = danger
+    if fire_danger and a.state == .charge:
+        a.state = .flee
+        a.t = 0.0
+
+__wild_shelter = (a: mut Animal, dt: f64) -> bool:
+    a.resting = false
+    if not wild_retreat(a.kind, env.hour, env.rain) or a.danger: return false
+    back = a.refuge - a.pos
+    back.y = 0
+    a.resting = length(back) < 0.8
+    if a.resting:
+        a.speed = approach(a.speed, 0.0, 6.0, dt)
+        a.state = .graze
+    else:
+        a.state = .walk
+        __go(a, normalize(back), (if a.kind == .fox: 1.4 else: 0.85), dt, 2.5)
+    true
+
+# Keep a near-lens cone clear during a cinematic, including its blended handoff. The
+# displayed scene also handles BOTW_CAM without reaching into main.jo's debug state.
+__wild_free_view = env("BOTW_CAM") != none
+wild_bird_obscures = (p: vec3, eye: vec3, forward: vec3, head: vec3, cinematic: bool) -> bool:
+    if length(p - head) < 1.8: return true
+    if not cinematic: return false
+    delta = p - eye
+    depth = f64(dot(delta, forward))
+    if length(delta) < 2.5: return true
+    depth > 0.0 and depth < 18.0 and f64(length(delta - forward * f32(depth))) < 0.8 + depth * 0.95
+
+__bird_eye = () -> vec3: if __wild_free_view: sc.cam else: view_pos()
+__bird_forward = () -> vec3: if __wild_free_view: sc.fwd else: normalize(view_target() - view_pos() + vec3(0, 0, -0.001))
+__bird_cinematic = () -> bool: __wild_free_view or cam.override or cam.blend > 0.01
+
+__bird_depart = (a: mut Animal):
+    eye = __bird_eye()
+    away = vec3(a.pos.x - eye.x, 0, a.pos.z - eye.z)
+    # Depart on the camera's far side; a tangent spreads the flock rather than lining it up.
+    if length(away) < 30.0:
+        away = normalize(away + vec3(0.001, 0, 0))
+        side = vec3(-away.z, 0, away.x) * f32((fract(a.seed * 0.37) - 0.5) * 0.9)
+        a.face = yaw_of(away + side)
+
+__bird_evade = (a: mut Animal, dt: f64) -> bool:
+    eye = __bird_eye()
+    fwd = __bird_forward()
+    head = pl.pos + vec3(0, 1.6, 0)
+    ahead = a.pos + forward_of(a.face) * 4.0 + vec3(0, f32(a.vy * 0.5), 0)
+    if not wild_bird_obscures(a.pos, eye, fwd, head, __bird_cinematic()) and not wild_bird_obscures(ahead, eye, fwd, head, __bird_cinematic()): return false
+    # Steer outward across the cone boundary, never through its axis toward the lens.
+    delta = a.pos - eye
+    radial = delta - fwd * dot(delta, fwd)
+    side = normalize(vec3(-fwd.z, 0, fwd.x) + vec3(0.001, 0, 0))
+    sign = if dot(radial, side) < 0.0: -1.0 else: 1.0
+    away = normalize(vec3(delta.x, 0, delta.z) + vec3(0.001, 0, 0))
+    dir = away * 0.65 + side * f32(sign * 1.4)
+    if length(a.pos - head) < 3.5: dir += normalize(vec3(a.pos.x - head.x, 0, a.pos.z - head.z) + vec3(0.001, 0, 0)) * 2.0
+    a.face = turn_toward(a.face, yaw_of(dir), 7.0 * dt)
+    a.vy = approach(a.vy, 2.8, 5.0, dt)
+    q = a.home + forward_of(a.face) * 16.0
+    if water_depth(f64(q.x), f64(q.z)) > 0.1 or normal_at(f64(q.x), f64(q.z)).y < 0.8: q = a.home
+    q.y = f32(height_at(f64(q.x), f64(q.z)))
+    a.landing = q
+    true
+
+# All accepted damage sources use one transition; dead animals cannot be hit again.
+wildlife_damage = (a: mut Animal, damage: f64, from: vec3, fire: bool = false, knock: f64 = 0.0, react_hit: bool = true) -> bool:
+    if a.state == .dead or a.state == .gone: return false
+    a.hp = max(0.0, a.hp - damage)
+    if a.hp <= 0.0:
+        a.state = .dead
+        a.t = 0.0
+        a.speed = 0.0
+        a.el = Elem()
+        a.impulse = vec3(0, 0, 0)
+        a.vy = min(a.vy, 0.0)
+        return true
+    if fire: a.el.burning = max(a.el.burning, 4.0)
+    if not react_hit: return false
+    a.scare = from
+    a.startle = 0.12
+    a.t = 0.0
+    if a.kind == .sparrow or a.kind == .pigeon or a.kind == .crow or a.kind == .hawk:
+        a.state = .fly
+        a.landing = a.home
+        a.face = yaw_of(a.pos - from + vec3(0.001, 0, 0))
+        a.vy = 4.0
+    else: a.state = .flee
+    if knock > 0.0:
+        a.impulse = normalize(a.pos - from + vec3(0.001, 0.6, 0)) * f32(knock)
+    false
+
+wildlife_hit_center = (a: Animal) -> vec3:
+    a.pos + vec3(0, (if a.kind == .boar or a.kind == .fox: 0.6 else: (if a.kind == .fish: 0.0 else: 0.25)), 0)
+
+wildlife_hit_distance = (from: vec3, to: vec3, i: int) -> f64:
+    a = animals[i]
+    if a.state == .dead or a.state == .gone: return -1.0
+    radius = if a.kind == .boar or a.kind == .fox: 0.9 else: (if a.kind == .hawk: 0.5 else: 0.4)
+    swept_actor_distance(from, to, wildlife_hit_center(a), radius)
+
+# Arrows and thrown weapons both query the same nearest actor/world sweep.
+wildlife_arrow_distance = (ar: Arrow, i: int) -> f64:
+    wildlife_hit_distance(ar.prev, ar.pos, i)
+
+wildlife_arrow_hit = (ar: Arrow, i: int):
+    wildlife_damage(animals[i], ar.damage, ar.prev, ar.fire)
+
+__flock_scared = fill(false, 5)
+
+wildlife_update = (dt: f64):
+    wild_calls.clear()
+    wild_voices.clear()
+    __wild_heat(dt)
+    # A bounded patch signal shares herd/flock alarms without all-pairs searches.
+    if __flock_scared.len() != animals.len() + 5: __flock_scared = fill(false, animals.len() + 5)
+    loop i in [0..__flock_scared.len()): __flock_scared[i] = false
+    loop a in animals:
+        if a.flock >= 0 and (a.state == .graze or a.state == .walk):
+            d = f64(length(a.pos - pl.pos))
+            if d < wild_hearing(f64(length(vec2(pl.vel.x, pl.vel.z))), env.rain, pl.sneaking): __flock_scared[a.flock] = true
+    loop mut a in animals:
+        a.t += dt
+        a.idle += dt
+        to_pl = pl.pos - a.pos
+        dist = f64(length(to_pl))
+        if dist > 250.0 and a.kind != .hawk: continue
+        wild_voice_update(a, dt)
+        if a.kind != .fish and a.kind != .hawk and a.state != .dead and a.state != .gone: __wild_sense(a, dist, dt)
+        # Species share the death/drop path, including birds shot in flight.
+        if a.state == .dead:
+            a.speed = 0.0
+            ground = ground_at(f64(a.pos.x), f64(a.pos.z), f64(a.pos.y), 0.0).y
+            if let wl = water_level(f64(a.pos.x), f64(a.pos.z)): ground = max(ground, wl)
+            a.vy -= 9.8 * dt
+            a.pos.y = f32(max(ground, f64(a.pos.y) + a.vy * dt))
+            settled = f64(a.pos.y) <= ground + 0.01
+            if settled: a.vy = 0.0
+            if a.t > 1.6 and settled:
+                a.state = .gone
+                a.respawn = if a.kind == .boar: 400.0 else: 500.0
+                fx_poof(a.pos)
+                loot = if a.kind == .fish: "hyrule_bass" else: (if a.kind == .boar or a.kind == .fox: "raw_meat" else: "raw_bird_drumstick")
+                spawn_item(loot, a.pos + vec3(0, 0.4, 0), vec3(0, 3.0, 0))
+                if a.kind == .boar and random() < 0.5: spawn_item("raw_meat", a.pos + vec3(0.3, 0.5, 0), vec3(0.5, 3.0, 0))
+            continue
+        if a.state == .gone:
+            a.respawn -= dt
+            if a.respawn <= 0.0 and dist > 80.0:
+                a.state = .graze
+                a.hp = if a.kind == .boar: 8.0 else: (if a.kind == .fox: 2.0 else: 3.0)
+                a.pos = a.home
+                a.el = Elem()
+            continue
+        # struck by the player
+        loop h in player_hits:
+            if a.last_swing == h.id: continue
+            body = a.kind == .boar or a.kind == .fox
+            center = wildlife_hit_center(a)
+            radius = if a.kind == .hawk: 0.35 else: (if a.kind == .fish: 0.20 else: 0.18)
+            contact = if body: blade_contact(h, a.pos, 0.9, 0.30) else: (if blade_touches(h, center, radius): blade_nearest(h, center) else: vec3(0, -10000, 0))
+            if contact.y > -9000.0:
+                a.last_swing = h.id
+                lethal = wildlife_damage(a, h.damage, h.from, h.fire)
+                fx_sparks(contact, 10)
+                if lethal: break
+                # a cornered boar turns on you now and then
+                if a.kind == .boar and random() < 0.4: a.state = .charge
+        if a.state == .dead: continue
+        if length(a.impulse) > 0.01:
+            a.pos += a.impulse * f32(dt)
+            push_out(a.pos, 0.3, 0.8)
+            a.impulse *= f32(exp(-6.0 * dt))
+        if a.el.shock > 0.0 or a.el.frozen > 0.0:
+            a.speed = 0.0
+            continue
+        match a.kind:
+            boar:
+                match a.state:
+                    graze, walk:
+                        if __wild_shelter(a, dt):
+                            __ground(a)
+                            continue
+                        if a.t > (if a.state == .walk: 2.0 + fract(a.seed * 0.53) * 3.0 else: 4.0 + fract(a.seed * 0.37) * 8.0):
+                            a.t = 0.0
+                            a.state = if a.state == .graze: WState.walk else: WState.graze
+                            if a.state == .walk: a.landing = a.pos + forward_of(a.face + random(-1.5, 1.5)) * 8.0
+                        if a.state == .walk:
+                            back = a.home - a.pos
+                            dir = if length(back) > 15.0: normalize(back) else: normalize(a.landing - a.pos + vec3(0.001, 0, 0))
+                            __go(a, dir, 0.55 + fract(a.seed * 0.41) * 0.65, dt, 2.0)
+                        else: a.speed = approach(a.speed, 0.0, 4.0, dt)
+                        # Family members scatter after the nearest boar sounds the alarm.
+                        group = a.flock >= 0 and __flock_scared[a.flock]
+                        if group and not a.danger:
+                            a.scare = pl.pos
+                            a.startle = 0.12 + fract(a.seed * 0.73) * 0.18
+                        if a.danger or group:
+                            a.state = .flee
+                            a.t = 0.0
+                    flee:
+                        away = a.pos - a.scare
+                        safe = not a.danger and length(away) > 20.0
+                        if a.startle <= 0.0: __go(a, normalize(vec3(away.x, 0, away.z) + vec3(0.001, 0, 0)), (if safe and a.t > 4.0: 1.2 else: 8.5), dt, 5.0)
+                        if a.t > 5.0 and safe and a.speed < 1.3:
+                            a.state = .graze
+                            a.t = 0.0
+                            a.home = a.pos
+                            a.speed = 0.0
+                    charge:
+                        if a.startle > 0.0:
+                            __ground(a)
+                            continue
+                        before = a.pos + vec3(0, 0.6, 0)
+                        __go(a, normalize(vec3(to_pl.x, 0, to_pl.z) + vec3(0.001, 0, 0)), 7.5, dt, 3.0)
+                        after = a.pos + vec3(0, 0.6, 0)
+                        path = after - before
+                        cover = if length(path) > 0.001: raycast(before, path, f64(length(path))) else: Hit()
+                        if cover.hit:
+                            after = cover.pos - normalize(path) * 0.05
+                            a.pos = after - vec3(0, 0.6, 0)
+                            push_out(a.pos, 0.5, 1.0)
+                            after = a.pos + vec3(0, 0.6, 0)
+                        if swept_actor_distance(before, after, pl.pos + vec3(0, 0.6, 0), 1.3) >= 0.0:
+                            hit_player(2, a.pos, 4.0)
+                            a.state = .flee
+                            a.t = 0.0
+                        if a.t > 4.0:
+                            a.state = .flee
+                            a.t = 0.0
+                    _: pass
+                __ground(a)
+            fox:
+                match a.state:
+                    graze, walk:
+                        if __wild_shelter(a, dt):
+                            __ground(a)
+                            continue
+                        # trotting from place to place, stopping to sniff and look about
+                        if a.t > (if a.state == .walk: 4.0 else: 7.0):
+                            a.t = 0.0
+                            a.state = if a.state == .graze: WState.walk else: WState.graze
+                            if a.state == .walk: a.landing = a.pos + forward_of(a.face + random(-2.0, 2.0)) * 10.0
+                        if a.state == .walk:
+                            back = a.home - a.pos
+                            dir = if length(back) > 25.0: normalize(back) else: normalize(a.landing - a.pos + vec3(0.001, 0, 0))
+                            __go(a, dir, 1.6, dt, 2.5)
+                        else: a.speed = approach(a.speed, 0.0, 5.0, dt)
+                        # foxes are warier than boars
+                        if a.danger:
+                            a.state = .flee
+                            a.t = 0.0
+                    flee:
+                        away = a.pos - a.scare
+                        away = normalize(vec3(away.x, 0, away.z) + vec3(0.001, 0, 0))
+                        safe = not a.danger and length(a.pos - a.scare) > 20.0
+                        if a.startle <= 0.0: __go(a, normalize(away + forward_of(a.face + sin(a.t * 3.0 + a.seed)) * 0.4), (if safe and a.t > 3.0: 1.2 else: 9.5), dt, 6.0)
+                        if a.t > 4.0 and safe and a.speed < 1.3:
+                            a.state = .graze
+                            a.t = 0.0
+                            a.home = a.pos
+                            a.speed = 0.0
+                    _: pass
+                __ground(a)
+            sparrow, pigeon, crow:
+                match a.state:
+                    graze, walk:
+                        if __wild_shelter(a, dt):
+                            __ground(a)
+                            a.vy = 0.0
+                            continue
+                        # pecking and hopping about
+                        # (crows stalk about with a hop now and then)
+                        if a.t > (if a.kind == .crow: 1.15 else: 1.8) + fract(a.seed * 0.43) * (if a.kind == .crow: 0.65 else: 1.1):
+                            a.t = 0.0
+                            back = a.home - a.pos
+                            a.face = if a.kind == .crow and length(back.xz) > 3.5: yaw_of(back) else: a.face + random(-1.0, 1.0)
+                            a.vy = if a.kind == .crow: 1.65 + fract(a.seed * 0.7) * 0.3 else: 1.4
+                        a.vy -= 9.8 * dt
+                        if a.vy > 0.0 or f64(a.pos.y) > height_at(f64(a.pos.x), f64(a.pos.z)) + 0.001: a.pos += forward_of(a.face) * f32(0.65 * dt)
+                        g = height_at(f64(a.pos.x), f64(a.pos.z))
+                        a.pos.y = f32(max(g, f64(a.pos.y) + a.vy * dt))
+                        if f64(a.pos.y) <= g: a.vy = 0.0
+                        group = a.flock >= 0 and __flock_scared[a.flock]
+                        outing = a.kind != .crow and a.flock >= 0 and a.idle > 5.2 + fract(a.seed * 0.71) * 6.0
+                        if a.danger or group or outing:
+                            if group and not a.danger:
+                                a.scare = pl.pos
+                                a.startle = 0.04 + fract(a.seed) * 0.2
+                            if a.kind == .crow and dist < 60.0 and random() < 0.35: wild_calls.push(a.pos)
+                            a.state = .fly
+                            a.t = 0.0
+                            a.idle = 0.0
+                            a.face = yaw_of(a.pos - (if outing and not group and not a.danger: a.home else: a.scare)) + random(-0.6, 0.6)
+                            __bird_depart(a)
+                            a.vy = random(3.0, 5.0)
+                            q = a.home + forward_of(a.face) * f32(10.0 + fract(a.seed * 0.3) * 8.0)
+                            if water_depth(f64(q.x), f64(q.z)) > 0.1 or normal_at(f64(q.x), f64(q.z)).y < 0.8: q = a.home
+                            q.y = f32(height_at(f64(q.x), f64(q.z)))
+                            a.landing = q
+                    fly:
+                        if a.idle <= dt * 1.5: __bird_depart(a)
+                        if a.startle > 0.0: continue
+                        avoiding = __bird_evade(a, dt)
+                        a.pos += forward_of(a.face) * f32(7.0 * dt) + vec3(0, f32(a.vy * dt), 0)
+                        if avoiding: continue
+                        a.face += sin(a.t * 2.0 + a.seed) * dt
+                        a.vy = approach(a.vy, 1.0, 1.0, dt)
+                        # Crows burst away, then circle a bounded feeding patch. The old
+                        # home-seeking turn could leave them in an ever-widening orbit.
+                        if a.kind == .crow:
+                            if a.t > 1.1:
+                                ang = a.seed + a.t * 0.72
+                                radius = 6.0 + fract(a.seed * 0.37) * 3.0
+                                target = a.home + v3(cos(ang) * radius, 5.0 + sin(a.seed) * 1.0, sin(ang) * radius)
+                                a.face = turn_toward(a.face, yaw_of(target - a.pos), 2.8 * dt)
+                                a.vy = clamp(f64(target.y - a.pos.y) * 1.2, -2.5, 2.5)
+                            if a.t > 8.0 + fract(a.seed) * 2.0 and dist > 18.0:
+                                a.landing = a.home
+                                a.state = .land
+                                a.t = 0.0
+                        else:
+                            # Wheel above the feeding patch before descending to a new spot.
+                            if a.t > 1.0:
+                                ang = a.seed + a.t * 0.85
+                                target = a.landing + v3(cos(ang) * 5.0, 3.0 + sin(a.seed) * 0.7, sin(ang) * 5.0)
+                                a.face = turn_toward(a.face, yaw_of(target - a.pos), 2.8 * dt)
+                                a.vy = clamp(f64(target.y - a.pos.y), -2.0, 2.0)
+                            if a.t > 5.0 + fract(a.seed) * 2.0 and dist > 10.0:
+                                a.state = .land
+                                a.t = 0.0
+                    land:
+                        if __bird_evade(a, dt):
+                            a.state = .fly
+                            a.t = 0.0
+                            continue
+                        if a.danger:
+                            a.state = .fly
+                            a.t = 0.0
+                            a.face = yaw_of(a.pos - a.scare)
+                            __bird_depart(a)
+                            a.vy = 4.0
+                            continue
+                        # Aim at the landing point instead of flying indefinitely downhill.
+                        delta = a.landing - a.pos
+                        delta.y = 0
+                        a.face = turn_toward(a.face, yaw_of(delta), 3.5 * dt)
+                        a.pos += normalize(delta + vec3(0.001, 0, 0)) * f32(min(f64(length(delta)), 3.5 * dt))
+                        g = height_at(f64(a.pos.x), f64(a.pos.z))
+                        a.pos.y = f32(approach(f64(a.pos.y), g, 1.2, dt))
+                        if f64(a.pos.y) < g + 0.2:
+                            a.pos.y = f32(g)
+                            a.state = .graze
+                            a.t = -2.0 - fract(a.seed) * 3.0
+                            a.idle = 0.0
+                            if a.kind != .crow and a.flock < 0: a.home = a.pos
+                    _: pass
+            hawk:
+                retreat = wild_retreat(a.kind, env.hour, env.rain)
+                a.resting = retreat and length(a.refuge - a.pos) < 0.4
+                if retreat:
+                    delta = a.refuge - a.pos
+                    if not a.resting:
+                        a.face = turn_toward(a.face, yaw_of(delta), 1.2 * dt)
+                        a.pos += normalize(delta) * f32(min(f64(length(delta)), 7.0 * dt))
+                    continue
+                ang = a.t * 0.25 + a.seed
+                r = 35.0 + 10.0 * sin(a.seed)
+                target = a.home + v3(cos(ang) * r, sin(a.t * 0.3) * 6.0, sin(ang) * r)
+                a.pos = lerp(a.pos, target, f32(min(1.0, dt * 2.0)))
+                a.face = yaw_of(v3(-sin(ang), 0.0, cos(ang)))
+            fish:
+                if a.state == .flee:
+                    __go(a, normalize(vec3(-to_pl.x, 0, -to_pl.z) + vec3(0.001, 0, 0)), 3.0, dt, 6.0)
+                    if a.t > 2.0: a.state = .graze
+                else:
+                    a.face += sin(a.t * 0.5 + a.seed) * dt * 0.8
+                    a.pos += forward_of(a.face) * f32(0.6 * dt)
+                    if f64(length(a.pos - a.home)) > 5.0: a.face = turn_toward(a.face, yaw_of(a.home - a.pos), 2.0 * dt)
+                    if dist < 3.5:
+                        a.state = .flee
+                        a.t = 0.0
+                if let wl = water_level(f64(a.pos.x), f64(a.pos.z)):
+                    a.pos.y = f32(max(wl - 0.6, height_at(f64(a.pos.x), f64(a.pos.z)) + 0.15))
+                else: a.face += PI
+    loop mut a in animals:
+        if length(a.pos - pl.pos) < 250.0: wild_voice_update(a, 0.0)
+    loop mut b in bugs:
+        b.phase += dt
+        b.hide = max(0.0, b.hide - dt)
+        if not b.firefly or b.hide > 0.0 or env.night < 0.2: continue
+        if b.fleeing <= 0.0: b.pos = wild_bug_position(b)
+        d = f64(length(b.pos - (pl.pos + vec3(0, 0.8, 0))))
+        if d < critter_scare() and not pl.sneaking: b.fleeing = 2.5
+        if b.fleeing > 0.0:
+            away = normalize(b.pos - (pl.pos + vec3(0, 0.8, 0)) + vec3(0.001, 0.2, 0))
+            b.pos += away * f32(3.0 * dt)
+            b.fleeing = max(0.0, b.fleeing - dt)
+
+# ---------------- animation and drawing ----------------
+__wa_n = 0
+wildlife_animate = (dt0: f64):
+    if not wild_ready: return
+    __wa_n += 1
+    loop mut a in animals:
+        if a.state == .gone: continue
+        dc = f64(length(a.pos - sc.cam))
+        if dc > 110.0 and a.kind != .hawk: continue
+        # (the far ones every other frame, by halves)
+        dt = dt0
+        if dc > 40.0:
+            if (__wa_n + int(a.seed * 10.0)) % 2 == 0: continue
+            dt = dt0 * 2.0
+        match a.kind:
+            boar: pass
+            fox:
+                clip = match a.state:
+                    graze: (if a.resting: "curl" else: (if fract(a.seed * 0.61) < 0.65: "sit" else: "graze"))
+                    walk: "walk"
+                    flee: "run"
+                    dead: "die"
+                    _: "idle"
+                if a.startle > 0.0: clip = "idle"
+                c = clip_index(fox_lib, clip)
+                anim_play(a.anim, (if c >= 0: c else: 0), 0.2, a.state != .dead, false, (if clip == "walk" or clip == "run": wild_fox_rate(a) else: 1.0))
+                anim_update(a.anim, dt)
+                # Keep the rise at the end of the seven-second stop, including foxes
+                # spawned halfway through an idle or updated every other frame.
+                if clip == "sit": a.anim.t = min(a.t, 6.999)
+                a.skin = skin(fox_m, anim_pose(fox_lib, a.anim))
+            sparrow, pigeon, crow: pass
+            hawk:
+                clip = if a.kind == .hawk: (if a.resting: "idle" else: "glide") else: (if a.state == .fly or a.state == .land: "fly" else: "idle")
+                c = clip_index(bird_lib, clip)
+                anim_play(a.anim, (if c >= 0: c else: 0), 0.2, true)
+                anim_update(a.anim, dt)
+                a.skin = skin((if a.kind == .hawk: eagle_m else: gull_m), anim_pose(bird_lib, a.anim))
+            fish:
+                k = int(a.seed) % 3
+                anim_update(a.anim, dt)
+                c = clip_index(fish_libs[k], "swim")
+                anim_play(a.anim, (if c >= 0: c else: 0), 0.2, true, false, (if a.state == .flee: 3.0 else: 1.0))
+                a.skin = skin(fish_m[k], anim_pose(fish_libs[k], a.anim))
+            _: pass
+
+struct WildBatch:
+    items: PropI[]
+    buf: InstBuf
+__wild_batches: WildBatch[]
+
+wildlife_draw = ():
+    if not wild_ready: return
+    if __wild_batches.len() == 0:
+        loop k in [0..18): __wild_batches.push(WildBatch([], inst_buffer([PropI(mat4(), vec4(1, 1, 1, 1))])))
+    loop mut b in __wild_batches: b.items.clear()
+    # The displayed camera is constant during this draw, including shadow passes.
+    # Ordinary play only needs the hero proximity test, so avoid rebuilding a
+    # cinematic view direction separately for every (even distant) bird.
+    bird_eye = __bird_eye()
+    bird_cinematic = __bird_cinematic()
+    bird_forward = if bird_cinematic: __bird_forward() else: vec3(0, 0, 0)
+    bird_head = pl.pos + vec3(0, 1.6, 0)
+    loop a in animals:
+        if a.state == .gone: continue
+        d = f64(length(a.pos - sc.cam))
+        if d > (if a.kind == .hawk: 600.0 else: 110.0): continue
+        if sc.shadow and (d > 40.0 or a.kind == .fish or a.kind == .hawk): continue
+        # A camera cut can sweep onto a bird between updates. Omit only that near bird
+        # until steering has cleared the shot; distant wildlife stays in the panorama.
+        if a.kind == .sparrow or a.kind == .pigeon or a.kind == .crow or a.kind == .hawk:
+            if wild_bird_obscures(a.pos, bird_eye, bird_forward, bird_head, bird_cinematic): continue
+        dip = if a.kind != .boar and a.startle > 0.0: sin(max(0.0, 0.12 - a.startle) / 0.12 * PI) * 0.07 else: 0.0
+        world = facing_mat(a.pos, a.face) * scaling(v3(1.0, 1.0 - dip / 0.6, 1.0))
+        match a.kind:
+            boar:
+                __draw_boar(a, world, d)
+            sparrow, pigeon, crow:
+                bk = if a.kind == .sparrow: 0 else: (if a.kind == .pigeon: 1 else: 2)
+                sz = [2.0, 2.5, 2.7][bk]
+                pose = bird_pose(a)
+                bm = world * scaling(v3(sz, sz, sz))
+                # Keep the perch silhouette; flight has a slim breast and separate
+                # continuously rotating wings, shared in one instance batch per species.
+                flight = pose.wing != 0
+                slim = if flight: lerp(0.88, 0.72, smoothstep(12.0, 55.0, d)) else: 1.0
+                body = bm * pose.body * scaling(v3(slim, slim, 1.0))
+                __wild_batches[bk * 3 + (if flight: 1 else: 0)].items.push(PropI(body, vec4(1, 1, 1, 1)))
+                if flight:
+                    loop side in [-1.0, 1.0]:
+                        wing = bm * pose.body * translation(v3(side * 0.025 * slim, 0.082 * slim, 0.0))
+                        wing *= rotation_z(side * pose.flap) * scaling(v3(side, 1.0, lerp(0.88, 0.72, smoothstep(12.0, 55.0, d))))
+                        __wild_batches[bk * 3 + 2].items.push(PropI(wing, vec4(1, 1, 1, 1)))
+                __wild_batches[12 + bk].items.push(PropI(bm * pose.head * scaling(v3(slim, slim, 1.0)), vec4(1, 1, 1, 1)))
+                if pose.wing == 0: __wild_batches[15 + bk].items.push(PropI(bm, vec4(1, 1, 1, 1)))
+            fox:
+                p = CharParams(rim = 0.6, fill = 1.3, creature = 1.0)
+                if a.state == .dead: p.dissolve = f32(clamp((a.t - 1.0) / 0.6, 0.0, 1.0))
+                draw_char(fox_m, world * wild_ground_tilt(a), a.skin, p)
+            hawk:
+                draw_char(eagle_m, world * scaling(v3(0.6, 0.6, 0.6)), a.skin, CharParams(creature = 1.0))
+            fish:
+                k = int(a.seed) % 3
+                draw_char(fish_m[k], world * scaling(v3(1.3, 1.3, 1.3)), a.skin, CharParams(tint = vec4(0.5, 0.6, 0.55, 1)))
+            _: pass
+
+    loop k in [0..9):
+        b = __wild_batches[k]
+        if b.items.len() == 0: continue
+        inst_update(b.buf, b.items)
+        draw_props(__bird(k / 3, k % 3), b.buf, creature = 1.0)
+    loop k in [12..18):
+        b = __wild_batches[k]
+        if b.items.len() == 0: continue
+        inst_update(b.buf, b.items)
+        draw_props(__bird_details[k - 12], b.buf, creature = 1.0)
+    if sc.shadow or env.night > 0.5 or env.rain > 0.3: return
+    loop bi in 0.. and b in bugs:
+        if b.hide > 0.0 or b.firefly or f64(length(b.home - sc.cam)) > 40.0: continue
+        t = b.phase
+        p = b.home + v3(sin(t * 0.7) * 2.0 + sin(t * 2.3) * 0.35, 1.2 + sin(t * 1.3) * 0.35, cos(t * 0.6) * 2.0)
+        p.y = f32(max(f64(p.y), height_at(f64(p.x), f64(p.z)) + 0.8))
+        flap = 0.25 + abs(sin(t * 15.0)) * 0.75
+        m = translation(p) * rotation_y(t * 0.7) * rotation_x(-0.3) * scaling(v3(flap, 1.0, 1.0))
+        __wild_batches[9 + bi % 3].items.push(PropI(m, vec4(1, 1, 1, 1)))
+    loop k in [0..3):
+        b = __wild_batches[9 + k]
+        if b.items.len() == 0: continue
+        inst_update(b.buf, b.items)
+        draw_props(__butterfly(k), b.buf)
+
+# A continuous wedge from tucked haunches to tall withers and a heavy rooting head.
+# Broad coat planes and the broken mane silhouette remain readable in the grass.
+__boar_m: Mesh[]
+const __BOAR_NECK = v3(0.0, 0.51, 0.40)
+const __BOAR_HIP_Y = 0.35
+__boar_parts = () -> Mesh[]:
+    if __boar_m.len() == 0:
+        hide = rgb(0.19, 0.135, 0.090)
+        mane = rgb(0.23, 0.165, 0.105)
+        cheek = rgb(0.42, 0.33, 0.235)
+        dark = rgb(0.065, 0.045, 0.03)
+        belly = rgb(0.32, 0.23, 0.14)
+        b = MeshB()
+        # z, centre height, half width, half height. Raised withers, tucked belly and slim rump.
+        sections = [vec4(-0.72, 0.48, 0.06, 0.10), vec4(-0.57, 0.48, 0.20, 0.20),
+            vec4(-0.30, 0.50, 0.24, 0.25), vec4(0.08, 0.625, 0.32, 0.385),
+            vec4(0.32, 0.615, 0.315, 0.365), vec4(0.49, 0.51, 0.245, 0.26)]
+        loop j in [0..sections.len()):
+            r = sections[j]
+            loop k in [0..17):
+                ang = TAU * f64(k) / 16.0
+                x = cos(ang)
+                y = sin(ang)
+                prev = sections[max(0, j - 1)]
+                next = sections[min(sections.len() - 1, j + 1)]
+                nz = -(x * x * f64(next.z - prev.z) / f64(r.z) + y * (f64(next.y - prev.y) + y * f64(next.w - prev.w)) / f64(r.w)) / f64(next.x - prev.x)
+                n = normalize(v3(x / f64(r.z), y / f64(r.w), nz))
+                col = mix(hide, belly, f32(smoothstep(0.0, -0.85, y) * 0.6))
+                # Broad shoulder saddle and tawny flanks, painted into the coat.
+                saddle = smoothstep(-0.35, 0.38, f64(r.x)) * smoothstep(-0.1, 0.9, y)
+                flank = smoothstep(0.25, 0.9, abs(x)) * (0.6 + 0.4 * sin(f64(j) * 1.7 + y * 2.0))
+                col = mix(col, mane, f32(saddle * 0.55 + flank * 0.28))
+                # Uneven broad coat washes follow the flank, not tiny screen-space noise.
+                wash = 0.93 + 0.07 * sin(f64(j) * 2.3 + y * 4.0 + x * 2.0)
+                col = vec4(col.xyz * f32(wash), col.w)
+                b.vs.push(Vertex3D(v3(x * f64(r.z), f64(r.y) + y * f64(r.w), f64(r.x)), n, vec2(0, 0), col))
+        loop j in [0..sections.len() - 1):
+            loop k in [0..16):
+                a = u32(j * 17 + k)
+                loop v in [a, a + 1, a + 17, a + 1, a + 18, a + 17]: b.idx.push(v)
+        loop j in [0, sections.len() - 1]:
+            r = sections[j]
+            center = u32(b.vs.len())
+            b.vs.push(Vertex3D(vec3(0, r.y, r.x), v3(0.0, 0.0, (if j == 0: -1.0 else: 1.0)), vec2(0, 0), hide))
+            loop k in [0..16):
+                a = u32(j * 17 + k)
+                if j == 0:
+                    loop v in [center, a + 1, a]: b.idx.push(v)
+                else:
+                    loop v in [center, a, a + 1]: b.idx.push(v)
+        # Overlapping swept locks: uneven roots, widths and tips break
+        # the repeated triangular comb. Low side tufts nest into the coat.
+        loop k in [0..30):
+            h=hash2(f64(k),7.0)
+            z=lerp(0.43,-0.62,(f64(k)+0.55*hash2(f64(k),11.0))/30.0)
+            sx=(hash2(f64(k),3.0)-0.5)*0.18
+            y=0.0
+            loop j in [0..sections.len()-1):
+                a=sections[j]
+                c=sections[j+1]
+                if z>=f64(a.x) and z<=f64(c.x):
+                    t=(z-f64(a.x))/f64(c.x-a.x)
+                    width=lerp(f64(a.z),f64(c.z),t)
+                    y=lerp(f64(a.y),f64(c.y),t)+lerp(f64(a.w),f64(c.w),t)*sqrt(max(0.0,1.0-pow(sx/width,2.0)))
+            height=(0.024+0.045*smoothstep(-0.65,0.25,z))*(0.55+0.75*h)
+            width=0.040+0.032*hash2(f64(k),19.0)
+            sweep=0.055+0.055*hash2(f64(k),23.0)
+            root=v3(sx,y-0.026,z+0.035)
+            bend=v3(sx*1.08,y+height*0.60,z-sweep*0.37)
+            tip=v3(sx*1.2+(h-0.5)*0.026,y+height,z-sweep)
+            color=mix(hide,mane,f32(0.35+0.45*hash2(f64(k),29.0)))
+            # Flattened five-sided curved tuft, broad root hidden in its neighbour.
+            base=u32(b.vs.len())
+            loop ring in [0..3):
+                centre=if ring==0:root else:(if ring==1:bend else:tip)
+                radius=if ring==0:width else:(if ring==1:width*0.80 else:0.002)
+                loop v in [0..5):
+                    angle=TAU*f64(v)/5.0
+                    n=normalize(v3(cos(angle)*0.55,sin(angle),sin(angle)*0.24))
+                    pos=centre+v3(cos(angle)*radius,sin(angle)*radius*0.55,0.0)
+                    b.vs.push(Vertex3D(pos,n,vec2(0,0),color))
+            loop ring in [0..2):
+                loop v in [0..5):
+                    a=base+u32(ring*5+v)
+                    c=base+u32(ring*5+(v+1)%5)
+                    loop index in [a,c,a+5,c,c+5,a+5]: b.idx.push(index)
+        __boar_m.push(mesh(b.vs, b.idx))
+        # the head, about the neck
+        h = MeshB()
+        # The rear ring sits inside the shoulders throughout the graze arc. A deep
+        # cheek tapers as one surface to the blunt snout, without a ball-shaped skull.
+        rings = [vec4(-0.14, 0.025, 0.245, 0.235), vec4(0.10, 0.010, 0.235, 0.210),
+            vec4(0.30, -0.045, 0.190, 0.175), vec4(0.50, -0.125, 0.140, 0.115), vec4(0.68, -0.16, 0.135, 0.090)]
+        base = u32(h.vs.len())
+        loop j in [0..rings.len()):
+            r = rings[j]
+            prev = rings[max(0, j - 1)]
+            next = rings[min(rings.len() - 1, j + 1)]
+            loop k in [0..17):
+                a = TAU * f64(k) / 16.0
+                x = cos(a)
+                y = sin(a)
+                dz = f64(next.x - prev.x)
+                nz = -(x * x * f64(next.z - prev.z) / f64(r.z) + y * (f64(next.y - prev.y) + y * f64(next.w - prev.w)) / f64(r.w)) / max(dz, 0.001)
+                n = normalize(v3(x / f64(r.z), y / f64(r.w), nz))
+                col = if y < -0.25: belly else: mix(hide, cheek, f32((if y > 0.45: 0.70 else: 0.20) * smoothstep(0.25, 0.68, f64(r.x))))
+                h.vs.push(Vertex3D(v3(x * f64(r.z), f64(r.y) + y * f64(r.w), f64(r.x)), n, vec2(0, 0), col))
+        loop j in [0..rings.len() - 1):
+            loop k in [0..16):
+                a = base + u32(j * 17 + k)
+                loop v in [a, a + 1, a + 17, a + 1, a + 18, a + 17]: h.idx.push(v)
+        # Flat oval cartilage disc: a short rim and a capped face, not a round nose.
+        nose = rgb(0.52, 0.36, 0.25)
+        base = u32(h.vs.len())
+        h.vs.push(Vertex3D(v3(0.0, -0.16, 0.699), vec3(0, 0, 1), vec2(0, 0), nose))
+        loop k in [0..17):
+            angle = TAU * f64(k) / 16.0
+            h.vs.push(Vertex3D(v3(cos(angle) * 0.135, -0.16 + sin(angle) * 0.09, 0.699), vec3(0, 0, 1), vec2(0, 0), nose))
+        loop k in [0..16):
+            loop v in [base, base + 1 + u32(k), base + 2 + u32(k)]: h.idx.push(v)
+        loop k in [0..16):
+            base = u32(h.vs.len())
+            loop end in [0..2):
+                angle = TAU * f64(k + end) / 16.0
+                n = normalize(v3(cos(angle) / 0.135, sin(angle) / 0.09, 0.0))
+                loop z in [0.68, 0.699]:
+                    h.vs.push(Vertex3D(v3(cos(angle) * 0.135, -0.16 + sin(angle) * 0.09, z), n, vec2(0, 0), nose))
+            loop v in [base, base + 2, base + 1, base + 2, base + 3, base + 1]: h.idx.push(v)
+        loop sx in [-1.0, 1.0]:
+            mb_sphere(h, v3(sx * 0.052, -0.155, 0.700), v3(0.021, 0.014, 0.005), dark, 8)
+            ivory = rgb(0.92, 0.86, 0.69)
+            root = v3(sx * 0.14, -0.18, 0.51)
+            bend = v3(sx * 0.205, -0.13, 0.58)
+            tip = v3(sx * 0.235, -0.015, 0.60)
+            # Shared rings follow the curve: no open seams between cylinder pieces.
+            curve = [root,bend,tip,v3(sx * 0.20,0.065,0.575)]
+            radii = [0.036,0.022,0.012,0.0]
+            base = u32(h.vs.len())
+            loop row in [0..curve.len()):
+                axis = normalize(curve[min(row+1,curve.len()-1)]-curve[max(0,row-1)])
+                across = normalize(cross(axis,vec3(0,0,1)))
+                along = cross(axis,across)
+                loop k in [0..8):
+                    a = TAU*f64(k)/7.0
+                    n = across*f32(cos(a))+along*f32(sin(a))
+                    col = darken(ivory,0.18*(1.0-f64(row)/3.0))
+                    h.vs.push(Vertex3D(curve[row]+n*f32(radii[row]),n,vec2(0,0),col))
+            loop row in [0..3):
+                loop k in [0..7):
+                    a = base+u32(row*8+k)
+                    loop v in [a,a+1,a+8,a+1,a+9,a+8]: h.idx.push(v)
+            mb_sphere(h, v3(sx * 0.185, -0.075, 0.16), v3(0.045, 0.09, 0.13), hide, 12)
+            mb_sphere(h, v3(sx * 0.209, 0.016, 0.235), v3(0.035, 0.029, 0.034), dark, 10)
+            mb_sphere(h, v3(sx * 0.231, 0.024, 0.248), v3(0.012, 0.013, 0.014), rgb(0.43, 0.24, 0.08), 8)
+            mb_sphere(h, v3(sx * 0.238, 0.029, 0.253), v3(0.004, 0.005, 0.005), rgb(0.78, 0.70, 0.51), 6)
+            mb_cyl(h, v3(sx * 0.216, 0.05, 0.18), v3(sx * 0.185, 0.038, 0.30), 0.029, 0.019, mane, 8)
+            loop k in [0..7):
+                z = 0.03 + f64(k) * 0.025
+                mb_cyl(h, v3(sx * 0.175, -0.03, z), v3(sx * 0.23, -0.09, z - 0.06), 0.015, 0.0, hide, 3)
+        __boar_m.push(mesh(h.vs, h.idx))
+        # Articulated upper leg and hock; the same triangles, split at the knee.
+        l = MeshB()
+        mb_cyl(l, v3(0.0, 0.065, 0.0), v3(0.0, -0.188, 0.0), 0.085, 0.043, hide, 8)
+        __boar_m.push(mesh(l.vs, l.idx))
+        shin = MeshB()
+        mb_sphere(shin, vec3(0, 0, 0), v3(0.044, 0.047, 0.044), hide, 6)
+        mb_cyl(shin, v3(0.0, 0.012, 0.0), v3(0.0, -0.12, -0.025), 0.045, 0.032, hide, 8)
+        loop sx in [-1.0, 1.0]:
+            mb_sphere(shin, v3(sx * 0.021, -0.145, 0.012), v3(0.020, 0.025, 0.048), dark, 8)
+        __boar_m.push(mesh(shin.vs, shin.idx))
+        tail = MeshB()
+        # Thin, slightly crooked tail; no cattle-like tassel.
+        mb_cyl(tail, v3(0.0, 0.57, -0.68), v3(0.025, 0.46, -0.83), 0.014, 0.009, hide, 4)
+        mb_cyl(tail, v3(0.025, 0.46, -0.83), v3(0.05, 0.39, -0.85), 0.009, 0.003, dark, 4)
+        __boar_m.push(mesh(tail.vs, tail.idx))
+        loop sx in [-1.0, 1.0]:
+            ear = MeshB()
+            mb_cyl(ear, v3(sx * 0.125, 0.13, 0.04), v3(sx * 0.205, 0.23, 0.055), 0.062, 0.008, hide, 3)
+            mb_cyl(ear, v3(sx * 0.14, 0.155, 0.072), v3(sx * 0.195, 0.215, 0.072), 0.033, 0.0, rgb(0.33, 0.225, 0.18), 3)
+            __boar_m.push(mesh(ear.vs, ear.idx))
+        jaw = MeshB()
+        mb_sphere(jaw, v3(0.0, -0.20, 0.47), v3(0.085, 0.025, 0.19), dark, 12)
+        __boar_m.push(mesh(jaw.vs, jaw.idx))
+    __boar_m
+
+__boar_hips = [v3(0.16, __BOAR_HIP_Y, 0.3), v3(-0.16, __BOAR_HIP_Y, 0.3), v3(0.16, __BOAR_HIP_Y, -0.45), v3(-0.16, __BOAR_HIP_Y, -0.45)]
+
+# Shared by the renderer and headless footing checks. All pose data are scalar values;
+# no sampled arrays or temporary meshes are allocated for procedural animals.
+struct BoarPose:
+    torso = mat4()
+    head = mat4()
+    jaw = 0.0
+    tail = 0.0
+    ear_l = 0.0
+    ear_r = 0.0
+
+boar_pose = (a: Animal) -> BoarPose:
+    p = BoarPose()
+    if a.state == .dead:
+        k = clamp(a.t / 0.45, 0.0, 1.0)
+        p.torso = translation(v3(0.0, 0.25 * k - max(0.0, a.t - 1.0) * 0.6, 0.0)) * rotation_z(k * 1.45) * translation(v3(0.0, -0.25 * k, 0.0))
+        p.head = p.torso * translation(__BOAR_NECK) * rotation_x(0.18)
+        return p
+    clock = a.idle
+    ph = a.gait
+    alert = a.startle > 0.0
+    run = (a.state == .flee or a.state == .charge) and not alert
+    moving = if alert or a.state == .graze: 0.0 else: clamp(a.speed / (if a.state == .walk: 0.85 else: 2.5), 0.0, 1.0)
+    # A long rooting interval, chewing as the head rises, then a held lookout.
+    cycle = fract(clock / (6.5 + fract(a.seed * 0.713) * 4.5) + fract(a.seed * 0.317))
+    feed = smoothstep(0.02, 0.14, cycle) * (1.0 - smoothstep(0.56, 0.72, cycle))
+    graze = if a.state == .graze and not a.resting: feed else: 0.0
+    weight = sin(clock * 0.83 + a.seed)
+    bob = -0.014 + sin(clock * 2.1 + a.seed) * 0.004 + abs(sin(ph)) * moving * (if run: 0.038 else: 0.018)
+    if a.state == .walk or run: bob -= moving * (if run: 0.060 else: 0.035)
+    if a.resting: bob -= 0.06
+    roll = sin(ph + 0.4) * moving * 0.045 + weight * 0.022 * (1.0 - moving)
+    pitch = sin(ph * 2.0 - 0.6) * moving * (if run: 0.065 else: 0.018) + graze * 0.016
+    p.torso = translation(v3(weight * 0.009 * (1.0 - moving), bob, 0.0)) * translation(v3(0.0, 0.48, -0.22)) * rotation_z(roll) * rotation_x(pitch) * translation(v3(0.0, -0.48, 0.22))
+    root = graze * (0.46 + sin(clock * 4.7 + a.seed) * 0.025)
+    hp = if alert: -0.24 else: (if a.state == .charge: 0.31 else: (if run: 0.12 + sin(ph * 2.0 - 1.0) * 0.035 else: root - (1.0 - graze) * 0.10 + sin(ph - 0.6) * moving * 0.035))
+    look = if a.state == .graze: (1.0 - feed) * sin(clock * 0.7 + a.seed) * 0.34 + graze * sin(clock * 1.9 + a.seed) * 0.11 else: 0.0
+    if alert: look = clamp(wrap_angle(yaw_of(a.scare - a.pos) - a.face), -0.45, 0.45)
+    p.head = p.torso * translation(__BOAR_NECK) * rotation_z(-roll * 0.8) * rotation_y(look) * rotation_x(hp - pitch * 0.7)
+    p.jaw = if a.state == .graze and not a.resting: (0.5 + 0.5 * sin(clock * 12.0 + a.seed)) * 0.075 else: 0.0
+    p.tail = sin(clock * 2.8 + a.seed) * 0.30 + pow(max(0.0, sin(clock * 0.91 + a.seed)), 12.0) * sin(clock * 16.0) * 0.48
+    p.ear_l = if alert: -0.35 else: pow(max(0.0, sin(clock * 1.3 + a.seed)), 18.0) * sin(clock * 25.0) * 0.55
+    p.ear_r = if alert: 0.35 else: pow(max(0.0, sin(clock * 1.1 + a.seed + 2.0)), 18.0) * sin(clock * 23.0) * 0.55
+    p
+
+struct BoarLeg:
+    upper = mat4()
+    lower = mat4()
+
+# Orient a -Y segment between joints, keeping the hoof endpoint on its target.
+__boar_segment = (from: vec3, to: vec3) -> mat4:
+    y = normalize(from - to)
+    x = normalize(cross(y, vec3(0, 0, 1)))
+    z = cross(x, y)
+    m = mat4()
+    m[0] = vec4(x, 0)
+    m[1] = vec4(y, 0)
+    m[2] = vec4(z, 0)
+    m[3] = vec4(from, 1)
+    m
+
+boar_leg = (a: Animal, p: BoarPose, i: int) -> BoarLeg:
+    run = a.state == .flee or a.state == .charge
+    moving = if a.startle > 0.0 or a.state == .dead or a.state == .graze or a.speed < 0.001: 0.0 else: 1.0
+    off = if run: (if i < 2: f64(i) * 0.5 else: PI + f64(i - 2) * 0.5) else: (if i == 0: 0.0 else: (if i == 1: PI else: (if i == 2: PI * 1.5 else: PI * 0.5)))
+    cycle = fract((a.gait + off) / TAU)
+    stance = if run: 0.26 else: 0.62
+    stride = TAU / (if run: 6.5 else: 15.0)
+    swing = clamp((cycle - stance) / (1.0 - stance), 0.0, 1.0)
+    recovery = sin(swing * PI)
+    travel = if cycle < stance: stride * (stance * 0.5 - cycle) else: stride * stance * (smooth01(swing) - 0.5)
+    anchor = __boar_hips[i]
+    foot = v3(f64(anchor.x), 0.035 + recovery * moving * (if run: 0.105 else: 0.065), f64(anchor.z) + travel * moving)
+    hip = transform_point(p.torso, anchor)
+    if a.state == .dead: foot = transform_point(p.torso, anchor + vec3(0, -0.28, 0.08))
+    delta = foot - hip
+    reach = clamp(f64(length(delta)), 0.036, 0.3249)
+    dir = normalize(delta)
+    pole = vec3(0, 0, (if i < 2: -1 else: 1))
+    pole = normalize(pole - dir * dot(pole, dir))
+    along = (0.18 * 0.18 + reach * reach - 0.145 * 0.145) / (2.0 * reach)
+    knee = hip + dir * f32(along) + pole * f32(sqrt(max(0.0, 0.18 * 0.18 - along * along)))
+    BoarLeg(__boar_segment(hip, knee), __boar_segment(knee, hip + dir * f32(reach)))
+
+boar_shape = (seed: f64) -> vec3:
+    # Lean yearlings, long-backed adults and broad, high-shouldered heavy boars.
+    girth = fract(seed * 0.173)
+    size = 0.72 + girth * 0.55
+    v3(size * (0.72 + girth * 0.56), size * (0.90 + girth * 0.17), size * (1.12 - girth * 0.12))
+
+boar_coat = (seed: f64) -> vec4:
+    # Charcoal, red umber and pale grey-brown coats retain the painted saddle.
+    tone = fract(seed * 0.173)
+    col = if tone < 0.34: mix(vec3(0.46, 0.51, 0.57), vec3(0.73, 0.75, 0.77), f32(tone / 0.34)) else: (if tone < 0.68: mix(vec3(0.96, 0.68, 0.49), vec3(1.18, 0.92, 0.70), f32((tone - 0.34) / 0.34)) else: mix(vec3(0.94, 1.04, 1.13), vec3(1.23, 1.25, 1.22), f32((tone - 0.68) / 0.32)))
+    vec4(col, 1)
+
+__draw_boar = (a: Animal, world0: mat4, d: f64):
+    parts = __boar_parts()
+    visual_seed = if a.appearance >= 0.0: a.appearance / 0.173 else: a.seed
+    tint = boar_coat(visual_seed)
+    world = world0 * wild_ground_tilt(a) * scaling(boar_shape(visual_seed))
+    p = boar_pose(a)
+    draw_prop(parts[0], world * p.torso, tint, 0.0, 0.2, creature = 1.0)
+    draw_prop(parts[1], world * p.head, tint, 0.0, 0.2, creature = 1.0)
+    # Small hinges also stay attached at distance; the expensive four leg chains keep
+    # their original distance/shadow cutoff.
+    draw_prop(parts[4], world * p.torso * translation(v3(0.0, 0.57, -0.68)) * rotation_y(p.tail) * translation(v3(0.0, -0.57, 0.68)), tint, 0.0, 0.2, creature = 1.0)
+    loop side in [0..2):
+        sx = if side == 0: -1.0 else: 1.0
+        pivot = v3(sx * 0.125, 0.13, 0.04)
+        draw_prop(parts[5 + side], world * p.head * translation(pivot) * rotation_z((if side == 0: p.ear_l else: p.ear_r)) * translation(-pivot), tint, 0.0, 0.2, creature = 1.0)
+    draw_prop(parts[7], world * p.head * translation(v3(0.0, -0.17, 0.24)) * rotation_x(p.jaw) * translation(v3(0.0, 0.17, -0.24)), tint, 0.0, 0.2, creature = 1.0)
+    if d > 45.0 or (sc.shadow and d > 20.0): return
+    loop i in [0..4):
+        leg = boar_leg(a, p, i)
+        draw_prop(parts[2], world * leg.upper, tint, 0.0, 0.2, creature = 1.0)
+        draw_prop(parts[3], world * leg.lower, tint, 0.0, 0.2, creature = 1.0)
+
+# Small birds: folded perch, slim flight body and one mirrored wing mesh.
+# Continuous transforms reuse the former up/down-pose batch budget.
+# kinds: 0 sparrow (streaked brown, buff breast), 1 pigeon (blue-grey), 2 crow (black)
+struct BirdPose:
+    body = mat4()
+    head = mat4()
+    wing = 0
+    flap = 0.0
+
+bird_pose = (a: Animal) -> BirdPose:
+    p = BirdPose()
+    flying = a.state == .fly or a.state == .land
+    live = a.state != .dead and a.state != .gone
+    clock = a.idle + a.seed
+    # Two deliberate pecks then a held, independently turning head. Feet never rotate.
+    cycle = fract(clock / 2.4)
+    peck = if not flying and not a.resting and live: pow(max(0.0, sin(cycle * TAU * 2.0)), 6.0) * (1.0 - smoothstep(0.48, 0.55, cycle)) else: 0.0
+    look = if flying or not live: 0.0 else: sin(clock * 1.7) * 0.65 * (1.0 - peck)
+    pitch = if a.startle > 0.0: -0.18 else: peck * 0.3
+    p.body = translation(v3(0.0, 0.04, 0.0)) * rotation_x(pitch) * translation(v3(0.0, -0.04, 0.0))
+    p.head = p.body * translation(v3(0.0, 0.082, 0.025)) * rotation_y(look) * rotation_x(peck * 0.95) * translation(v3(0.0, -0.082, -0.025))
+    if flying and live:
+        # The first raised wings and downstroke precede the climb; all clocks are
+        # simulation time, so fixed-frame captures and gameplay show the same beat.
+        # idle resets on takeoff, but survives fly/land steering changes.
+        flight_time = a.idle
+        beat = if flight_time < 0.45: flight_time * 6.0 else: 2.7 + (flight_time - 0.45) * (if a.kind == .crow: 4.0 else: 9.0)
+        p.wing = if fract(beat) < 0.5: 1 else: 2
+        p.flap = 0.08 + 0.72 * sin(beat * TAU)
+    p
+
+# A shallow feather fan with a tapered outline. Shared by all cached wing poses;
+# silhouette detail costs triangles inside the existing instanced draw, not parts.
+__bird_fan = (b: mut MeshB, points: vec3[], col: vec4, m: mat4 = mat4()):
+    center = vec3(0, 0, 0)
+    loop q in points: center += q
+    center /= f32(points.len())
+    area = 0.0
+    loop i in [0..points.len()):
+        a = points[i]
+        c = points[(i + 1) % points.len()]
+        area += f64(a.x * c.z - a.z * c.x)
+    loop side in [-1.0, 1.0]:
+        base = u32(b.vs.len())
+        n = transform_dir(m, v3(0.0, side, 0.0))
+        b.vs.push(Vertex3D(transform_point(m, center + v3(0.0, side * 0.003, 0.0)), n, vec2(0, 0), col))
+        loop q in points: b.vs.push(Vertex3D(transform_point(m, q), n, vec2(0, 0), col))
+        loop k in [0..points.len()):
+            a = base + 1 + u32(k)
+            c = base + 1 + u32((k + 1) % points.len())
+            loop v in (if side * area > 0.0: [base, c, a] else: [base, a, c]): b.idx.push(v)
+
+__bird_details: Mesh[]
+__bird_feet: Mesh[]
+__bird_m: Mesh[]
+__bird = (kind: int, pose: int) -> Mesh:
+    if __bird_m.len() == 0:
+        loop k in [0..3):
+            back = [rgb(0.42, 0.29, 0.17), rgb(0.55, 0.56, 0.6), rgb(0.07, 0.07, 0.09)][k]
+            belly = [rgb(0.8, 0.71, 0.56), rgb(0.62, 0.6, 0.66), rgb(0.1, 0.1, 0.12)][k]
+            head = [rgb(0.47, 0.4, 0.36), rgb(0.44, 0.46, 0.52), rgb(0.06, 0.06, 0.08)][k]
+            wing = [rgb(0.33, 0.21, 0.12), rgb(0.48, 0.49, 0.53), rgb(0.05, 0.05, 0.07)][k]
+            beak = [rgb(0.3, 0.25, 0.2), rgb(0.35, 0.3, 0.3), rgb(0.04, 0.04, 0.05)][k]
+            loop pose_ in [0..3):
+                b = MeshB()
+                mb_sphere(b, v3(0.0, 0.07, 0.0), v3((if k == 1: 0.042 else: 0.036), (if k == 1:0.046 else:0.038), (if k == 2: 0.067 else: 0.058)), back, 12)
+                mb_sphere(b, v3(0.0, 0.06, 0.012), v3(0.032, (if k==1:0.040 else:0.032), 0.046), belly, 10)
+                # the tail, cocked up a little
+                tail = if k == 2: 0.128 else: (if k == 1: 0.107 else: 0.100)
+                __bird_fan(b, [v3(-0.013, 0.073, -0.035), v3(0.013, 0.073, -0.035),
+                    v3(0.022, 0.095, -tail + 0.008), v3(0.008, 0.098, -tail),
+                    v3(-0.008, 0.098, -tail), v3(-0.022, 0.095, -tail + 0.008)], wing)
+                # Overlapping neck feathers keep the rotating head seated in the breast.
+                mb_sphere(b, v3(0.0, 0.092, 0.038), v3(0.022, 0.033, 0.027), head, 10)
+                if pose_ == 0:
+                    # wings folded along the sides; thin legs
+                    loop sx in [-1.0, 1.0]:
+                        mb_sphere(b, v3(sx * 0.033, 0.080, -0.013), v3(0.012, 0.025, 0.048), wing, 10)
+                        __bird_fan(b, [v3(sx * 0.026, 0.089, 0.025), v3(sx * 0.043, 0.076, -0.015),
+                            v3(sx * 0.026, 0.065, -0.078), v3(sx * 0.019, 0.080, -0.040)], wing)
+                        if k == 1:
+                            # Two broad pigeon wing bars, visible without tiny feather noise.
+                            loop z in [-0.025, -0.004]:
+                                mb_cyl(b, v3(sx * 0.037, 0.091, z), v3(sx * 0.044, 0.071, z - 0.014), 0.003, 0.003, rgb(0.22, 0.25, 0.29), 4)
+                if pose_ == 2:
+                    # A single tapered feather plane, mirrored at the shoulder.
+                    # Its chord is narrow enough to remain a bird at vista scale.
+                    b = MeshB()
+                    span = if k == 2: 1.18 else: 1.0
+                    points: vec3[]
+                    loop q in [vec2(0.0, 0.022), vec2(0.045, 0.034), vec2(0.095, 0.024),
+                        vec2(0.142, 0.002), vec2(0.161, -0.018), vec2(0.143, -0.033),
+                        vec2(0.109, -0.048), vec2(0.075, -0.048), vec2(0.030, -0.035), vec2(0.0, -0.023)]:
+                        points.push(v3(f64(q.x) * span, 0.0, f64(q.y)))
+                    __bird_fan(b, points, wing)
+                __bird_m.push(mesh(b.vs, b.idx))
+            b = MeshB()
+            mb_sphere(b, v3(0.0, 0.123, 0.057), v3(0.023, 0.026, 0.026), head, 12)
+            mb_cyl(b, v3(0.0, 0.121, 0.077), v3(0.0, 0.116, (if k == 2: 0.124 else: 0.101)), (if k == 2: 0.011 else: 0.008), 0.001, beak, 5)
+            if k == 0:
+                loop sx in [-1.0, 1.0]:
+                    mb_sphere(b, v3(sx * 0.020, 0.119, 0.061), v3(0.005, 0.010, 0.016), rgb(0.77, 0.68, 0.50), 6)
+            if k == 1:
+                mb_sphere(b, v3(0.0, 0.102, 0.047), v3(0.022, 0.014, 0.021), rgb(0.25, 0.31, 0.30), 10)
+                # A pale cere and orange iris separate the bill and eye at 1 m.
+                mb_sphere(b,v3(0.0,0.124,0.080),v3(0.008,0.006,0.007),rgb(0.70,0.69,0.64),8)
+            loop sx in [-1.0, 1.0]:
+                if k==1: mb_sphere(b,v3(sx*0.020,0.129,0.067),v3(0.0055,0.006,0.006),rgb(0.58,0.36,0.16),8)
+                mb_sphere(b, v3(sx * 0.023, 0.129, 0.068), v3(0.0035, 0.004, 0.004), rgb(0.02, 0.02, 0.02), 6)
+            __bird_details.push(mesh(b.vs, b.idx))
+            b = MeshB()
+            loop sx in [-1.0, 1.0]:
+                mb_cyl(b, v3(sx * 0.012, 0.042, 0.004), v3(sx * 0.012, 0.006, 0.01), 0.003, 0.002, beak, 3)
+                loop toe in [-1.0, 1.0]:
+                    mb_cyl(b, v3(sx * 0.012, 0.006, 0.01), v3(sx * 0.012 + toe * 0.007, 0.003, 0.028), 0.002, 0.001, beak, 3)
+            __bird_feet.push(mesh(b.vs, b.idx))
+        loop foot in __bird_feet: __bird_details.push(foot)
+    __bird_m[kind * 3 + pose]
+
+# Thin lobed wings with a narrow pigmented margin, rather than inflated ovals.
+# The three existing species batches and movement/RNG remain unchanged.
+butterfly_geometry = (col: vec4) -> MeshB:
+    b = MeshB()
+    mb_cyl(b,v3(0.0,-0.030,0.0),v3(0.0,0.028,0.0),0.004,0.003,rgb(0.12,0.09,0.055),5)
+    contour = [vec2(0.003,0.023),vec2(0.035,0.062),vec2(0.072,0.078),
+        vec2(0.092,0.063),vec2(0.090,0.032),vec2(0.063,0.006),
+        vec2(0.079,-0.014),vec2(0.066,-0.041),vec2(0.043,-0.052),vec2(0.010,-0.031)]
+    loop sx in [-1.0,1.0]:
+        center = vec2(f32(sx*0.034),0.004)
+        loop face in [-1.0,1.0]:
+            n = v3(0.0,0.0,face)
+            loop k in [0..contour.len()):
+                a = contour[k]*vec2(f32(sx),1)
+                c = contour[(k+1)%contour.len()]*vec2(f32(sx),1)
+                ai = mix(center,a,0.76)
+                ci = mix(center,c,0.76)
+                base = u32(b.vs.len())
+                loop q in [center,ai,ci,a,c]:
+                    edge = q==a or q==c
+                    # Dark roots and margins keep tiny wings from reading as solid candy.
+                    pigment = if edge: col*vec4(0.48,0.45,0.40,1) else: (if q==center: col*vec4(0.56,0.53,0.48,1) else: col)
+                    b.vs.push(Vertex3D(vec3(q, f32(face*0.001)),n,vec2(0,0),pigment))
+                loop tri in [(0,1,2),(1,3,4),(1,4,2)]:
+                    if sx*face<0.0:
+                        loop j in [tri.0,tri.1,tri.2]: b.idx.push(base+u32(j))
+                    else:
+                        loop j in [tri.0,tri.2,tri.1]: b.idx.push(base+u32(j))
+    b
+
+__butterfly_m: Mesh[]
+__butterfly = (k: int) -> Mesh:
+    if __butterfly_m.len() == 0:
+        loop c in [rgb(0.38,0.29,0.105),rgb(0.48,0.47,0.36),rgb(0.18,0.30,0.39)]:
+            b = butterfly_geometry(c)
+            __butterfly_m.push(mesh(b.vs,b.idx))
+    __butterfly_m[k]
+
+wild_bug_position = (b: Bug) -> vec3:
+    b.home + v3(sin(b.phase * 0.7) * 3.0 + sin(b.phase * 2.3) * 0.5, 0.8 + sin(b.phase * 1.3) * 0.5, cos(b.phase * 0.6) * 3.0)
+
+# Quiet approaches offer Catch through the existing contextual action button.
+# Ordinary pickups retain priority, and the callback rechecks eligibility.
+wild_catchable = (p: vec3, id: str, fleeing: f64) -> bool:
+    if not pl.sneaking or pl.state != .ground or fight.act != .idle or fleeing > 0.0 or not has_item_def(id): return false
+    if nearest_item(pl.pos + vec3(0, 0.3, 0), 1.6) >= 0 or grass_fire_near(pl.pos, 2.0): return false
+    eye = pl.pos + vec3(0, 0.8, 0)
+    delta = p - eye
+    d = f64(length(delta))
+    d <= 1.6 and (d < 0.001 or not raycast(eye, delta, d).hit)
+
+wild_catch = (p: vec3, id: str, fleeing: f64) -> bool:
+    if not wild_catchable(p, id, fleeing) or not inv_add(id): return false
+    ui_pickup(item(id).name)
+    act.interact = false
+    true
+
+__catch_u = -1
+__catch_index = -1
+__catch_bug = false
+__catch_action = ():
+    i = __catch_index
+    if i < 0: return
+    if __catch_bug:
+        if i >= bugs.len() or env.night < 0.2: return
+        b = bugs[i]
+        if b.firefly and b.hide <= 0.0 and wild_catch(b.pos, "sunset_firefly", b.fleeing): bugs[i].hide = 600.0
+    else:
+        if i >= critters.len(): return
+        c = critters[i]
+        id = if c.kind == .frog: "hot_footed_frog" else: "hightail_lizard"
+        if c.kind != .squirrel and c.hide <= 0.0 and wild_catch(c.pos, id, c.fleeing): critters[i].hide = 600.0
+    wild_catch_prompt()
+
+# A single moving usable follows the nearest catchable creature. Main's existing
+# interaction selection and bound-button HUD own both the prompt and the action.
+wild_catch_prompt = ():
+    if __catch_u < 0 or __catch_u >= usables.len() or usables[__catch_u].prompt != "Catch":
+        __catch_u = add_usable(vec3(0, -10000, 0), 1.6, "Catch", __catch_action, false)
+        usables[__catch_u].automatic_use = false
+    usables[__catch_u].enabled = false
+    __catch_index = -1
+    best = 1.6
+    loop i in 0.. and c in critters:
+        if c.hide > 0.0 or c.kind == .squirrel: continue
+        id = if c.kind == .frog: "hot_footed_frog" else: "hightail_lizard"
+        distance = f64(length(c.pos - (pl.pos + vec3(0, 0.8, 0))))
+        if distance > best or not wild_catchable(c.pos, id, c.fleeing): continue
+        best = distance
+        __catch_index = i
+        __catch_bug = false
+        usables[__catch_u].pos = c.pos
+    if env.night >= 0.2:
+        loop i in 0.. and b in bugs:
+            if not b.firefly or b.hide > 0.0: continue
+            distance = f64(length(b.pos - (pl.pos + vec3(0, 0.8, 0))))
+            if distance > best or not wild_catchable(b.pos, "sunset_firefly", b.fleeing): continue
+            best = distance
+            __catch_index = i
+            __catch_bug = true
+            usables[__catch_u].pos = b.pos
+    usables[__catch_u].enabled = __catch_index >= 0
+
+critter_scare = () -> f64:
+    if pl.sneaking: 0.65 else: (if max(pl.speed, f64(length(vec2(pl.vel.x, pl.vel.z)))) > 4.0: 7.0 else: 4.0)
+
+# Fireflies use the glow pass; daytime butterflies use solid wings above the blossoms.
+wildlife_bugs = (dt: f64, cam: vec3):
+    dusk = clamp(env.night * 1.5, 0.0, 1.0)
+    if dusk < 0.2: return
+    loop b in bugs:
+        if b.hide > 0.0 or not b.firefly or f64(length(b.pos - cam)) > 60.0: continue
+        t = b.phase
+        p = b.pos
+        if fract(t * 0.3) < 0.6: emit(.glow, p, vec3(0, 0, 0), dt * 1.5, 0.05, rgba(0.85, 1.0, 0.45, 0.9 * f32(dusk)))
+
+# ---------------- small critters: squirrels in the woods, frogs by the water, lizards on rocks ----------------
+enum CKind: squirrel, frog, lizard
+
+struct Critter:
+    kind: CKind
+    pos: vec3
+    home: vec3
+    tree = vec3(0, 0, 0)   # a squirrel's tree (trunk base) and its radius in w
+    trunk = 0.0
+    face = 0.0
+    t = 0.0
+    hop = 0.0              # 0..1 through a hop
+    up = 0.0               # a squirrel's height up its trunk
+    fleeing = 0.0
+    hide = 0.0             # gone (a frog under water) for a while
+    seed = 0.0
+
+critters: Critter[]
+critter_meshes: Mesh[]
+
+critters_init = ():
+    b = MeshB()
+    fur = rgb(0.55, 0.32, 0.18)
+    mb_sphere(b, v3(0.0, 0.1, 0.0), v3(0.07, 0.08, 0.12), fur, 8)
+    mb_sphere(b, v3(0.0, 0.18, 0.1), v3(0.05, 0.05, 0.06), fur, 8)
+    mb_sphere(b, v3(0.0, 0.25, -0.14), v3(0.06, 0.15, 0.06), rgb(0.66, 0.42, 0.25), 8)
+    loop sx in [-1.0, 1.0]:
+        mb_sphere(b, v3(sx * 0.028, 0.2, 0.14), v3(0.012, 0.012, 0.012), rgb(0.05, 0.05, 0.05), 4)
+        mb_sphere(b, v3(sx * 0.03, 0.24, 0.08), v3(0.012, 0.025, 0.01), fur, 4)
+    critter_meshes.push(mesh(b.vs, b.idx))
+    b2 = MeshB()
+    green = rgb(0.32, 0.55, 0.22)
+    mb_sphere(b2, v3(0.0, 0.05, 0.0), v3(0.06, 0.045, 0.075), green, 8)
+    loop sx in [-1.0, 1.0]:
+        mb_sphere(b2, v3(sx * 0.03, 0.09, 0.05), v3(0.018, 0.018, 0.018), rgb(0.9, 0.75, 0.2), 4)
+        mb_box(b2, v3(sx * 0.06, 0.02, -0.04), v3(0.03, 0.012, 0.045), green)
+    critter_meshes.push(mesh(b2.vs, b2.idx))
+    b3 = MeshB()
+    lz = rgb(0.2, 0.42, 0.55)
+    mb_sphere(b3, v3(0.0, 0.03, 0.02), v3(0.035, 0.022, 0.08), lz, 6)
+    mb_cyl(b3, v3(0.0, 0.025, -0.05), v3(0.0, 0.015, -0.22), 0.02, 0.002, rgb(0.85, 0.45, 0.15), 5)
+    mb_sphere(b3, v3(0.0, 0.035, 0.12), v3(0.025, 0.018, 0.035), lz, 6)
+    loop sx in [-1.0, 1.0]:
+        loop sz in [-1.0, 1.0]: mb_box(b3, v3(sx * 0.04, 0.012, sz * 0.045), v3(0.018, 0.007, 0.007), lz)
+    critter_meshes.push(mesh(b3.vs, b3.idx))
+    seed_random(55)
+    # squirrels at the foot of the woods' trees
+    loop p in places:
+        if p.height > 8.0 and random() < 0.04 and not is_snow_area(f64(p.pos.x), f64(p.pos.z)):
+            a = random(0.0, TAU)
+            q = p.pos + v3(cos(a) * 2.5, 0.0, sin(a) * 2.5)
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            critters.push(Critter(.squirrel, q, q, tree = p.pos, trunk = max(0.25, p.radius * 0.07), seed = random(0.0, 100.0)))
+    # lizards on bare rock, frogs on the banks of ponds and the river
+    loop k in [0..6000):
+        x = random(-1600.0, -350.0)
+        z = random(1400.0, 2450.0)
+        if is_snow_area(x, z) or water_level(x, z) != none: continue
+        q = v3(x, height_at(x, z), z)
+        if material_at(x, z).y > 0.7 and normal_at(x, z).y > 0.8:
+            if random() < 0.12: critters.push(Critter(.lizard, q, q, seed = random(0.0, 100.0)))
+            continue
+        near = false
+        loop d in [(3.0, 0.0), (-3.0, 0.0), (0.0, 3.0), (0.0, -3.0)]:
+            if water_level(x + d.0, z + d.1) != none: near = true
+        if near: critters.push(Critter(.frog, q, q, seed = random(0.0, 100.0)))
+    if env("BOTW_DEBUG") != none:
+        loop c in critters: eprint("critter {c.kind} {c.pos.x} {c.pos.z} {c.pos.y}")
+
+# Move soles, not the decorative hop offset. Short swept steps cannot tunnel at
+# low frame rates; support probes stop at cliffs and retain rock/platform tops.
+critter_step = (c: mut Critter, delta: vec3) -> bool:
+    base = ground_at(f64(c.pos.x), f64(c.pos.z), f64(c.pos.y), 0.18)
+    steps = max(1, int(ceil(f64(length(delta)) / 0.08)))
+    increment = delta / f32(steps)
+    side = normalize(vec3(-increment.z, 0, increment.x) + vec3(0.00001, 0, 0)) * 0.10
+    moved = false
+    loop k in [0..steps):
+        q = c.pos + increment
+        support = ground_at(f64(q.x), f64(q.z), base.y, 0.18)
+        rise = support.y - base.y
+        if rise > 0.18 or rise < -0.22 or support.normal.y < 0.72: break
+        if c.kind != .frog and water_depth(f64(q.x), f64(q.z)) > 0.08 and support.collider < 0: break
+        supported = true
+        front = normalize(increment + vec3(0.00001, 0, 0)) * 0.10
+        loop offset in [front, -front, side, -side]:
+            foot = q + offset
+            edge = ground_at(f64(foot.x), f64(foot.z), base.y, 0.18)
+            if abs(edge.y - support.y) > 0.22 or edge.normal.y < 0.72: supported = false
+        if not supported: break
+        # Above a small accepted step, below a wall: three tracks cover body width.
+        y = max(base.y, support.y) + 0.20
+        blocked = false
+        loop offset in [vec3(0, 0, 0), side, -side]:
+            from = v3(f64(c.pos.x), y, f64(c.pos.z)) + offset
+            to = v3(f64(q.x), y, f64(q.z)) + offset
+            if raycast(from, to - from, f64(length(to - from)) + 0.10, true, false).hit: blocked = true
+        if blocked: break
+        q.y = f32(support.y)
+        c.pos = q
+        base = support
+        moved = true
+    moved
+
+critters_update = (dt: f64):
+    loop mut c in critters:
+        d = f64(length(c.pos - pl.pos))
+        if d > 70.0: continue
+        c.t += dt
+        if c.hide > 0.0:
+            c.hide -= dt
+            if c.hide <= 0.0: c.pos = c.home
+            continue
+        scare = critter_scare()
+        if d < scare and c.fleeing <= 0.0:
+            c.fleeing = 2.5
+            dv = c.pos - pl.pos
+            c.face = yaw_of(vec3(dv.x, 0, dv.z)) + random(-0.5, 0.5)
+        c.fleeing = max(0.0, c.fleeing - dt)
+        if c.kind == .squirrel:
+            # scared: to the tree and up the trunk; down again once it is quiet
+            tv = vec3(c.tree.x - c.pos.x, 0, c.tree.z - c.pos.z)
+            at_tree = f64(length(tv)) < c.trunk + 0.20
+            if c.fleeing > 0.0 or d < scare:
+                if at_tree: c.up = min(c.up + dt * 3.5, 3.2)
+                else:
+                    c.face = yaw_of(tv)
+                    critter_step(c, forward_of(c.face) * f32(min(6.0 * dt, max(0.0, f64(length(tv)) - c.trunk - 0.10))))
+                    if c.hop <= 0.0: c.hop = 1.0
+            else if c.up > 0.0: c.up = max(0.0, c.up - dt * 1.2)
+            else if fract(c.t * 0.2 + c.seed) < 0.15:
+                if c.hop <= 0.0:
+                    c.hop = 1.0
+                    c.face += random(-1.2, 1.2)
+                    if f64(length(c.pos - c.home)) > 4.0: c.face = yaw_of(c.home - c.pos)
+                critter_step(c, forward_of(c.face) * f32(2.5 * dt))
+        else:
+            moving = c.fleeing > 0.0 or fract(c.t * 0.25 + c.seed) < 0.12
+            if c.fleeing <= 0.0 and moving and c.hop <= 0.0: c.face += random(-1.2, 1.2)
+            if c.fleeing <= 0.0 and f64(length(c.pos - c.home)) > 6.0: c.face = yaw_of(c.home - c.pos)
+            if c.kind == .frog:
+                if moving and c.hop <= 0.0: c.hop = 1.0
+                if c.hop > 0.0: critter_step(c, forward_of(c.face) * f32((if c.fleeing > 0.0: 3.5 else: 1.8) * dt))
+            else if moving: critter_step(c, forward_of(c.face) * f32((if c.fleeing > 0.0: 5.0 else: 1.0) * dt))
+        c.hop = max(0.0, c.hop - dt * 3.0)
+        g = ground_at(f64(c.pos.x), f64(c.pos.z), f64(c.pos.y), 0.18).y
+        h = if c.hop > 0.0: sin(c.hop * PI) * (if c.kind == .frog: 0.3 else: 0.18) else: 0.0
+        c.pos.y = f32(g + h + c.up)
+        # frogs jump into the water and stay under a while
+        if c.kind == .frog and water_level(f64(c.pos.x), f64(c.pos.z)) != none:
+            fx_splash(c.pos, 6)
+            c.hide = 8.0
+    wild_catch_prompt()
+
+critters_draw = ():
+    if sc.shadow: return
+    loop c in critters:
+        if c.hide > 0.0 or f64(length(c.pos - sc.cam)) > 45.0: continue
+        k = match c.kind:
+            squirrel: 0
+            frog: 1
+            lizard: 2
+        m = facing_mat(c.pos, c.face)
+        if c.up > 0.05:
+            # head up the trunk, belly against the bark
+            tv = vec3(c.tree.x - c.pos.x, 0, c.tree.z - c.pos.z)
+            m = facing_mat(c.pos, yaw_of(tv)) * rotation_x(-1.45)
+        else if c.hop <= 0.0 and c.fleeing <= 0.0:
+            t = c.t + c.seed
+            breath = sin(t * (if c.kind == .frog: 4.0 else: 2.5))
+            nibble = if c.kind == .squirrel: pow(max(0.0, sin(t * 1.3)), 10.0) * 0.14 else: 0.0
+            m = m * scaling(v3(1.0 + breath * 0.018, 1.0 + breath * 0.035 - nibble, 1.0))
+            if c.kind == .lizard: m = m * rotation_y(sin(t * 0.9) * 0.06)
+        draw_prop(critter_meshes[k], m, vec4(1, 1, 1, 1), 0.0, 0.1)

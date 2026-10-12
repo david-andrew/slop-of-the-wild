@@ -1,0 +1,289 @@
+use 'gfx.jo'
+use 'terrain.jo'
+use 'player.jo'
+use 'enemies.jo'
+use 'elements.jo'
+use 'structures.jo'
+use 'skel.jo'
+use 'hero_motion.jo'
+use 'enemy_weapon_pose.jo'
+use 'items.jo'
+
+# Stable ambient roles survive a changing animation phase. Once alerted, every
+# actor uses the existing combat/archery AI and attack contact poses.
+enemy_camp_roles = ():
+    # One of this camp's three authored ground actors gets a random bow during
+    # placement. Give that actor a melee role now that its lookout has a bow.
+    loop mut e in enemies:
+        if e.kind == .bokoblin and not e.lookout and hypot(f64(e.home.x) + 955.87, f64(e.home.z) - 1948.86) < 23.0:
+            e.archer = false
+            e.camp = 1
+            d = vec3(-955.87, e.pos.y, 1948.86) - e.pos
+            e.face = yaw_of(d)
+    loop b in bonfires:
+        members: int[]
+        loop i in 0.. and e in enemies:
+            if e.camp == 1 and not e.archer and not e.lookout and length(e.home - b.pos) < 23.0: members.push(i)
+        if members.len() < 3: continue
+        loop n in [0..members.len()):
+            i = members[n]
+            enemies[i].camp_role = if n == 0: CampRole.sitter else: (if n % 2 == 1: CampRole.club else: CampRole.spear)
+            enemies[i].weapon = if n % 2 == 0 and n > 0: "boko_spear" else: "boko_club"
+            enemies[i].patrol = false
+            # Pull the near guard into the gathering instead of cropping its
+            # club silhouette at the authored camp overview camera.
+            if enemies[i].camp_role == .club and hypot(f64(b.pos.x) + 955.87, f64(b.pos.z) - 1948.86) < 1.0:
+                q = mix(enemies[i].home, b.pos, 0.55)
+                q.y = f32(height_at(f64(q.x), f64(q.z)))
+                enemies[i].pos = q
+                enemies[i].home = q
+                enemies[i].face = yaw_of(b.pos - q)
+            # The west gathering originally put all three bodies on one side
+            # of the fire within arm's reach. Give its carriers separate places
+            # around the hearth so their daytime gestures have clear silhouettes.
+            if n > 0 and hypot(f64(b.pos.x) + 1440.41, f64(b.pos.z) - 1581.3) < 1.0:
+                q = b.pos + (if n % 2 == 1: vec3(-4.1, 0, 2.2) else: vec3(3.9, 0, 1.2))
+                q.y = f32(height_at(f64(q.x), f64(q.z)))
+                if enemy_walkable(enemies[i].home, q):
+                    enemies[i].pos = q
+                    enemies[i].home = q
+                    enemies[i].face = yaw_of(b.pos - q)
+    # The camp by the old man's hill has three ground actors and no tower actor.
+    # A fourth guard surveys the approach from a flat, climbable rock shelf.
+    p = v3(f64(CAMP_LOOKOUT.x), height_at(f64(CAMP_LOOKOUT.x), f64(CAMP_LOOKOUT.y)) + CAMP_LOOKOUT_HEIGHT, f64(CAMP_LOOKOUT.y))
+    i = spawn_enemy(.bokoblin, p)
+    enemies[i].lookout = true
+    enemies[i].archer = true
+    enemies[i].face = 2.3
+    enemies[i].camp_role = .lookout
+
+camp_idle_clip = (e: Enemy, fallback: str) -> str:
+    if e.archer: return "bow_hold"
+    match e.camp_role:
+        sitter: "sit"
+        club: "sword_idle"
+        spear: "idle"
+        _: fallback
+
+# Orient the actual grip socket, then solve its contact point. Re-solving the
+# wrist offset keeps the prop in the palm when the two-bone arm changes rotation.
+camp_grip_axis = (m: Model, p: mut Pose, hand: int, socket: Socket, direction: vec3, local_axis: vec3 = vec3(0,1,0)):
+    grip=bone_world(m,p,hand)*socket.offset
+    from=normalize(transform_dir(grip,local_axis))
+    to=normalize(direction)
+    axis=cross(from,to)
+    if length(axis)<0.00001: return
+    parent=bone_world(m,p,m.parent[hand])
+    local=normalize(transform_dir(inverse(parent),axis))
+    p.r[m.canon[hand]]=normalize(quat_mul(quat_axis_angle(local,acos(clamp(f64(dot(from,to)),-1.0,1.0))),p.r[m.canon[hand]]))
+
+camp_prop_contact = (m: Model, lib: AnimLib, p: mut Pose, side: str, socket: Socket, contact: vec3, tip: vec3, direction: vec3):
+    hand=bone_index(m,"hand_"+side)
+    if hand<0: return
+    loop iteration in [0..4):
+        camp_grip_axis(m,p,hand,socket,direction)
+        grip=bone_world(m,p,hand)*socket.offset
+        delta=contact-transform_point(grip,tip)
+        target=bone_world(m,p,hand)[3].xyz+delta
+        motion_arm(m,lib,p,bone_index(m,"upperarm_"+side),bone_index(m,"lowerarm_"+side),hand,target)
+    camp_grip_axis(m,p,hand,socket,direction)
+
+const CAMP_POKER_REACH = 2.75
+
+camp_has_poker = (e: Enemy) -> bool:
+    if e.camp_role!=.club or e.state!=.idle or e.alert>0.3 or e.archer or e.lookout or e.burning>0.0 or e.frozen>0.0 or e.held!="": return false
+    if camp_day_activity(e)==3: return false
+    loop fire in bonfires:
+        if length(fire.pos-e.pos)<4.1: return true
+    false
+
+# Fixed-length tool and a small independently phased rake through the near coals.
+# This uses the existing weapon draw and never changes inventory/AI ownership.
+camp_poker_tip = (e: Enemy) -> vec3:
+    world=translation(e.pos)*rotation_y(PI-e.face)*scaling(e.contact_scale)
+    tip=vec3(-0.25,0.12,1.72)
+    best=6.0
+    loop fire in bonfires:
+        d=f64(length(fire.pos-e.pos))
+        if d<best:
+            best=d
+            local=transform_point(inverse(world),fire.pos)
+            near=normalize(vec3(local.x,0,local.z))
+            tip=local-near*0.40+vec3(0,0.12,0)
+    tip+v3(sin(e.anim_t*1.17+f64(e.home.x))*0.10,0.035*sin(e.anim_t*2.34),0.04*sin(e.anim_t*1.17))
+
+# Footing can move the pelvis after the ambient arm solve. Settle only the
+# poker arm against the coals, letting its direction follow the actual grip.
+# This keeps the fixed-length branch attached without moving planted feet.
+camp_settle_poker = (m: Model, lib: AnimLib, p: mut Pose, e: Enemy):
+    if not camp_has_poker(e): return
+    tip=camp_poker_tip(e)
+    hand=bone_index(m,"hand_r")
+    local_tip=v3(0,CAMP_POKER_REACH,0.03)
+    loop settle in [0..8):
+        grip=bone_world(m,p,hand)*SOCKET_HAND_R.offset
+        camp_grip_axis(m,p,hand,SOCKET_HAND_R,tip-grip[3].xyz,local_tip)
+        grip=bone_world(m,p,hand)*SOCKET_HAND_R.offset
+        target=bone_world(m,p,hand)[3].xyz+tip-transform_point(grip,local_tip)
+        motion_arm(m,lib,p,bone_index(m,"upperarm_r"),bone_index(m,"lowerarm_r"),hand,target)
+
+    grip=bone_world(m,p,hand)*SOCKET_HAND_R.offset
+    camp_grip_axis(m,p,hand,SOCKET_HAND_R,tip-grip[3].xyz,local_tip)
+
+# Hands and wrists define the prop silhouettes without moving planted feet.
+# The lookout keeps one hand shading its eyes, and the bow in its other hand.
+camp_idle_pose = (m: Model, lib: AnimLib, p: mut Pose, e: Enemy):
+    if e.state != .idle or e.burning > 0.0 or e.frozen > 0.0: return
+    role = if e.archer: CampRole.lookout else: e.camp_role
+    camp_day_pose(m, lib, p, e)
+    if role == .none or role == .sitter: return
+    hand = bone_index(m, "hand_r")
+    if hand < 0: return
+    target = if role == .lookout: v3(-0.16, 1.65, 0.30) else: (if role == .club: v3(-0.28, 1.22, -0.02) else: v3(-0.40, 0.90, 0.30))
+    motion_arm(m, lib, p, bone_index(m, "upperarm_r"), bone_index(m, "lowerarm_r"), hand, target)
+    if role == .lookout:
+        rotate_bone(lib, p, lib_bone(lib, "Head"), vec3(0, 1, 0), sin(e.anim_t * 0.55) * 0.32)
+        return
+    if camp_has_poker(e):
+        tip=camp_poker_tip(e)
+        grip=v3(-0.28,0.86,0.36+0.07*sin(e.anim_t*1.17))
+        direction=normalize(tip-grip)
+        # The long fire branch reaches the coals from the authored camp place.
+        camp_prop_contact(m,lib,p,"r",SOCKET_HAND_R,tip,v3(0,CAMP_POKER_REACH,0.03),direction)
+        return
+    socket = bone_world(m, p, hand) * SOCKET_HAND_R.offset
+    from = normalize(transform_dir(socket, vec3(0, 1, 0)))
+    to = normalize(if role == .spear: vec3(0.10, 1.0, 0.05) else: vec3(-0.16, 1.0, -0.55))
+    axis = cross(from, to)
+    if length(axis) < 0.00001: return
+    parent = bone_world(m, p, m.parent[hand])
+    local = normalize(transform_dir(inverse(parent), axis))
+    p.r[m.canon[hand]] = normalize(quat_mul(quat_axis_angle(local, acos(clamp(f64(dot(from, to)), -1.0, 1.0))), p.r[m.canon[hand]]))
+
+# A private, position-seeded schedule never consumes the AI/perception RNG.
+# Each actor has a different window length, offset, pause and gesture tempo;
+# successive windows choose fresh actions rather than repeating a camp-wide loop.
+# 0 rest, 1 gnaw, 2 scratch, 3 dance, 4 sitting doze.
+camp_day_window = (e: Enemy) -> vec3:
+    seed = hash2(f64(e.home.x) * 0.17, f64(e.home.z) * 0.13)
+    duration = 13.0 + seed * 11.0
+    clock = e.anim_t + seed * duration
+    epoch = floor(clock / duration)
+    age = clock - epoch * duration
+    pause = 1.2 + hash2(seed * 91.0, epoch + 8.0) * 3.8
+    end = duration - 1.0 - hash2(epoch + 31.0, seed * 77.0) * 2.6
+    weight = smoothstep(pause, pause + 0.8, age) * (1.0 - smoothstep(end - 1.0, end, age))
+    vec3(f32(epoch), f32(age), f32(weight))
+
+camp_day_activity = (e: Enemy) -> int:
+    if e.state != .idle or e.alert > 0.3 or e.burning > 0.0 or e.frozen > 0.0 or e.archer or e.lookout: return 0
+    if e.camp_role == .none: return 0
+    win = camp_day_window(e)
+    if win.z <= 0.0: return 0
+    choice = hash2(f64(e.home.x) + f64(win.x) * 73.1, f64(e.home.z) - f64(win.x) * 41.7)
+    if e.camp_role == .sitter: return if choice < 0.65: 1 else: 4
+    # Different opening activities make a gathering legible at first approach.
+    if win.x == 0: return if e.camp_role == .club: 2 else: 3
+    if choice < 0.48: return 2
+    3
+
+# Bind-space centre of the painted lower snout (boko_face_paint). Convert
+# through inverse bind so the head's local axes/height cannot turn it into a
+# chest target. This follows chewing and all retargeted head rotations.
+camp_mouth = (m: Model, p: Pose) -> vec3:
+    head=bone_index(m,"Head")
+    transform_point(bone_world(m,p,head)*m.ibm[head],vec3(0,1.055,0.51))
+
+camp_day_pose = (m: Model, lib: AnimLib, p: mut Pose, e: Enemy):
+    activity = camp_day_activity(e)
+    if activity == 0: return
+    win = camp_day_window(e)
+    weight = f64(win.z)
+    t = f64(win.y) * (0.8 + hash2(f64(e.home.z), f64(win.x) + 9.0) * 0.45)
+    q = p
+    head = bone_index(m, "Head")
+    if head < 0: return
+    hp = bone_world(m, q, head)[3].xyz
+    hand = bone_index(m, "hand_l")
+    if activity == 1:
+        # Bring the left-hand bone to the snout, chew, then lower it to inspect.
+        bite = 0.5 + 0.5 * sin(t * 2.7 + sin(t * 0.71))
+        bite=smoothstep(0.18,0.72,bite)
+        rotate_bone(lib, q, lib_bone(lib, "Head"), vec3(1, 0, 0), sin(t * 9.1) * 0.025 * bite)
+        mouth=camp_mouth(m,q)
+        target=mouth+v3(0.16*(1.0-bite),-0.18*(1.0-bite),0.07-0.15*(1.0-bite))
+        # Meat centre, rather than wrist, meets the lower snout. A held bite
+        # leaves time to read the contact before the independent lowering phase.
+        camp_prop_contact(m,lib,q,"l",SOCKET_HAND_L,target,vec3(0,0.18,0),vec3(-0.15,0.35,0.92))
+    else if activity == 2:
+        # Repeated short scrapes behind the ear; the right hand keeps its weapon.
+        target = hp + v3(0.28, 0.10 + sin(t * 10.0) * 0.065, -0.07)
+        motion_arm(m, lib, q, bone_index(m, "upperarm_l"), bone_index(m, "lowerarm_l"), hand, target)
+        rotate_bone(lib, q, lib_bone(lib, "Head"), vec3(0, 0, 1), -0.18)
+    else if activity == 3:
+        dance = clip_index(lib, "victory")
+        if dance >= 0: blend_into(q, sample_clip(lib, dance, t, true), 0.85)
+        rotate_bone(lib, q, lib_bone(lib, "spine_01"), vec3(0, 0, 1), sin(t * 3.7) * 0.15)
+    else:
+        # Dozing is only a visual idle: ordinary daytime hearing stays intact.
+        nod = 0.18 + smoothstep(-0.6, 0.9, sin(t * 0.65)) * 0.38
+        rotate_bone(lib, q, lib_bone(lib, "Head"), vec3(1, 0, 0), nod)
+        rotate_bone(lib, q, lib_bone(lib, "spine_01"), vec3(1, 0, 0), 0.16)
+    blend_into(p, q, weight)
+
+__camp_meat: Mesh
+camp_meat = () -> Mesh:
+    if __camp_meat.vao == 0:
+        b = MeshB()
+        bone = rgb(0.78, 0.68, 0.46)
+        mb_cyl(b, vec3(0, -0.10, 0), vec3(0, 0.35, 0), 0.035, 0.045, bone, 8)
+        loop x in [-0.04, 0.04]:
+            mb_sphere(b, v3(x, -0.09, 0), vec3(0.06, 0.05, 0.05), bone, 8)
+            mb_sphere(b, v3(x, 0.35, 0), vec3(0.065, 0.055, 0.05), bone, 8)
+        mb_sphere(b, vec3(0, 0.18, 0), vec3(0.13, 0.14, 0.11), rgb(0.28, 0.09, 0.035), 10)
+        mb_sphere(b, vec3(0.05, 0.24, 0.07), vec3(0.07, 0.06, 0.045), rgb(0.52, 0.25, 0.10), 8)
+        __camp_meat = mesh(b.vs, b.idx)
+    __camp_meat
+
+__camp_poker: Mesh
+camp_poker = () -> Mesh:
+    if __camp_poker.vao==0:
+        b=MeshB()
+        wood=rgb(0.23,0.13,0.055)
+        mb_cyl(b,vec3(0,-0.18,0),v3(0,CAMP_POKER_REACH-0.13,0),0.025,0.018,wood,8)
+        mb_cyl(b,v3(0,CAMP_POKER_REACH-0.13,0),v3(0,CAMP_POKER_REACH,0.03),0.018,0.012,rgb(0.055,0.043,0.03),8)
+        __camp_poker=mesh(b.vs,b.idx)
+    __camp_poker
+
+# The sitter's club lies beside its right knee. Recognition reaches the grip,
+# closes the hand, then rises with the same prop instead of hopping out of a sit.
+camp_ground_weapon = (e: Enemy) -> bool:
+    e.camp_role == .sitter and (e.state == .idle or e.state == .notice and e.t < 0.18)
+
+camp_ground_grip = (e: Enemy) -> mat4:
+    translation(e.pos) * rotation_y(PI - e.face) * scaling(e.contact_scale) * translation(vec3(-0.44, 0.15, 0.38)) * rotation_x(PI * 0.5)
+
+camp_notice_pose = (m: Model, lib: AnimLib, p: mut Pose, e: Enemy):
+    if e.state != .notice or e.burning > 0.0 or e.frozen > 0.0: return
+    if e.kind != .bokoblin and e.kind != .blue_bokoblin: return
+    p = sample_clip(lib, clip_index(lib, "fight_idle"), e.t, true)
+    if e.camp_role == .sitter:
+        seated = sample_clip(lib, clip_index(lib, "sit"), e.anim_t, true)
+        blend_into(seated, p, smoothstep(0.18, 0.62, e.t))
+        p = seated
+        reaching = p
+        rise = smoothstep(0.20, 0.64, e.t)
+        grip = mix(vec3(-0.44, 0.15, 0.38), vec3(-0.40, 1.24, 0.24), f32(rise))
+        direction = normalize(mix(vec3(0, 0, 1), vec3(-0.15, 1, 0.05), f32(rise)))
+        enemy_contact_reach(m, lib, p, grip)
+        camp_prop_contact(m, lib, p, "r", SOCKET_HAND_R, grip, vec3(0, 0, 0), direction)
+        blend_into(reaching, p, smoothstep(0.0, 0.16, e.t))
+        p = reaching
+    else:
+        # Lookouts point with the free hand; carriers lift their weapon overhead
+        # and point with the other arm. Both silhouettes face the sensed threat.
+        side = if e.archer: "r" else: "l"
+        motion_arm(m, lib, p, bone_index(m, "upperarm_" + side), bone_index(m, "lowerarm_" + side), bone_index(m, "hand_" + side), vec3(0.10, 1.48, 0.88))
+        if not e.archer:
+            camp_prop_contact(m, lib, p, "r", SOCKET_HAND_R, vec3(-0.42, 1.38, 0.15), vec3(0, 0, 0), vec3(-0.18, 1, 0.12))
+    rotate_bone(lib, p, lib_bone(lib, "Head"), vec3(1, 0, 0), -0.12)

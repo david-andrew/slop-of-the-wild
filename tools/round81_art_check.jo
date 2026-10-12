@@ -1,0 +1,66 @@
+# CPU geometry contracts: the three rounded boulders retain bounds and topology.
+build:
+    opt = release
+use '../game/vegetation.jo'
+from '../game/vegetation.jo' import __rd32
+loop model in [1,2,3]:
+    b=read_bytes("assets/nature/Rock_Medium_{model}.vm") ?? []
+    o=8
+    parts=__rd32(b,4)
+    loop part in [0..parts):
+        tl=__rd32(b,o+4)
+        o+=8+tl
+        nv=__rd32(b,o)
+        ni=__rd32(b,o+4)
+        o+=8
+        f=fill(f32(0),nv*12)
+        mem_copy(data(f) as *u8,data(b)+o,nv*48)
+        o+=nv*48
+        ids=fill(u32(0),ni)
+        mem_copy(data(ids) as *u8,data(b)+o,ni*4)
+        o+=ni*4
+        vs: Vertex3D[]
+        lo=vec3(1e9,1e9,1e9)
+        hi=vec3(-1e9,-1e9,-1e9)
+        loop k in [0..nv):
+            p=vec3(f[k*12],f[k*12+1],f[k*12+2])
+            lo=min(lo,p)
+            hi=max(hi,p)
+            vs.push(Vertex3D(p,vec3(f[k*12+3],f[k*12+4],f[k*12+5]),vec2(f[k*12+6],f[k*12+7]),vec4(1,1,1,1)))
+        round_rock_vertices(vs,ids)
+        rlo=vec3(1e9,1e9,1e9)
+        rhi=vec3(-1e9,-1e9,-1e9)
+        worst=0.0
+        loop v in vs:
+            rlo=min(rlo,v.pos)
+            rhi=max(rhi,v.pos)
+            assert(abs(length(v.normal)-1.0)<0.0001,"unit rounded normal")
+        assert(length(rlo-lo)<0.00001 and length(rhi-hi)<0.00001,"authored bounds preserved")
+        loop k in [0..ni/3):
+            a=vs[int(ids[k*3])]
+            bb=vs[int(ids[k*3+1])]
+            c=vs[int(ids[k*3+2])]
+            n=cross(bb.pos-a.pos,c.pos-a.pos)
+            assert(length(n)>0.0000001,"nondegenerate rock triangle")
+            if dot(n,a.normal+bb.normal+c.normal)<=0: worst+=1.0
+        assert(worst==0.0,"outward rounded surface")
+        print("PASS Rock {model}: {nv} vertices, {ni/3} triangles, reverse {worst}")
+
+use '../game/chars.jo'
+cloth=old_man_cloak_mesh()
+assert(cloth.vs.len()<1300 and cloth.idx.len()/3<2400,"bounded cached cloak geometry")
+loop v in cloth.vs:
+    assert(abs(length(v.normal)-1.0)<0.0001,"unit cloth normal")
+    assert(abs(v.pos.x)<0.55 and v.pos.y>=-0.03 and v.pos.y<=1.001,"cloak remains within body/contact envelope")
+loop row in [0..16):
+    a=cloth.vs[row*49]
+    b=cloth.vs[row*49+48]
+    assert(length(a.pos-b.pos)<0.00001 and length(a.normal-b.normal)<0.0001,"closed continuous drape seam")
+loop k in [0..1440):
+    a=cloth.vs[int(cloth.idx[k*3])]
+    b=cloth.vs[int(cloth.idx[k*3+1])]
+    c=cloth.vs[int(cloth.idx[k*3+2])]
+    n=cross(b.pos-a.pos,c.pos-a.pos)
+    assert(length(n)>0.000001 and dot(n,a.normal+b.normal+c.normal)>0,"outward nondegenerate drape")
+assert(old_cloak_point(0.0,0.0).y>old_cloak_point(PI,0.0).y+0.04,"front hem clears toes")
+print("PASS cloak: {cloth.vs.len()} vertices, {cloth.idx.len()/3} triangles, closed drape seam, shaped hem and bounded sleeves")

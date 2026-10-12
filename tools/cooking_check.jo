@@ -1,0 +1,141 @@
+# Headless recipe, reservation, rebound menu input, save and temperature regressions.
+use '../game/items.jo'
+use '../game/inventory.jo'
+use '../game/cooking.jo'
+use '../game/save.jo'
+use '../game/gfx.jo'
+use '../game/input.jo'
+use '../game/player.jo'
+use '../game/combat.jo'
+use '../game/elements.jo'
+use '../game/env.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/water.jo'
+use '../game/fx.jo'
+
+checks = 0
+check = (ok: bool, message: str):
+    checks += 1
+    assert(ok, message)
+
+run_checks = ():
+    items_init()
+    loop ingredients in [fill("pepper", 5), ["raw_meat"], ["raw_bird_drumstick"], ["apple"], ["apple", "apple"], ["shroom"],
+        ["raw_meat", "shroom"], ["hyrule_bass"], ["herb"], ["acorn"], ["pepper"], ["pepper", "shroom"],
+        ["pepper", "raw_meat"], ["pepper", "pepper", "raw_meat"], ["pepper", "apple", "shroom", "raw_meat", "herb"]]:
+        result = pot_result(ingredients)
+        hearts = 0
+        peppers = 0
+        loop id in ingredients:
+            hearts += if id == "acorn": 2 else: item(id).heal * 2
+            if id == "pepper": peppers += 1
+        check(has_item_def(result) and item(result).heal == hearts, "ingredient hearts add and double in the pot")
+        check(item(result).warm == (if peppers > 0: 300.0 + f64(peppers) * 150.0 else: 0.0), "pepper count controls warmth")
+        print("recipe {ingredients}: {item(result).name}, quarters={item(result).heal}, warmth={item(result).warm:.0}s")
+    check(item(pot_result(["raw_meat"])).name == "Meat Skewer", "meat recipe")
+    check(item(pot_result(["apple"])).name == "Simmered Fruit", "pot fruit differs from fire-baked fruit")
+    check(item(pot_result(["shroom"])).name == "Mushroom Skewer", "mushroom recipe")
+    check(item(pot_result(["raw_meat", "shroom"])).name == "Meat and Mushroom Skewer", "mixed skewer")
+    check(pot_result(["firewood"]) == "dubious_food" and pot_result(["apple", "hot_footed_frog"]) == "dubious_food", "unsupported materials fail")
+    loop stone in ["rock", "amber", "flint", "opal"]:
+        check(pot_result(["apple", "firewood", stone]) == "rock_hard_food", "stone overrides dubious mix")
+    check(pot_result([]) == "" and pot_result(fill("apple", 6)) == "", "empty and over-limit recipes rejected")
+    check(not can_hold(item("baked_apple")) and not can_hold(item("travelers_sword")), "cooked dishes and gear cannot be held")
+    inv = Inventory()
+    inv_add("apple", 6)
+    loop i in [0..5): check(inv_hold("apple"), "hold one copy")
+    check(not inv_hold("apple") and inv.held.len() == 5 and count_of("apple") == 6 and available_of("apple") == 1, "five-item cap reserves copies")
+    check(inv_take("apple") and not inv_take("apple") and inv_owns("apple") and inv.slots[0] == "apple", "held copies remain owned and bound but unavailable to eat")
+    saved = save_decode(save_encode(PlateauSave(inventory = inv, activated = fill(false, 4), completed = fill(false, 4))))!
+    check(saved.inventory.held.len() == 0 and saved.inventory.stacks["apple"] == 5 and saved.inventory.slots[0] == "apple", "save restores held copies as ordinary inventory without loss")
+    check(inv.held.len() == 5, "save does not disturb live held selection")
+    inv_cancel_hold()
+    check(available_of("apple") == 5 and inv.held.len() == 0, "cancel returns all reservations")
+    check(inv_hold("apple"), "hold after cancel")
+    cooked = inv_cook_held()
+    check(inv.held.len() == 0 and count_of("apple") == 4 and count_of(cooked) == 1, "cooking consumes only selected copies")
+    restored = save_decode(save_encode(PlateauSave(inventory = inv, activated = fill(false, 4), completed = fill(false, 4))))!
+    check(restored.inventory.stacks[cooked] == 1 and item(cooked).heal == 4, "dish properties survive save decode")
+
+    # Actual keyboard binding -> Actions -> inventory priority. No duplicated control logic.
+    inv = Inventory()
+    inv_add("apple", 2)
+    invui = InvUI(open = true, tab = 3, t = 1.0)
+    __key_down = fill(false, 128)
+    __key_pressed = fill(false, 128)
+    __key_released = fill(false, 128)
+    __key_typed = fill(false, 128)
+    __mouse_btn = fill(false, 8)
+    __mouse_pressed = fill(false, 8)
+    input_rebind(2, .f)
+    __key_event(int(Key.f), true)
+    input_update(1.0 / 60.0, false)
+    inventory_update(1.0 / 60.0)
+    check(inv.held.len() == 1 and count_of("apple") == 2, "rebound Attack selects Hold in the menu")
+    __input_end_frame()
+    __key_event(int(Key.f), false)
+    __input_end_frame()
+    act = Actions(back = true)
+    inventory_update(1.0 / 60.0)
+    check(invui.open and inv.held.len() == 0 and count_of("apple") == 2, "Back cancels Hold before closing")
+    act = Actions(interact = true, slot = 2, attack = true, drop = true)
+    pl = Player(hp = 4)
+    inventory_update(1.0 / 60.0)
+    check(pl.hp == 6 and inv.held.len() == 0 and count_of("apple") == 1, "eat wins simultaneous bind hold drop")
+    act = Actions(slot = 2, attack = true, drop = true)
+    inventory_update(1.0 / 60.0)
+    check(inv.slots[2] == "apple" and inv.held.len() == 0 and count_of("apple") == 1, "bind wins simultaneous hold drop")
+    act = Actions(attack = true, drop = true)
+    inventory_update(1.0 / 60.0)
+    check(inv.held.len() == 1 and witems.len() == 0, "hold wins simultaneous drop")
+    inv_toggle()
+    check(not invui.open and inv.held.len() == 1, "Close carries selection into the world")
+    witems.clear()
+    pl.pos = vec3(0, 0, 0)
+    cooking_drop_held()
+    check(witems.len() == 1 and witems[0].id == "apple" and count_of("apple") == 0 and inv.held.len() == 0, "field drop transfers exactly one reserved copy")
+
+    hf.n = 64
+    hf.cell = 1.0
+    hf.x0 = -32.0
+    hf.z0 = -32.0
+    hf.h = fill(f32(0), 4096)
+    hf.mat = fill(u8(0), 4096 * 4)
+    areas = fill(u8(47), 4096) # Mount Jolia's actual climate tag
+    edge_sd = fill(f32(-100), 4096)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+    bonfires = [Bonfire(vec3(0, 0, 0), pot = true, lit = false)]
+    check(not cooking_pot_lit(vec3(0, 0, 0)), "unlit pot refuses Cook")
+    bonfires[0].lit = true
+    check(cooking_pot_lit(vec3(0, 0, 0)), "lit pot allows Cook")
+    bonfires[0].pot = false
+    # Production open-fire reaction still roasts a dropped apple.
+    pl.pos = vec3(20, 0, 20)
+    use_terrain = true
+    env.weather = .clear
+    env.rain = 0.0
+    env.night = 0.0
+    loop i in [0..180): elements_update(1.0 / 60.0, pl.pos)
+    check(witems[0].id == "baked_apple", "dropping food in open fire still roasts it")
+    bonfires.clear()
+    witems.clear()
+    inv = Inventory()
+    inv_add("pepper", 2)
+    inv_hold("pepper")
+    inv_hold("pepper")
+    warm_dish = inv_cook_held()
+    pl = Player(hp = 4, pos = vec3(20, 0, 20))
+    warm_t = 0.0
+    cold_dmg_t = 0.0
+    check(eat_food(warm_dish) and warm_t == 600.0 and pl.hp == 8, "eating selected peppers grants 600 seconds of resistance")
+    loop i in [0..360): elements_update(1.0 / 60.0, pl.pos)
+    check(pl.hp == 8 and temp_feel >= 0.3 and warm_t > 593.9, "spicy dish protects in Mount Jolia climate")
+    warm_t = 0.0
+    pl.invuln = 0.0
+    loop i in [0..310): elements_update(1.0 / 60.0, pl.pos)
+    check(pl.hp == 7 and temp_feel < 0.2, "expired resistance restores existing cold damage")
+    print("cooking: {checks} checks PASS; hold limit=5, pepper warmth=450/600/1050s, roast preserved")
+
+run_checks()

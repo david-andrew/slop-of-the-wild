@@ -1,0 +1,18 @@
+diff --git a/game/player.jo b/game/player.jo
+--- a/game/player.jo
++++ b/game/player.jo
+@@ -320,10 +320,11 @@
+     pl.ground = g
+     pl.grounded = true
+     if water_depth(f64(pl.pos.x), f64(pl.pos.z)) < 0.3: pl.last_safe = pl.pos
+-    # deep water: swim
+-    d = water_depth(f64(pl.pos.x), f64(pl.pos.z))
++    # Measure immersion above the supporting surface, including a floating log.
++    wl = water_level(f64(pl.pos.x), f64(pl.pos.z)) ?? -1e9
++    d = wl - f64(pl.pos.y)
+     if d > 1.25:
+-        pl.water_y = f64(pl.pos.y) + d
++        pl.water_y = wl
+         set_state(.swim)
+         pl.events.push("splash")
+     # footsteps

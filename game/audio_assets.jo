@@ -1,0 +1,87 @@
+use 'gfx.jo'
+use 'asset_stream.jo'
+
+# Lossless float samples and shared handles; no reverb/filter/synthesis work on frames.
+# Sample IDs preserve alias identity for SFX take dispatch and spatial filtering.
+struct AudioAsset:
+    groups: Sound[][]
+    flags: int[]
+
+const AUDIO_ASSET_MAGIC = 0x4257415544494F31
+
+audio_asset_key = (sources: str[]) -> int:
+    paths = ["game/audio_assets.jo", "game/asset_stream.jo", "sloppy/lib/game/audio.jo", "sloppy/lib/core/math.jo"]
+    loop name in sorted(list_dir("assets/audio")):
+        if ends_with(name, ".wav"): paths.push("assets/audio/" + name)
+    shared = asset_key(paths)
+    own = asset_key(sources)
+    int(__str_hash("{shared}|{own}"))
+
+audio_asset_read = (path: str, key: int) -> AudioAsset?:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_NO_PREPARED_ASSETS") != none: return none
+    s = asset_open(path)
+    defer asset_close(s)
+    if not s.ok or asset_int(s) != AUDIO_ASSET_MAGIC or asset_int(s) != key: return none
+    count = asset_int(s)
+    if not s.ok or count < 1 or count > 2048: return none
+    sounds: Sound[]
+    loop i in [0..count):
+        n = asset_int(s)
+        if not s.ok or n < 0 or n > MIX_RATE * 60 or n % 2 != 0 or n * 4 > s.left: return none
+        samples = fill(f32(0), n)
+        asset_read(s, data(samples) as *u8, n * 4)
+        if not s.ok: return none
+        sounds.push(Sound(samples))
+    groups = asset_int(s)
+    if not s.ok or groups < 1 or groups > 2048: return none
+    out = AudioAsset()
+    loop i in [0..groups):
+        n = asset_int(s)
+        if not s.ok or n < 0 or n > 2048: return none
+        group: Sound[]
+        loop j in [0..n):
+            id = asset_int(s)
+            if not s.ok or id < 0 or id >= count: return none
+            group.push(sounds[id])
+        out.groups.push(group)
+    nflags = asset_int(s)
+    if not s.ok or nflags < 0 or nflags > 2048: return none
+    loop i in [0..nflags): out.flags.push(asset_int(s))
+    if not s.ok or s.left != 0: return none
+    out
+
+audio_asset_write = (path: str, key: int, asset: AudioAsset) -> bool:
+    sounds: Sound[]
+    ids: int[][]
+    loop group in asset.groups:
+        refs: int[]
+        loop sound in group:
+            id = -1
+            loop i in 0.. and old in sounds:
+                if data(old.samples) == data(sound.samples):
+                    id = i
+                    break
+            if id < 0:
+                id = sounds.len()
+                sounds.push(sound)
+            refs.push(id)
+        ids.push(refs)
+    temp = path + ".tmp"
+    s = asset_create(temp)
+    asset_put_int(s, AUDIO_ASSET_MAGIC)
+    asset_put_int(s, key)
+    asset_put_int(s, sounds.len())
+    loop sound in sounds:
+        asset_put_int(s, sound.samples.len())
+        asset_write(s, data(sound.samples) as *u8, sound.samples.len() * 4)
+    asset_put_int(s, ids.len())
+    loop group in ids:
+        asset_put_int(s, group.len())
+        loop id in group: asset_put_int(s, id)
+    asset_put_int(s, asset.flags.len())
+    loop flag in asset.flags: asset_put_int(s, flag)
+    asset_close(s)
+    if not s.ok: return false
+    when TARGET == "linux":
+        return syscall(82, data(temp + "\0"), data(path + "\0")) == 0
+    else: return false

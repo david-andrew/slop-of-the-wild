@@ -1,0 +1,62 @@
+# Offline production ambience, with field and isolated gust exports. No window.
+use '../game/sfx.jo'
+use '../game/env.jo'
+from '../game/sfx.jo' import __amb_gust, __amb_cover, __amb_k, __amb_forest, __amb_snow
+
+__audio_state = 2
+seed_random(51)
+sfx_init()
+master_volume(0.8)
+out = args()[1]
+mkdir(out)
+wav = (name: str, pcm: u8[]):
+    b: u8[]
+    w16 = (v: int):
+        loop k in [0..2): b.push(u8((v >> (k * 8)) & 255))
+    w32 = (v: int):
+        loop k in [0..4): b.push(u8((v >> (k * 8)) & 255))
+    loop c in "RIFF": b.push(c)
+    w32(36 + pcm.len())
+    loop c in "WAVEfmt ": b.push(c)
+    w32(16)
+    w16(1)
+    w16(2)
+    w32(MIX_RATE)
+    w32(MIX_RATE * 4)
+    w16(4)
+    w16(16)
+    loop c in "data": b.push(c)
+    w32(pcm.len())
+    loop v in pcm: b.push(v)
+    assert(write_bytes("{out}/{name}.wav", b))
+loop isolated in [false, true]:
+    stop_all()
+    amb = Ambient(bird_t = 1000.0, owl_t = 1000.0, pond_t = 1000.0)
+    env = Env(hour = 11.0, gust = 1.0)
+    amb_biome = 0
+    music_activity = 0.0
+    __amb_gust = 0.0
+    __amb_cover = 0.0
+    __amb_k = 0.0
+    __amb_forest = 0.0
+    __amb_snow = 0.0
+    seed_random(68)
+    trace = "time,id,duration,pitch,looping,volume\n"
+    pcm: u8[]
+    last_id = 0
+    loop frame in [0..1800):
+        ambient_update(0.1, 0.0, 240.0, 0.0)
+        loop mut voice in __voices:
+            if voice.id == amb.wind_gust and voice.id != last_id:
+                trace += "{f64(frame) * 0.1:.3},{voice.id},{duration(voice.sound):.3},{voice.pitch:.5},{voice.looping},{voice.volume:.6}\n"
+                last_id = voice.id
+            if isolated and voice.id != amb.wind_gust: voice.volume = 0.0
+        __mix(4800)
+        loop v in __mix_buf:
+            q = int(clamp(f64(v), -1.0, 1.0) * 32767.0) & 65535
+            pcm.push(u8(q & 255))
+            pcm.push(u8(q >> 8))
+    name = if isolated: "gust" else: "field"
+    wav(name, pcm)
+    assert(write_file("{out}/{name}-events.csv", trace))
+    print("exported {name}: 180 seconds, production gains, master 0.8")

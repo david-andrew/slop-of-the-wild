@@ -1,0 +1,110 @@
+# CPU ray tests against the rendered triangles, including backface culling.
+# Collision-only raycasts cannot catch visible holes in the cave mouth.
+use '../game/interiors.jo'
+use '../game/structures.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+from '../game/build.jo' import __bchunks
+
+checks = 0
+check = (ok: bool, name: str):
+    assert(ok, name)
+    checks += 1
+
+surface_hit = (o: vec3, d: vec3, limit: f64) -> bool:
+    loop key, b in __bchunks:
+        loop i in [0..b.idx.len() / 3):
+            a = b.verts[int(b.idx[i * 3])].pos
+            bb = b.verts[int(b.idx[i * 3 + 1])].pos
+            c = b.verts[int(b.idx[i * 3 + 2])].pos
+            e1 = bb - a
+            e2 = c - a
+            h = cross(d, e2)
+            det = f64(dot(e1, h))
+            if det < 0.000001: continue
+            s = o - a
+            u = f64(dot(s, h)) / det
+            if u < 0.0 or u > 1.0: continue
+            q = cross(s, e1)
+            v = f64(dot(d, q)) / det
+            if v < 0.0 or u + v > 1.0: continue
+            t = f64(dot(e2, q)) / det
+            if t > 0.001 and t < limit: return true
+    false
+
+hf.n = 32
+hf.cell = 200.0
+hf.x0 = -4000.0
+hf.z0 = -2000.0
+hf.h = fill(f32(247.2), hf.n * hf.n)
+course_start = v3(-1128.0, 237.0, 1884.0)
+course_end = v3(-1067.0, 247.5, 1844.0)
+corridor(course_start, course_end, 36)
+sor_rock_mouth()
+# Every jamb block's seat lies on actual arch triangles. The centre is inset
+# 38 cm from this seat, well within the block's 54 cm minimum half-extent.
+loop sign in [-1.0,1.0]:
+    loop k in [0..3):
+        loop row in [0..2):
+            q=sor_mouth_block(sign,k,row)
+            j=if sign<0.0:3+row*3 else:29-row*3
+            across=sor_mouth_point(j+1,1+k*2)-sor_mouth_point(j,1+k*2)
+            along=sor_mouth_point(j,2+k*2)-sor_mouth_point(j,1+k*2)
+            n=normalize(cross(across,along))
+            q+=(across+along)*0.025
+            loop direction in [-1.0,1.0]:
+                check(surface_hit(q+n*f32(direction*0.08),n*f32(-direction),0.16),"relief seated in arch {sign}/{k}/{row}/{direction}")
+axis = normalize(vec3(course_end.x - course_start.x, 0, course_end.z - course_start.z))
+side = vec3(-axis.z, 0, axis.x)
+loop dist in [-1.5, 0.0, 1.5, 3.0, 4.5, 6.0, 9.0, 15.0, 25.0, 38.0, 40.0, 40.5, 41.0]:
+    floor_ = course_end - axis * f32(dist) - v3(0.0, dist * 10.5 / 72.945, 0.0)
+    eye = floor_ + vec3(0, 1.65, 0)
+    loop sign in [-1.0, 1.0]:
+        loop up in [-0.35, 0.0, 0.65, 1.5]:
+            loop angle in [-0.25, 0.0, 0.25]:
+                d = normalize(side * f32(sign) + axis * f32(angle) + v3(0.0, up, 0.0))
+                check(surface_hit(eye, d, 12.0), "closed side at {dist}, {sign}, {up}, {angle}")
+    check(surface_hit(eye, vec3(0, 1, 0), 9.0), "closed roof at {dist}")
+    if dist > 1.0: check(surface_hit(eye, vec3(0, -1, 0), 3.0), "visible floor at {dist}")
+# All nine real camp sites keep the hide footprint off authored ground enemies.
+load_actors()
+loop f in actors:
+    if f.name != "FireWood" and f.name != "Obj_FireWoodBundle": continue
+    if f.pos.x < -1600 or f.pos.x > -350 or f.pos.z < 1400 or f.pos.z > 2420: continue
+    loop angle in [0.0, 0.8, 2.3, 4.9]:
+        chosen = camp_tent_angle(f64(f.pos.x), f64(f.pos.z), angle)
+        p = f.pos + v3(cos(chosen) * 5.5, 0.0, sin(chosen) * 5.5)
+        loop e in actors:
+            if starts_with(e.name, "Enemy_Bokoblin") and length(vec2(e.pos.x - f.pos.x, e.pos.z - f.pos.z)) < 10.0:
+                check(length(vec2(p.x - e.pos.x, p.z - e.pos.z)) > 3.0, "tent clears authored ground enemy")
+# Report the actual deterministic camp-five correction (same random sequence
+# as camps): separate the roof silhouette from the nearby ground guard.
+seed_random(33)
+loop f in actors:
+    if f.name != "FireWood" and f.name != "Obj_FireWoodBundle": continue
+    fx = f64(f.pos.x)
+    fz = f64(f.pos.z)
+    if fx < -1600.0 or fx > -350.0 or fz < 1400.0 or fz > 2420.0: continue
+    if hypot(fx + 943.0, fz - 1880.0) < 15.0: continue
+    count = 0
+    loop e in actors:
+        if starts_with(e.name, "Enemy_Bokoblin") and hypot(f64(e.pos.x) - fx, f64(e.pos.z) - fz) < 10.0: count += 1
+    if count < 2: continue
+    original = random(0.0, TAU)
+    chosen = camp_tent_angle(fx, fz, original)
+    if hypot(fx + 955.87, fz - 1948.86) < 1.0:
+        loop angle in [original, chosen]:
+            p = f.pos + v3(cos(angle) * 5.5, 0.0, sin(angle) * 5.5)
+            nearest = 100.0
+            loop e in actors:
+                if starts_with(e.name, "Enemy_Bokoblin"): nearest = min(nearest, hypot(f64(e.pos.x - p.x), f64(e.pos.z - p.z)))
+            print("camp5 candidate {angle:.3}: {p.x:.2}, {p.z:.2}; nearest enemy {nearest:.3} m")
+    # Remaining camps() draws: rack angle, meat shape/offsets, skull rotation.
+    random(1.4, 2.2)
+    loop k in [0..3):
+        random(-0.1, 0.1)
+        random(0.0, 0.12)
+        random(0.11, 0.15)
+    random(0.0, TAU)
+print("passage mesh and camp clearance: {checks} checks PASS")

@@ -1,0 +1,16 @@
+# Diagnostic: one draw in flight, with CPU update overlapping the preceding GPU
+# draw. Keep every import rooted here, as in performance_finish.jo: the pinned
+# compiler keys modules by lexical path, so a wrapper in build/ must not import
+# main through another ../../ path and initialize a second game.
+build:
+    opt = release
+use 'performance_motion.jo'
+use 'performance_output.jo'
+use '../game/main.jo'
+use '../game/gpuqueue.jo'
+# Pending/null guards also make this wrapper safe after main owns the fence.
+queue_draw = ():
+    gpu_queue_wait()
+    draw()
+    gpu_queue_submit()
+main = (): performance_output_run(route_update, queue_draw)

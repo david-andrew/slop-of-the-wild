@@ -1,0 +1,77 @@
+# CPU-only two-minute observation of the authored camp roles. The ambient
+# scheduler cannot consume combat RNG or change perception/state/weapon carry.
+use '../game/enemy_camp.jo'
+use '../game/enemies.jo'
+use '../game/gfx.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/elements.jo'
+
+homes = [vec3(-957.69, 238.5623, 1955.3), vec3(-953.89, 238.19386, 1952.1495), vec3(-948.91, 237.87, 1950.25),
+    vec3(-1440.1388, 222.63641, 1586.3177), vec3(-1444.51, 222.7, 1583.5), vec3(-1436.51, 222.7, 1582.5)]
+loop camp in [0..2):
+    seen = fill(false, 5)
+    histories: int[][]
+    loop member in [0..3):
+        role = [CampRole.sitter, CampRole.club, CampRole.spear][member]
+        home = homes[camp * 3 + member]
+        e = Enemy(.bokoblin, home, home, camp = 1, camp_role = role, weapon = "boko_club")
+        history: int[]
+        changes = 0
+        previous = -1
+        loop frame in [0..7200):
+            e.anim_t = f64(frame) / 60.0
+            action = camp_day_activity(e)
+            seen[action] = true
+            if action != previous: changes += 1
+            previous = action
+            if frame % 30 == 0: history.push(action)
+            assert(e.state == .idle and e.alert == 0.0 and e.weapon == "boko_club", "ambient gestures preserve AI and weapon ownership")
+        assert(changes >= 8 and changes < 60, "natural pauses with bounded action changes over two minutes")
+        same = 0
+        loop k in [0..120):
+            if history[k] == history[k + 120]: same += 1
+        assert(same < 105, "second minute must not repeat the first")
+        histories.push(history)
+        # Every interrupt must immediately release the ambient pose/prop.
+        loop state in [EState.notice, EState.chase, EState.windup, EState.attack, EState.sleep, EState.dead]:
+            e.state = state
+            assert(camp_day_activity(e) == 0)
+        e.state = .idle
+        e.alert = 0.4
+        assert(camp_day_activity(e) == 0)
+        e.alert = 0.0
+        e.archer = true
+        assert(camp_day_activity(e) == 0)
+        print("PASS camp {camp} {role}: {changes} transitions, repeated half-second samples {same}/120")
+    assert(seen[1] and seen[2] and seen[3] and seen[4], "each camp includes gnaw, scratch, dance and sitting doze")
+    # No adjacent actors share the same pauses/action schedule.
+    loop member in [0..2):
+        different = 0
+        loop k in [0..240):
+            if histories[member][k] != histories[member + 1][k]: different += 1
+        assert(different > 120, "actors spend most of two minutes doing different things")
+seed_random(782)
+expected = random()
+seed_random(782)
+loop home in homes:
+    e = Enemy(.bokoblin, home, home, camp = 1, camp_role = .sitter, anim_t = 8.0)
+    camp_day_activity(e)
+assert(random() == expected, "ambient schedule must never perturb AI RNG")
+print("PASS daytime camps: two minutes each, four idles, independent pauses, interruptible, RNG preserved")
+
+# Authored idle positions spread the west camp without changing the crowd solver.
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+enemies.clear()
+bonfires.clear()
+fire = v3(-1440.41, height_at(-1440.41, 1581.3), 1581.3)
+bonfires.push(Bonfire(fire))
+loop p in [vec3(-1440.1388, 222.63641, 1586.3177), vec3(-1438.8057, 222.6342, 1585.7693), vec3(-1438.3943, 222.65773, 1585.0074)]:
+    i = spawn_enemy(.bokoblin, p)
+    enemies[i].camp = 1
+enemy_camp_roles()
+loop i in [0..3):
+    loop j in [i + 1..3): assert(length(enemies[i].home - enemies[j].home) > 3.5, "west camp idles have separate silhouettes")
+    assert(length(enemies[i].home - fire) < 6.0 and enemies[i].state == .idle)
+print("PASS west gathering: three distinct places around the original hearth")

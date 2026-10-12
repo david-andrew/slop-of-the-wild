@@ -1,0 +1,997 @@
+{
+  "schema_version": 1,
+  "accessed": "2026-10-10",
+  "base_commit": "73006e5",
+  "decision": "No guessed row promoted; eight guesses remain excluded from measured agreement. No player.jo or camera.jo changes.",
+  "files": [
+    {
+      "id": "player-general",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "Actor/GeneralParamList/Player_Link.gparamlist.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/Player_Link.gparamlist.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/Player_Link.gparamlist.yml",
+      "sha256": "8e5a5f1860983c7172ecd78cb43a0d1c7c4e29b31badf339871297610e12b7c5",
+      "bytes": 6326
+    },
+    {
+      "id": "player-ai",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "Actor/AIProgram/Player_Link.aiprog.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/Player_Link.aiprog.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/Player_Link.aiprog.yml",
+      "sha256": "09904f9cfc5a5a467e8bbfb8b04143c07ec1e422ba3f17f669c6f84236c4d64b",
+      "bytes": 83431
+    },
+    {
+      "id": "camera-ai",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "Actor/AIProgram/GameRomCamera.aiprog.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/GameRomCamera.aiprog.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/GameRomCamera.aiprog.yml",
+      "sha256": "d39d5330a81121cf52dfa9450da4d024aa547f7390ce7a67a854434b21e0cc8e",
+      "bytes": 91927
+    },
+    {
+      "id": "camera-general",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "Actor/GeneralParamList/GameRomCamera.gparamlist.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/GameRomCamera.gparamlist.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/GameRomCamera.gparamlist.yml",
+      "sha256": "f4b8f1128be361b74418b08502159d0eb19e7bf9f5fe6f39006360a4de8a73c0",
+      "bytes": 489
+    },
+    {
+      "id": "move-as",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "Actor/AS/Player_Move.as.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AS/Player_Move.as.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AS/Player_Move.as.yml",
+      "sha256": "9e77c5a5506acce594d749a8bd34e9b87efadbb9fadd07ec9474d03520e3c8fc",
+      "bytes": 66217
+    },
+    {
+      "id": "decomp-move",
+      "repository": "zeldaret/botw",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "path": "src/Game/Actor/Player/Action/actionPlayerMove.cpp",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerMove.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerMove.cpp",
+      "sha256": "88c82aa946c4f0cf63449b426eb610d35f92a0548c916b04de9491059db6284a",
+      "bytes": 787
+    },
+    {
+      "id": "decomp-jump",
+      "repository": "zeldaret/botw",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "path": "src/Game/Actor/Player/Action/actionPlayerJump.cpp",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerJump.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerJump.cpp",
+      "sha256": "8c8e5ecfd0028c31516392ffc3f410ff1c9b576c8863e9ed48100a7f9b7f565d",
+      "bytes": 1055
+    },
+    {
+      "id": "decomp-fall",
+      "repository": "zeldaret/botw",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "path": "src/Game/Actor/Player/Action/actionPlayerFall.cpp",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerFall.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerFall.cpp",
+      "sha256": "3f0cee35e6d8fe32117e8650e5a465808909a34256d9c0932429d538cdc98960",
+      "bytes": 619
+    },
+    {
+      "id": "decomp-glide",
+      "repository": "zeldaret/botw",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "path": "src/Game/Actor/Player/Action/actionPlayerParashawlGlideBase.cpp",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerParashawlGlideBase.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerParashawlGlideBase.cpp",
+      "sha256": "4c8ba414c7a8023f089e70713164d8903c5abe617a67c6c165efeb68309fb7e8",
+      "bytes": 1205
+    },
+    {
+      "id": "decomp-camera",
+      "repository": "zeldaret/botw",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "path": "src/Game/Actor/Camera/Action/actionCameraChase.cpp",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Camera/Action/actionCameraChase.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Camera/Action/actionCameraChase.cpp",
+      "sha256": "3a067ba69b06d5220230bfa3f4491d3a265f9722b6c6bf094972fcf3741d1a1f",
+      "bytes": 223
+    },
+    {
+      "id": "decomp-player-base",
+      "repository": "zeldaret/botw",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "path": "src/Game/Actor/Player/actPlayerBase.h",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/actPlayerBase.h",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/actPlayerBase.h",
+      "sha256": "9bd0656bdb07f9a4d2f0473b44c461ae089024da432aa5e40c79f2362e715db3",
+      "bytes": 456
+    },
+    {
+      "id": "decomp-player-general",
+      "repository": "zeldaret/botw",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "path": "src/KingSystem/Resource/GeneralParamList/resGParamListObjectPlayer.h",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/KingSystem/Resource/GeneralParamList/resGParamListObjectPlayer.h",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/KingSystem/Resource/GeneralParamList/resGParamListObjectPlayer.h",
+      "sha256": "552208ea904c671f59db3acff8ca398eb8d2def7576347838433f78342b4ca40",
+      "bytes": 20216
+    },
+    {
+      "id": "wiiu-root-report",
+      "repository": "ntngel1/botw-renderer",
+      "commit": "656ceeb6ab2dd0eb0d6fa352cd1a3adddf0ec10b",
+      "path": "docs/research/wiiu-as-frame-ctrl.md",
+      "url": "https://github.com/ntngel1/botw-renderer/blob/656ceeb6ab2dd0eb0d6fa352cd1a3adddf0ec10b/docs/research/wiiu-as-frame-ctrl.md",
+      "raw_url": "https://raw.githubusercontent.com/ntngel1/botw-renderer/656ceeb6ab2dd0eb0d6fa352cd1a3adddf0ec10b/docs/research/wiiu-as-frame-ctrl.md",
+      "sha256": "acd29b08e73ef11ef8f4fc13e45bb5249622355bac50ec3414f44446ad111a30",
+      "bytes": 86904
+    },
+    {
+      "id": "secondary-player-dump",
+      "repository": "Echocolat/botw-bgparamlist",
+      "commit": "e8cd5a94a1f15296beb1f74fbeb81f3620083892",
+      "path": "json/Player.json",
+      "url": "https://github.com/Echocolat/botw-bgparamlist/blob/e8cd5a94a1f15296beb1f74fbeb81f3620083892/json/Player.json",
+      "raw_url": "https://raw.githubusercontent.com/Echocolat/botw-bgparamlist/e8cd5a94a1f15296beb1f74fbeb81f3620083892/json/Player.json",
+      "sha256": "b2ed660c66c0522044ef541fe29a1dbfc501633bbdaa9b20f97b2c1c324d4cb1",
+      "bytes": 12192
+    },
+    {
+      "id": "tas-input",
+      "repository": "MCMi460/BOTW-TAS",
+      "commit": "b09637c3e9b452f577cbfdfeee845fafe04ddced",
+      "path": "any%/SoR/script1.py",
+      "url": "https://github.com/MCMi460/BOTW-TAS/blob/b09637c3e9b452f577cbfdfeee845fafe04ddced/any%/SoR/script1.py",
+      "raw_url": "https://raw.githubusercontent.com/MCMi460/BOTW-TAS/b09637c3e9b452f577cbfdfeee845fafe04ddced/any%25/SoR/script1.py",
+      "sha256": "fcd4e5a103b481f2dc16d904c72c98b2a8a30e7c3126863091a58337b0de3bee",
+      "bytes": 227
+    },
+    {
+      "id": "re-notes-readme",
+      "repository": "leoetlino/botw-re-notes",
+      "commit": "d7654c491625e9a0dfa33cbf2e3a84edbcbaacc1",
+      "path": "README.md",
+      "url": "https://github.com/leoetlino/botw-re-notes/blob/d7654c491625e9a0dfa33cbf2e3a84edbcbaacc1/README.md",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw-re-notes/d7654c491625e9a0dfa33cbf2e3a84edbcbaacc1/README.md",
+      "sha256": "4ad5bca370f3d560e2d20ac9e6665348bb125be72f24ab622d8bfb5221e0015a",
+      "bytes": 2720
+    },
+    {
+      "id": "re-notes-code",
+      "repository": "leoetlino/botw-re-notes",
+      "commit": "d7654c491625e9a0dfa33cbf2e3a84edbcbaacc1",
+      "path": "code/dragonItemGetDropPosition.cpp",
+      "url": "https://github.com/leoetlino/botw-re-notes/blob/d7654c491625e9a0dfa33cbf2e3a84edbcbaacc1/code/dragonItemGetDropPosition.cpp",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw-re-notes/d7654c491625e9a0dfa33cbf2e3a84edbcbaacc1/code/dragonItemGetDropPosition.cpp",
+      "sha256": "fd86e9e4ac27456506cd5ec887836047587200ce815b8757a2ce8d5a4cb99329",
+      "bytes": 1032
+    },
+    {
+      "id": "global-general",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "Actor/GeneralParamList/GlobalParameter.gparamlist.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/GlobalParameter.gparamlist.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/GlobalParameter.gparamlist.yml",
+      "sha256": "aa6c1b644be28c9a0b3ba40657176ec638a478f4f551db49276119457e6609b1",
+      "bytes": 3358
+    },
+    {
+      "id": "gamedata-bool_array_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/bool_array_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/bool_array_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/bool_array_data.yml",
+      "sha256": "a91ba6cbee0e61be8e1e4a89547b11c7e22998433565f70b577df00084d796a7",
+      "bytes": 2786
+    },
+    {
+      "id": "gamedata-bool_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/bool_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/bool_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/bool_data.yml",
+      "sha256": "e261e02cee180e0ccd4fd6e278c0e3d337d3dd1cc220e4fcd703ab551e14d9c5",
+      "bytes": 2457721
+    },
+    {
+      "id": "gamedata-f32_array_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/f32_array_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/f32_array_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/f32_array_data.yml",
+      "sha256": "6303aa33a34bc423f524068a6b6740a90cfd61bfc43118d113694fac78282ddb",
+      "bytes": 882
+    },
+    {
+      "id": "gamedata-f32_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/f32_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/f32_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/f32_data.yml",
+      "sha256": "a90b2ec16f5573ee0d10d3c9dd755fca34fa933032bf93481137d4d3ac35a5d3",
+      "bytes": 11755
+    },
+    {
+      "id": "gamedata-revival_bool_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/revival_bool_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/revival_bool_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/revival_bool_data.yml",
+      "sha256": "83af9e5fc5429c32324f5a2ba853155d52658d210b3f3cd52a206691f7178580",
+      "bytes": 8660052
+    },
+    {
+      "id": "gamedata-revival_s32_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/revival_s32_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/revival_s32_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/revival_s32_data.yml",
+      "sha256": "658b2bf34613d6a362e034b8f9ed47750cf00cfe2adfb1e82d53b3525d26fe69",
+      "bytes": 21246
+    },
+    {
+      "id": "gamedata-s32_array_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/s32_array_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/s32_array_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/s32_array_data.yml",
+      "sha256": "56a43b3e560b87adeb1a2b094ef6b8f1d31a80df83139c5f27c9ae5743f3565f",
+      "bytes": 14614
+    },
+    {
+      "id": "gamedata-s32_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/s32_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/s32_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/s32_data.yml",
+      "sha256": "b0c0fd73587605423e83a252886b9a286756bd9d94c1190e72a44e5b85bc4250",
+      "bytes": 697148
+    },
+    {
+      "id": "gamedata-string256_array_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/string256_array_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string256_array_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string256_array_data.yml",
+      "sha256": "45b8dd12986ca44170af1d0c847b9273eea9b90658f5584664c202af7667e3a1",
+      "bytes": 5236
+    },
+    {
+      "id": "gamedata-string256_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/string256_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string256_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string256_data.yml",
+      "sha256": "e10768854b3654d4977c764ed4f5d2731ed93f9cc295e30ed6b57d9c3e2d1a07",
+      "bytes": 740
+    },
+    {
+      "id": "gamedata-string32_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/string32_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string32_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string32_data.yml",
+      "sha256": "d039f3ab3f6ad81a42a7710dd18930f65d9c745af3bcfbd75bf5d033dcb2a084",
+      "bytes": 1488
+    },
+    {
+      "id": "gamedata-string64_array_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/string64_array_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string64_array_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string64_array_data.yml",
+      "sha256": "894e0467c1d6dac1fdc351dfbdb956215f25b5d2fdc22e828e8f6ad239ef97d7",
+      "bytes": 14635
+    },
+    {
+      "id": "gamedata-string64_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/string64_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string64_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/string64_data.yml",
+      "sha256": "bf664f0c27d4a6ec9e7f0a726c0eb056b8cc9300bad1cffa4150ed0ad533343d",
+      "bytes": 3985
+    },
+    {
+      "id": "gamedata-vector2f_array_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/vector2f_array_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector2f_array_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector2f_array_data.yml",
+      "sha256": "6540305ab2169cd874a44d77d21bbbce15b96d44fa675621aa09e992c9ffea30",
+      "bytes": 4476
+    },
+    {
+      "id": "gamedata-vector2f_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/vector2f_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector2f_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector2f_data.yml",
+      "sha256": "26b897dca97bc472265a3f5154c4119dfefcc14f1f7ea04875a4e47ad66d391f",
+      "bytes": 295
+    },
+    {
+      "id": "gamedata-vector3f_array_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/vector3f_array_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector3f_array_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector3f_array_data.yml",
+      "sha256": "a43dd94bf721fff4836c82b2f41a8b288fe7237ccc5b8f8efd0f53b61dbb2895",
+      "bytes": 7534
+    },
+    {
+      "id": "gamedata-vector3f_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/vector3f_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector3f_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector3f_data.yml",
+      "sha256": "8caf7b7ac5343e046675753f9caf0bb5e735bc4dad924028db2ba524a90d5803",
+      "bytes": 14880
+    },
+    {
+      "id": "gamedata-vector4f_data",
+      "repository": "leoetlino/botw",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "path": "GameData/Flag/vector4f_data.yml",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector4f_data.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/GameData/Flag/vector4f_data.yml",
+      "sha256": "d8a50062fff421ac1c6fdcc78539d06d0bd4182a83db5c2d9300df6526379d17",
+      "bytes": 332
+    }
+  ],
+  "gamedata_search": {
+    "file_count": 18,
+    "bytes": 11919805,
+    "pattern": "accel|decel|parashawl|glide|camera|player.*(speed|move|turn|air)|link.*(speed|move|turn|air)|run.*speed|dash.*speed",
+    "result": "Camera settings, mini-game cameras, paraglider quest flags found; no parameter establishes these normal locomotion response rows. GlobalParameter.gparamlist separately searched."
+  },
+  "native_candidates": [
+    {
+      "source_id": "player-general",
+      "object": "Player",
+      "values": {
+        "MaxSpeedInAir": 0.3,
+        "TurnEnableSpeed": 0.0,
+        "TurnEnableStickSub": 30.0,
+        "TurnEnableDirSub": 120.0,
+        "DashToRunStickValueDec": 0.03,
+        "AtnPosInterPolationRate": 0.2,
+        "AtnPosInterPolationMin": 0.01,
+        "AtnPosInterPolationMax": 0.2
+      },
+      "interpretation": "Reversal thresholds are known; remaining candidate semantics/consumers are not established. Dash-to-run and attention interpolation names do not justify ground acceleration or chase-camera target lag."
+    },
+    {
+      "source_id": "player-ai",
+      "object": "Action/Action_35/SInst (PlayerParashawlGlide)",
+      "values": {
+        "GlideSpeedMax": 0.02,
+        "Lv2GlideSpeedMax": 0.35,
+        "OverSpeedDec": 0.002,
+        "GlideRotSpeed": 20.0,
+        "GlideRotRate": 0.2,
+        "WindScale": 10.0
+      },
+      "interpretation": "Native scalar values only. No validated conversion to full-forward m/s, sink m/s, or yaw deg/s. Do not multiply by 30 and relabel them."
+    },
+    {
+      "source_id": "camera-ai",
+      "object": "Action/Action_2/SInst (DefaultNormal CameraChase)",
+      "values": {
+        "lngCus": 0.1,
+        "lngCusSpeedEffect": 0.2,
+        "AtHCusMin": 0.6,
+        "AtHCusMax": 1.0,
+        "atVCusMin": 0.4,
+        "atVCusMax": 1.0,
+        "atMoveOffset": 0.5,
+        "keepManual": true,
+        "radius": 5.3,
+        "Fovy": 0.872665
+      },
+      "interpretation": "FOV radians * 180/pi = 50.000021 deg; radius in game metres = 5.3 clone metres, already scored. Response coefficients have no proven update equation: no conversion to yaw rate/time constant is accepted."
+    },
+    {
+      "source_id": "camera-general",
+      "object": "Camera",
+      "values": {
+        "LatConnectRateAfterEvent": 0.75,
+        "LngConnectRateAfterEvent": 0.325,
+        "DistConnectRateAfterEvent": 1.5,
+        "ConnectAfterEventMin": 30.0,
+        "ConnectAfterEventMax": 90.0
+      },
+      "interpretation": "Event-return connection settings, not an established ordinary auto-follow yaw/target-lag model; no validated response conversion."
+    }
+  ],
+  "rows": [
+    {
+      "metric": "time to 90% run",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 0.3,
+      "unit": "s",
+      "clone_before": 0.233,
+      "clone_after": 0.233,
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "decomp-player-base",
+        "secondary-player-dump",
+        "move-as",
+        "wiiu-root-report",
+        "tas-input",
+        "decomp-move"
+      ],
+      "decision": "No on-foot acceleration/deceleration parameter or implemented velocity equation found. AS input smoothing and start clip duration do not give input-to-world-speed trajectories.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q01",
+        "Q03",
+        "Q04",
+        "Q05",
+        "Q06",
+        "Q10",
+        "Q11",
+        "Q12",
+        "Q16",
+        "Q17"
+      ]
+    },
+    {
+      "metric": "stop time",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 0.25,
+      "unit": "s",
+      "clone_before": 0.2,
+      "clone_after": 0.2,
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "decomp-player-base",
+        "secondary-player-dump",
+        "move-as",
+        "wiiu-root-report",
+        "tas-input",
+        "decomp-move"
+      ],
+      "decision": "Wait/Brake are different animation states. The 8-frame run Brake is a reversal, not known stick release. TAS script has an input release but no paired output trace.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q03",
+        "Q05",
+        "Q06",
+        "Q10",
+        "Q11",
+        "Q12",
+        "Q16"
+      ]
+    },
+    {
+      "metric": "stop distance",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 0.6,
+      "unit": "m",
+      "clone_before": 0.53,
+      "clone_after": 0.53,
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "decomp-player-base",
+        "secondary-player-dump",
+        "move-as",
+        "wiiu-root-report",
+        "tas-input",
+        "decomp-move"
+      ],
+      "decision": "No calibrated stick-release displacement trace acquired. Terminal run speed and reversal root displacement cannot supply release stop distance.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q03",
+        "Q05",
+        "Q06",
+        "Q08",
+        "Q10",
+        "Q11",
+        "Q16"
+      ]
+    },
+    {
+      "metric": "glide forward speed",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 7.8,
+      "unit": "m/s",
+      "clone_before": 7.679,
+      "clone_after": 7.679,
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "tas-input",
+        "wiiu-root-report"
+      ],
+      "decision": "GlideSpeedMax=0.02 and Lv2GlideSpeedMax=0.35 are loaded, but no runtime glide equation is provided. Their units, Lv2 activation, and relationship to full-stick speed remain unidentified. No synchronized normal glide between calibrated map points acquired.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q02",
+        "Q06",
+        "Q07",
+        "Q08",
+        "Q09",
+        "Q11",
+        "Q13",
+        "Q16"
+      ]
+    },
+    {
+      "metric": "glide sink rate",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 2.6,
+      "unit": "m/s",
+      "clone_before": 2.6,
+      "clone_after": 2.6,
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide"
+      ],
+      "decision": "No native forward-input sink constant identified. Leicester 70 m / 22 s experiment explicitly has no horizontal component; it cannot support forward-input sink.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q02",
+        "Q06",
+        "Q07",
+        "Q09",
+        "Q11",
+        "Q13"
+      ]
+    },
+    {
+      "metric": "run-up speed curve RMSE / top speed",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 0.0,
+      "unit": "ratio",
+      "clone_before": 0.062,
+      "clone_after": 0.062,
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "decomp-player-base",
+        "secondary-player-dump",
+        "move-as",
+        "wiiu-root-report",
+        "tas-input",
+        "decomp-move"
+      ],
+      "decision": "The comparison curve is a guessed exponential: 5.556*(1-exp(-t/(0.3/2.3))). Native root reports do not provide a complete known-input startup trajectory. The RMSE is against that hypothesis, not BotW data.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q01",
+        "Q04",
+        "Q05",
+        "Q06",
+        "Q10",
+        "Q11",
+        "Q12",
+        "Q16"
+      ]
+    },
+    {
+      "metric": "90 degree turn at a run",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 0.25,
+      "unit": "s",
+      "clone_before": 0.183,
+      "clone_after": 0.183,
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "decomp-player-base",
+        "secondary-player-dump",
+        "move-as",
+        "wiiu-root-report",
+        "tas-input",
+        "decomp-move"
+      ],
+      "decision": "TurnEnableDirSub=120 is a reversal threshold; NoLoopStickAngleBlender InputLimit=15 controls AS input, not measured body yaw rate. Curve animation root rotations vary by clip/phase. No known 90-degree input step with body/camera response acquired.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q01",
+        "Q05",
+        "Q06",
+        "Q10",
+        "Q11",
+        "Q12",
+        "Q15",
+        "Q16"
+      ]
+    },
+    {
+      "metric": "sideways drift in a running jump",
+      "status": "guess",
+      "confidence": "G",
+      "promoted": false,
+      "reference_value": null,
+      "provisional_target": 0.9,
+      "unit": "m",
+      "clone_before": 1.065,
+      "clone_after": 1.065,
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "decomp-jump",
+        "decomp-fall",
+        "decomp-player-base",
+        "secondary-player-dump"
+      ],
+      "decision": "MaxSpeedInAir=0.3 is a possible speed cap, not a sideways steering coefficient or landing drift. Even a proven 9 m/s cap would not determine this running-jump trajectory. No paired sideways-input jump trace acquired.",
+      "unit_mapping": "No accepted BotW response value, so no conversion or implementation tuning is justified.",
+      "query_ids_searched": [
+        "Q01",
+        "Q05",
+        "Q06",
+        "Q10",
+        "Q11",
+        "Q16",
+        "Q17"
+      ]
+    }
+  ],
+  "camera_response": {
+    "status": "guess",
+    "reference_value": null,
+    "source_ids_searched": [
+      "camera-ai",
+      "camera-general",
+      "decomp-camera",
+      "player-general",
+      "decomp-player-base",
+      "tas-input"
+    ],
+    "decision": "No calibrated isolated auto-follow/target-lag trace or implemented native chase equation found. Do not assume auto-yaw is exponential, or even enabled in this same mode.",
+    "clone_diagnostics": {
+      "steady_target_lag_m": 0.0661,
+      "yaw_45_seconds": 1.35,
+      "body_heading_seconds": 0.183,
+      "residual_yaw_degrees_at_6s": 3.438,
+      "peak_yaw_degrees_per_second": 47.042,
+      "overshoot_degrees": 0.0,
+      "settling_5deg_seconds_through_6s": 5.333
+    },
+    "query_ids_searched": [
+      "Q01",
+      "Q05",
+      "Q06",
+      "Q10",
+      "Q11",
+      "Q14"
+    ]
+  },
+  "other_sources": [
+    {
+      "id": "zeldamods-player-schema",
+      "url": "https://zeldamods.org/wiki/Bgparamlist",
+      "decision": "Field/type schema, not per-build on-foot response values. Defaults are not Player_Link actor values."
+    },
+    {
+      "id": "zeldamods-camera",
+      "url": "https://zeldamods.org/w_botw/index.php?title=Camera&oldid=7257",
+      "decision": "Subsystem stub, no auto-follow equation/rate."
+    },
+    {
+      "id": "leicester-sink",
+      "url": "https://journals.le.ac.uk/index.php/pst/article/download/3330/3017/8787",
+      "published": "2019-12-06",
+      "values": {
+        "height_m_approx": 70,
+        "time_s_approx": 22,
+        "sink_m_per_s_approx": 3.2,
+        "acceleration_video_frames_reported": [
+          2,
+          4
+        ]
+      },
+      "method": "Authors recorded a vertical, zero-horizontal-component tower drop and counted video frames; timings/scale are approximate and raw recording not supplied.",
+      "decision": "Supports the existing unscored literature estimate for no-input sink; cannot promote forward-input sink."
+    },
+    {
+      "id": "community-speed-study",
+      "url": "https://www.reddit.com/r/botw/comments/xlrzrq/",
+      "published": "2022-09-23",
+      "decision": "Author stopwatch-tested Dueling Peaks to Proxim Bridge along road; glide follows minimap road, not a measured straight-line world trajectory. No synchronized input, turn/stop/start trace, or forward sink. Tables are embedded images; no exact speed values transcribed into this audit."
+    },
+    {
+      "id": "tas-index",
+      "url": "https://www.zsr.gg/botw/tas/exterior",
+      "decision": "Names exterior TAS videos; segment completion times are not ordinary locomotion response measurements."
+    },
+    {
+      "id": "tas-oldman-video",
+      "url": "https://www.youtube.com/watch?v=cN_TODTOYn4&t=9s",
+      "title": "BotW - Old Man's dialogue (TAS)",
+      "access": "Browser video metadata: duration 45.001 s, 1280x720. Paused image inspected at 9.000 s.",
+      "observation": "Glider above Plateau Tower; no controller overlay in the inspected image. YouTube page states no description.",
+      "decision": "No downloadable original acquired, no frame-rate assumption/counts made, no paired TAS log identified. No calibrated forward-glide or camera response measurement."
+    },
+    {
+      "id": "tas-sor-video",
+      "url": "https://www.youtube.com/watch?v=Csc6BdsjZjY&t=78s",
+      "title": "[TAS] SOR Clip | 42.300",
+      "access": "Browser video metadata: duration 113.281 s, 1280x720. Paused images inspected at 68.000 s (black) and 78.000 s (wake chamber shot).",
+      "observation": "No controller overlay in inspected images. YouTube page states no description.",
+      "decision": "42.300 title is segment completion time, not an acceleration/stop/turn measurement. No downloadable original acquired or paired TAS log identified."
+    },
+    {
+      "id": "tas-script-method",
+      "source_id": "tas-input",
+      "values": {
+        "input_calls_holding_B": 90,
+        "frames_per_call_argument": 1,
+        "left_stick_x": -6113,
+        "left_stick_y": 32033,
+        "right_stick_x": 0,
+        "right_stick_y": 0,
+        "next_buttons": [
+          "KEY_A"
+        ],
+        "next_left_stick": [
+          0,
+          0
+        ]
+      },
+      "decision": "Real scripted input, not synchronized output. No justified fps, start state, movement distance, or linkage to either inspected TAS video. Comment flags bad angle/too-long run."
+    }
+  ],
+  "verification": {
+    "feel_reference_agreement_before": 99.6,
+    "feel_reference_agreement_after": 99.6,
+    "measured_references": 26,
+    "data": 24,
+    "footage": 2,
+    "guesses": 8,
+    "inferred": 7,
+    "behavior_before": "29/29",
+    "behavior_after": "29/29",
+    "implementation_constants_changed": [],
+    "source_files_verified": 36,
+    "source_bytes_verified": 12299189,
+    "printed_metric_values_unchanged": 70,
+    "trace_checks": [
+      "Initial row t=0; subsequent steps 1/60 s within CSV rounding",
+      "Look axes neutral in world-turn trials",
+      "Exported pre-update wish remains east through camera yaw changes"
+    ],
+    "required_checks": [
+      {
+        "name": "feel_test",
+        "path": "tools/feel_test.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "fauna_test",
+        "path": "tools/fauna_test.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "element_test",
+        "path": "tools/element_test.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "element_check",
+        "path": "tools/element_check.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "save_test",
+        "path": "tools/save_test.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "architecture_test",
+        "path": "tools/architecture_test.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "contact_check",
+        "path": "tools/contact_check.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "integration_test",
+        "path": "tools/integration_test.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "input_check",
+        "path": "tools/input_check.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "camera_check",
+        "path": "tools/camera_check.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "combat_check",
+        "path": "tools/combat_check.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "title_handoff_check",
+        "path": "tools/title_handoff_check.jo",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "slot_check",
+        "path": "tools/slot_check.jo",
+        "exit": 0,
+        "render_lock": "external flock /tmp/botw-render.lock"
+      },
+      {
+        "name": "shrine_route_check",
+        "path": "tools/shrine_route_check.sh",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "late_story_check",
+        "path": "tools/late_story_check.sh",
+        "exit": 0,
+        "render_lock": "not required (headless)"
+      },
+      {
+        "name": "shrine_exit_check",
+        "path": "tools/shrine_exit_check.sh",
+        "exit": 0,
+        "render_lock": "external flock /tmp/botw-render.lock"
+      },
+      {
+        "name": "passage_check",
+        "path": "tools/passage_check.sh",
+        "exit": 0,
+        "render_lock": "external flock /tmp/botw-render.lock"
+      },
+      {
+        "name": "opening_check",
+        "path": "tools/opening_check.sh",
+        "exit": 0,
+        "render_lock": "self-locking script"
+      }
+    ],
+    "required_checks_passed": "18/18",
+    "render_lock_note": "slot_check was initially mistaken for headless and invoked without flock; its final passing rerun used the external lock. No other render invocation omitted the lock."
+  },
+  "web_queries": [
+    {
+      "id": "Q01",
+      "query": "BotW decomp Player run acceleration deceleration camera param"
+    },
+    {
+      "id": "Q02",
+      "query": "\"BotW\" \"GlideSpeedMax\""
+    },
+    {
+      "id": "Q03",
+      "query": "\"BotW\" \"deceleration\""
+    },
+    {
+      "id": "Q04",
+      "query": "\"BotW\" \"acceleration\" \"Player\""
+    },
+    {
+      "id": "Q05",
+      "query": "\"BotW\" \"controller overlay\" running"
+    },
+    {
+      "id": "Q06",
+      "query": "\"BotW\" \"TAS\" \"input\" log"
+    },
+    {
+      "id": "Q07",
+      "query": "\"Breath of the Wild\" paraglider \"m/s\""
+    },
+    {
+      "id": "Q08",
+      "query": "\"BotW\" \"movement speed\" measured"
+    },
+    {
+      "id": "Q09",
+      "query": "\"Breath of the Wild\" \"paraglider\" \"horizontal speed\""
+    },
+    {
+      "id": "Q10",
+      "query": "\"Breath of the Wild\" \"controller overlay\" speedrun"
+    },
+    {
+      "id": "Q11",
+      "query": "\"Breath of the Wild\" \"input display\" youtube"
+    },
+    {
+      "id": "Q12",
+      "query": "\"PlayerMove\" \"acceleration\" Zelda"
+    },
+    {
+      "id": "Q13",
+      "query": "\"PlayerParashawlGlide\" speed BotW"
+    },
+    {
+      "id": "Q14",
+      "query": "\"BotW\" \"camera auto\" rate"
+    },
+    {
+      "id": "Q15",
+      "query": "\"Breath of the Wild\" \"turn rate\""
+    },
+    {
+      "id": "Q16",
+      "query": "botw movement mechanics speed acceleration datamined Link parameters"
+    },
+    {
+      "id": "Q17",
+      "query": "site.zeldamods.org \"Player\" \"speed\""
+    }
+  ],
+  "source_build_notes": {
+    "zeldaret/botw": "Public experimental Switch v1.5.0 decompilation; relevant runtime calculations remain stubs.",
+    "leoetlino/botw": "Converted parameter dump pinned by commit/hash; exact ROM/platform/patch provenance not established by this audit.",
+    "ntngel1/botw-renderer": "Report describes Wii U v208 research. Root-motion observations are the author's published report, not our extraction.",
+    "TAS videos": "Browser playback metadata and inspected timestamps only; original decoded frame rate, platform/patch and paired input log not acquired."
+  }
+}

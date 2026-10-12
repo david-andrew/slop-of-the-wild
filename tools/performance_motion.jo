@@ -1,0 +1,55 @@
+build:
+    opt = release
+use '../game/main.jo'
+use 'performance_output.jo'
+use '../game/player.jo'
+use '../game/camera.jo'
+use '../game/combat.jo'
+use '../game/enemies.jo'
+use '../game/frametime.jo'
+use '../game/save.jo'
+from '../game/save.jo' import __save_file, __save_age, __save_mark, __milestones
+
+# Input-only movement/fighting after BOTW_AT/BOTW_GIVE fixture setup. No teleport,
+# per-frame health/stamina refill, forced actor states, or camera override during the route.
+route_distance = 0.0
+route_camera = 0.0
+route_moving = 0
+route_sprint = 0
+route_talus_active = 0
+route_talus_strike = 0
+route_swing = 0
+route_update = (dt: f64):
+    if frame_number() == 0:
+        if let path = env("BOTW_BENCH_SAVE"):
+            assert(contains(path, "/botw-clone-sol/build/"), "benchmark save must stay in this checkout build directory")
+            if file_exists(path): assert(delete_file(path))
+            __save_file = path
+            __save_mark = __milestones()
+            save_enabled = true
+    save_age = __save_age
+    before = pl.pos
+    camera_before = cam.pos
+    update(dt)
+    if save_enabled and save_age > 1.0 and __save_age < save_age:
+        assert(file_exists(__save_file))
+        eprint("perf autosave: frame {frame_number()} age {save_age:.3} path {__save_file}")
+    distance = f64(length(pl.pos - before))
+    route_distance += distance
+    route_camera += f64(length(cam.pos - camera_before))
+    if distance > 0.01: route_moving += 1
+    if pl.sprinting and distance > 0.01: route_sprint += 1
+    if fight.act == .swing: route_swing += 1
+    loop e in enemies:
+        if e.kind != .talus: continue
+        if e.state != .sleep and e.state != .gone and e.state != .dead and e.state != .buried: route_talus_active += 1
+        if e.state == .windup or e.state == .attack: route_talus_strike += 1
+    if frame_number() % 120 == 0:
+        usage = fill(i64(0), 18)
+        getrusage(0, data(usage))
+        eprint("perf memory: frame {frame_number()} hwm_kib {usage[4]}")
+        eprint("perf motion: frame {frame_number()} distance {route_distance:.3} camera {route_camera:.3} moving {route_moving} sprint {route_sprint} swing {route_swing} talus_active {route_talus_active} talus_strike {route_talus_strike} hp {pl.hp:.1} pos {pl.pos.x:.3},{pl.pos.z:.3}")
+
+main = ():
+    if env("BOTW_BENCH_CLIENT_SIZE") != none: performance_output_run(route_update, draw)
+    else: __game_run(route_update, draw)

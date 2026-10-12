@@ -1,0 +1,202 @@
+# Generic array utilities. Arrays are values with copy-on-write storage.
+
+is_empty[T] = (xs: T[]) -> bool: xs.len() == 0
+first[T] = (xs: T[]) -> T: xs[0]
+last[T] = (xs: T[]) -> T: xs[xs.len() - 1]
+
+contains[T] = (xs: T[], x: T) -> bool:
+    loop e in xs:
+        if e == x: return true
+    false
+
+index_of[T] = (xs: T[], x: T) -> int:
+    loop i in 0.. and e in xs:
+        if e == x: return i
+    -1
+
+map[T, U] = (xs: T[], f: (T) -> U) -> U[]:
+    out: U[]
+    out.reserve(xs.len())
+    loop x in xs: out.push(f(x))
+    out
+
+filter[T] = (xs: T[], f: (T) -> bool) -> T[]:
+    out: T[]
+    loop x in xs:
+        if f(x): out.push(x)
+    out
+
+each[T] = (xs: T[], f: (T) -> void):
+    loop x in xs: f(x)
+
+reduce[T, A] = (xs: T[], init: A, f: (A, T) -> A) -> A:
+    acc = init
+    loop x in xs: acc = f(acc, x)
+    acc
+
+any[T] = (xs: T[], f: (T) -> bool) -> bool:
+    loop x in xs:
+        if f(x): return true
+    false
+
+all[T] = (xs: T[], f: (T) -> bool) -> bool:
+    loop x in xs:
+        if not f(x): return false
+    true
+
+find[T] = (xs: T[], f: (T) -> bool) -> T?:
+    loop x in xs:
+        if f(x): return x
+    none
+
+count[T] = (xs: T[], f: (T) -> bool) -> int:
+    n = 0
+    loop x in xs:
+        if f(x): n += 1
+    n
+
+sum[T] = (xs: T[]) -> T:
+    s: T
+    loop x in xs: s = s + x
+    s
+
+min[T] = (xs: T[]) -> T:
+    m = xs[0]
+    loop x in xs:
+        if x < m: m = x
+    m
+
+max[T] = (xs: T[]) -> T:
+    m = xs[0]
+    loop x in xs:
+        if x > m: m = x
+    m
+
+reverse[T] = (xs: mut T[]):
+    i = 0
+    j = xs.len() - 1
+    loop i < j:
+        t = xs[i]
+        xs[i] = xs[j]
+        xs[j] = t
+        i += 1
+        j -= 1
+
+reversed[T] = (xs: T[]) -> T[]:
+    out = xs
+    out.reverse()
+    out
+
+range = (a: int, b: int) -> int[]:
+    out: int[]
+    loop i in [a..b): out.push(i)
+    out
+
+enumerate[T] = (xs: T[]) -> (int, T)[]:
+    out: (int, T)[]
+    loop i in 0.. and x in xs: out.push((i, x))
+    out
+
+zip[A, B] = (xs: A[], ys: B[]) -> (A, B)[]:
+    out: (A, B)[]
+    n = xs.len()
+    if ys.len() < n: n = ys.len()
+    loop i in [0..n): out.push((xs[i], ys[i]))
+    out
+
+flatten[T] = (xss: T[][]) -> T[]:
+    out: T[]
+    loop xs in xss:
+        loop x in xs: out.push(x)
+    out
+
+swap[T] = (xs: mut T[], i: int, j: int):
+    t = xs[i]
+    xs[i] = xs[j]
+    xs[j] = t
+
+# ---------------- sorting ----------------
+__insertion_sort[T] = (xs: mut T[], lo: int, hi: int, less: (T, T) -> bool):
+    i = lo + 1
+    loop i < hi:
+        j = i
+        loop j > lo and less(xs[j], xs[j - 1]):
+            t = xs[j]
+            xs[j] = xs[j - 1]
+            xs[j - 1] = t
+            j -= 1
+        i += 1
+
+__quick_sort[T] = (xs: mut T[], lo: int, hi: int, less: (T, T) -> bool, depth: int):
+    if hi - lo <= 16:
+        __insertion_sort(xs, lo, hi, less)
+        return
+    if depth == 0:
+        __heap_sort(xs, lo, hi, less)
+        return
+    mid = lo + (hi - lo) / 2
+    # median of three
+    if less(xs[mid], xs[lo]): swap(xs, mid, lo)
+    if less(xs[hi - 1], xs[lo]): swap(xs, hi - 1, lo)
+    if less(xs[hi - 1], xs[mid]): swap(xs, hi - 1, mid)
+    pivot = xs[mid]
+    i = lo
+    j = hi - 1
+    loop i <= j:
+        loop less(xs[i], pivot): i += 1
+        loop less(pivot, xs[j]): j -= 1
+        if i <= j:
+            swap(xs, i, j)
+            i += 1
+            j -= 1
+    if lo < j + 1: __quick_sort(xs, lo, j + 1, less, depth - 1)
+    if i < hi: __quick_sort(xs, i, hi, less, depth - 1)
+
+__sift_down[T] = (xs: mut T[], lo: int, start: int, n: int, less: (T, T) -> bool):
+    root = start
+    loop true:
+        child = 2 * root + 1
+        if child >= n: return
+        if child + 1 < n and less(xs[lo + child], xs[lo + child + 1]): child += 1
+        if less(xs[lo + root], xs[lo + child]):
+            swap(xs, lo + root, lo + child)
+            root = child
+        else: return
+
+__heap_sort[T] = (xs: mut T[], lo: int, hi: int, less: (T, T) -> bool):
+    n = hi - lo
+    s = n / 2 - 1
+    loop s >= 0:
+        __sift_down(xs, lo, s, n, less)
+        s -= 1
+    e = n - 1
+    loop e > 0:
+        swap(xs, lo, lo + e)
+        __sift_down(xs, lo, 0, e, less)
+        e -= 1
+
+__less[T] = (a: T, b: T) -> bool: a < b
+
+# sort in place (ascending, using <)
+sort[T] = (xs: mut T[]):
+    __quick_sort(xs, 0, xs.len(), __less, 64)
+
+# sort in place with a custom "less than" function
+sort_with[T] = (xs: mut T[], less: (T, T) -> bool):
+    __quick_sort(xs, 0, xs.len(), less, 64)
+
+# sort in place by a key
+sort_by[T, K] = (xs: mut T[], key: (T) -> K):
+    __quick_sort(xs, 0, xs.len(), (a: T, b: T) -> bool: key(a) < key(b), 64)
+
+sorted[T] = (xs: T[]) -> T[]:
+    out = xs
+    out.sort()
+    out
+
+__fmt_join[T] = (xs: T[], sep: str) -> str:
+    buf: u8[]
+    loop i in 0.. and x in xs:
+        if i > 0: __buf_append_str(buf, sep)
+        __fmt(buf, x)
+    str_from_bytes(buf)

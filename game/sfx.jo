@@ -1,0 +1,1228 @@
+use 'gfx.jo'
+use 'audio_assets.jo'
+use 'env.jo'
+use 'physics.jo'
+use 'music.jo'
+use 'player.jo'
+use 'combat.jo'
+
+# Sound effects: compact Kenney CC0 foley layered with synthesis at start-up; footsteps,
+# hits, monster voices, splashes, cloth, explosions, the Guardian's sight and shot, thunder,
+# arrows, and the ambient beds (wind, rain, fire, birds by day, crickets by night).
+
+struct Sfx:
+    step_grass: Sound[]
+    step_stone: Sound[]
+    step_snow: Sound[]
+    swing: Sound
+    swing_heavy: Sound
+    windup_heavy: Sound
+    hit: Sound
+    hit_big: Sound
+    hit_wood: Sound
+    block: Sound
+    parry: Sound
+    grunt: Sound[]
+    notice: Sound
+    horn: Sound
+    poof: Sound
+    splash: Sound
+    cloth: Sound
+    land: Sound
+    explode: Sound
+    laser_lock: Sound
+    laser: Sound
+    thunder: Sound
+    twang: Sound
+    arrow_hit: Sound
+    chest: Sound
+    door: Sound
+    rumble: Sound
+    hurt: Sound
+    eat: Sound
+    moan: Sound
+    hum: Sound
+    wind: Sound
+    rain: Sound
+    wind_gust: Sound
+    rain_gust: Sound
+    wind_gust_takes: Sound[]
+    rain_gust_takes: Sound[]
+    fire: Sound
+    owl: Sound
+    water_birds: Sound
+    frogs: Sound
+    individuals: Sound[][]
+    birds: Sound[]
+    caw: Sound
+    boar_grunt: Sound
+    boar_alarm: Sound
+    boar_snort: Sound
+    fox_yip: Sound
+    bird_scatter: Sound
+    peck: Sound
+    crickets: Sound
+    climb: Sound
+    water: Sound
+    step_wood: Sound[]
+    rustle: Sound
+    bow_draw: Sound
+    wake_air: Sound
+    ready = false
+
+sfx = Sfx()
+
+__noise_burst = (dur: f64, lp: f64, vol: f64, attack: f64, decay: f64, hp: f64 = 0.0) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    y = 0.0
+    yh = 0.0
+    prev = 0.0
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        x = random(-1.0, 1.0)
+        y += (x - y) * lp
+        v = y
+        if hp > 0.0:
+            yh = hp * (yh + y - prev)
+            prev = y
+            v = yh
+        env_ = min(t / max(attack, 0.0001), 1.0) * exp(-max(t - attack, 0.0) / decay)
+        s = f32(v * env_ * vol)
+        out[i * 2] = s
+        out[i * 2 + 1] = s
+    Sound(out)
+
+# a voice: a glottal buzz (its pitch gliding f0 -> f1, a little jitter, a growl of roughness)
+# and breath, through formant resonances (the vowel), for grunts, calls and caws
+__voice = (f0: f64, f1: f64, dur: f64, formants: vec3[], vol: f64, breath: f64 = 0.15, growl: f64 = 0.0, attack: f64 = 0.025) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    sr = f64(MIX_RATE)
+    nf = formants.len()
+    y1 = fill(0.0, nf)
+    y2 = fill(0.0, nf)
+    ph = 0.0
+    lp = 0.0
+    jitter = 0.0
+    air = 0.0
+    cycle = 1.0
+    loop i in [0..n):
+        t = f64(i) / sr
+        k = t / dur
+        # Correlated pitch drift, irregular pulse strength and filtered turbulent air.
+        # Per-sample white pitch jitter was nearly inaudible and left a steady buzz.
+        jitter += (random(-1.0, 1.0) - jitter) * 0.002
+        air += (random(-1.0, 1.0) - air) * 0.24
+        f = (f0 + (f1 - f0) * k) * (1.0 + jitter * 0.35 + growl * 0.055 * sin(t * 47.0 + sin(t * 19.0)))
+        ph += f / sr
+        if ph >= 1.0:
+            ph -= 1.0
+            cycle = random(1.0 - growl * 0.65, 1.0)
+        # (a pulse that opens and snaps shut, softened)
+        src = (if ph < 0.6: sin(ph / 0.6 * PI) else: 0.0) - 0.38
+        lp += (src - lp) * 0.35
+        x = lp * cycle + air * breath * (0.65 + 0.35 * sin(t * 39.0 + sin(t * 13.0)))
+        if growl > 0.0: x *= 1.0 - growl * (0.5 + 0.5 * sin(t * TAU * 31.0 + sin(t * 70.0)))
+        v = 0.0
+        loop j in [0..nf):
+            fm = formants[j]
+            r = exp(-PI * f64(fm.y) / sr)
+            a1 = -2.0 * r * cos(TAU * f64(fm.x) / sr)
+            a2 = r * r
+            yy = (1.0 - r) * x - a1 * y1[j] - a2 * y2[j]
+            y2[j] = y1[j]
+            y1[j] = yy
+            v += yy * f64(fm.z)
+        env_ = min(t / attack, 1.0) * clamp((dur - t) / (dur * 0.45), 0.0, 1.0)
+        s = f32(v * env_)
+        out[i * 2] = s
+        out[i * 2 + 1] = s
+    # (the filters' gain depends on the vowel: brought to a peak of vol * 0.5)
+    pk: f32 = 0.0001
+    loop q in out: pk = max(pk, abs(q))
+    g = f32(vol * 0.5) / pk
+    loop i in [0..out.len()): out[i] = out[i] * g
+    Sound(out)
+
+# noise through a band-pass (a state-variable filter) whose centre sweeps f0 -> f1, with an
+# attack/decay envelope: swooshes, rustles, splashes
+__swept = (dur: f64, f0: f64, f1: f64, q: f64, vol: f64, attack: f64, decay: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    low = 0.0
+    band = 0.0
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        fc = f0 * pow(f1 / f0, t / dur)
+        f = 2.0 * sin(PI * min(fc, 18000.0) / f64(MIX_RATE))
+        x = random(-1.0, 1.0)
+        low += f * band
+        high = x - low - q * band
+        band += f * high
+        env_ = min(t / max(attack, 0.0001), 1.0) * exp(-max(t - attack, 0.0) / decay)
+        v = f32(band * env_ * vol)
+        out[i * 2] = v
+        out[i * 2 + 1] = v * 0.92
+    Sound(out)
+
+# a damped sine thump (bodies, impacts)
+__thump = (f0: f64, f1: f64, dur: f64, vol: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    ph = 0.0
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        f = f0 * pow(f1 / f0, t / dur)
+        ph += TAU * f / f64(MIX_RATE)
+        v = f32(sin(ph) * exp(-t * 18.0) * vol)
+        out[i * 2] = v
+        out[i * 2 + 1] = v
+    Sound(out)
+
+# a looping bed: noise shaped by slow wobbles (wind, rain, fire)
+__bed = (secs: f64, lp: f64, vol: f64, wob: f64, crackle: f64) -> Sound:
+    n = int(secs * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    y = 0.0
+    y2 = 0.0
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        x = random(-1.0, 1.0)
+        y += (x - y) * lp
+        y2 += (y - y2) * lp
+        w = 1.0 - wob * 0.5 * (1.0 + sin(t * TAU * 0.13 + sin(t * 0.7) * 2.0))
+        c = 0.0
+        if crackle > 0.0 and random() < crackle: c = random(-1.0, 1.0) * 0.8
+        # fade the ends together so the loop is seamless
+        e = min(1.0, min(t, secs - t) / 0.05)
+        sl = f32((y2 * w * vol + c * vol) * e)
+        out[i * 2] = sl
+        out[i * 2 + 1] = f32((y * w * vol * 0.9 + c * vol * 0.7) * e)
+    Sound(out)
+
+# a bird: quick chirps sliding in pitch
+__chirps = (base: f64, count: int, gap: f64) -> Sound:
+    parts: Sound[]
+    loop k in [0..count):
+        f = base * random(0.9, 1.2)
+        parts.push(tone(f, 0.07, .sine, 0.12, 0.005, 0.04, random(1.2, 1.6)))
+    seq: f32[]
+    loop p in parts:
+        loop s in p.samples: seq.push(s)
+        loop k in [0..int(gap * f64(MIX_RATE)) * 2): seq.push(0.0)
+    Sound(seq)
+
+# a struck body: a handful of inharmonic partials, each ringing down at its own rate
+# (freqs in Hz, decay times in seconds, amplitudes), a click of noise at the attack
+__modal = (freqs: f64[], decays: f64[], amps: f64[], dur: f64, vol: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    xs: f64[]
+    ys: f64[]
+    cs: f64[]
+    ss: f64[]
+    es: f64[]
+    ds: f64[]
+    loop k in [0..freqs.len()):
+        es.push(amps[k])
+        xs.push(cos(f64(k) * 1.7))
+        ys.push(sin(f64(k) * 1.7))
+        cs.push(cos(TAU * freqs[k] / f64(MIX_RATE)))
+        ss.push(sin(TAU * freqs[k] / f64(MIX_RATE)))
+        ds.push(exp(-1.0 / (decays[k] * f64(MIX_RATE))))
+    click_env = 0.6
+    click_decay = exp(-1.0 / (0.004 * f64(MIX_RATE)))
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        v = 0.0
+        loop k in [0..freqs.len()):
+            v += ys[k] * es[k]
+            nx = xs[k] * cs[k] - ys[k] * ss[k]
+            ys[k] = xs[k] * ss[k] + ys[k] * cs[k]
+            xs[k] = nx
+            es[k] *= ds[k]
+        click = (random() * 2.0 - 1.0) * click_env
+        click_env *= click_decay
+        smp = f32((v + click) * vol * clamp(t / 0.0015, 0.0, 1.0))
+        out[i * 2] = smp
+        out[i * 2 + 1] = smp
+    Sound(out)
+
+# a horn: brassy harmonics swelling in (the upper ones later, as a lip buzz does), a little
+# vibrato, a slide up into the note and a breathy edge
+__horn = (f0: f64, dur: f64, vol: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out: f32[]
+    ph = fill(0.0, 8)
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        amp = clamp(t / 0.12, 0.0, 1.0) * clamp((dur - t) / 0.25, 0.0, 1.0)
+        f = f0 * (0.94 + 0.06 * clamp(t / 0.15, 0.0, 1.0)) * (1.0 + 0.006 * sin(t * TAU * 5.5))
+        v = 0.0
+        loop k in [0..8):
+            h = f64(k + 1)
+            bright = clamp((t - 0.03 * h) / 0.1, 0.0, 1.0)
+            ph[k] += TAU * f * h / f64(MIX_RATE)
+            v += sin(ph[k]) * bright / (h * 0.8 + 0.2)
+        v += (random() * 2.0 - 1.0) * 0.05 * amp
+        smp = f32(v * amp * vol * 0.25)
+        out.push(smp)
+        out.push(smp)
+    Sound(out)
+
+# Original wordless breath/vowel shimmer: no speech, recording or voice imitation.
+# Wide formants soften a mostly noisy excitation; slow swells and quiet decorrelated
+# reflections avoid the sharp onset and buzzy growl used by creature calls.
+__wake_air = () -> Sound:
+    saved_rng = __global_rng
+    seed_random(560031)
+    source = __voice(242.0, 226.0, 4.8, [v3(720.0, 230.0, 0.8), v3(1260.0, 340.0, 0.5), v3(2750.0, 550.0, 0.12)], 0.065, 3.2)
+    __global_rng = saved_rng
+    out = fill(f32(0), source.samples.len() + MIX_RATE * 2)
+    loop i in [0..source.samples.len() / 2):
+        t = f64(i) / f64(MIX_RATE)
+        swell = smoothstep(0.0, 0.85, t) * (1.0 - smoothstep(1.45, 2.65, t))
+        swell += smoothstep(2.0, 2.9, t) * (1.0 - smoothstep(3.4, 4.8, t)) * 0.65
+        v = source.samples[i * 2] * f32(swell)
+        out[i * 2] += v
+        out[i * 2 + 1] += v
+        loop j in [0..3):
+            delay = int([0.19, 0.37, 0.61][j] * f64(MIX_RATE))
+            gain = f32([0.24, 0.15, 0.08][j])
+            out[(i + delay) * 2] += v * gain
+            out[(i + delay + MIX_RATE / 100) * 2 + 1] += v * gain
+    Sound(out)
+
+# Avoid synthesizing a handle that will immediately be replaced by recorded takes.
+__sfx_source = (name: str, make: () -> Sound) -> Sound:
+    if let bytes = read_bytes("assets/audio/foley-{name}.wav"): return load_wav(bytes)
+    make()
+
+# Authored creature voices: glottal harmonics and breath, distinct from monster speech.
+# Each sample is prebuilt once; sfx_at supplies distance filtering and wall occlusion.
+__wild_voice = (kind: int, identity: f64 = 0.5, take: int = -1) -> Sound:
+    dur = [0.36, 0.65, 0.28, 0.32, 0.20][kind]
+    if take >= 0: dur *= [0.86, 0.97, 1.08, 1.16][take]
+    bend = if take < 0: 0.0 else: [-0.04, 0.025, -0.018, 0.045][take]
+    out = fill(f32(0), int(dur * f64(MIX_RATE)) * 2)
+    phase = 0.0
+    breath = 0.0
+    loop i in [0..out.len()/2):
+        t = f64(i) / f64(MIX_RATE)
+        q = t / dur
+        hz = match kind:
+            0: 105.0 - q * 34.0 + sin(t * 45.0) * 6.0
+            1: 440.0 + sin(q * PI) * 510.0 - q * 170.0
+            2: 78.0 + q * 45.0
+            3: 720.0 + sin(q * PI) * 390.0 - q * 280.0
+            _: 3100.0 + sin(q * TAU * 2.0) * 850.0
+        phase += TAU * hz * (1.0 + bend * sin(q * PI)) * (0.91 + identity * 0.18) / f64(MIX_RATE)
+        breath += (random(-1.0, 1.0) - breath) * (if kind == 2: 0.32 else: 0.11)
+        env_ = smoothstep(0.0, (0.012 + identity * 0.042) * (if take < 0: 1.0 else: 0.7 + f64(take) * 0.22), t) * (1.0 - smoothstep(dur * 0.65, dur, t))
+        voice = sin(phase) * 0.17 + sin(phase * 2.0) * 0.075 + sin(phase * 3.0) * 0.04
+        if kind == 0: voice *= 0.6 + 0.4 * pow(0.5 + 0.5 * sin(t * TAU * 29.0), 3.0)
+        if kind == 2: voice = voice * 0.35 + breath * 0.55
+        if kind == 4: voice = sin(phase) * 0.17 * pow(0.5 + 0.5 * sin(q * TAU * 2.0), 2.0)
+        sample = f32((voice + breath * (if kind == 1: 0.13 else: 0.045) * (0.55 + identity * 0.9)) * env_)
+        out[i*2] = sample
+        out[i*2+1] = sample
+    Sound(out)
+
+sfx_init = ():
+    if sfx.ready: return
+    # Sound design has its own fixed seed in both baked and generated paths.
+    # It never consumes gameplay randomness, including when assets are missing.
+    saved = __global_rng
+    defer __global_rng = saved
+    seed_random(7)
+    if sfx_asset_load(): return
+    sfx.wake_air = __wake_air()
+    loop k in [0..6):
+        # grass: the heel's soft thud under a swish of blades brushing the boot (each different)
+        sfx.step_grass.push(__sfx_source("step-grass-{k % 5}", (): mix([__thump(random(85.0, 110.0), 55.0, 0.07, 0.22), __swept(random(0.1, 0.16), random(1800.0, 2600.0), random(900.0, 1400.0), 0.6, 0.16, 0.012, 0.04)])))
+        # stone: a hard heel click, the gritty scuff after, a little body
+        sfx.step_stone.push(__sfx_source("step-stone-{k % 5}", (): mix([__modal([random(1900.0, 2600.0), random(3800.0, 4600.0)], [0.012, 0.008], [0.4, 0.2], 0.05, 0.35), __swept(0.08, 3000.0, 1500.0, 0.8, 0.1, 0.004, 0.025), __thump(random(120.0, 160.0), 70.0, 0.05, 0.14)])))
+        # snow: a crunch of many tiny breaks over a soft compression
+        if let bytes = read_bytes("assets/audio/foley-step-snow-{k % 5}.wav"):
+            sfx.step_snow.push(load_wav(bytes))
+        else:
+            cr: Sound[]
+            loop j in [0..random_int(5, 9)):
+                g = __modal([random(1500.0, 4000.0)], [0.004], [random(0.15, 0.35)], 0.012, 0.5)
+                pad = fill(f32(0), int(random(0.0, 0.11) * f64(MIX_RATE)) * 2)
+                loop v in g.samples: pad.push(v)
+                cr.push(Sound(pad))
+            cr.push(__noise_burst(0.16, 0.1, 0.16, 0.015, 0.05, 0.0))
+            sfx.step_snow.push(mix(cr))
+    # a blade cuts the air with a rising swish and a thin ring of steel; a heavy one with a deeper rush
+    sfx.swing = __sfx_source("swing-0", (): mix([__swept(0.24, 900.0, 3200.0, 0.5, 0.42, 0.05, 0.07), __modal([3150.0, 4720.0, 6300.0], [0.18, 0.12, 0.08], [0.05, 0.03, 0.015], 0.35, 0.5)]))
+    sfx.windup_heavy = __sfx_source("windup-heavy-1", (): mix([__swept(0.18, 1600.0, 550.0, 0.7, 0.65, 0.008, 0.07), __thump(190.0, 95.0, 0.16, 0.5)]))
+    sfx.swing_heavy = __sfx_source("swing-1", (): mix([__swept(0.38, 400.0, 1600.0, 0.5, 0.5, 0.09, 0.11), __modal([1870.0, 2960.0], [0.25, 0.15], [0.05, 0.03], 0.45, 0.5)]))
+    # a blade biting into hide: a dull body thump, a fleshy crack, a short metallic ring
+    sfx.hit = __sfx_source("hit-0", (): mix([__thump(140.0, 55.0, 0.18, 0.55), __noise_burst(0.09, 0.45, 0.42, 0.001, 0.025),
+        __modal([1180.0, 2710.0, 4390.0], [0.05, 0.03, 0.02], [0.18, 0.1, 0.06], 0.18, 0.5)]))
+    # Finishers: a deeper body hit with a sharper crack and a longer steel tail.
+    sfx.hit_big = __sfx_source("hit-big-0", (): mix([__thump(92.0, 38.0, 0.24, 0.65), __noise_burst(0.11, 0.5, 0.48, 0.001, 0.035),
+        __modal([780.0, 1940.0, 3210.0], [0.09, 0.065, 0.04], [0.2, 0.12, 0.08], 0.28, 0.55)]))
+    # on wood: a hollow knock (low wooden modes) and splintery noise
+    sfx.hit_wood = __sfx_source("hit-wood-0", (): mix([__modal([210.0, 455.0, 830.0, 1370.0], [0.07, 0.045, 0.03, 0.02], [0.5, 0.3, 0.2, 0.1], 0.2, 0.55), __noise_burst(0.07, 0.55, 0.3, 0.001, 0.02)]))
+    # a guard: steel on wood, a bright clang that rings on
+    sfx.block = __sfx_source("block-0", (): mix([__modal([620.0, 1540.0, 2470.0, 3720.0], [0.25, 0.16, 0.1, 0.06], [0.35, 0.22, 0.14, 0.08], 0.5, 0.5), __thump(110.0, 70.0, 0.12, 0.35), __noise_burst(0.06, 0.7, 0.25, 0.001, 0.015)]))
+    sfx.parry = mix([tone(1320.0, 0.5, .sine, 0.25, 0.001, 0.45), tone(1980.0, 0.4, .sine, 0.12, 0.001, 0.35)])
+    # a bokoblin's grunt: a low rough "uh" falling away, a little different each time
+    loop k in [0..3):
+        g0 = random(105.0, 135.0)
+        sfx.grunt.push(__voice(g0, g0 * 0.72, random(0.24, 0.40), [v3(random(450.0, 660.0), 180.0, 1.0), v3(random(850.0, 1250.0), 260.0, 0.45), v3(2450.0, 420.0, 0.10)], 0.72, 2.4, 0.75))
+    # noticing him: a startled, rising "huh?!"
+    sfx.notice = mix([__voice(150.0, 230.0, 0.34, [v3(560.0, 200.0, 1.0), v3(1750.0, 320.0, 0.45), v3(2500.0, 450.0, 0.12)], 0.8, 2.0, 0.65), __thump(95.0, 50.0, 0.2, 0.35)])
+    # the Bokoblins' horn: a long low call, then a higher one
+    h1 = __horn(146.8, 1.4, 0.8)
+    h2 = __horn(220.0, 0.9, 0.6)
+    hs: f32[]
+    loop v in h1.samples: hs.push(v)
+    loop v in h2.samples: hs.push(v)
+    sfx.horn = Sound(hs)
+    sfx.poof = __noise_burst(0.6, 0.06, 0.4, 0.02, 0.2)
+    sfx.splash = mix([__swept(0.6, 800.0, 3500.0, 0.3, 0.6, 0.01, 0.15), __thump(90.0, 40.0, 0.2, 0.3)])
+    sfx.water = __bed(5.0, 0.25, 0.14, 0.35, 0.003)
+    sfx.cloth = __noise_burst(0.35, 0.15, 0.3, 0.02, 0.1, 0.4)
+    sfx.land = __noise_burst(0.15, 0.2, 0.35, 0.002, 0.05)
+    sfx.explode = mix([__noise_burst(1.6, 0.05, 0.9, 0.003, 0.45), tone(55.0, 1.0, .sine, 0.6, 0.001, 0.8, 0.5)])
+    sfx.laser_lock = tone(880.0, 3.0, .sine, 0.12, 0.05, 0.1, 1.6, 12.0)
+    sfx.laser = mix([tone(1400.0, 0.4, .saw, 0.25, 0.001, 0.3, 0.3), __noise_burst(0.6, 0.3, 0.4, 0.001, 0.2)])
+    sfx.thunder = __noise_burst(3.5, 0.02, 1.0, 0.02, 1.0)
+    sfx.twang = mix([tone(180.0, 0.25, .triangle, 0.25, 0.001, 0.2, 0.97), __noise_burst(0.05, 0.6, 0.15, 0.001, 0.01)])
+    sfx.arrow_hit = __noise_burst(0.08, 0.5, 0.3, 0.001, 0.02)
+    sfx.chest = mix([tone(90.0, 0.6, .triangle, 0.2, 0.01, 0.3, 1.1), __noise_burst(0.5, 0.15, 0.15, 0.05, 0.2)])
+    sfx.door = __bed(2.5, 0.02, 0.5, 0.0, 0.0)
+    sfx.rumble = __bed(6.0, 0.015, 0.9, 0.4, 0.0)
+    sfx.hurt = mix([__thump(160.0, 60.0, 0.2, 0.6), __noise_burst(0.15, 0.3, 0.35, 0.001, 0.04)])
+    # eating: three crisp bites and chewing
+    eb: Sound[]
+    loop j in [0..3):
+        bt = mix([__swept(0.08, 2500.0, 1200.0, 0.7, 0.3, 0.003, 0.025), __thump(160.0, 90.0, 0.05, 0.15)])
+        pad = fill(f32(0), int((0.02 + f64(j) * 0.17) * f64(MIX_RATE)) * 2)
+        loop v in bt.samples: pad.push(v)
+        eb.push(Sound(pad))
+    sfx.eat = mix(eb)
+    sfx.climb = __noise_burst(0.12, 0.3, 0.12, 0.01, 0.04)
+    # The carrier stays quiet and almost steady; the event banks own the swells.
+    # Its old eight-second wobble overwhelmed variation in the gust layer.
+    sfx.wind = __bed(19.0, 0.012, 0.40, 0.08, 0.0)
+    sfx.moan = __moan(8.0)
+    sfx.hum = __hum(6.0)
+    sfx.rain = __bed(6.0, 0.35, 0.18, 0.15, 0.002)
+    loop k in [0..4):
+        sfx.wind_gust_takes.push(__gust_take([7.2, 9.4, 11.7, 8.6][k], [0.22, 0.38, 0.16, 0.30][k],
+            [0.018, 0.032, 0.024, 0.043][k], [0.085, 0.025, 0.11, 0.019][k], 0.38, f64(k)))
+        sfx.rain_gust_takes.push(__gust_take([5.3, 8.1, 10.2, 6.7][k], [0.34, 0.18, 0.42, 0.25][k],
+            [0.09, 0.22, 0.13, 0.18][k], [0.24, 0.08, 0.20, 0.10][k], 0.11, f64(k) + 0.5))
+    sfx.wind_gust = sfx.wind_gust_takes[0]
+    sfx.rain_gust = sfx.rain_gust_takes[0]
+    sfx.fire = __bed(4.0, 0.06, 0.25, 0.3, 0.004)
+    sfx.birds.push(__chirps(3200.0, 4, 0.08))
+    sfx.birds.push(__chirps(2400.0, 3, 0.15))
+    sfx.birds.push(__chirps(4100.0, 6, 0.05))
+    # a crow: two or three harsh, nasal caws falling in pitch
+    cw: f32[]
+    loop k in [0..3):
+        c = mix([__voice(560.0 - f64(k) * 30.0, 470.0 - f64(k) * 30.0, 0.24, [v3(1250.0, 160.0, 1.0), v3(2300.0, 220.0, 0.6), v3(3400.0, 300.0, 0.3)], 0.55, 0.35, 0.3), __noise_burst(0.22, 0.4, 0.04, 0.02, 0.1)])
+        loop v in c.samples: cw.push(v)
+        loop q in [0..int(0.12 * f64(MIX_RATE)) * 2): cw.push(0.0)
+    sfx.caw = Sound(cw)
+    # a woodpecker: a quick roll of hollow knocks
+    pk: f32[]
+    knock = __modal([820.0, 1730.0], [0.012, 0.008], [0.6, 0.25], 0.035, 0.6)
+    loop k in [0..14):
+        loop v in knock.samples: pk.push(v * f32(1.0 - f64(k) * 0.04))
+        loop q in [0..int(0.028 * f64(MIX_RATE)) * 2): pk.push(0.0)
+    sfx.peck = Sound(pk)
+    # A short insect call with irregular chirplet spacing, glides and rests.
+    # Playback is one-shot with independent pitch/level/pan and multi-second gaps;
+    # all synthesis remains at load, including the prepared-asset path.
+    cr = fill(f32(0), int(2.1 * f64(MIX_RATE)) * 2)
+    starts = [0.0, 0.10, 0.23, 0.61, 0.75, 0.91, 1.46, 1.64]
+    loop j in [0..starts.len()):
+        dur = [0.055, 0.070, 0.045, 0.085][j % 4]
+        ph = 0.0
+        loop i in [0..int(dur * f64(MIX_RATE))):
+            t = f64(i) / f64(MIX_RATE)
+            f = 3650.0 + f64(j % 3) * 310.0 + 170.0 * sin(PI * t / dur)
+            ph += TAU * f / f64(MIX_RATE)
+            envelope = pow(sin(PI * t / dur), 2.0)
+            v = f32((sin(ph) + 0.18 * sin(ph * 1.43)) * envelope * (0.048 - f64(j % 4) * 0.005))
+            k = int(starts[j] * f64(MIX_RATE)) + i
+            cr[k * 2] = v
+            cr[k * 2 + 1] = v
+    sfx.crickets = Sound(cr)
+    sfx.boar_grunt = __wild_voice(0)
+    sfx.boar_alarm = __wild_voice(1)
+    sfx.boar_snort = __wild_voice(2)
+    sfx.fox_yip = __wild_voice(3)
+    sfx.bird_scatter = __wild_voice(4)
+    # Quiet, rounded calls occupy a different register from the forest songbirds.
+    sfx.owl = mix([tone(410.0, 0.45, .sine, 0.075, 0.08, 0.26, 0.88), __delayed(tone(350.0, 0.62, .sine, 0.065, 0.10, 0.36, 0.96), 0.62)])
+    sfx.water_birds = __voice(780.0, 580.0, 0.42, [v3(1350, 260, 1), v3(2500, 420, 0.35)], 0.12, 0.32, 0.12, 0.055)
+    sfx.frogs = mix([__voice(130.0, 96.0, 0.26, [v3(510, 110, 1), v3(1250, 230, 0.4)], 0.095, 0.20, 0.32, 0.045), __delayed(__voice(145.0, 110.0, 0.23, [v3(560, 130, 1), v3(1300, 250, 0.4)], 0.075, 0.24, 0.35, 0.035), 0.38)])
+    loop kind in [0..5):
+        voices: Sound[]
+        loop individual in [0..4): voices.push(__wild_voice(kind, f64(individual) / 3.0))
+        sfx.individuals.push(voices)
+    __sfx_variants_init()
+    __sfx_spatial_init()
+    sfx.ready = true
+
+# Existing gameplay callers keep their Sound handles. Before the mixer consumes new
+# voices, resolve those handles to non-repeating prebuilt takes. No sample work on frames.
+# This also lets the existing stone/wood dispatch choose real wood at the contact surface.
+struct SfxTakes:
+    sources: Sound[]
+    takes: Sound[]
+    last = -1
+    stone = false
+sfx_takes: SfxTakes[]
+__sfx_seen = 0
+__sfx_rng = rng(51051)           # variation must not change gameplay or score randomness
+__sfx_drawing = false
+__sfx_draw_voice = 0
+__sfx_rustle_t = 0.0
+
+# Gentle low-pass colour and a common peak ceiling, applied only during load.
+__sfx_shape = (s: Sound, lp: f64, gain: f64, ceiling: f64) -> Sound:
+    out = fill(f32(0), s.samples.len())
+    l = 0.0
+    r = 0.0
+    peak = 0.000001
+    loop i in [0..s.samples.len()/2):
+        l += (f64(s.samples[i * 2]) - l) * lp
+        r += (f64(s.samples[i * 2 + 1]) - r) * lp
+        out[i * 2] = f32(l * gain)
+        out[i * 2 + 1] = f32(r * gain)
+        peak = max(peak, max(abs(l * gain), abs(r * gain)))
+    if peak > ceiling:
+        loop mut v in out: v *= f32(ceiling / peak)
+    Sound(out)
+
+__sfx_foley = (name: str, fallback: Sound) -> Sound:
+    if let bytes = read_bytes("assets/audio/foley-{name}.wav"): return load_wav(bytes)
+    fallback
+
+__sfx_register = (sources: Sound[], takes: Sound[], stone: bool = false):
+    sfx_takes.push(SfxTakes(sources, takes, -1, stone))
+
+__sfx_variants_init = ():
+    # Isolate load-time sound design from world generation and the piano sequencer too.
+    saved = __global_rng
+    seed_random(51051)
+    loop surface in ["grass", "stone", "snow", "wood"]:
+        takes: Sound[]
+        loop k in [0..5):
+            fallback = if surface == "snow": sfx.step_snow[k] else: (if surface == "grass": sfx.step_grass[k] else: sfx.step_stone[k])
+            body = __thump(random(80.0, 140.0), random(45.0, 65.0), 0.12, (if surface == "snow": 0.035 else: 0.065))
+            if surface == "wood": body = __modal([random(170.0, 230.0), random(390.0, 520.0), 910.0], [0.065, 0.038, 0.018], [0.6, 0.28, 0.12], 0.22, 0.1)
+            take = mix([__sfx_foley("step-{surface}-{k}", fallback), __delayed(body, random(0.008, 0.018))])
+            takes.push(__sfx_shape(take, random(0.50, 0.85), 1.0, 0.45))
+        match surface:
+            "grass": __sfx_register(sfx.step_grass, takes)
+            "snow": __sfx_register(sfx.step_snow, takes)
+            "wood": sfx.step_wood = takes
+            _: __sfx_register(sfx.step_stone, takes, true)
+    loop kind in ["swing", "swing_heavy", "hit", "hit_big", "hit_wood", "block", "twang", "splash"]:
+        source = match kind:
+            "swing": sfx.swing
+            "swing_heavy": sfx.swing_heavy
+            "hit": sfx.hit
+            "hit_big": sfx.hit_big
+            "hit_wood": sfx.hit_wood
+            "block": sfx.block
+            "twang": sfx.twang
+            _: sfx.splash
+        takes: Sound[]
+        loop k in [0..5):
+            take = source
+            match kind:
+                "swing", "swing_heavy":
+                    heavy = kind == "swing_heavy"
+                    air = __swept((if heavy: 0.38 else: 0.24), random(650.0, 950.0), random(2400.0, 3400.0), 0.8, 0.18, 0.04, (if heavy: 0.12 else: 0.065))
+                    edge = __sfx_shape(__sfx_foley("swing-{k % 3}", source), 0.55, 0.65, 0.26)
+                    take = mix([air, edge])
+                "hit", "hit_big":
+                    big = kind == "hit_big"
+                    name = if big: "hit-big" else: "hit"
+                    body = __thump(random(90.0, 145.0), (if big: 38.0 else: 55.0), 0.22, (if big: 0.23 else: 0.14))
+                    steel = __modal([random(1050.0, 1400.0), random(2500.0, 3100.0)], [0.045, 0.025], [0.1, 0.05], 0.16, 0.20)
+                    take = mix([__sfx_foley("{name}-{k % 3}", source), __delayed(body, random(0.003, 0.01)), steel])
+                "hit_wood":
+                    take = mix([__sfx_foley("hit-wood-{k % 3}", source), __modal([random(180.0, 250.0), 465.0, 835.0], [0.08, 0.04, 0.025], [0.4, 0.2, 0.1], 0.25, 0.14)])
+                "block":
+                    take = mix([__sfx_foley("block-{k % 3}", source), __sfx_shape(__sfx_foley("hit-wood-{k % 3}", sfx.hit_wood), 0.35, 0.25, 0.15), __modal([random(610.0, 660.0), random(1510.0, 1580.0), 2490.0], [0.18, 0.12, 0.065], [0.28, 0.15, 0.07], 0.48, 0.20)])
+                "twang":
+                    take = mix([__modal([random(170.0, 190.0), 365.0, 730.0, 1135.0], [0.12, 0.08, 0.045, 0.025], [0.7, 0.3, 0.12, 0.06], 0.35, 0.35), __noise_burst(0.035, 0.45, 0.08, 0.001, 0.008), __sfx_shape(__sfx_foley("cloth-{k % 3}", sfx.cloth), 0.30, 0.18, 0.08)])
+                "splash":
+                    layers = [__swept(0.58, random(700.0, 1100.0), random(2700.0, 3800.0), 0.8, 0.22, 0.008, 0.13), __thump(88.0, 38.0, 0.20, 0.10)]
+                    loop j in [0..7):
+                        droplet = tone(random(550.0, 1700.0), 0.035, .sine, random(0.025, 0.055), 0.002, 0.022, random(0.50, 0.8))
+                        layers.push(__delayed(droplet, random(0.035, 0.40)))
+                    take = mix(layers)
+                _: pass
+            takes.push(__sfx_shape(take, random(0.52, 0.88), (if kind == "splash": 2.2 else: 1.0), (if kind == "hit_big": 0.66 else: 0.50)))
+        __sfx_register([source], takes)
+    # Other frequent handles also receive per-hit filter, pitch and gain variation.
+    loop source in [sfx.cloth, sfx.land, sfx.hurt, sfx.climb, sfx.arrow_hit, sfx.notice, sfx.grunt[0], sfx.grunt[1], sfx.grunt[2], sfx.parry, sfx.caw]:
+        takes: Sound[]
+        loop k in [0..4):
+            base = if data(source.samples) == data(sfx.cloth.samples): __sfx_foley("cloth-{k % 3}", source) else: source
+            creature = data(source.samples) == data(sfx.notice.samples)
+            loop g in sfx.grunt:
+                if data(source.samples) == data(g.samples): creature = true
+            if creature:
+                rising = data(source.samples) == data(sfx.notice.samples)
+                f = random(95.0, 165.0)
+                base = __voice(f, f * (if rising: random(1.3, 1.7) else: random(0.58, 0.85)), random(0.24, 0.43), [v3(random(450.0, 690.0), random(160.0, 250.0), 1.0), v3(random(950.0, 1800.0), 320.0, 0.45), v3(2500.0, 450.0, 0.10)], 0.78, random(1.8, 3.1), random(0.6, 0.85), random(0.012, 0.055))
+            if data(source.samples) == data(sfx.caw.samples):
+                # Re-articulate each caw; filtering a fixed three-caw sample alone
+                # left its internal rhythm recognisable on every encounter.
+                caws: Sound[]
+                at = 0.0
+                loop j in [0..(if k % 2 == 0: 2 else: 3)):
+                    f = random(510.0, 610.0) - f64(j) * 27.0
+                    length_ = random(0.19, 0.29)
+                    caw = __voice(f, f * random(0.79, 0.9), length_, [v3(random(1150.0, 1350.0), 160.0, 1.0), v3(2300.0, 220.0, 0.6), v3(3400.0, 300.0, 0.3)], 0.55, 0.35, 0.3, random(0.015, 0.035))
+                    caws.push(__delayed(caw, at))
+                    at += length_ + random(0.09, 0.21)
+                base = mix(caws)
+            takes.push(__sfx_shape(base, 0.35 + f64(k) * 0.15, 0.85, 0.48))
+        __sfx_register([source], takes)
+    sfx.rustle = __sfx_shape(mix([__swept(0.28, 3200.0, 1300.0, 1.0, 0.12, 0.035, 0.07), __delayed(__noise_burst(0.17, 0.30, 0.06, 0.02, 0.045, 0.6), 0.07)]), 0.8, 2.4, 0.25)
+    rustles: Sound[]
+    draws: Sound[]
+    loop k in [0..5):
+        rustles.push(__sfx_shape(sfx.rustle, random(0.4, 0.9), random(0.9, 1.1), 0.25))
+        draws.push(__sfx_shape(mix([__sfx_foley("bow-draw-{k % 3}", sfx.cloth), __sfx_shape(__sfx_foley("cloth-{k % 3}", sfx.cloth), 0.30, 0.18, 0.06)]), 0.40, 0.65, 0.19))
+    sfx.bow_draw = draws[0]
+    __sfx_register([sfx.rustle], rustles)
+    __sfx_register([sfx.bow_draw], draws)
+    # Four articulations for each stable animal identity. Different duration,
+    # attack and pitch contour, selected without consecutive sample repeats.
+    loop kind in [0..sfx.individuals.len()):
+        loop individual in [0..4):
+            takes: Sound[]
+            loop take in [0..4): takes.push(__wild_voice(kind, f64(individual) / 3.0, take))
+            aliases = [sfx.individuals[kind][individual]]
+            if individual == 2: aliases.push([sfx.boar_grunt, sfx.boar_alarm, sfx.boar_snort, sfx.fox_yip, sfx.bird_scatter][kind])
+            __sfx_register(aliases, takes)
+    __global_rng = saved
+
+# Resolve cue identity through variants and spatial filters, including direct play()
+# callers. This catches hits, parries, blocks, hurt and enemy attack warnings.
+sfx_priority_gain = 1.0
+sfx_priority_hold = 0.0
+__sfx_identity = (sound: Sound) -> Sound:
+    result = sound
+    loop colour in sfx_spatial:
+        if data(result.samples) == data(colour.far.samples) or data(result.samples) == data(colour.wall.samples):
+            result = colour.source
+            break
+    loop bank in sfx_takes:
+        loop take in bank.takes:
+            if data(result.samples) == data(take.samples): return bank.sources[0]
+    result
+
+__sfx_priority = (sound: Sound):
+    source = __sfx_identity(sound)
+    cue = false
+    loop handle in [sfx.hit, sfx.hit_big, sfx.parry, sfx.block, sfx.hurt, sfx.notice, sfx.windup_heavy, sfx.grunt[0], sfx.grunt[1], sfx.grunt[2]]:
+        if data(source.samples) == data(handle.samples): cue = true
+    foot = false
+    loop bank in [sfx.step_grass, sfx.step_stone, sfx.step_snow, sfx.step_wood]:
+        loop handle in bank:
+            if data(source.samples) == data(handle.samples): foot = true
+    if cue:
+        if seq.mood == .combat or seq.want == .combat: music_cue_duck()
+        sfx_priority_gain = min(sfx_priority_gain, 0.28)
+        sfx_priority_hold = max(sfx_priority_hold, 0.16)
+    else if foot:
+        sfx_priority_gain = min(sfx_priority_gain, 0.35)
+        sfx_priority_hold = max(sfx_priority_hold, 0.10)
+
+__sfx_variations_update = (dt: f64):
+    saved = __global_rng
+    __global_rng = __sfx_rng
+    drawing = fight.act == .aim
+    if drawing and not __sfx_drawing: __sfx_draw_voice = play(sfx.bow_draw, 0.45)
+    if not drawing and __sfx_drawing: stop(__sfx_draw_voice)
+    __sfx_drawing = drawing
+    __sfx_rustle_t = max(0.0, __sfx_rustle_t - dt)
+    # A light brush between footfalls; no sound while stationary or on bare surfaces.
+    if pl.state == .ground and pl.ground.surf == .grass and length(vec2(pl.vel.x, pl.vel.z)) > 1.0 and __sfx_rustle_t <= 0.0:
+        play(sfx.rustle, (if pl.sneaking: 0.12 else: 0.22), random(-0.12, 0.12))
+        __sfx_rustle_t = random(0.32, 0.52)
+    loop mut voice in __voices:
+        if voice.id <= __sfx_seen or voice.looping: continue
+        __sfx_priority(voice.sound)
+        source = __sfx_identity(voice.sound)
+        loop cue in [sfx.hit,sfx.hit_big,sfx.parry,sfx.block,sfx.hurt,sfx.notice,sfx.windup_heavy,sfx.grunt[0],sfx.grunt[1],sfx.grunt[2]]:
+            if data(source.samples) == data(cue.samples): voice.volume *= f32(1.258925412) # +2 dB cue gain; score gain/duck are staged separately
+        matched = false
+        loop mut bank in sfx_takes:
+            loop source in bank.sources:
+                if data(voice.sound.samples) != data(source.samples): continue
+                takes = if bank.stone and pl.ground.surf == .wood: sfx.step_wood else: bank.takes
+                k = random_int(0, (if bank.last < 0: takes.len() else: takes.len() - 1))
+                if bank.last >= 0 and k >= bank.last: k += 1
+                bank.last = k
+                voice.sound = takes[k]
+                voice.pitch *= random(0.965, 1.035)
+                voice.volume *= f32(random(0.94, 1.04))
+                matched = true
+                break
+            if matched: break
+    __sfx_seen = __voice_id
+    __sfx_rng = __global_rng
+    __global_rng = saved
+
+# The room a sound is heard in, set by the game: 0 in the open; a rock cave's close, quick
+# echoes; a shrine chamber's longer ones
+sfx_room = 0.0
+sfx_room_size = 1.0
+struct __Echo:
+    t: f64
+    s: Sound
+    v: f64
+    pan: f64
+    pitch: f64
+__echoes: __Echo[]
+__ECHO_TAPS = [0.061, 0.113, 0.187, 0.29, 0.43]
+__ECHO_GAINS = [0.3, 0.22, 0.16, 0.1, 0.06]
+
+sfx_play = (s: Sound, v: f64, pan: f64 = 0.0, pitch: f64 = 1.0) -> int:
+    id = play(s, v, pan, pitch)
+    if sfx_room > 0.05 and v > 0.02 and __echoes.len() < 40:
+        loop k in [0..__ECHO_TAPS.len()):
+            side = if k % 2 == 0: -0.4 else: 0.4
+            # (each tap a little off the last in time and pitch: a room, not a comb)
+            __echoes.push(__Echo(__ECHO_TAPS[k] * sfx_room_size * random(0.93, 1.07), s, v * __ECHO_GAINS[k] * sfx_room, clamp(pan * 0.5 + side, -0.8, 0.8), pitch * random(0.985, 1.0)))
+    id
+
+__echoes_update = (dt: f64):
+    i = 0
+    loop i < __echoes.len():
+        __echoes[i].t -= dt
+        e = __echoes[i]
+        if e.t <= 0.0:
+            play(e.s, e.v, e.pan, e.pitch)
+            __echoes.remove(i)
+        else: i += 1
+
+# Compact spatial colour banks: two-pole 3.5 kHz distance takes at 24 kHz and
+# 950 Hz wall takes at 12 kHz. Both retain stereo and duration via playback pitch.
+# Anti-alias filtering precedes decimation; no filtering or sample allocation per event.
+struct SpatialTake:
+    source: Sound
+    far: Sound
+    wall: Sound
+sfx_spatial: SpatialTake[]
+sfx_spatial_bytes = 0
+sfx_spatial_seconds = 0.0
+
+__sfx_low_take = (s: Sound, hz: f64, stride: int) -> Sound:
+    out = fill(f32(0), ((s.samples.len() / 2 + stride - 1) / stride) * 2)
+    a = 1.0 - exp(-TAU * hz / f64(MIX_RATE))
+    l = 0.0
+    r = 0.0
+    ll = 0.0
+    rr = 0.0
+    loop i in [0..s.samples.len() / 2):
+        l += (f64(s.samples[i * 2]) - l) * a
+        r += (f64(s.samples[i * 2 + 1]) - r) * a
+        ll += (l - ll) * a
+        rr += (r - rr) * a
+        if i % stride == 0:
+            out[(i / stride) * 2] = f32(ll)
+            out[(i / stride) * 2 + 1] = f32(rr)
+    Sound(out)
+
+__sfx_spatial_init = ():
+    start = time()
+    spatial = [sfx.notice, sfx.grunt[0], sfx.grunt[1], sfx.grunt[2], sfx.hit,
+        sfx.hit_big, sfx.parry, sfx.horn, sfx.hit_wood, sfx.poof, sfx.twang,
+        sfx.laser_lock, sfx.laser, sfx.explode, sfx.chest, sfx.splash, sfx.caw,
+        sfx.door, sfx.swing_heavy, sfx.rumble, sfx.fire, sfx.land, sfx.boar_grunt, sfx.boar_alarm, sfx.boar_snort, sfx.fox_yip, sfx.bird_scatter]
+    loop bank in sfx.individuals:
+        loop voice in bank: spatial.push(voice)
+    loop source in spatial:
+        takes = [source]
+        loop bank in sfx_takes:
+            loop alias in bank.sources:
+                if data(alias.samples) == data(source.samples): takes = bank.takes
+        loop take in takes:
+            far = __sfx_low_take(take, 3500.0, 2)
+            wall = __sfx_low_take(take, 950.0, 4)
+            sfx_spatial.push(SpatialTake(take, far, wall))
+            sfx_spatial_bytes += (far.samples.len() + wall.samples.len()) * 4
+    sfx_spatial_seconds = time() - start
+
+# Resolve before colour/echoes; ambient_update must not replace a filtered take later.
+__sfx_spatial_resolve = (s: Sound) -> Sound:
+    saved = __global_rng
+    __global_rng = __sfx_rng
+    result = s
+    loop mut bank in sfx_takes:
+        matched = false
+        loop alias in bank.sources:
+            if data(alias.samples) == data(s.samples): matched = true
+        if not matched: continue
+        k = random_int(0, (if bank.last < 0: bank.takes.len() else: bank.takes.len() - 1))
+        if bank.last >= 0 and k >= bank.last: k += 1
+        bank.last = k
+        result = bank.takes[k]
+        break
+    __sfx_rng = __global_rng
+    __global_rng = saved
+    result
+
+# 3D-ish: volume by distance, pan by direction relative to the camera
+sfx_at = (s: Sound, pos: vec3, cam: vec3, cam_right: vec3, vol: f64 = 1.0, pitch: f64 = 1.0, range: f64 = 40.0):
+    if not sfx.ready: return
+    d = f64(length(pos - cam))
+    if d > range: return
+    v = vol * clamp(1.0 - d / range, 0.0, 1.0) ^ 1.5
+    obstructed = false
+    if d > 2.0:
+        h = raycast(cam, pos - cam, d - 0.7, true, false)
+        obstructed = h.hit
+        if obstructed: v *= 0.22
+    take = __sfx_spatial_resolve(s)
+    rate = 1.0
+    loop colour in sfx_spatial:
+        if data(colour.source.samples) != data(take.samples): continue
+        if obstructed:
+            take = colour.wall
+            rate = 0.25
+        else if d > max(6.0, range * 0.25):
+            take = colour.far
+            rate = 0.5
+        break
+    pan = 0.0
+    if d > 0.5: pan = clamp(f64(dot(normalize(pos - cam), cam_right)) * 0.8, -0.8, 0.8)
+    sfx_play(take, v, pan, pitch * rate * (0.95 + __sfx_rng.next_float() * 0.10))
+
+# ambient beds: started once, volumes follow the weather, time and place
+struct Ambient:
+    wind_gust = 0
+    rain_gust = 0
+    wind_gust_t = 0.0
+    rain_gust_t = 0.8
+    wind_gust_previous = -1
+    rain_gust_previous = -1
+    gust_rng = rng(68051)
+    wind = 0
+    rain = 0
+    fire = 0
+    crickets = 0
+    cricket_t = 0.7
+    cricket_gain = 0.0
+    insect_rng = rng(87089)
+    water = 0
+    moan = 0
+    hum = 0
+    room = 0
+    bird_t = 3.0
+    owl_t = 11.0
+    pond_t = 2.0
+    pond_bird = false
+    age = 0.0
+    bird_last: f64[]
+    bird_previous = -1
+
+amb = Ambient()
+
+# 1 while the music rests: the world's own sounds come up to fill the silence (set by the game)
+amb_lift = 0.0
+amb_opening = false      # the cave-to-title wind carries the scene between footfalls
+__amb_k = 0.0
+
+# wind sounding through broken stone: noise rung through two hollow resonances, swelling and
+# falling slowly (a loop)
+__moan = (dur: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    sr = f64(MIX_RATE)
+    fs = [196.0, 293.0, 441.0]
+    y1 = fill(0.0, 3)
+    y2 = fill(0.0, 3)
+    loop i in [0..n):
+        t = f64(i) / sr
+        x = random(-1.0, 1.0)
+        v = 0.0
+        loop j in [0..3):
+            r = exp(-PI * 6.0 / sr)
+            a1 = -2.0 * r * cos(TAU * (fs[j] * (1.0 + 0.01 * sin(t * 0.7 + f64(j)))) / sr)
+            yy = (1.0 - r) * x - a1 * y1[j] - r * r * y2[j]
+            y2[j] = y1[j]
+            y1[j] = yy
+            v += yy * [1.0, 0.6, 0.3][j]
+        sw = 0.5 - 0.5 * cos(TAU * t / dur)
+        s = f32(v * (0.25 + 0.75 * sw * sw) * 0.1)
+        out[i * 2] = s
+        out[i * 2 + 1] = s
+    Sound(out)
+
+# inside the shrines: the low hum of something ancient still running, a faint high shimmer
+__hum = (dur: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    sr = f64(MIX_RATE)
+    loop i in [0..n):
+        t = f64(i) / sr
+        # (whole cycles over the loop so it joins without a click)
+        v = sin(TAU * 55.0 * t) * 0.5 + sin(TAU * 110.0 * t + sin(TAU * t / dur) * 2.0) * 0.3 + sin(TAU * 165.0 * t) * 0.12
+        v += sin(TAU * 1760.0 * t) * 0.025 * (0.5 + 0.5 * sin(TAU * 2.0 * t / dur))
+        s = f32(v * 0.05)
+        out[i * 2] = s
+        out[i * 2 + 1] = s * f32(0.96)
+    Sound(out)
+
+# where the player is, for the ambience: 0 the open fields, 1 the forest (sheltered, full of
+# birds, a woodpecker), 2 the snow (a hard wind, no birds), 3 the ruins (wind in the stones)
+amb_biome = 0
+__amb_snow = 0.0
+__amb_forest = 0.0
+__amb_ruins = 0.0
+shrine_hum = 0.0          # set by the game: in a shrine's chambers (not the Shrine of Resurrection's passage)
+__peck_t = 5.0
+
+__amb_cover = 0.0
+__amb_gust = 0.0
+
+# Prebuilt non-looping turbulent air: each take has a different attack, shoulder,
+# release and two-pole filter sweep. Both ends reach zero without a loop seam.
+__gust_take = (dur: f64, rise: f64, lp0: f64, lp1: f64, vol: f64, take: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    low = 0.0
+    low2 = 0.0
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        k = t / dur
+        sw = smoothstep(0.0, 0.9, k)
+        lp = lerp(lp0, lp1, sw) * (1.0 + 0.12 * sin(k * TAU * (1.2 + take * 0.23)))
+        low += (random(-1.0, 1.0) - low) * lp
+        low2 += (low - low2) * lp
+        envelope = smoothstep(0.0, rise, k) * (1.0 - smoothstep(0.57 + take * 0.025, 1.0, k))
+        shoulder = 0.68 + 0.32 * sin(k * PI * (1.15 + take * 0.19) + take * 0.6) ^ 2.0
+        out[i * 2] = f32(low2 * vol * envelope * shoulder)
+        out[i * 2 + 1] = f32(lerp(low2, low, 0.35) * vol * envelope * shoulder * 0.9)
+    Sound(out)
+
+# Independent bounded renewal clocks, with no consecutive take repeats. Pauses,
+# playback rate and pan vary per event; wind and rain never share a clock.
+__ambient_gusts = (dt: f64):
+    amb.wind_gust_t -= dt
+    amb.rain_gust_t -= dt
+    loop rain in [false, true]:
+        timer = if rain: amb.rain_gust_t else: amb.wind_gust_t
+        if timer > 0.0: continue
+        bank = if rain: sfx.rain_gust_takes else: sfx.wind_gust_takes
+        previous = if rain: amb.rain_gust_previous else: amb.wind_gust_previous
+        pick = int(amb.gust_rng.next_float() * f64(bank.len() - 1))
+        if pick >= previous: pick += 1
+        if previous < 0: pick = int(amb.gust_rng.next_float() * f64(bank.len()))
+        rate = 0.88 + amb.gust_rng.next_float() * 0.24
+        pan = -0.38 + amb.gust_rng.next_float() * 0.76
+        id = play(bank[pick], 0.0, pan, rate)
+        next = duration(bank[pick]) / rate + 2.3 + amb.gust_rng.next_float() * 9.5
+        if rain:
+            amb.rain_gust = id
+            amb.rain_gust_previous = pick
+            amb.rain_gust_t = next
+        else:
+            amb.wind_gust = id
+            amb.wind_gust_previous = pick
+            amb.wind_gust_t = next
+
+ambient_update = (dt: f64, indoor: f64, altitude: f64, fire_close: f64, water_close: f64 = 0.0, covered: bool = false):
+    if not sfx.ready: return
+    amb.age += dt
+    sfx_priority_hold = max(0.0, sfx_priority_hold - dt)
+    if sfx_priority_hold <= 0.0: sfx_priority_gain = min(1.0, sfx_priority_gain + dt / 0.22)
+    __sfx_variations_update(dt)
+    if amb.wind == 0:
+        amb.wind = play(sfx.wind, 0.0, 0.0, 1.0, true)
+        amb.rain = play(sfx.rain, 0.0, 0.0, 1.0, true)
+        amb.fire = play(sfx.fire, 0.0, 0.0, 1.0, true)
+        amb.water = play(sfx.water, 0.0, 0.0, 1.0, true)
+        amb.moan = play(sfx.moan, 0.0, 0.0, 1.0, true)
+        amb.hum = play(sfx.hum, 0.0, 0.0, 1.0, true)
+        # Slowed filtered air provides room tone beneath the tonal machinery;
+        # reuse the prepared wind bank without changing the audio asset schema.
+        amb.room = play(sfx.wind, 0.0, 0.0, 0.70, true)
+    __echoes_update(dt)
+    __amb_k = approach(__amb_k, amb_lift, 0.3, dt)
+    __amb_cover = approach(__amb_cover, (if covered: 1.0 else: 0.0), 2.5, dt)
+    # Footstep priority otherwise drops the wind on every stride, audibly
+    # pumping the opening's sustained breeze. Keep its bed under the title's
+    # music duck; ordinary gameplay retains the existing cue/footstep priority.
+    weather_out = (1.0 - __amb_cover * 0.78) * (if amb_opening: 1.0 else: sfx_priority_gain)
+    # Up to 3 dB of room for piano attacks, recovering slowly into the long rests.
+    music_space = 1.0 - 0.292 * music_activity * clamp(music_vol, 0.0, 1.0)
+    # (the broadband beds, rain and wind, give the piano twice the room: at 3 dB the rain still
+    # covered three in four of its notes)
+    weather_out = weather_out * (1.0 - 0.29 * music_activity * clamp(music_vol, 0.0, 1.0))
+    out = (1.0 - indoor) * (0.75 + 0.45 * __amb_k) * music_space
+    __amb_snow = approach(__amb_snow, (if amb_biome == 2: 1.0 else: 0.0), 0.25, dt)
+    __amb_forest = approach(__amb_forest, (if amb_biome == 1: 1.0 else: 0.0), 0.25, dt)
+    # Match visual weather gusts; ease the gain to avoid zipper noise.
+    __amb_gust = approach(__amb_gust, clamp((env.gust - 0.6) / 2.9, 0.0, 1.0), 0.8, dt)
+    gust = 0.65 + 0.35 * __amb_gust
+    __ambient_gusts(dt)
+    set_pitch(amb.wind, 0.99 + 0.06 * sin(amb.age * 0.051 + 0.4 * sin(amb.age * 0.089)))
+    set_volume(amb.wind_gust, __amb_gust * (0.24 + 0.16 * clamp((altitude - 230.0) / 180.0, 0.0, 1.0)) * (1.0 - __amb_forest * 0.6) * out * weather_out)
+    set_volume(amb.rain_gust, env.rain * __amb_gust * 0.35 * out * weather_out)
+    set_volume(amb.wind, ((0.25 + clamp((altitude - 200.0) / 200.0, 0.0, 0.5) + env.clouds * 0.2) * (1.0 - __amb_forest * 0.55) + __amb_snow * 0.55 * gust) * out * weather_out)
+    set_volume(amb.rain, env.rain * 0.7 * out * weather_out)
+    set_volume(amb.fire, fire_close * sfx_priority_gain)
+    insect_level = env.night * (1.0 - env.rain) * 0.6 * out
+    amb.cricket_t -= dt
+    if amb.cricket_t <= 0.0 and insect_level > 0.01:
+        pitch = (0.84 + amb.insect_rng.next_float() * 0.33)
+        amb.cricket_gain = (0.65 + amb.insect_rng.next_float() * 0.45)
+        amb.crickets = play(sfx.crickets, insect_level * amb.cricket_gain, (-0.75 + amb.insect_rng.next_float() * 1.5), pitch)
+        amb.cricket_t = duration(sfx.crickets) / pitch + (0.8 + amb.insect_rng.next_float() * 2.6)
+    set_volume(amb.crickets, insect_level * amb.cricket_gain)
+    set_volume(amb.water, water_close * out)
+    # (in the ruins the wind sounds through the stones; underground, the shrine's hum)
+    __amb_ruins = approach(__amb_ruins, (if amb_biome == 3: 1.0 else: 0.0), 0.25, dt)
+    set_volume(amb.moan, __amb_ruins * (0.5 + env.clouds * 0.3) * out)
+    set_volume(amb.hum, indoor * shrine_hum * (if shrine_hum >= 0.25: 6.309573445 else: 1.0) * music_space)
+    # Shrine hum +16 dB: ~-29 LUFS alone at the production chamber control.
+    # Continuous indoor bed: no footstep duck/pumping. The 0.35 shrine control
+    # scales it with the hum (+2.5 dB room lift); the Resurrection cave's 0.12 remains quieter.
+    set_volume(amb.room, indoor * shrine_hum * 0.933465003 * music_space)
+    # Quiet calls share the piano duck and outdoors fade. Snow has occasional distant
+    # chirps, never a dense woodland chorus; heavy rain suppresses incidental calls.
+    amb.bird_t -= dt
+    if amb.bird_t <= 0.0:
+        amb.bird_t = random(4.5, 11.0) * (1.0 - 0.45 * __amb_forest) * (1.0 + __amb_snow * 4.0)
+        if env.night < 0.3 and env.rain < 0.3 and indoor < 0.5:
+            if amb.bird_last.len() != sfx.birds.len(): amb.bird_last = fill(-100.0, sfx.birds.len())
+            eligible: int[]
+            loop bank in [0..(if __amb_forest > 0.5: 2 else: sfx.birds.len())):
+                if bank != amb.bird_previous and amb.age - amb.bird_last[bank] >= 20.0: eligible.push(bank)
+            if eligible.len() > 0:
+                bank = eligible[random_int(0, eligible.len())]
+                amb.bird_last[bank] = amb.age
+                amb.bird_previous = bank
+                play(sfx.birds[bank], random(0.10, 0.23) * out * (1.0 - __amb_snow * 0.80), random(-0.7, 0.7), random(0.94, 1.08))
+            else: amb.bird_t = 1.0
+    amb.owl_t -= dt
+    if amb.owl_t <= 0.0:
+        amb.owl_t = random(19.0, 37.0)
+        if __amb_forest > 0.5 and env.night > 0.7 and env.rain < 0.4 and indoor < 0.5:
+            play(sfx.owl, 0.20 * out, random(-0.75, 0.75), random(0.96, 1.04))
+    amb.pond_t -= dt
+    if amb.pond_t <= 0.0:
+        amb.pond_t = random(5.0, 10.0)
+        pond = 1.0 - smoothstep(60.0, 105.0, f64(length(vec2(pl.pos.x + 1230.0, pl.pos.z - 1650.0))))
+        dusk = smoothstep(16.8, 18.0, env.hour) * (1.0 - smoothstep(19.6, 21.0, env.hour))
+        if pond * dusk > 0.05 and env.rain < 0.5 and indoor < 0.5:
+            play((if amb.pond_bird: sfx.water_birds else: sfx.frogs), 0.23 * pond * dusk * out, random(-0.65, 0.65), random(0.94, 1.06))
+            amb.pond_bird = not amb.pond_bird
+    # a woodpecker somewhere in the trees
+    __peck_t -= dt
+    if __peck_t <= 0.0:
+        __peck_t = random(9.0, 20.0)
+        if __amb_forest > 0.5 and env.night < 0.3 and env.rain < 0.3: play(sfx.peck, random(0.12, 0.22) * out, random(-0.8, 0.8), random(0.95, 1.05))
+
+# Explicit banks keep source handles and variant aliases shared after loading.
+sfx_asset = () -> AudioAsset:
+    groups: Sound[][] = [
+        sfx.step_grass,
+        sfx.step_stone,
+        sfx.step_snow,
+        [sfx.swing],
+        [sfx.swing_heavy],
+        [sfx.windup_heavy],
+        [sfx.hit],
+        [sfx.hit_big],
+        [sfx.hit_wood],
+        [sfx.block],
+        [sfx.parry],
+        sfx.grunt,
+        [sfx.notice],
+        [sfx.horn],
+        [sfx.poof],
+        [sfx.splash],
+        [sfx.cloth],
+        [sfx.land],
+        [sfx.explode],
+        [sfx.laser_lock],
+        [sfx.laser],
+        [sfx.thunder],
+        [sfx.twang],
+        [sfx.arrow_hit],
+        [sfx.chest],
+        [sfx.door],
+        [sfx.rumble],
+        [sfx.hurt],
+        [sfx.eat],
+        [sfx.moan],
+        [sfx.hum],
+        [sfx.wind],
+        [sfx.rain],
+        sfx.wind_gust_takes,
+        sfx.rain_gust_takes,
+        [sfx.fire],
+        sfx.birds,
+        [sfx.caw],
+        [sfx.peck],
+        [sfx.crickets],
+        [sfx.climb],
+        [sfx.water],
+        sfx.step_wood,
+        [sfx.rustle],
+        [sfx.bow_draw],
+        [sfx.wake_air],
+        [sfx.boar_grunt], [sfx.boar_alarm], [sfx.boar_snort], [sfx.fox_yip], [sfx.bird_scatter], [sfx.owl], [sfx.water_birds], [sfx.frogs]]
+    loop bank in sfx.individuals: groups.push(bank)
+    flags = [sfx_takes.len(), sfx_spatial.len()]
+    loop bank in sfx_takes:
+        groups.push(bank.sources)
+        groups.push(bank.takes)
+        flags.push(if bank.stone: 1 else: 0)
+    loop take in sfx_spatial: groups.push([take.source, take.far, take.wall])
+    AudioAsset(groups, flags)
+
+sfx_asset_load = () -> bool:
+    maybe = audio_asset_read("assets/prepared/sfx.bin", audio_asset_key(["game/sfx.jo"]))
+    if maybe == none: return false
+    asset = maybe!
+    if asset.flags.len() < 2: return false
+    banks = asset.flags[0]
+    spatial = asset.flags[1]
+    if banks < 0 or banks > 256 or spatial < 0 or spatial > 1024 or asset.flags.len() != 2 + banks or asset.groups.len() != 59 + banks * 2 + spatial: return false
+    base = Sfx()
+    base.step_grass = asset.groups[0]
+    base.step_stone = asset.groups[1]
+    base.step_snow = asset.groups[2]
+    if asset.groups[3].len() != 1: return false
+    base.swing = asset.groups[3][0]
+    if asset.groups[4].len() != 1: return false
+    base.swing_heavy = asset.groups[4][0]
+    if asset.groups[5].len() != 1: return false
+    base.windup_heavy = asset.groups[5][0]
+    if asset.groups[6].len() != 1: return false
+    base.hit = asset.groups[6][0]
+    if asset.groups[7].len() != 1: return false
+    base.hit_big = asset.groups[7][0]
+    if asset.groups[8].len() != 1: return false
+    base.hit_wood = asset.groups[8][0]
+    if asset.groups[9].len() != 1: return false
+    base.block = asset.groups[9][0]
+    if asset.groups[10].len() != 1: return false
+    base.parry = asset.groups[10][0]
+    base.grunt = asset.groups[11]
+    if asset.groups[12].len() != 1: return false
+    base.notice = asset.groups[12][0]
+    if asset.groups[13].len() != 1: return false
+    base.horn = asset.groups[13][0]
+    if asset.groups[14].len() != 1: return false
+    base.poof = asset.groups[14][0]
+    if asset.groups[15].len() != 1: return false
+    base.splash = asset.groups[15][0]
+    if asset.groups[16].len() != 1: return false
+    base.cloth = asset.groups[16][0]
+    if asset.groups[17].len() != 1: return false
+    base.land = asset.groups[17][0]
+    if asset.groups[18].len() != 1: return false
+    base.explode = asset.groups[18][0]
+    if asset.groups[19].len() != 1: return false
+    base.laser_lock = asset.groups[19][0]
+    if asset.groups[20].len() != 1: return false
+    base.laser = asset.groups[20][0]
+    if asset.groups[21].len() != 1: return false
+    base.thunder = asset.groups[21][0]
+    if asset.groups[22].len() != 1: return false
+    base.twang = asset.groups[22][0]
+    if asset.groups[23].len() != 1: return false
+    base.arrow_hit = asset.groups[23][0]
+    if asset.groups[24].len() != 1: return false
+    base.chest = asset.groups[24][0]
+    if asset.groups[25].len() != 1: return false
+    base.door = asset.groups[25][0]
+    if asset.groups[26].len() != 1: return false
+    base.rumble = asset.groups[26][0]
+    if asset.groups[27].len() != 1: return false
+    base.hurt = asset.groups[27][0]
+    if asset.groups[28].len() != 1: return false
+    base.eat = asset.groups[28][0]
+    if asset.groups[29].len() != 1: return false
+    base.moan = asset.groups[29][0]
+    if asset.groups[30].len() != 1: return false
+    base.hum = asset.groups[30][0]
+    if asset.groups[31].len() != 1: return false
+    base.wind = asset.groups[31][0]
+    if asset.groups[32].len() != 1: return false
+    base.rain = asset.groups[32][0]
+    if asset.groups[33].len() != 4: return false
+    base.wind_gust = asset.groups[33][0]
+    base.wind_gust_takes = asset.groups[33]
+    if asset.groups[34].len() != 4: return false
+    base.rain_gust = asset.groups[34][0]
+    base.rain_gust_takes = asset.groups[34]
+    if asset.groups[35].len() != 1: return false
+    base.fire = asset.groups[35][0]
+    base.birds = asset.groups[36]
+    if asset.groups[37].len() != 1: return false
+    base.caw = asset.groups[37][0]
+    if asset.groups[38].len() != 1: return false
+    base.peck = asset.groups[38][0]
+    if asset.groups[39].len() != 1: return false
+    base.crickets = asset.groups[39][0]
+    if asset.groups[40].len() != 1: return false
+    base.climb = asset.groups[40][0]
+    if asset.groups[41].len() != 1: return false
+    base.water = asset.groups[41][0]
+    base.step_wood = asset.groups[42]
+    if asset.groups[43].len() != 1: return false
+    base.rustle = asset.groups[43][0]
+    if asset.groups[44].len() != 1: return false
+    base.bow_draw = asset.groups[44][0]
+    if asset.groups[45].len() != 1: return false
+    base.wake_air = asset.groups[45][0]
+    if asset.groups[46].len() != 1 or asset.groups[47].len() != 1 or asset.groups[48].len() != 1 or asset.groups[49].len() != 1 or asset.groups[50].len() != 1: return false
+    base.boar_grunt = asset.groups[46][0]
+    base.boar_alarm = asset.groups[47][0]
+    base.boar_snort = asset.groups[48][0]
+    base.fox_yip = asset.groups[49][0]
+    base.bird_scatter = asset.groups[50][0]
+    loop index in [51..54):
+        if asset.groups[index].len() != 1: return false
+    base.owl = asset.groups[51][0]
+    base.water_birds = asset.groups[52][0]
+    base.frogs = asset.groups[53][0]
+    loop index in [54..59):
+        if asset.groups[index].len() != 4: return false
+        base.individuals.push(asset.groups[index])
+    if base.grunt.len() < 3 or base.step_grass.len() < 5 or base.step_stone.len() < 5 or base.step_snow.len() < 5 or base.step_wood.len() < 5 or base.birds.len() < 3: return false
+    takes: SfxTakes[]
+    filters: SpatialTake[]
+    payload = 0
+    loop i in [0..banks):
+        sources = asset.groups[59 + i * 2]
+        variants = asset.groups[59 + i * 2 + 1]
+        if sources.len() == 0 or variants.len() < 2: return false
+        takes.push(SfxTakes(sources, variants, -1, asset.flags[i + 2] != 0))
+    loop i in [0..spatial):
+        g = asset.groups[59 + banks * 2 + i]
+        if g.len() != 3: return false
+        filters.push(SpatialTake(g[0], g[1], g[2]))
+        payload += (g[1].samples.len() + g[2].samples.len()) * 4
+    sfx = base
+    sfx_takes = takes
+    sfx_spatial = filters
+    sfx_spatial_bytes = payload
+    sfx_spatial_seconds = 0.0
+    sfx.ready = true
+    true

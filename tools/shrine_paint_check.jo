@@ -1,0 +1,32 @@
+# Validate the baked wall surface rather than only the pigment helper.
+use '../game/shrines.jo'
+use '../game/build.jo'
+use '../game/physics.jo'
+from '../game/build.jo' import __named_b
+from '../game/shrines.jo' import __wall_bays, __wall_courses
+check = ():
+    loop id in [0..4):
+        name = "paint_{id}"
+        count = colliders.len()
+        begin_named(name)
+        __wall_bays(mat4(),id,7.2,7.0)
+        __wall_courses(translation(vec3(0,0,-0.015)),id,7.2,7.0)
+        end_named()
+        b = __named_b[name]
+        assert(colliders.len() == count,"wall paint adds no collision")
+        varied = 0
+        faces = 0
+        loop i in [0..b.idx.len()/3):
+            a = b.verts[int(b.idx[i*3])]
+            c = b.verts[int(b.idx[i*3+1])]
+            d = b.verts[int(b.idx[i*3+2])]
+            assert(length(cross(c.pos-a.pos,d.pos-a.pos)) > 0.0000001,"paint must not introduce degenerate/sliver triangles")
+            assert(a.mat.z == 0.0 and a.mat == PLAIN,"paint keeps emission and material/draw grouping unchanged")
+            assert(a.color.w == 1.0 or a.color.w == 0.6,"paint preserves opacity and underside shade")
+            if a.normal.z > 0.99:
+                faces += 1
+                if length(a.color.xyz-c.color.xyz) > 0.001 or length(a.color.xyz-d.color.xyz) > 0.001: varied += 1
+        assert(varied > 200 and varied*2 > faces,"walls need interpolated intra-panel pigment, not only flat tile colours")
+        assert(b.verts.len() < 18000,"paint stays within a bounded static mesh budget")
+        print("PASS shrine {id}: {varied}/{faces} front triangles carry painted variation; {b.verts.len()} vertices; no new collider, material or emission")
+check()

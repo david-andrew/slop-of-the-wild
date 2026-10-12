@@ -1,0 +1,54 @@
+# Focused regressions for blockers discovered by the real-terrain journey.
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/env.jo'
+
+main = ():
+    hf.n = 256
+    hf.cell = 2.0
+    hf.x0 = -256.0
+    hf.z0 = -256.0
+    hf.h = fill(f32(100), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    loop z in [0..hf.n):
+        loop x in [0..hf.n):
+            wx = hf.x0 + f64(x) * 2.0
+            wz = hf.z0 + f64(z) * 2.0
+            if wx > 30.0 and wx < 70.0 and wz < -40.0 and wz > -120.0:
+                hf.h[z * hf.n + x] = f32(100.0 + (-40.0 - wz) * 1.11)
+            if wx > 80.0 and wx < 140.0 and wz < -40.0 and wz > -120.0:
+                hf.h[z * hf.n + x] = f32(100.0 + (-40.0 - wz) * 1.28)
+    cam_yaw_global = 0.0
+    pl = Player(pos = vec3(110, 100, -36), last_safe = vec3(110, 100, -36))
+    act = Actions(move = vec2(0, 1))
+    loop k in [0..180): player_update(1.0 / 60.0)
+    assert(pl.state == .climb)
+    y = pl.pos.y
+    act = Actions()
+    loop k in [0..120): player_update(1.0 / 60.0)
+    assert(abs(f64(pl.pos.y - y)) < 0.001, "stationary slope climb must not drift upward")
+    act = Actions(move = vec2(0, -1))
+    loop k in [0..120): player_update(1.0 / 60.0)
+    assert(pl.pos.y < y - 0.5, "held-down must descend a sloped face")
+    print("PASS terrain climb: idle drift <1 mm; held-down descent {f64(y - pl.pos.y):.3} m / 2 s")
+    pl = Player(pos = vec3(50, 100, -36), last_safe = vec3(50, 100, -36))
+    act = Actions(move = vec2(0, 1))
+    loop k in [0..180): player_update(1.0 / 60.0)
+    assert(pl.state == .climb, "48-degree terrain must climb instead of trapping uphill input in a slide")
+    print("PASS terrain climb: 48-degree slide band accepts held-up climb")
+    add_box(vec3(0, 100, 0), vec3(3, 10, 0.1), 0.0, true, .stone)
+    pl = Player(pos = vec3(0, 110, 1.2), state = .air, face = PI, vel = vec3(0, -5, 0), st_t = 0.3, air_peak = 110.0)
+    act = Actions(move = vec2(0, 1))
+    player_update(1.0 / 60.0)
+    assert(pl.state == .climb, "held stick catches wall while facing is still turning")
+    print("PASS falling wall catch: 1.1 m reach, opposite initial facing")
+    pl = Player(pos = vec3(30, 160, 30), state = .air, air_peak = 160.0)
+    act = Actions()
+    loop k in [0..300):
+        player_update(1.0 / 60.0)
+        if pl.hp <= 0: break
+    assert(pl.hp == 0 and pl.state == .dead, "lethal fall must retain dead state")
+    print("PASS lethal landing: HP 0, dead state retained")

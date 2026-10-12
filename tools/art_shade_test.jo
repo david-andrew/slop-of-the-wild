@@ -1,0 +1,15 @@
+use '../game/gfx.jo'
+use '../game/shade.jo'
+# The foliage penumbra compresses contrast without changing the middle value or
+# leaving an exposure seam at the near cascade boundary. No graphics context.
+loop cover in [0.0,0.4,0.6,0.85,1.0]:
+    sp=vec4(0,0,0,f32(1.0+cover))
+    dark=painted_near_shadow(0.0,sp)
+    light=painted_near_shadow(1.0,sp)
+    assert(abs(dark+light-1.0)<0.00001,"balanced shadow/light endpoints")
+    assert(painted_near_shadow(0.5,sp)==0.5,"painted middle value preserved")
+    assert(dark>=0.0 and dark<=0.101 and light>=0.899,"bounded contrast compression")
+    if cover>=0.85: assert(dark==0.0 and light==1.0,"overcast lighting unchanged")
+    edge=vec4(f32(0.99*(1.0+cover)),0,0,f32(1.0+cover))
+    assert(painted_near_shadow(0.0,edge)==0.0 and painted_near_shadow(1.0,edge)==1.0,"no near cascade exposure seam")
+print("PASS painted shade: balanced values, preserved middle, bounded contrast, overcast and cascade continuity")

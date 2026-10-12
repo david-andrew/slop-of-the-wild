@@ -1,0 +1,1395 @@
+build:
+    output = "plateau"
+    opt = release
+
+use 'audio_cache.jo'
+use 'gfx.jo'
+use 'shader_load.jo'
+from 'shadows.jo' import shadow_frame
+use 'cputime.jo'
+use 'gputime.jo'
+use 'gpuqueue.jo'
+use 'frametime.jo'
+use 'shade.jo'
+use 'env.jo'
+use 'post.jo'
+use 'terrain.jo'
+use 'worldgen.jo'
+use 'water.jo'
+use 'water_render.jo'
+use 'grass.jo'
+use 'build.jo'
+use 'structures.jo'
+use 'interiors.jo'
+use 'farland.jo'
+use 'scene.jo'
+use 'render.jo'
+use 'physics.jo'
+use 'input.jo'
+use 'player.jo'
+use 'camera.jo'
+use 'vegetation.jo'
+use 'items.jo'
+use 'interact.jo'
+use 'ui.jo'
+use 'story.jo'
+use 'music.jo'
+use 'skel.jo'
+use 'charshade.jo'
+use 'chars.jo'
+use 'combat.jo'
+use 'enemies.jo'
+use 'enemy_camp.jo'
+use 'elements.jo'
+use 'element_puzzles.jo'
+use 'fx.jo'
+use 'sfx.jo'
+use 'shrines.jo'
+use 'wildlife.jo'
+use 'inventory.jo'
+use 'cooking.jo'
+use 'slate_map.jo'
+use 'options.jo'
+use 'trail.jo'
+use 'save.jo'
+use 'architecture_assets.jo'
+use 'terrain_assets.jo'
+
+# ---------------- loading ----------------
+t0 = time()
+# (BOTW_LOADTIME=1: how long each part of the load takes)
+__lt = time()
+__lap = (name: str):
+    if env("BOTW_LOADTIME") != none: eprint("  {name} {time() - __lt:.2}s")
+    __lt = time()
+worldgen_load()
+__lap("worldgen_load")
+structures_pads()
+__lap("structures_pads")
+sor_pads()
+__lap("sor_pads")
+worldgen_finish()
+__lap("worldgen_finish")
+terrain_asset_load()
+__lap("terrain_read")
+window("The Legend of Jo: Slop of the Wild", 1280, 720)
+terrain_upload()
+__lap("terrain_upload")
+water_build()
+__lap("water_build")
+grass_init()
+__lap("grass_init")
+farland_build()
+__lap("farland_build")
+if not architecture_load():
+    farland_castle_prepare()
+    sor_interior()
+    __lap("sor_interior")
+    structures_build()
+__lap("structures_build")
+# Queue the static uploads now; CPU placement/audio and later uploads run while
+# the driver consumes them. The existing warmup fence still guarantees readiness.
+glFlush()
+vegetation_init()
+__lap("vegetation_init")
+items_init()
+__lap("items_init")
+chars_init()
+__lap("chars_init")
+wildlife_init()
+__lap("wildlife_init")
+critters_init()
+__lap("critters_init")
+monsters_init()
+__lap("monsters_init")
+fx_init()
+trail_init()
+__lap("fx_init")
+enemies_place()
+__lap("enemies_place")
+elements_place()
+__lap("elements_place")
+sfx_init()
+audio_cache_init()
+# (the ambient loops started here, silent, not on the first frame: starting them all takes a while)
+ambient_update(0.0, 1.0, 0.0, 0.0, 0.0)
+__lap("sfx_init")
+options_load()
+__lap("options_load")
+piano_init()
+__lap("piano_init")
+# monsters by a campfire sit around it (and dance now and then)
+loop mut e in enemies:
+    loop b in bonfires:
+        dist = f64(length(e.pos - b.pos))
+        if (e.kind == .bokoblin or e.kind == .blue_bokoblin) and not e.lookout and not e.archer and e.camp < 0 and dist < 23.0:
+            # (ones standing off a way come in round the fire)
+            if dist > 9.0:
+                dv = e.pos - b.pos
+                q = b.pos + normalize(vec3(dv.x, 0, dv.z)) * f32(random(4.0, 5.5))
+                if use_terrain: q.y = f32(height_at(f64(q.x), f64(q.z)))
+                e.pos = q
+                e.home = q
+            e.camp = 1
+            # (never left standing inside a tent: step out round the fire until clear of it)
+            tries = 0
+            loop tries < 12:
+                inside = false
+                loop tp in camp_tents:
+                    if hypot(f64(tp.x - e.pos.x), f64(tp.z - e.pos.z)) < 3.3: inside = true
+                if not inside: break
+                ov = e.pos - b.pos
+                an = atan2(f64(ov.z), f64(ov.x)) + 0.6
+                rr = max(f64(length(vec3(ov.x, 0, ov.z))), 4.0)
+                q = b.pos + v3(cos(an) * rr, 0.0, sin(an) * rr)
+                if use_terrain: q.y = f32(height_at(f64(q.x), f64(q.z)))
+                e.pos = q
+                e.home = q
+                tries += 1
+            d = b.pos - e.pos
+            e.face = yaw_of(vec3(d.x, 0, d.z))
+            # (the grass trampled where it sits and sleeps)
+            if use_terrain: burn_mark(f64(e.pos.x), f64(e.pos.z), 2.2, 1, 1.8)
+# (nobody placed inside a tent: out to its side, archers too, on the ground)
+loop mut e in enemies:
+    if e.lookout or e.kind == .keese: continue
+    loop tp in camp_tents:
+        dv = vec3(e.pos.x - tp.x, 0, e.pos.z - tp.z)
+        if f64(length(dv)) < 4.2:
+            q = tp + normalize(dv + vec3(0.01, 0, 0)) * 4.3
+            q.y = f32(height_at(f64(q.x), f64(q.z)))
+            e.pos = q
+            e.home = q
+enemy_camp_roles()
+__lap("load_assets")
+
+# items where the original has them (on the plateau's top)
+on_plateau = (p: vec3) -> bool: in_bounds(f64(p.x), f64(p.z)) and edge_at(f64(p.x), f64(p.z)) < -3.0
+place_items = ():
+    map_: {str: str} = {"Weapon_Sword_044": "branch", "Weapon_Sword_043": "torch", "Weapon_Lsword_032": "axe",
+        "Weapon_Sword_004": "boko_club", "Weapon_Sword_021": "rusty_broadsword", "Weapon_Sword_002": "soldiers_broadsword",
+        "Weapon_Spear_004": "boko_spear", "Weapon_Shield_040": "pot_lid", "Weapon_Shield_004": "boko_shield", "Weapon_Bow_004": "boko_bow",
+        "Item_Fruit_A": "apple", "Item_Mushroom_E": "shroom", "Item_Fruit_I": "pepper", "Item_Plant_A": "herb",
+        "Item_Roast_03": "baked_apple", "Item_Fruit_K": "acorn", "Obj_ArrowBundle_A_01": "arrow", "Obj_ArrowNormal_A_01": "arrow"}
+    loop a in actors:
+        if let id = map_.get(a.name):
+            if not on_plateau(a.pos): continue
+            p = a.pos
+            g = height_at(f64(p.x), f64(p.z))
+            # apples hang in trees; the rest lies on the ground
+            if id == "apple" and f64(p.y) > g + 1.5:
+                spawn_placement(id, a.pos, p, hang = true)
+            else:
+                # Rest on the cabin/camp floor when it rises above the terrain.
+                # Buried ingredients looked reachable but their pickup ray hit wood.
+                resting_ground = ground_at(f64(p.x), f64(p.z), max(f64(p.y), g) + 0.3, 0.0, details=false)
+                spawn_placement(id, a.pos, v3(f64(p.x), max(g, resting_ground.y) + 0.05, f64(p.z)))
+place_items()
+# the branches just outside the Shrine of Resurrection (they are the first weapons)
+loop q in [(-1059.0, 1805.0), (-1053.0, 1803.0), (-1025.0, 1813.0), (-1034.0, 1847.0), (-1012.0, 1892.0)]:
+    p = v3(q.0, height_at(q.0, q.1) + 0.05, q.1)
+    spawn_placement("branch", p, p)
+# (assigned from inside a function: at the top level `name = ...` would declare main's own variable)
+__set_hooks = (): chest_opened = __chest_opened
+__set_hooks()
+story_setup()
+# the field's treasure chests, where the original has them: the camps' chests stay shut until
+# the camp is beaten; iron chests hide among the ruins and on the ridges
+__camp_chests: int[]
+seed_random(64)
+__enemy_loot = [("spiked_club", 1), ("arrow", 10), ("soldiers_broadsword", 1), ("amber", 1), ("arrow", 5), ("opal", 1)]
+__iron_loot = [("amber", 1), ("arrow", 5), ("opal", 1), ("travelers_spear", 1), ("amber", 1), ("pepper", 3), ("arrow", 5), ("opal", 1)]
+__ek = 0
+__ik = 0
+loop a in actors:
+    if not starts_with(a.name, "TBox_Field") or contains(a.name, "Aoc"): continue
+    x = f64(a.pos.x)
+    z = f64(a.pos.z)
+    if x < -1600.0 or x > -350.0 or z < 1400.0 or z > 2420.0: continue
+    if not in_bounds(x, z) or edge_at(x, z) > -2.0: continue
+    p = v3(x, height_at(x, z), z)
+    if f64(a.pos.y) > height_at(x, z) + 1.5: p.y = a.pos.y
+    if starts_with(a.name, "TBox_Field_Enemy"):
+        l = __enemy_loot[__ek % __enemy_loot.len()]
+        __ek += 1
+        __camp_chests.push(add_chest(p, f64(a.rot), l.0, l.1))
+    else:
+        l = __iron_loot[__ik % __iron_loot.len()]
+        __ik += 1
+        add_chest(p, f64(a.rot), l.0, l.1)
+eprint("field chests: {__ek} at camps, {__ik} in the open")
+
+# Cook exactly the materials selected with Hold; never silently choose a recipe.
+cook_at_pot = ():
+    if __cook_t > 0.0 or inv.held.len() == 0: return
+    lit = false
+    loop b in bonfires:
+        if b.pot and b.lit and length(b.pos - pl.pos) < 2.2:
+            lit = true
+            pot_cook_pos = b.pos
+    if not lit: return
+    # A chase lens caught behind the cabin wall can remain far from the body
+    # after leaving its porch. Recover before the pot animation starts.
+    if not cam.override and length(view_pos()-pl.pos)>12.0: camera_snap()
+    cooking_ingredients = [loop id in inv.held: id]
+    dish = inv_cook_held()
+    if dish == "": return
+    __cook_t = 2.2
+    pot_cook_t = __cook_t
+    __cook_dish = dish
+    pl.state = .cutscene
+    fight = Fight()
+    play(sfx.fire, 0.5)
+    fx_steam(pot_cook_pos + vec3(0, 0.65, 0), 20)
+    cooking_jingle(dish == "dubious_food" or dish == "rock_hard_food")
+__cook_dish = ""
+__cook_t = 0.0
+__pot_us: int[]
+loop b in bonfires:
+    if b.pot: __pot_us.push(add_usable(b.pos, 2.0, "Cook", cook_at_pot, false))
+# the old man would like the steak he wrote of; for it he gives the doublet that keeps out the cold
+give_u = add_usable(v3(-946.0, height_at(-946.0, 1883.5), 1883.5), 2.4, "Give", ():
+    inv_take("spicy_steak")
+    inv_add("warm_doublet")
+    ui_pickup("Warm Doublet")
+    item_jingle()
+)
+shrines_setup()
+# Append field puzzle records after existing chest/usable IDs for legacy saves.
+element_puzzles_place()
+
+__chest_opened = (i: int):
+    c = chests[i]
+    if c.content == "": return
+    ui_pickup(item(c.content).name)
+    item_jingle()
+
+# ---------------- test settings from the environment ----------------
+free_cam = false
+fc_pos = v3(-1024.0, 256.0, 1799.0)
+fc_yaw = 1.0
+fc_pitch = -0.06
+if let s = env("BOTW_CAM"):
+    p = split(s, ",")
+    fc_pos = v3(to_float(p[0]) ?? 0.0, to_float(p[1]) ?? 0.0, to_float(p[2]) ?? 0.0)
+    fc_yaw = to_float(p[3]) ?? 0.0
+    fc_pitch = to_float(p[4]) ?? 0.0
+    free_cam = true
+if let s = env("BOTW_PAINT"): post.paint = to_float(s) ?? 1.0
+if env("BOTW_SKIP") != none or env("BOTW_RISE") != none or free_cam: skip_to_outside()
+else: story_start()
+save_init()
+__set_save_hook = (): options_new_game = save_start_over
+__set_save_hook()
+if env("BOTW_TITLE") != none:
+    skip_to_outside()
+    story.title_done = false
+    pl.pos = v3(-1040.0, 0.0, 1812.0)
+    pl.pos.y = f32(height_at(-1040.0, 1812.0))
+if env("BOTW_TOWER") != none: raise_tower_now()
+# (test: the grass a few meters ahead is alight)
+__fire_test = env("BOTW_FIRE") != none
+__bolt_at = to_int(env("BOTW_BOLT") ?? "0") ?? 0
+__scripted = env("SLOPPY_INPUT") != none and env("SLOPPY_SCREENSHOT") != none
+# (test: start the tower's rise straight away)
+if env("BOTW_RISE") != none:
+    story.beat = .tower_rise
+    tower_cue()
+    story.t = 0.0
+    pl.state = .cutscene
+if let o = env("BOTW_ORBS"): story.orbs = to_int(o) ?? 0
+if env("BOTW_DOORS") != none:
+    story.door1_open = true
+    story.door2_open = true
+    story.slate = true
+# (test: start in the passage out of the Shrine of Resurrection, dressed, the doors open)
+if env("BOTW_PASSAGE") != none:
+    story.door1_open = true
+    story.door2_open = true
+    story.slate = true
+    story.beat = .inside
+    post.fade = 0.0
+    inv_add("old_shirt")
+    pl.pos = v3(-1127.0, 237.2, 1885.0)
+    pl.face = 0.99
+    pl.state = .ground
+    cam.yaw = pl.face
+    cam.pitch = 0.1
+    camera_snap()
+if let g = env("BOTW_GIVE"):
+    loop id in split(g, ","):
+        if has_item_def(id): inv_add(id, (if id == "arrow": 20 else: 1))
+        if id == "paraglider": pl.has_glider = true
+if let w = env("BOTW_WEATHER"):
+    env.weather_t = 1e9
+    match w:
+        "rain":
+            env.weather = .rain
+            env.clouds = 0.85
+            env.rain = 0.75
+            env.wet = 1.0
+            env.gust = 1.7
+        "storm":
+            env.weather = .storm
+            env.clouds = 0.95
+            env.rain = 1.0
+            env.wet = 1.0
+            env.gust = 2.8
+            env.storm_k = 1.0
+        "cloudy":
+            env.weather = .cloudy
+            env.clouds = 0.74
+        _: env.weather = .clear
+# A change of weather at given frames ("200:storm,1900:clear"), arriving at the game's own pace
+struct __WeatherAt:
+    frame: int
+    w: Weather
+__weather_seq: __WeatherAt[]
+if let ws = env("BOTW_WEATHER_SEQ"):
+    env.weather_t = 1e9
+    loop item in split(ws, ","):
+        kv = split(item, ":")
+        if kv.len() == 2:
+            w = match kv[1]:
+                "rain": Weather.rain
+                "storm": Weather.storm
+                "cloudy": Weather.cloudy
+                _: Weather.clear
+            __weather_seq.push(__WeatherAt(to_int(kv[0]) ?? 0, w))
+__weather_log = env("BOTW_WEATHER_LOG") != none
+# (test: BOTW_TIMESCALE=k runs the clock k times faster, to watch a dawn or dusk go by)
+if let ts = env("BOTW_TIMESCALE"): env.time_scale = to_float(ts) ?? 1.0
+__capture_dir = env("BOTW_CAPTURE_DIR")
+__capture_every = to_int(env("BOTW_CAPTURE_EVERY") ?? "0") ?? 0
+if env("BOTW_DEBUG") != none: eprint("hidden: far_towers={hooks.named_hidden.get("far_towers") ?? false} n={hooks.named_hidden.len()} beat={story.beat}")
+if let s = env("BOTW_HOUR"): env.hour = to_float(s) ?? 8.0
+if let s = env("BOTW_AT"):
+    p = split(s, ",")
+    pl.pos = v3(to_float(p[0]) ?? 0.0, 0.0, to_float(p[1]) ?? 0.0)
+    pl.pos.y = f32(height_at(f64(pl.pos.x), f64(pl.pos.z)))
+    if p.len() > 3:
+        pl.pos.y = f32(to_float(p[3]) ?? 0.0)
+        pl.state = .air
+        pl.air_peak = f64(pl.pos.y)
+    pl.last_safe = pl.pos
+    if p.len() > 2: pl.face = to_float(p[2]) ?? 0.0
+    cam.yaw = pl.face
+    camera_snap()
+
+hooks.opaque = ():
+    draw_uniform_begin()
+    if not sc.shadow: cpu_mark("hero_draw")
+    # Overcast fill belongs to the hero alone, preserving the dark canopy/ground values.
+    sky = env.sky_amb
+    if not sc.shadow and env.indoor < 0.5:
+        env.sky_amb = sky * f32(1.0 + env.storm_k * env.rain * 0.65)
+    cooking_carry_draw()
+    cooking_pot_draw()
+    hero_draw()
+    env.sky_amb = sky
+    # The first greeting's fire bounces onto the hood and face, without lifting the meadow.
+    fire_color = sc_lc
+    if not sc.shadow and old_man.visible and length(old_man.pos - vec3(sc_lp.x, sc_lp.y, sc_lp.z)) < 8.0:
+        sc_lc = fire_color * 1.65
+    old_man_draw()
+    sc_lc = fire_color
+    if not sc.shadow: cpu_mark("monsters_draw")
+    monsters_draw()
+    if not sc.shadow: cpu_mark("wildlife_draw")
+    wildlife_draw()
+    critters_draw()
+    if not sc.shadow: cpu_mark("shrines_props")
+    shrines_draw()
+    if not sc.shadow:
+        cpu_mark("world_items")
+        draw_world_items(sc.cam)
+        cpu_mark("chests")
+        chests_draw(sc.cam)
+        cpu_mark("bonfires")
+        draw_bonfires(sc.cam)
+        cpu_mark("barrels")
+        draw_barrels(sc.cam)
+        cpu_mark("arrows")
+        arrows_draw()
+    draw_uniform_end()
+
+hooks.transparent = ():
+    fire_glows.clear()
+    loop b in bonfires:
+        if b.lit: fire_glows.push(b.pos)
+    guardian_lasers_draw()
+    if f64(length(sc.cam - SOR_BED)) < 40.0: pool_draw(sc.vp, 1.0)
+    shrines_draw_transparent()
+    fx_draw(sc.cam, sc.vp, sc.view, env.indoor > 0.5)
+    trail_update(elapsed())
+    trail_draw(sc.vp, elapsed())
+
+arrow_mesh: Mesh
+__arrow_ready = false
+arrows_draw = ():
+    cpu_mark("draw")
+    if not __arrow_ready:
+        __arrow_ready = true
+        arrow_mesh = shape_mesh(.arrows)
+    loop a in arrows:
+        if not a.alive: continue
+        d = normalize(a.vel + vec3(0, 0.0001, 0))
+        m = translation(a.pos) * rotation(normalize(cross(vec3(0, 1, 0), d) + vec3(0.0001, 0, 0)), acos(clamp(f64(d.y), -1.0, 1.0)))
+        draw_prop(arrow_mesh, m * translation(v3(0.0, -0.4, 0.0)), vec4(1, 1, 1, 1))
+
+# sounds for what happened this frame
+cam_right = () -> vec3: normalize(cross(sc.fwd, vec3(0, 1, 0)))
+__step_n = 0
+# where a blade lands: a short bright streak across the blow, gone in a tenth of a second
+__slash_flash = (p: vec3, k: f64):
+    f = forward_of(pl.face)
+    side = v3(cos(pl.face), 0.0, sin(pl.face))
+    tilt = vec3(0, f32(random(-0.4, 0.4)), 0)
+    # Outlined dabs merge into an ink-backed streak, gone in a few frames.
+    loop j in [0..13):
+        t = (f64(j) / 12.0 - 0.5) * 0.7 * k
+        front = p + normalize(sc.cam-p+vec3(0,0.0001,0)) * 0.95
+        q = front - f * 0.15 + (side + tilt) * f32(t)
+        w = 1.0 - abs(t) / (0.35 * k)
+        emit(.slash, q, side * f32(1.0), 0.10, 0.065 + 0.08 * w * k, rgba(1.0, 0.95, 0.75, f32(0.95 * w)))
+
+play_events = ():
+    if not sfx.ready: return
+    c = sc.cam
+    r = cam_right()
+    loop e in pl.events:
+        match e:
+            "step":
+                __step_n += 1
+                sl = match pl.ground.surf:
+                    snow: sfx.step_snow
+                    rock, stone, wood: sfx.step_stone
+                    _: sfx.step_grass
+                v = if pl.sprinting: 0.55 else: 0.4
+                if pl.sneaking: v = 0.12
+                sfx_play(sl[__step_n % sl.len()], v, (if __step_n % 2 == 0: -0.15 else: 0.15), random(0.9, 1.1))
+            "jump": sfx_play(sfx.cloth, 0.25, 0.0, 1.3)
+            "land": sfx_play(sfx.land, 0.4)
+            "hard_land":
+                sfx_play(sfx.land, 0.8, 0.0, 0.7)
+                cam.shake = 0.6
+            "swing":
+                w = equipped_weapon()
+                play((if len(w) > 0 and item(w).two_handed: sfx.swing_heavy else: sfx.swing), 0.45, 0.0, random(0.9, 1.15))
+            "hurt":
+                sfx_play(sfx.hurt, 0.6)
+                cam.shake = 0.5
+                post.hurt = 1.0
+                ui.hearts_flash = 0.4
+            "block": sfx_play(sfx.block, 0.6)
+            "parry":
+                sfx_play(sfx.parry, 0.7)
+                fx_sparks(pl.pos + vec3(0, 1.2, 0) + forward_of(pl.face) * 0.6, 24)
+                __slash_flash(pl.pos + vec3(0, 1.2, 0) + forward_of(pl.face) * 0.6, 1.8)
+                emit(.ring, pl.pos + vec3(0, 1.2, 0), vec3(0, 0, 0), 0.24, 1.1, rgba(1.0, 0.95, 0.7, 0.95))
+            "flurry":
+                sfx_play(sfx.parry, 0.5, 0.0, 0.7)
+                emit(.glow, pl.pos + vec3(0, 1.2, 0), vec3(0, 0, 0), 0.28, 1.25, rgba(0.35, 0.75, 1.0, 0.9))
+                emit(.ring, pl.pos + vec3(0, 1.0, 0), vec3(0, 0, 0), 0.35, 1.3, rgba(0.5, 0.85, 1.0, 0.95))
+            "splash":
+                sfx_play(sfx.splash, 0.6)
+                fx_splash(pl.pos + vec3(0, 0.3, 0))
+            "glider_open", "glider_close": sfx_play(sfx.cloth, 0.5)
+            "grab", "climb_step": sfx_play(sfx.climb, 0.3)
+            "climb_jump": sfx_play(sfx.cloth, 0.35, 0.0, 1.4)
+            "shoot": sfx_play(sfx.twang, 0.6)
+            "throw": sfx_play(sfx.swing, 0.5, 0.0, 0.8)
+            "exhausted": pass
+            _: pass
+    loop w in wild_calls: sfx_at(sfx.caw, w, c, r, 0.6, random(0.9, 1.1), 60.0)
+    loop e in enemy_events:
+        if env("BOTW_DEBUGEV") != none: eprint("event {e.kind} at {e.pos} hp {pl.hp}")
+        match e.kind:
+            "notice":
+                sfx_at(sfx.notice, e.pos, c, r, 0.8, random(0.9, 1.1), 60.0)
+                if f64(length(e.pos - pl.pos)) < 40.0: alert_stab()
+            "windup": sfx_at(sfx.grunt[random_int(0, 3)], e.pos, c, r, 0.9, 1.0, 40.0)
+            "windup_heavy":
+                sfx_at(sfx.windup_heavy, e.pos, c, r, 1.0, 1.0, 45.0)
+                sfx_at(sfx.grunt[2], e.pos, c, r, 0.9, 0.85, 40.0)
+            "enemy_hit":
+                music_clean_hit()
+                hitstop = max(hitstop, e.stop)
+                cam.shake = max(cam.shake, 0.25)
+                sfx_at(sfx.hit, e.pos, c, r, 0.8)
+                __slash_flash(e.pos, 1.55)
+                toward_camera = normalize(sc.cam-e.pos+vec3(0,0.0001,0))
+                front = e.pos + toward_camera * 0.95
+                fx_sparks(e.pos + toward_camera * 0.4, 18)
+                emit(.glow, front, vec3(0, 0, 0), 0.12, 0.32, rgba(1.8, 1.25, 0.45, 0.95))
+                emit(.spark, front, vec3(0, 0, 0), 0.10, 0.34, rgba(1.8, 1.5, 0.8, 1.0))
+                # (a burst of light where the blow lands, readable from a way off)
+            "enemy_hit_big":
+                music_clean_hit()
+                hitstop = max(hitstop, e.stop)
+                cam.shake = max(cam.shake, 0.55)
+                sfx_at(sfx.hit_big, e.pos, c, r, 1.0, 0.95)
+                __slash_flash(e.pos, 1.85)
+                fx_sparks(e.pos + normalize(sc.cam-e.pos+vec3(0,0.0001,0))*0.4, 22)
+                emit(.ring, e.pos, vec3(0, 0, 0), 0.35, 1.6, rgba(1.0, 0.95, 0.85, 0.6))
+            "sneakstrike": sfx_at(sfx.parry, e.pos, c, r, 0.8, 0.8)
+            "horn": sfx_at(sfx.horn, e.pos, c, r, 1.0, 1.0, 120.0)
+            "slam":
+                sfx_at(sfx.hit_wood, e.pos, c, r, 0.9, 0.6)
+                fx_dust(e.pos, 14)
+                if f64(length(e.pos - pl.pos)) < 12.0: cam.shake = max(cam.shake, 0.4)
+            "enemy_die": sfx_at(sfx.grunt[0], e.pos, c, r, 0.7, 0.7)
+            "smoke":
+                sfx_at(sfx.poof, e.pos, c, r, 0.7)
+                fx_poof(e.pos)
+            "player_hit": pass
+            "bow": sfx_at(sfx.twang, e.pos, c, r, 0.6, 0.9, 60.0)
+            "guardian_lock": sfx_at(sfx.laser_lock, e.pos, c, r, 0.7, 1.0, 90.0)
+            "laser": sfx_at(sfx.laser, e.pos, c, r, 0.9, 1.0, 90.0)
+            "explode":
+                sfx_at(sfx.explode, e.pos, c, r, 1.0, 1.0, 150.0)
+                fx_explosion(e.pos)
+                cam.shake = 0.5
+            "deflect": sfx_play(sfx.parry, 0.8, 0.0, 1.2)
+            "rise": sfx_at(sfx.grunt[2], e.pos, c, r, 0.6, 0.6)
+            _: pass
+    loop e in elem_events:
+        if env("BOTW_DEBUGEV") != none: eprint("elem {e.kind} at {e.pos}")
+        match e.kind:
+            "explosion":
+                sfx_at(sfx.explode, e.pos, c, r, 1.0, 1.0, 200.0)
+                if f64(length(e.pos - pl.pos)) < 20.0: cam.shake = 0.8
+            "thunder": sfx_play(sfx.thunder, 1.0)
+            "cook": sfx_at(sfx.chest, e.pos, c, r, 0.3, 2.0)
+            "cold": sfx_play(sfx.hurt, 0.3, 0.0, 1.4)
+            "melt": sfx_at(sfx.splash, e.pos, c, r, 0.6, 1.4)
+            "burnt_up": sfx_play(sfx.poof, 0.5)
+            "collapse":
+                sfx_at(sfx.hit_wood, e.pos, c, r, 0.9, 0.55, 80.0)
+                fx_dust(e.pos, 18)
+            "fizz", "douse":
+                if not e.equipment: fx_steam(e.pos)
+                sfx_at(sfx.splash, e.pos, c, r, 0.35, 1.8)
+            _: pass
+
+# eat or use what is bound to a slot
+use_slot = (k: int):
+    if k < 0 or k >= inv.slots.len(): return
+    id = inv.slots[k]
+    if len(id) == 0: return
+    d = item(id)
+    match d.kind:
+        food:
+            if count_of(id) > 0 and fight.act == .idle:
+                eat_food(id)
+                fight.act = .eat
+                fight.t = 0.0
+                sfx_play(sfx.eat, 0.5)
+        weapon:
+            i = slot_gear_index(k)
+            if i >= 0: inv.weapon = i
+        shield:
+            i = slot_gear_index(k)
+            if i >= 0: inv.shield = i
+        bow:
+            i = slot_gear_index(k)
+            if i >= 0: inv.bow = i
+        _: pass
+
+# where the player is (the original's location names)
+struct Place:
+    name: str
+    x: f64
+    z: f64
+    r: f64
+places_named = [Place("Temple of Thyme", -818.0, 2001.0, 90.0), Place("Forest of Sprites", -1050.0, 1640.0, 130.0),
+    Place("Eastern Abbey", -495.0, 1990.0, 80.0), Place("Mount Jolia", -1288.0, 2221.0, 150.0),
+    Place("River of the Dread", -1228.0, 1981.0, 140.0), Place("Grate Plateau Tower", -560.0, 1695.0, 70.0),
+    Place("Hopper Pond", -1230.0, 1650.0, 60.0), Place("Shrine of Reheating", -1068.0, 1845.0, 40.0),
+    Place("Woodcutter's House", -784.0, 2255.0, 60.0)]
+__place_t = 0.0
+__last_place = ""
+# (the cave he wakes in is known: the title names the plateau instead)
+__found = ["Shrine of Reheating"]
+__shown: {str: f64} = {}
+check_places = (dt: f64):
+    __place_t -= dt
+    if __place_t > 0.0 or not story.title_done or zone_at(pl.pos + vec3(0, 1, 0)) != "": return
+    __place_t = 1.0
+    loop p in places_named:
+        if hypot(f64(pl.pos.x) - p.x, f64(pl.pos.z) - p.z) < p.r:
+            if __last_place != p.name:
+                __last_place = p.name
+                if not in_combat():
+                    # named when first found, and again only coming back after a long while
+                    if not __found.contains(p.name):
+                        __found.push(p.name)
+                        discovery_jingle()
+                        ui_location(p.name)
+                        __shown[p.name] = elapsed()
+                    else if elapsed() - __shown.get(p.name, 0.0) > 600.0:
+                        ui_location(p.name)
+                        __shown[p.name] = elapsed()
+            return
+    __last_place = ""
+
+slot_views = () -> SlotView[]:
+    out: SlotView[]
+    loop i in 0.. and id in inv.slots:
+        if len(id) == 0: out.push(SlotView("", .branch, vec4(0, 0, 0, 0), 0, "{i + 1}"))
+        else:
+            d = item(id)
+            n = if d.kind == .food or d.kind == .material: count_of(id) else: 1
+            out.push(SlotView(d.name, d.shape, d.color, n, "{i + 1}"))
+    out
+
+hitstop = 0.0
+# the old man gets up when the grass burns near him, and sits again once it is out
+__om_alarm = 0.0
+old_man_fire = (dt: f64):
+    if not old_man.visible or old_man.glide: return
+    if grass_fire_near(old_man.pos, 3.0):
+        if old_man.clip == "sit": old_man.clip = "idle"
+        __om_alarm = 6.0
+    else if __om_alarm > 0.0:
+        __om_alarm -= dt
+        at_fire = hypot(f64(old_man.pos.x) + 946.0, f64(old_man.pos.z) - 1883.5) < 1.0
+        if __om_alarm <= 0.0 and old_man.clip == "idle" and at_fire and story.beat != .roof: old_man.clip = "sit"
+water_snd = 0.0
+last_tip = vec3(0, 0, 0)
+
+# the blade leaves a short trail of light while it cuts
+swing_trail = ():
+    active = fight.act == .swing or fight.act == .spin or fight.act == .jump_attack or fight.act == .flurry
+    w = equipped_weapon()
+    if not active or len(w) == 0 or not chars_ready:
+        last_tip = vec3(0, 0, 0)
+        # (a hop or a backflip leaves no trail behind it)
+        if fight.act == .hop or fight.act == .backflip: trail_samples.clear()
+        return
+    hm = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_R)
+    reach = weapon_length(item(w))
+    tip = transform_point(hm, v3(0.0, reach, 0.0))
+    # (a spin sweeps the whole blade round: a broad ribbon, where a swing leaves a narrow one)
+    base = transform_point(hm, v3(0.0, reach * (if fight.act == .spin: 0.15 else: 0.45), 0.0))
+    trail_add(tip, base, elapsed())
+    last_tip = tip
+
+# charging a spin: motes of light drawn in along the blade, and a flare when it is ready
+__charge_full = false
+charge_fx = (dt: f64):
+    w = equipped_weapon()
+    if fight.act != .charge or len(w) == 0 or not chars_ready:
+        __charge_full = false
+        return
+    hm = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_R)
+    reach = weapon_length(item(w))
+    if random() < dt * (12.0 + 30.0 * fight.charge):
+        q = transform_point(hm, v3(0.0, reach * random(0.3, 1.0), 0.0))
+        off = rv(0.35)
+        emit(.glow, q + off, -off * 2.5, 0.35, 0.035, rgba(1.0, 0.92, 0.6, 0.85))
+    if fight.charge >= 1.0 and not __charge_full:
+        __charge_full = true
+        tip = transform_point(hm, v3(0.0, reach, 0.0))
+        loop k in [0..18):
+            a = TAU * f64(k) / 18.0
+            emit(.glow, tip, v3(cos(a) * 1.4, sin(a) * 1.4, 0.0), 0.3, 0.05, rgba(1.0, 0.95, 0.7, 1.0))
+        sfx_play(sfx.parry, 0.35, 0.0, 1.6)
+
+# lightning in a storm: a jagged bolt somewhere in view, its thunder late with distance
+thunder_t = -1.0
+storm_bolt = (dt: f64):
+    if thunder_t >= 0.0:
+        thunder_t -= dt
+        if thunder_t < 0.0: play(sfx.thunder, 0.9)
+    if not env.bolt: return
+    env.bolt = false
+    if env.indoor > 0.5: return
+    eye = if free_cam: fc_pos else: view_pos()
+    # (most in view; some behind, seen only as the land lighting up)
+    ang = cam.yaw + (if random() < 0.7 or __bolt_at > 0: random(-0.8, 0.8) else: random(1.6, 4.7))
+    d = random(120.0, 600.0)
+    x = f64(pl.pos.x) + sin(ang) * d
+    z = f64(pl.pos.z) - cos(ang) * d
+    # (test: BOTW_BOLT_AT="x,z" puts the forced strike there)
+    if __bolt_at > 0:
+        # A scripted strike uses the actual view, including free/title cameras.
+        # Keep its lower jagged trunk in the central scene instead of sampling
+        # a broad gameplay-yaw sector that can put it beyond the frame edge.
+        gaze = if free_cam: v3(sin(fc_yaw) * cos(fc_pitch), sin(fc_pitch), -cos(fc_yaw) * cos(fc_pitch)) else: normalize(view_target() - eye)
+        target = scripted_lightning_target(eye, gaze)
+        x = f64(target.x)
+        z = f64(target.y)
+        if let s = env("BOTW_BOLT_AT"):
+            a = split(s, ",")
+            if a.len() == 2:
+                x = to_float(a[0]) ?? x
+                z = to_float(a[1]) ?? z
+    g = height_at(x, z)
+    p = v3(x + random(-30.0, 30.0), g + 380.0, z + random(-30.0, 30.0))
+    strike_at(v3(x, g + 0.5, z))
+    # One camera-facing emissive stroke per bend, plus a soft halo. Physical
+    # distance is recomputed for forced pond strikes (the random distance is stale).
+    d = f64(length(v3(x, g, z) - eye))
+    surface = max(g, water_level(x, z) ?? g)
+    fx_lightning_path(v3(x, surface, z), eye)
+    # The strike occurs after the usual animation update; sample its flinch now.
+    if player_shock_t > 0.0: hero_animate(0.0, 0.0)
+    thunder_t = d / 340.0
+
+# the lock-on marker, enemies' health once hurt, and the bow's crosshair
+# what combat can lock on to: the monsters, then a shrine's scout (it had its own code apart from
+# them, and could not be targeted)
+__combat_target = (i: int) -> vec3: if i < enemies.len(): enemy_pos(i) else: scout_target_pos()
+
+__lock_marker = (sp: vec2):
+    pulse = f32(0.5 + 0.5 * sin(elapsed() * 6.0))
+    c = sp + vec2(0, -31 - 3 * pulse)
+    # Fixed HUD size: the open orange chevron stays readable at the lock range.
+    pts = [c + vec2(-17, -8), c + vec2(0, 8), c + vec2(17, -8)]
+    polyline(pts, 10, rgba(0.04, 0.02, 0.01, 0.95))
+    polyline(pts, 6, rgba(1.0, 0.25 + 0.15 * pulse, 0.04, 1))
+    polyline(pts, 1.5, rgba(1.0, 0.86, 0.55, 0.9))
+
+# Visible throughout a nearby awake encounter, including before the first hit.
+talus_health_shown = (e: Enemy) -> bool:
+    e.kind == .talus and e.hp > 0.0 and e.state != .sleep and e.state != .notice and e.state != .dead and e.state != .gone and length(e.pos - pl.pos) < 60.0
+
+talus_health_draw = (e: Enemy):
+    r = visible_rect()
+    w = min(440.0, f64(r.z) * 0.5)
+    x = f64(r.x) + (f64(r.z) - w) * 0.5
+    y = f64(r.y + r.w) - 48.0
+    text_centered("Stone Tantrum", vec2(f32(x + w * 0.5), f32(y - 12)), 18, rgba(1, 0.95, 0.86, 0.95))
+    rect(x - 2, y - 2, w + 4, 12, rgba(0.85, 0.78, 0.62, 0.8))
+    rect(x, y, w, 8, rgba(0.04, 0.02, 0.02, 0.95))
+    rect(x, y, w * clamp(e.hp / e.hp_max, 0.0, 1.0), 8, rgba(0.85, 0.16, 0.10, 1))
+
+# Follow the posed head rather than an assumed upright root height. The
+# skull's crown and the bar centre are only 0.18 m apart, including recoil.
+enemy_health_anchor = (i: int) -> vec3:
+    e = enemies[i]
+    if enemy_melee_body(e) and chars_ready and i < eanims.len():
+        head = bone_index(boko_m, "head")
+        if head >= 0:
+            return transform_point(eanims[i].world * bone_world(boko_m, eanims[i].skin, head), vec3(0, 0.614364, 0.266732)) + vec3(0, 0.18, 0)
+    e.pos + vec3(0, f32(e.lift) + (if e.kind == .guardian: 3.3 else: (if e.kind == .talus: 5.0 else: (if e.kind == .keese: 0.35 else: (if e.kind == .chuchu or e.kind == .ice_chuchu: 0.95 else: 1.7)))), 0)
+
+enemy_health_shown = (e: Enemy) -> bool:
+    e.kind != .talus and e.hp > 0.0 and e.hp < e.hp_max and e.state != .dead and e.state != .gone and e.state != .buried
+
+combat_hud = ():
+    if ui.hide: return
+    if fight.target == enemies.len():
+        if let sp = world_to_screen(scout_target_pos() + vec3(0, 0.9, 0)): __lock_marker(sp)
+    loop i in 0.. and e in enemies:
+        if e.state == .gone or e.state == .dead or e.state == .buried: continue
+        if talus_health_shown(e): talus_health_draw(e)
+        if f64(length(e.pos - pl.pos)) > 30.0: continue
+        hp_shown = enemy_health_shown(e)
+        locked = i == fight.target
+        if not hp_shown and not locked: continue
+        top = enemy_health_anchor(i)
+        if let sp = world_to_screen(top):
+            if hp_shown:
+                w = 80.0
+                rect(f64(sp.x) - w / 2.0 - 1, f64(sp.y) - 5, w + 2, 10, rgba(0.95, 0.89, 0.74, 0.85))
+                rect(f64(sp.x) - w / 2.0, f64(sp.y) - 4, w, 8, rgba(0.03, 0.02, 0.02, 0.95))
+                rect(f64(sp.x) - w / 2.0 + 1, f64(sp.y) - 3, (w - 2) * clamp(e.hp / e.hp_max, 0.0, 1.0), 6, rgba(0.95, 0.19, 0.10, 1))
+            if locked: __lock_marker(sp)
+    if fight.act == .aim:
+        r = visible_rect()
+        c = vec2(r.x + r.z / 2.0, r.y + r.w / 2.0)
+        k = f32(1.0 - fight.draw * 0.6)
+        loop q in [vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1)]:
+            line(c + q * (8.0 + 14.0 * k), c + q * (16.0 + 14.0 * k), 2.0, rgba(1, 1, 1, 0.85))
+        circle(c, 2, rgba(1, 1, 1, 0.9))
+
+# ---------------- the frame ----------------
+__low_res = false
+__ft_avg = 0.0167
+__ft_last = 0.0
+__res_t = 0.0
+__res_frames = 0
+__res_late = 0
+__res_tail = false
+__res_healthy = 0
+__res_fixed = env("BOTW_SCALE") != none
+__warmup_done = false
+# time() is monotonic. Recover the interval hidden by the window library's 100 ms clamp.
+# Startup is excluded; menus consume wall time without adding simulation debt.
+__loop_last = 0.0
+const LOOP_CAP = 0.5
+const LOOP_STEP = 1.0 / 120.0
+__loop_steps = 0
+__loop_accounted = 0.0
+__step_fraction = 1.0
+update = (dt0: f64):
+    terrain_upload_finish()
+    # The first callback has the compositor's configured pixel size and initialized 2D batch.
+    if not __warmup_done:
+        if env("BOTW_NO_WARMUP") == none: render_warmup()
+        __warmup_done = true
+        eprint("loaded in {time() - t0:.2}s")
+    frame_stats_begin(post.scale)
+    # (the real time between frames: dt0 is the fixed step)
+    now_ = time()
+    elapsed_dt = if __loop_last > 0.0: now_ - __loop_last else: dt0
+    __loop_last = now_
+    if __ft_last > 0.0:
+        interval = min(now_ - __ft_last, 0.1)
+        __ft_avg = lerp(__ft_avg, interval, 0.02)
+        __res_frames += 1
+        if interval > 0.0185: __res_late += 1
+        if __res_frames >= 120:
+            # A paced 60 Hz average can hide repeated missed frames. Require
+            # three late intervals in two seconds before lowering large views.
+            __res_tail = __res_late >= 3
+            __res_healthy = if __res_late == 0: __res_healthy + 1 else: 0
+            __res_frames = 0
+            __res_late = 0
+    __ft_last = now_
+    __res_t += min(dt0, 0.1)
+    large = pixel_size().x > 1700.0
+    if not __res_fixed and __res_t > 3.0 and not __low_res and (__ft_avg > 0.0171 or (large and __res_tail)):
+        __low_res = true
+        __res_t = 0.0
+        if env("BOTW_DEBUG") != none: eprint("resolution down ({__ft_avg * 1000.0:.1} ms)")
+        if env("BOTW_GPU_FRAME_LOG") != none: eprint("scale controller: frame {frame_number()} low 1 avg {__ft_avg * 1000.0:.3} fixed {env("BOTW_SCALE") ?? "none"}")
+    # At 60 Hz, 16.7 ms alone proves no headroom for the more expensive scale.
+    # Large views need five clean windows and enough margin for the pixel ratio.
+    else if not __res_fixed and __res_t > 20.0 and __low_res and __ft_avg < (if large: 0.0133 else: 0.0168) and (not large or __res_healthy >= 5):
+        __low_res = false
+        __res_t = 0.0
+        if env("BOTW_GPU_FRAME_LOG") != none: eprint("scale controller: frame {frame_number()} low 0 avg {__ft_avg * 1000.0:.3} fixed {env("BOTW_SCALE") ?? "none"}")
+    dt = clamp(elapsed_dt, 0.0, LOOP_CAP)
+    # (a scripted run steps the world 1/60 s a frame, so it plays out the same however loaded the machine)
+    if __scripted or __fixed_step: dt = 1.0 / 60.0
+    cpu_mark("input_update")
+    input_update(dt, not free_cam and not invui.open)
+    if key_pressed(.f10): quit()
+    # Native close/F10 is a frame transaction: save once before any catch-up.
+    if __win_close:
+        save_update(0.0)
+        return
+    if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:
+        save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")
+    # Menus own input before any simulation: inventory, map and options all pause
+    # the clock, weather, lightning, hit-stop, cooking, fires and actor timers.
+    map_known = story.tower_risen
+    map_player = pl.pos
+    map_face = pl.face
+    if not free_cam and story.title_done and pl.state != .dead and (invui.open or __cook_t <= 0.0) and inventory_update(dt):
+        save_update(0.0) # Native close still saves; autosave time is simulation time.
+        jingles_update(dt)
+        music_update(dt)
+        return
+    loop wa in __weather_seq:
+        if frame_number() == wa.frame: env.weather = wa.w
+    # (test: BOTW_BOLT=frame strikes a bolt then, to see one in a still; before the light is
+    # worked out, so the land flashes with the bolt in the same frame)
+    if __bolt_at > 0 and frame_number() == __bolt_at:
+        env.lightning = 1.0
+        env.bolt = true
+    cpu_mark("save_update")
+    save_update(dt)
+    # Bounded catch-up: no accumulated backlog after the cap, at most 60 ticks.
+    # Input is polled once; pulses occur only on the first tick and look deltas
+    # are divided across ticks. Held controls remain active throughout the hitch.
+    __loop_steps = int(ceil(dt / LOOP_STEP))
+    __loop_accounted = 0.0
+    if __loop_steps <= 0: return
+    look = act.look
+    __step_fraction = 1.0 / f64(__loop_steps)
+    loop tick in [0..__loop_steps):
+        if tick > 0: input_consume_edges()
+        act.look = look * f32(__step_fraction)
+        step_dt = dt / f64(__loop_steps)
+        # These lists describe the final displayed pose, not every catch-up pose.
+        contact_shadows.clear()
+        shafts.clear()
+        simulation_step(step_dt)
+        __loop_accounted += step_dt
+    act.look = look
+
+# Environment-driven colour and particle lighting must run in both camera modes.
+# Free-camera inspection returns before story/combat updates below.
+environment_visuals_update = ():
+    fx_light = vec3(min(env.sky_amb.x * 1.1 + env.sun_color.x * 0.35, 1.0), min(env.sky_amb.y * 1.1 + env.sun_color.y * 0.35, 1.0), min(env.sky_amb.z * 1.1 + env.sun_color.z * 0.35, 1.0))
+    post.sat = lerp(1.15, 1.04, env.dark)
+    post_moon = if env.indoor > 0.5: 0.0 else: smoothstep(0.3, 0.9, env.night)
+    post_golden = if env.indoor > 0.5: 0.0 else: (1.0 - smoothstep(0.06, 0.32, f64(env.sun_dir.y))) * (1.0 - env.night) * clamp(1.0 - env.dark * 1.3, 0.0, 1.0) * 0.8
+
+simulation_step = (dt: f64):
+    cpu_mark("world_sync")
+    inside = zone_at(pl.pos + vec3(0, 1, 0)) != ""
+    use_terrain = not inside
+    # (up the cave toward the mouth the daylight comes in gradually, over the last 75 m of the climb)
+    indoor_want = if inside: smoothstep(6.0, 75.0, f64(length(pl.pos - SOR_MOUTH_IN))) else: 0.0
+    if inside and zone_at(pl.pos + vec3(0, 1, 0)) != "sor": indoor_want = 1.0
+    env.indoor = approach(env.indoor, indoor_want, 1.5, dt)
+    roof_hidden = hooks.named_hidden
+    loop k, c in hooks.named_collapse:
+        if c.w > 0.4: roof_hidden[k] = true
+    roof_lift = hooks.named_lift
+    roof_lift["tower"] = hooks.tower_lift
+    rain_sync(roof_hidden, roof_lift)
+    cpu_mark("env_update")
+    env_update(dt, false)
+    environment_visuals_update()
+    if __weather_log and frame_number() % 10 == 0:
+        sheltered = not rain_exposed(pl.pos + vec3(0, 1.6, 0))
+        eprint("wx f={frame_number()} clouds={env.clouds:.4} rain={env.rain:.4} dark={env.dark:.4} wet={hero_wet:.4} sheltered={sheltered} pos={pl.pos.x:.1},{pl.pos.z:.1} hour={env.hour:.4} sun={luma(env.sun_color):.4} sky={luma(env.sky_amb):.4} light={env.light_dir.x:.4},{env.light_dir.y:.4},{env.light_dir.z:.4}")
+    snowing = is_snow_area(f64(pl.pos.x), f64(pl.pos.z)) or f64(pl.pos.y) > 330.0
+    cpu_mark("jingles_update")
+    jingles_update(dt)
+    cpu_mark("music_update")
+    music_update(dt)
+    # Benchmark evidence only: confirm that traversal moves and a fight stays active.
+    if env("BOTW_SCENE_LOG") != none and frame_number() % 120 == 0:
+        engaged = 0
+        striking = 0
+        nearby = 0
+        loop e in enemies:
+            if e.state == .dead or e.state == .gone or e.state == .buried: continue
+            if length(e.pos - pl.pos) > 40.0: continue
+            nearby += 1
+            if e.state == .notice or e.state == .chase or e.state == .windup or e.state == .attack or e.state == .recover or e.state == .shoot or e.state == .stagger: engaged += 1
+            if e.state == .windup or e.state == .attack or e.state == .shoot: striking += 1
+        eprint("perf scene: frame {frame_number()} pos {pl.pos.x:.1},{pl.pos.y:.1},{pl.pos.z:.1} hp {pl.hp} state {pl.state} enemies {nearby} engaged {engaged} striking {striking} action {fight.act}")
+    if free_cam:
+        md = mouse_delta() * f32(__step_fraction)
+        if mouse_down(.right):
+            fc_yaw += f64(md.x) * 0.004
+            fc_pitch = clamp(fc_pitch - f64(md.y) * 0.004, -1.5, 1.5)
+        f = v3(sin(fc_yaw) * cos(fc_pitch), sin(fc_pitch), -cos(fc_yaw) * cos(fc_pitch))
+        r = normalize(cross(f, vec3(0, 1, 0)))
+        sp = if key_down(.shift): 300.0 else: 40.0
+        fc_pos += (f * act.move.y + r * act.move.x) * f32(sp * dt)
+        # (characters still breathe and move, fires burn, for looking at them)
+        elements_update(dt, fc_pos)
+        fx_update(dt)
+        hero_animate(dt, 0.0)
+        if __bolt_at > 0: storm_bolt(dt)
+        old_man_update(dt)
+        # Inspection skips enemy AI, but ambient gestures still need their clock.
+        loop mut e in enemies: e.anim_t += dt
+        enemy_anim_update(dt)
+        wildlife_update(dt)
+        wildlife_bugs(dt, fc_pos)
+        wildlife_animate(dt)
+        return
+    # hit-stop: the world holds still for a moment when a blow lands
+    hitstop = max(0.0, hitstop - dt)
+    wdt = dt * fight.time_scale * (if hitstop > 0.0: 0.05 else: 1.0)
+    cam_open_ground = f64(length(pl.pos - SOR_MOUTH_IN)) > 60.0
+    cave_mouth = SOR_MOUTH_IN
+    cave_in = normalize(v3(-1128.0, 0.0, 1884.0) - vec3(SOR_MOUTH_IN.x, 0, SOR_MOUTH_IN.z))
+    indoor_haze = if shr_cur < 0: vec3(0.05, 0.1, 0.17) else: [vec3(0.05, 0.1, 0.17), vec3(0.09, 0.09, 0.11), vec3(0.03, 0.15, 0.11), vec3(0.14, 0.17, 0.22)][shr_cur % 4]
+    ui.temp = approach(ui.temp, temp_feel, 0.5, dt)
+    cpu_mark("story_update")
+    story_update(dt)
+    cpu_mark("shrines_update")
+    shrines_update(wdt)
+    # Refresh pot eligibility before choosing this frame's interaction.
+    loop pu in __pot_us: usables[pu].enabled = __cook_t <= 0.0 and inv.held.len() > 0 and cooking_pot_lit(usables[pu].pos)
+    if inv.held.len() > 0:
+        fight = Fight()
+        if act.drop or act.jump or act.attack or act.throw_ or act.bow or act.lock or act.slot >= 0 or pl.state != .ground:
+            cooking_drop_held()
+            # A swapped pad jump/drop button releases the materials without jumping.
+            if act.drop: act.jump = false
+    # the action button: use what is in front, or pick up what lies at the feet
+    ui.prompt = ""
+    # (standing in flames is no time to be offered the cooking pot)
+    in_flames = grass_fire_near(pl.pos, 2.0)
+    loop ti in 0.. and tf in tent_fire:
+        if tf > 0.0 and f64(length(camp_tents[ti] - pl.pos)) < 4.0: in_flames = true
+    if pl.state == .ground:
+        ui_i = usable_near(pl.pos, forward_of(pl.face))
+        wi = nearest_item(pl.pos + vec3(0, 0.3, 0), 1.6)
+        if inv.held.len() > 0: ui.prompt = if ui_i >= 0 and __pot_us.contains(ui_i): "Cook" else: "Drop"
+        else if in_flames: ui.prompt = ""
+        else if ui_i >= 0: ui.prompt = usables[ui_i].prompt
+        # (not in the thick of a fight: the button still picks up, the prompt stays quiet)
+        else if wi >= 0 and not in_combat() and fight.act == .idle: ui.prompt = "Pick up"
+        # (behind the raised shield the button is the perfect guard, not a pickup)
+        if act.interact and fight.act != .guard:
+            if inv.held.len() > 0:
+                if ui_i >= 0 and __pot_us.contains(ui_i): use_it(ui_i)
+                else: cooking_drop_held()
+                act.interact = false
+            else if ui_i >= 0: use_it(ui_i)
+            else if wi >= 0:
+                id = witems[wi].id
+                if pickup_item(wi):
+                    ui_pickup(item(id).name)
+                    play(sfx_click(), 0.4)
+    if act.slot >= 0: use_slot(act.slot)
+    cpu_mark("player_update")
+    player_update(wdt)
+    water_swimmer_update(wdt, pl.pos, pl.vel, pl.state == .swim, pl.water_y)
+    if water_wade_ring: fx_wade(pl.pos, water_wade_level(), pl.vel, water_wade_enter)
+    cpu_mark("combat_update")
+    combat_update(wdt, __combat_target, enemies.len() + 1)
+    cpu_mark("hero_animate")
+    hero_animate(wdt, (if story.beat == .wake: 1.0 - clamp(story.t / 3.5, 0.0, 1.0) else: 0.0))
+    hero_blade_hits()
+    blade_debug()
+    cpu_mark("player_torch_update")
+    player_torch_update(wdt, torch_lit)
+    cpu_mark("enemies_update")
+    enemies_update(wdt, env.night > 0.5)
+    cpu_mark("wildlife_update")
+    wildlife_update(wdt)
+    cpu_mark("critters_update")
+    critters_update(wdt)
+    cpu_mark("wildlife_bugs")
+    wildlife_bugs(wdt, sc.cam)
+    cpu_mark("arrows_update")
+    arrows_update(wdt)
+    # hostile arrows hit the player
+    loop mut a in arrows:
+        if a.alive and a.hostile and a.stuck <= 0.0 and f64(length(a.pos - (pl.pos + vec3(0, 1.0, 0)))) < 0.7:
+            hit_player(int(a.damage), a.pos - a.vel * 0.05, 2.0)
+            a.alive = false
+    cpu_mark("items_physics")
+    items_physics(wdt)
+    if __fire_test and frame_number() > 5:
+        __fire_test = false
+        f = forward_of(pl.face)
+        # (the wind blowing from it toward him: the front comes at him; with the wind across or
+        # away it ran off from him and he never met it)
+        env.wind = vec2(-f.x, -f.z) * f32(length(env.wind))
+        # (on the ground there: at his height, over the slope falling away, it was out of reach of the grass)
+        loop k in [0..5):
+            q = pl.pos + f * f32(9.0 + f64(k)) + v3(random(-1.0, 1.0), 0.0, random(-1.0, 1.0))
+            q.y = f32(height_at(f64(q.x), f64(q.z)) + 0.3)
+            ignite_at(q)
+    cpu_mark("elements_update")
+    elements_update(wdt, sc.cam)
+    cpu_mark("old_man_fire")
+    old_man_fire(wdt)
+    cpu_mark("fx_update")
+    fx_update(wdt)
+    cpu_mark("fx_rain_ground")
+    fx_rain_ground(sc.cam, wdt, env.indoor > 0.5)
+    cpu_mark("chests_update")
+    chests_update(dt)
+    cam.aiming = fight.act == .aim
+    cpu_mark("camera_update")
+    camera_update(dt)
+    cam_debug()
+    cpu_mark("ui_update")
+    ui_update(dt)
+    cpu_mark("old_man_update")
+    old_man_update(wdt)
+    cpu_mark("hero_wet_update")
+    hero_wet_update(wdt, (if env.indoor > 0.5 or not rain_exposed(pl.pos + vec3(0, 1.6, 0)): 0.0 else: env.rain), pl.state == .swim)
+    charge_fx(dt)
+    cpu_mark("swing_trail")
+    swing_trail()
+    cpu_mark("enemy_anim_update")
+    enemy_anim_update(wdt)
+    cpu_mark("combat_presentation_clear")
+    combat_presentation_clear()
+    cpu_mark("wildlife_animate")
+    wildlife_animate(wdt)
+    cpu_mark("play_events")
+    play_events()
+    cpu_mark("storm_bolt")
+    storm_bolt(dt)
+    cpu_mark("check_places")
+    check_places(dt)
+    post.hurt = max(0.0, post.hurt - dt * 2.0)
+    if pl.state == .ground or pl.state == .cutscene:
+        contact_shadows.push(vec4(pl.pos.x, pl.pos.y, pl.pos.z, 0.42))
+        # Small pools at the planted soles stay attached on snow/slopes even with low sun.
+        if pl.state == .ground and hero_motion.initialized:
+            loop foot in hero_motion.feet:
+                if foot.planted and foot.weight > 0.5:
+                    p = foot.anchor
+                    contact_shadows.push(vec4(p.x, p.y + 0.04, p.z, 0.22))
+    # the cave mouth: the daylight beyond is seen from the passage; shafts of it slant in
+    see_out_from = SOR_MOUTH_IN
+    if f64(length(sc.cam - SOR_MOUTH_IN)) < 30.0 and env.night < 0.5:
+        shafts.push(vec4(SOR_MOUTH_IN.x - 4.0, SOR_MOUTH_IN.y - 0.5, SOR_MOUTH_IN.z + 3.0, 1.6))
+        if random() < dt * 8.0: emit(.glow, SOR_MOUTH_IN + v3(random(-6.0, 2.0), random(0.0, 3.0), random(-1.0, 6.0)), v3(random(-0.05, 0.05), -0.05, random(-0.05, 0.05)), 4.0, 0.025, rgba(1.0, 0.95, 0.8, 0.5))
+    # a low mist lies over the floor of the chamber he wakes in
+    # up the cave toward the mouth: dust turning in the daylight, and shafts of it falling through
+    # cracks in the roof over the last stretch
+    dmo = f64(length(sc.cam - SOR_MOUTH_IN))
+    if dmo < 35.0 and env.night < 0.5:
+        if random() < dt * 25.0:
+            q = mix(sc.cam, SOR_MOUTH_IN, f32(random(0.2, 0.9))) + v3(random(-1.8, 1.8), random(-0.5, 2.5), random(-1.8, 1.8))
+            emit(.dust, q, v3(random(-0.05, 0.05), random(-0.03, 0.06), random(-0.05, 0.05)), random(3.0, 5.0), random(0.015, 0.03), rgba(1.0, 0.88, 0.62, f32(0.5 * smoothstep(35.0, 10.0, dmo) * smoothstep(4.0, 12.0, dmo))))
+        loop sk in [0..3):
+            fk = [0.25, 0.45, 0.65][sk]
+            sp_ = mix(SOR_MOUTH_IN, v3(-1128.0, 237.0, 1884.0), f32(fk * 0.4)) + v3([0.6, -0.8, 0.3][sk], -1.0, [0.4, -0.3, 0.7][sk])
+            shafts.push(vec4(sp_.x, sp_.y, sp_.z, f32(0.9 * smoothstep(40.0, 15.0, dmo))))
+    # motes of the pool's light rising slowly through the chamber, drifting, winking out
+    if f64(length(sc.cam - SOR_BED)) < 25.0 and random() < dt * 9.0:
+        emit(.glow, SOR_BED + v3(random(-3.5, 3.5), random(0.0, 0.6), random(-3.5, 3.5)), v3(random(-0.06, 0.06), random(0.15, 0.35), random(-0.06, 0.06)), random(4.0, 7.0), random(0.012, 0.028), rgba(0.18, 0.5, 0.75, 0.5))
+    if f64(length(sc.cam - SOR_BED)) < 25.0 and random() < dt * 5.0:
+        emit(.smoke, SOR_BED + v3(random(-6.0, 6.0), random(-0.3, 0.1), random(-6.0, 6.0)), v3(random(-0.08, 0.08), 0.02, random(-0.08, 0.08)), random(6.0, 9.0), random(1.4, 2.4), rgba(0.5, 0.72, 0.9, 0.1), 0.0, 0.1)
+    # Combat focus follows flurry timing; environment grading is shared above.
+    post_focus = approach(post_focus, (if fight.act == .flurry: 1.0 else: 0.0), 6.0, dt)
+    # music follows the situation
+    if story.title_done and story.beat != .title and story.beat != .tower_rise:
+        mood = if in_combat(): Mood.combat else: (if env.indoor > 0.5: Mood.shrine else: (if env.night > 0.6: Mood.field_night else: (if is_snow_area(f64(pl.pos.x), f64(pl.pos.z)): Mood.snow else: Mood.field_day)))
+        if __last_place == "Temple of Thyme" or __last_place == "Eastern Abbey": mood = (if in_combat(): Mood.combat else: Mood.ruins)
+        if __last_place == "Forest of Sprites" and mood == .field_day: mood = .forest
+        # (the low sun of morning and evening has its own tune)
+        if mood == .field_day and post_golden > 0.35: mood = .field_golden
+        if mood == .field_day or mood == .field_golden:
+            if env.rain > 0.5: mood = .field_rain
+        music_mood(mood)
+        near_foes = false
+        loop e in enemies:
+            if e.state != .gone and e.state != .dead and e.state != .buried and e.kind != .guardian and f64(length(e.pos - pl.pos)) < 25.0: near_foes = true
+        combat_watch(in_combat(), near_foes)
+    near_fire = fire_audio_level(pl.pos)
+    # water close by (lapping, the river's rush)
+    near_water = 0.0
+    if frame_number() % 10 == 0:
+        loop k in [0..8):
+            a = f64(k) / 8.0 * TAU
+            if water_level(f64(pl.pos.x) + cos(a) * 10.0, f64(pl.pos.z) + sin(a) * 10.0) != none: near_water += 0.06
+        water_snd = near_water
+    amb_lift = if seq.events.len() == 0 and seq.mood != .combat: 1.0 else: 0.0
+    amb_opening = not story.title_done and (story.beat == .inside or story.beat == .explore or story.beat == .title)
+    amb_biome = if snowing: 2 else: (if __last_place == "Forest of Sprites": 1 else: (if __last_place == "Temple of Thyme" or __last_place == "Eastern Abbey": 3 else: 0))
+    shrine_hum = if shr_cur >= 0: 0.35 else: 0.12
+    sfx_room = env.indoor * (if shr_cur >= 0: 1.0 else: 0.7)
+    sfx_room_size = if shr_cur >= 0: 1.0 else: 0.5
+    cpu_mark("ambient_update")
+    ambient_update(dt, env.indoor, f64(pl.pos.y), near_fire, water_snd, not rain_exposed(pl.pos + vec3(0, 1.6, 0)))
+    if pl.state == .dead and pl.st_t > 3.5:
+        # back to the last safe place, hearts restored
+        pl.hp = pl.hp_max
+        pl.pos = pl.last_safe
+        pl.vel = vec3(0,0,0)
+        pl.air_peak = f64(pl.pos.y)
+        pl.state = .ground
+        pl.st_t = 0.0
+        camera_snap()
+    hooks.grass_player = pl.pos
+    # cooking: kneel at the pot a moment, the prompt away until done
+    if __cook_t > 0.0:
+        __cook_t -= dt
+        pot_cook_t = max(0.0, __cook_t)
+        if random() < dt * 8.0: fx_steam(pot_cook_pos + vec3(0, 0.65, 0), 2)
+        if __cook_t <= 0.0:
+            if pl.state == .cutscene: pl.state = .ground
+            ui_pickup(item(__cook_dish).name)
+            item_jingle()
+            __cook_dish = ""
+    loop pu in __pot_us: usables[pu].enabled = __cook_t <= 0.0 and inv.held.len() > 0 and cooking_pot_lit(usables[pu].pos)
+    # a camp's chest opens once no monster of it stands within 25 m
+    if frame_number() % 15 == 0:
+        loop ci in __camp_chests:
+            free = true
+            loop e in enemies:
+                if e.state != .gone and e.state != .dead and e.state != .buried and f64(length(e.pos - chests[ci].pos)) < 25.0: free = false
+            usables[chests[ci].usable].enabled = free
+    hero_busy_clip = if __cook_t > 0.0: "Fixing_Kneeling" else: ""
+    music_still = if pl.speed < 0.3 and pl.state == .ground: music_still + dt else: 0.0
+    usables[give_u].enabled = count_of("spicy_steak") > 0 and old_man.visible and not old_man.glide and f64(length(old_man.pos - v3(-946.0, old_man.pos.y, 1883.5))) < 2.0
+    pl.can_surf = len(equipped_shield()) > 0
+    hooks.glow = vec3(0.3, 1.0, 2.6)
+    loop sh in shrines: hooks.named_glow[sh.name] = (if sh.activated: vec3(0.3, 1.0, 2.6) else: vec3(3.0, 1.1, 0.25))
+    hooks.named_glow["tower"] = tower_activation_glow()
+    hooks.named_glow["far_towers"] = (if story.t < 6.0 and story.beat == .tower_rise: vec3(3.0, 1.1, 0.25) else: vec3(0.3, 1.0, 2.6))
+    cpu_mark("story_render_hooks")
+    story_render_hooks()
+    # the local light: a lit torch in hand, else the nearest lit fire (they matter at dusk and night)
+    sc_lp = vec4(0, 0, 0, 0)
+    best = 45.0
+    loop b in bonfires:
+        d = f64(length(b.pos - pl.pos))
+        if b.lit and d < best:
+            best = d
+            fl = 1.0 + 0.12 * sin(elapsed() * 13.0 + f64(b.pos.x)) + 0.08 * sin(elapsed() * 31.0)
+            # (by night the fire is all the light there is: a wide warm pool round it)
+            sc_lp = vec4(b.pos.x, b.pos.y + 1.3, b.pos.z, f32(lerp(9.0, 20.0, env.night) * fl))
+            sc_lc = vec3(1.6, 0.66, 0.3) * f32(fl * lerp(1.0, 1.65, env.night))
+    # a grass fire: from the middle of the burning near by, as wide as it has spread
+    if flames.len() > 3:
+        fc = vec3(0, 0, 0)
+        fnum = 0
+        loop fm in flames:
+            q = cell_pos(fm.cell)
+            if f64(length(q - pl.pos)) < 40.0:
+                fc += q
+                fnum += 1
+        if fnum > 3:
+            fc = fc / f32(fnum)
+            spread = 0.0
+            loop fm in flames:
+                q = cell_pos(fm.cell)
+                if f64(length(q - pl.pos)) < 40.0: spread = max(spread, f64(length(q - fc)))
+            if f64(length(fc - pl.pos)) < best:
+                fl = 1.0 + 0.1 * sin(elapsed() * 11.0) + 0.06 * sin(elapsed() * 29.0)
+                sc_lp = vec4(fc.x, fc.y + 1.2, fc.z, f32(min(8.0 + spread * 1.1, 30.0) * fl))
+                sc_lc = vec3(1.8, 0.8, 0.3) * f32(fl * min(f64(fnum) / 12.0, 1.0) * lerp(1.0, 2.6, env.night))
+    if zone_at(pl.pos + vec3(0, 1, 0)) == "sor":
+        # the restoration pool lights the room
+        sc_lp = vec4(SOR_BED.x, SOR_BED.y + 1.4, SOR_BED.z, 8.0)
+        sc_lc = vec3(0.55, 1.15, 1.6) * f32(1.0 + 0.06 * sin(elapsed() * 1.3))
+        # up the passage, the day pours in at the mouth, warm on the rock
+        dm = f64(length(pl.pos - SOR_MOUTH_IN))
+        if dm < 45.0:
+            sc_lp = vec4(SOR_MOUTH_IN.x, SOR_MOUTH_IN.y + 1.5, SOR_MOUTH_IN.z, 42.0)
+            sc_lc = (env.sun_color * vec3(1.0, 0.9, 0.75) * 0.9 + env.sky_amb * 0.5) * f32(0.6 + 0.6 * smoothstep(45.0, 8.0, dm))
+    # (just out of the mouth the rock behind keeps that warm light a while, fading as he walks on:
+    # leaving the cave's zone had switched it off at once, the rock dropping from warm to dark blue
+    # in one frame, the step before the title)
+    if zone_at(pl.pos + vec3(0, 1, 0)) == "" and story.slate:
+        dmo = f64(length(pl.pos - SOR_MOUTH_IN))
+        if dmo < 30.0:
+            k = smoothstep(30.0, 6.0, dmo)
+            sc_lp = vec4(SOR_MOUTH_IN.x, SOR_MOUTH_IN.y + 1.5, SOR_MOUTH_IN.z, 42.0)
+            sc_lc = (env.sun_color * vec3(1.0, 0.9, 0.75) * 0.9 + env.sky_amb * 0.5) * f32(0.6 + 0.6 * smoothstep(45.0, 8.0, dmo)) * f32(k)
+    cpu_mark("shrines_light")
+    shrines_light(sc_lp, sc_lc)
+    if torch_lit:
+        tp = pl.pos + vec3(0, 1.6, 0) + forward_of(pl.face) * 0.4
+        sc_lp = vec4(tp.x, tp.y, tp.z, 8.0)
+        sc_lc = vec3(2.0, 0.95, 0.35) * f32(1.0 + 0.1 * sin(elapsed() * 17.0))
+    if env("BOTW_DEBUG") != none and frame_number() % 30 == 0: eprint("f{frame_number()} arrows={arrows.len()} inv={inv.arrows} act={fight.act} om={old_man.visible} {old_man.pos} {old_man.clip} face={pl.face:.2} spd={pl.speed:.2} camyaw={cam.yaw:.2} zone={zone_at(pl.pos + vec3(0, 1, 0))} terrain={use_terrain} ground={height_at(f64(pl.pos.x), f64(pl.pos.z)):.1} door1={story.door1:.2} door2={story.door2:.2} slate={story.slate} prompt={ui.prompt} beat={story.beat} t={story.t:.2} lift={hooks.tower_lift:.1} override={cam.override} blend={cam.blend:.2} pl={pl.pos} state={pl.state}")
+
+draw = ():
+    gpu_queue_wait()
+    # big windows: the 3D scene renders at 80% (the paint filter hides it), stepping down to 72%
+    # for a while when frames keep running late (two steps only: each change reallocates targets)
+    post.scale = if pixel_size().x > 1700.0: (if __low_res: 0.72 else: 0.8) else: (if __low_res: 0.9 else: 1.0)
+    if let scale = env("BOTW_SCALE"): post.scale = clamp(to_float(scale) ?? post.scale, 0.5, 1.0)
+    # (things between the camera and the player dissolve, but not in cutscenes)
+    veg_player = if free_cam or cam.override or cam.blend > 0.05: v3(0.0, -1000.0, 0.0) else: pl.pos
+    exposure = post.exposure
+    # Exposure lifts the entire strike frame while retaining the hue-preserving light flash.
+    if env.lightning > 0.88 and env.indoor < 0.5: post.exposure = exposure * (1.0 + env.lightning * 0.45)
+    if free_cam:
+        f = v3(sin(fc_yaw) * cos(fc_pitch), sin(fc_pitch), -cos(fc_yaw) * cos(fc_pitch))
+        render_world(fc_pos, fc_pos + f, 50.0)
+    else:
+        render_world(view_pos(), view_target(), view_fov())
+    post.exposure = exposure
+    cpu_mark("hud")
+    # (no HUD for the free camera: it is for looking)
+    ui.hide = ui.hide or free_cam
+    if not invui.open:
+        combat_hud()
+        w = equipped_weapon()
+        hud_gear.clear()
+        sh_ = equipped_shield()
+        if len(sh_) > 0 and not inv.slots.contains(sh_): hud_gear.push(SlotView(item(sh_).name, item(sh_).shape, item(sh_).color, 1, ""))
+        bw_ = equipped_bow()
+        if len(bw_) > 0 and not inv.slots.contains(bw_): hud_gear.push(SlotView(item(bw_).name, item(bw_).shape, item(bw_).color, inv.arrows, ""))
+        hud_draw(slot_views(), (if len(w) > 0: item(w).name else: ""))
+        cpu_mark("shrine_hud")
+        shrines_draw_2d()
+    cpu_mark("inventory_hud")
+    inventory_draw()
+    cpu_mark("story_hud")
+    if not invui.open: story_draw_2d()
+    gpu_queue_submit()
+    cpu_frame_end()
+    frame_stats_end()
+    if env("BOTW_DEBUG") != none and not invui.open: text("{fps():.0} fps  {pl.state}  {pl.speed:.1} m/s  {pl.pos.x:.0},{pl.pos.y:.0},{pl.pos.z:.0}", vec2(20, 690), 16, rgba(1, 1, 1, 0.7))
+
+
+# Scene culling and hidden parts leave some actor vertex/material paths cold.
+# Warm all loaded model/texture variants without moving actors or sampling RNG.
+character_warmup = ():
+    models = [ranger_m, hero_bare_m, boko_m, stalko_m, eagle_m, fox_m, gull_m]
+    loop m in fish_m: models.push(m)
+    rt = make_target(64, 64)
+    depth = make_depth_target_wh(64, 64)
+    camera = vec3(0, 0, 6)
+    vp = orthographic(-2.0, 2.0, -2.0, 2.0, 0.1, 20.0) * look_at(camera, vec3(0, 0, 0), vec3(0, 1, 0))
+    scene = cur_scene()
+    scene.vp = vp
+    scene.cam = camera
+    loop m in models:
+        if not m.ok: continue
+        center = (m.bmin + m.bmax) * 0.5
+        size = f32(3.0 / max(model_height(m), 0.1))
+        world = scaling(vec3(size, size, size)) * translation(-center)
+        sk = skin_rest(m)
+        bind_target(depth)
+        gl_opaque_state()
+        glColorMask(0, 0, 0, 0)
+        glDisable(GL_CULL_FACE)
+        glEnable(GL_POLYGON_OFFSET_FILL)
+        glPolygonOffset(1.5, 2.0)
+        glClear(GL_DEPTH_BUFFER_BIT)
+        draw_character_shadow(m, world, sk, vp)
+        glDisable(GL_POLYGON_OFFSET_FILL)
+        glColorMask(1, 1, 1, 1)
+        loop variant in [0..m.variants):
+            bind_target(rt)
+            gl_opaque_state()
+            glClearColor(0, 0, 0, 0)
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            draw_character(m, world, sk, scene, CharParams(variant = variant))
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    free_target(depth)
+    free_target(rt)
+    gl_restore_2d()
+
+# Submit representative shader/target/material paths during loading, without presenting
+# a frame or advancing story/simulation. The driver can specialize on the first draw.
+# Temporarily selecting a shrine warms its monk/dome; restore the selection afterwards.
+render_warmup = ():
+    started = time()
+    ct = cpu_timing
+    gt = gpu_timing
+    cpu_timing = false
+    gpu_timing = false
+    gpu_vsync_check()
+    saved_sc = sc
+    saved_shrine = shr_cur
+    saved_alpha = story.title_alpha
+    post.scale = if pixel_size().x > 1700.0: 0.8 else: 1.0
+    if let scale = env("BOTW_SCALE"): post.scale = clamp(to_float(scale) ?? post.scale, 0.5, 1.0)
+    story_assets_init()
+    ui_assets_init()
+    hero_animate(0.0, (if story.beat == .wake: 1.0 else: 0.0))
+    enemy_anim_update(0.0)
+    wildlife_animate(0.0)
+    vegetation_warmup()
+    character_warmup()
+    # Outdoor view (terrain, vegetation, grass, sky, water, characters, post).
+    p = v3(-1000.0, height_at(-1000.0, 1620.0) + 3.0, 1620.0)
+    render_world(p, p + vec3(0, 0, 1), 50.0)
+    trail_warmup(sc.vp, p + vec3(0, 0, 3))
+    # The wet terrain is a separate program; link completion alone does not warm
+    # its driver draw specialization. Compile that path before the first storm.
+    saved_wet = env.wet
+    saved_shadow_frame = shadow_frame
+    env.wet = 1.0
+    render_world(p, p + vec3(0, 0, 1), 50.0)
+    env.wet = saved_wet
+    # Preserve the original alternating cascade schedule for the remaining
+    # warmup views and the first visible frames.
+    shadow_frame = saved_shadow_frame
+    # Shrine material, mechanisms, the monk's translucent dome, and the cave pool.
+    shr_cur = 0
+    p = srec[0].o + vec3(0, 2, -4)
+    render_world(p, p + vec3(0, 0, -1), 50.0)
+    shr_cur = -1
+    render_world(SOR_BED + vec3(0, 2, 4), SOR_BED, 50.0)
+    shr_cur = saved_shrine
+    # Both staggered shadow cascades belong to the starting camera before play begins.
+    loop k in [0..2): render_world(view_pos(), view_target(), view_fov())
+    story.title_alpha = 1.0
+    if not invui.open: story_draw_2d()
+    flush()
+    story.title_alpha = saved_alpha
+    glFinish()
+    shader_load_cache_commit()
+    sc = saved_sc
+    cpu_timing = ct
+    gpu_timing = gt
+    if env("BOTW_LOADTIME") != none: eprint("  render_warmup {time() - started:.3}s")

@@ -1,0 +1,51 @@
+# Headless spatial/material checks; screenshots measure the final display result.
+use '../game/shrines.jo'
+use '../game/build.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+from '../game/shrines.jo' import __shrine_fixture_light, __pendants, SHR_SKY, SHR_GROUND, SHR_HAZE, __shrine_hook_names, __shrine_hook_names_init
+checks = 0
+loop id in [0..4):
+    lamp = __pendants[id][0]
+    o = srec[id].o
+    sample = (p: vec3, glow: f32 = 0.0) -> BVert:
+        b = Builder()
+        b.verts.push(BVert(o + p, vec3(0, 1, 0), vec4(0.28, 0.32, 0.37, 1), vec4(0, 0, glow, 0)))
+        __shrine_fixture_light(b)
+        b.verts[0]
+    pool = sample(vec3(lamp.x, lamp.w, lamp.z), 0.0)
+    shadow = sample(vec3(0, -8, 1), 0.0)
+    trace = sample(vec3(lamp.x, lamp.w, lamp.z), 0.4)
+    assert(pool.color == shadow.color and pool.color == trace.color, "lighting cannot change stone pigment")
+    assert(length(pool.light) > 0.7 and length(shadow.light) < 0.001, "bounded pool must leave distant shadow uncoloured")
+    assert(length(trace.light) < 0.001, "accent cannot colour blue emissive traces")
+    shr_cur = id
+    pl.pos = o + vec3(0, 0, 0)
+    lp = vec4(0, 0, 0, 0)
+    lc = vec3(0, 0, 0)
+    assert(shrines_light(lp, lc))
+    assert(lc.z > lc.x, "lift light keeps its own cool colour")
+    pl.pos = o + lamp.xyz - vec3(0, 0.2, 0)
+    assert(shrines_light(lp, lc))
+    assert(length(lp.xyz - o - lamp.xyz) < 0.01, "accent on player belongs to a real fixture")
+    checks += 6
+    print("PASS lighting {srec[id].name}: pigment preserved, bounded pool, blue traces, cool lift, local pendant")
+assert(SHR_SKY.z > SHR_SKY.x and SHR_GROUND.z > SHR_GROUND.x and SHR_HAZE.z > SHR_HAZE.x)
+print("PASS lighting: {checks + 1} checks; cool shared ambient and haze")
+
+# Steady simulation ticks retain name strings; edits invalidate cached keys.
+__shrine_hook_names_init()
+dais = __shrine_hook_names[0].dais
+goal = __shrine_hook_names[0].goal
+assert(goal == srec[0].key + "_goal" and __shrine_hook_names[0].hidden.contains(goal), "destination shares the cached visibility keys")
+loop i in [0..1000): __shrine_hook_names_init()
+assert(data(dais) == data(__shrine_hook_names[0].dais), "steady ticks reuse immutable strings")
+assert(data(goal) == data(__shrine_hook_names[0].goal), "steady ticks reuse the destination key too")
+saved_name = srec[0].name
+srec[0].name = "cache-fixture"
+__shrine_hook_names_init()
+assert(__shrine_hook_names[0].terminal == "cache-fixture_terminal")
+srec[0].name = saved_name
+__shrine_hook_names_init()
+assert(__shrine_hook_names[0].terminal == saved_name + "_terminal")
+print("PASS shrine hook names: steady reuse and changed-name invalidation")

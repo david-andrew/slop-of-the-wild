@@ -1,0 +1,32 @@
+# Temple access and the story's lookout, without a graphics context.
+use '../game/structures.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+
+setup = ():
+    hf.n = 128
+    hf.cell = 2.0
+    hf.x0 = -946.0
+    hf.z0 = 1873.0
+    hf.h = fill(f32(221), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    temple()
+setup()
+
+p = (x: f64, y: f64, z: f64) -> vec3: lp(TEMPLE, TEMPLE_ROT, x, y, z)
+inward = transform_dir(rotation_y(TEMPLE_ROT), v3(0.0, 0.0, -1.0))
+# A player can pass through the tower into the nave.
+loop x in [-1.0, 0.0, 1.0]:
+    hit = raycast(p(x, 2.5, 46.0), inward, 22.0, true, false)
+    assert(not hit.hit)
+# The old man's position still rests on the original deck at 43 m.
+q = p(4.0, 43.0, 32.0)
+g = ground_at(f64(q.x), f64(q.z), f64(q.y), 0.1)
+assert(abs(g.y - f64(q.y)) < 0.01 and g.collider >= 0)
+# The tower's corner ribs are continuous climbable stone up to the belfry.
+loop y in [2.0, 9.0, 18.0, 28.0, 35.0, 40.0]:
+    probe = wall_probe(p(4.8, y, 45.0), inward, 5.0)
+    assert(probe.hit and probe.climbable)
+print("architecture: open portal, climbable tower, story lookout PASS")

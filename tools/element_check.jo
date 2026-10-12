@@ -1,0 +1,63 @@
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/build.jo'
+use '../game/structures.jo'
+use '../game/matter.jo'
+
+# Roof holes, sloped faces, moving pieces, and rain on a lit torch, without a window.
+checks = 0
+check = (ok: bool, name: str):
+    if not ok:
+        eprint("FAIL: {name}")
+        exit(1)
+    checks += 1
+
+hf.n = 32
+hf.cell = 200.0
+hf.x0 = -4000.0
+hf.z0 = -2000.0
+hf.h = fill(f32(221), hf.n * hf.n)
+temple()
+p = (x: f64, y: f64, z: f64) -> vec3: lp(TEMPLE, TEMPLE_ROT, x, y, z)
+from_ = p(0.0, 1.6, 45.0)
+to_ = p(0.0, 1.6, 25.0)
+check(not raycast(from_, normalize(to_ - from_), 20.0, true, false).hit, "open Temple passage")
+check(not rain_exposed(p(0.0, 1.6, -20.0)), "intact nave roof")
+check(rain_exposed(p(4.0, 1.6, -0.5)), "open nave bay")
+check(not rain_exposed(p(13.0, 1.6, -15.5)), "sloping aisle roof")
+check(rain_exposed(p(13.0, 1.6, 12.5)), "missing aisle roof")
+check(rain_exposed(p(0.0, 34.0, -20.0)), "above the roof")
+q = p(0.0, 1.6, -20.0)
+check(rain_streak_height(f64(q.x), f64(q.z)) > f64(q.y), "cached intact roof")
+q = p(4.0, 1.6, -0.5)
+check(rain_streak_height(f64(q.x), f64(q.z)) < f64(q.y), "cached open bay")
+o = vec3(200, 221, 200)
+abbey(o, 0.4, 12.0)
+check(rain_exposed(o + vec3(0, 1.6, 0)), "ruins open to the sky")
+check(not rain_exposed(lp(o, 0.4, 0.0, 1.6, 6.0)), "shelter under a ruined arch")
+begin_named("test_lift")
+box(v3(100.0, 10.0, 100.0), vec3(4, 1, 4), 0.0, vec4(1, 1, 1, 1), vec4(0, 0, 0, 0), false)
+end_named()
+rain_sync({}, {"test_lift": 8.0})
+rain_view_prepare(vec3(100, 2, 100), 1)
+check(abs(rain_view_height(100.0, 100.0) - 19.0) < 0.01, "nearby raised roof cache")
+check(abs(rain_cover_height(100.0, 100.0) - 19.0) < 0.01, "raised roof")
+check(abs(rain_streak_height(100.0, 100.0) - 19.0) < 0.01, "cached raised roof")
+rain_sync({"test_lift": true}, {})
+rain_view_prepare(vec3(100, 2, 100), 16)
+check(rain_view_height(100.0, 100.0) < 0.0, "nearby hidden roof cache")
+check(rain_exposed(vec3(100, 1, 100)), "hidden roof")
+rain_sync({}, {})
+q = p(0.0, 1.6, -20.0)
+rain_view_prepare(q, 17)
+check(rain_view_height(f64(q.x), f64(q.z)) > f64(q.y), "nearby nave roof cache")
+q = p(4.0, 1.6, -0.5)
+check(rain_view_height(f64(q.x), f64(q.z)) < f64(q.y), "nearby nave hole cache")
+s = Elem(burning = -1.0)
+q = p(0.0, 1.6, -20.0)
+loop k in [0..600): react(TORCH, s, Exposure(rain = (if rain_exposed(q): 0.75 else: 0.0)), 1.0 / 60.0)
+check(burning(s) and s.wet == 0.0, "torch stays dry under a roof")
+q = p(4.0, 1.6, -0.5)
+check(react(TORCH, s, Exposure(rain = (if rain_exposed(q): 0.75 else: 0.0)), 1.0 / 60.0) == .put_out, "rain through a hole douses a torch")
+print("{checks} element checks passed")

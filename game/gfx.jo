@@ -1,0 +1,374 @@
+use 'shader_load.jo'
+# Rendering core: shader patching, HDR render targets, full-screen passes, static instancing.
+
+# ---- GLSL features the shader translator lacks: marker functions whose bodies are swapped ----
+# (shader(vs, fs) gives GLSL text; these functions are rewritten in it before compiling)
+glsl_discard = (cond: bool) -> f32: 0.0
+glsl_fetch = (t: Texture, x: int, y: int) -> vec4: vec4(0, 0, 0, 0)
+glsl_texel_size = (t: Texture) -> vec2: vec2(0, 0)
+glsl_lod = (t: Texture, uv: vec2, lod: f32) -> vec4: vec4(0, 0, 0, 0)
+glsl_dither = (p: vec2) -> f32: 0.0
+glsl_pixel_dither = (unused: f32) -> f32: 0.0
+glsl_occluder_dither = (unused: f32) -> f32: 0.0
+glsl_instance = (z: f32) -> f32: 0.0
+glsl_facet = (p: vec3) -> vec3: vec3(0, 1, 0)
+glsl_vertex = (z: f32) -> f32: 0.0
+glsl_leaf_edge = (alpha: f32, cutoff: f32) -> f32: 0.0
+
+__patch_bodies: {str: str} = {
+    "glsl_discard": "    if ($0) discard;\n    return 0.0;\n",
+    "glsl_leaf_edge": "    float w = clamp(fwidth($0) * 0.60, 0.015, 0.12);\n    float coverage = smoothstep($1 - w, $1 + w, $0);\n    float d = fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(0.06711056, 0.00583715))));\n    if (coverage < d) discard;\n    return coverage;\n",
+    "glsl_texel_size": "    return vec2(1.0) / vec2(textureSize($0, 0));\n",
+    "glsl_fetch": "    return texelFetch($0, ivec2($1, $2), 0);\n",
+    "glsl_lod": "    return textureLod($0, $1, $2);\n",
+    "glsl_instance": "    return float(gl_InstanceID) + $0;\n",
+    "glsl_vertex": "    return float(gl_VertexID) + $0;\n",
+    "glsl_facet": "    return normalize(cross(dFdx($0), dFdy($0)));\n",
+    # A balanced 4x4 threshold tile is integrated exactly by the occluder resolve.
+    # Leaf cutouts/LOD keep their existing pattern; only camera dissolves use this.
+    "glsl_occluder_dither": "    int x = int(gl_FragCoord.x) & 3;\n    int y = int(gl_FragCoord.y) & 3;\n    int lo = ((x & 1) ^ (y & 1)) * 2 + (y & 1);\n    int hi = ((x >> 1) ^ (y >> 1)) * 2 + (y >> 1);\n    return (float(lo * 4 + hi) + 0.5) / 16.0;\n",
+    "glsl_pixel_dither": "    return fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(0.06711056, 0.00583715))));\n",
+    "glsl_dither": "    return fract(52.9829189 * fract(dot($0, vec2(0.06711056, 0.00583715))));\n",
+}
+
+__patch_glsl = (src: str) -> str:
+    out = src
+    loop name, body in __patch_bodies:
+        key = " f_" + name + "_"
+        at = find(out, key)
+        loop at >= 0:
+            # only definitions: the line starts with the return type (calls are indented)
+            ls = at
+            loop ls > 0 and out[ls - 1] != '\n': ls -= 1
+            if out[ls] == ' ':
+                at = find(out, key, at + 1)
+                continue
+            lp = find(out, "(", at)
+            rp = find(out, ")", lp)
+            params = split(out[lp + 1..rp), ",")
+            b = body
+            loop i in 0.. and p in params:
+                ws = words(trim(p))
+                b = replace(b, "$" + "{i}", ws[ws.len() - 1])
+            open_ = find(out, "{{\n", rp)
+            close_ = find(out, "\n}\n", open_)
+            out = out[..open_ + 2) + b + out[close_ + 1..]
+            at = find(out, key, open_)
+    out
+
+make_sh = (src: ShaderSource) -> Shader:
+    # Establish the runtime context before extension/cache discovery. The portable
+    # loader retains ShaderSource's CPU functions for the software/web fallback.
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_ASSET_CHECK") != none: return Shader()
+    __gfx_init_gl_only()
+    if env("BOTW_GPU_FRAME_LOG") != none: eprint("shader request: frame {frame_number()}")
+    shader_load_finish(shader_load_submit(src))
+
+# ---- extra GL entry points ----
+@lib("libGLESv2.so.2")
+extern glBlitFramebuffer = (sx0: i32, sy0: i32, sx1: i32, sy1: i32, dx0: i32, dy0: i32, dx1: i32, dy1: i32, mask: u32, filter: u32)
+@lib("libGLESv2.so.2")
+@symbol("glBindFramebuffer")
+extern gl_bind_fb_target = (target: u32, f: u32)
+@lib("libGLESv2.so.2")
+extern glTexParameterf = (target: u32, pname: u32, v: f32)
+@lib("libGLESv2.so.2")
+extern glPolygonOffset = (factor: f32, units: f32)
+
+const GL_RGBA16F_ = 0x881A
+const GL_EQUAL = 0x0202
+const GL_R32F = 0x822E
+const GL_R16F = 0x822D
+const GL_RGBA32F = 0x8814
+const GL_RG16F = 0x822F
+const GL_RG = 0x8227
+const GL_POLYGON_OFFSET_FILL = 0x8037
+const GL_READ_FRAMEBUFFER = 0x8CA8
+const GL_DRAW_FRAMEBUFFER = 0x8CA9
+const GL_TEXTURE_MAX_ANISOTROPY = 0x84FE
+const GL_TEXTURE_COMPARE_MODE = 0x884C
+
+# ---- render targets ----
+struct Target:
+    fbo = 0
+    color = Texture(0, 0, 0)
+    depth = Texture(0, 0, 0)
+    w = 0
+    h = 0
+
+__tex_params = (filter: int, wrap: int):
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(filter))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, i32(filter))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, i32(wrap))
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, i32(wrap))
+
+# a color texture of a given format (no data)
+color_texture = (w: int, h: int, internal: int, format: int, ty: int, filter: int = GL_LINEAR) -> Texture:
+    id = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(id))
+    gl_tex_image(w, h, internal, format, ty, null, 0)
+    __tex_params(filter, GL_CLAMP_TO_EDGE)
+    Texture(id, w, h)
+
+depth_texture = (w: int, h: int) -> Texture:
+    id = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(id))
+    gl_tex_image(w, h, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, null, 0)
+    __tex_params(GL_NEAREST, GL_CLAMP_TO_EDGE)
+    Texture(id, w, h)
+
+# color (hdr: half floats) + a depth texture that later passes can read
+make_target = (w: int, h: int, hdr: bool = true, with_depth: bool = true, filter: int = GL_LINEAR) -> Target:
+    t = Target(w = w, h = h)
+    if hdr: t.color = color_texture(w, h, GL_RGBA16F_, GL_RGBA, GL_HALF_FLOAT, filter)
+    else: t.color = color_texture(w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, filter)
+    t.fbo = gl_create_framebuffer()
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(t.fbo))
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(t.color.id), 0)
+    if with_depth:
+        t.depth = depth_texture(w, h)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, u32(t.depth.id), 0)
+    t
+
+# a depth-only target of any size
+make_depth_target_wh = (w: int, h: int) -> Target:
+    t = Target(w = w, h = h)
+    t.depth = depth_texture(w, h)
+    t.fbo = gl_create_framebuffer()
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(t.fbo))
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, u32(t.depth.id), 0)
+    t
+
+# a depth-only target (shadow maps)
+make_depth_target = (size: int) -> Target:
+    t = Target(w = size, h = size)
+    t.depth = depth_texture(size, size)
+    t.fbo = gl_create_framebuffer()
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(t.fbo))
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, u32(t.depth.id), 0)
+    t
+
+free_target = (t: Target):
+    if t.fbo == 0: return
+    gl_delete_framebuffer(t.fbo)
+    if t.color.id != 0: gl_delete_texture(t.color.id)
+    if t.depth.id != 0: gl_delete_texture(t.depth.id)
+
+bind_target = (t: Target):
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(t.fbo))
+    glViewport(0, 0, i32(t.w), i32(t.h))
+
+# textures from data
+float_texture = (w: int, h: int, values: f32[], filter: int = GL_NEAREST) -> Texture:
+    id = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(id))
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+    gl_tex_image(w, h, GL_R32F, GL_RED, GL_FLOAT, data(values) as *u8, values.len() * 4)
+    __tex_params(filter, GL_CLAMP_TO_EDGE)
+    Texture(id, w, h)
+
+rgba32f_texture = (w: int, h: int, values: f32[]) -> Texture:
+    id = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(id))
+    gl_tex_image(w, h, GL_RGBA32F, GL_RGBA, GL_FLOAT, data(values) as *u8, values.len() * 4)
+    __tex_params(GL_NEAREST, GL_CLAMP_TO_EDGE)
+    Texture(id, w, h)
+
+update_rgba32f = (t: Texture, values: f32[]):
+    glBindTexture(GL_TEXTURE_2D, u32(t.id))
+    gl_tex_sub_image(0, 0, t.width, t.height, GL_RGBA, GL_FLOAT, data(values) as *u8, values.len() * 4)
+
+# RGBA8 bytes, optionally mipmapped and repeating
+bytes_texture = (w: int, h: int, px: u8[], mip: bool = true, repeat: bool = true) -> Texture:
+    id = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(id))
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+    gl_tex_image(w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, data(px), px.len())
+    wrap = GL_CLAMP_TO_EDGE
+    if repeat: wrap = GL_REPEAT
+    __tex_params(GL_LINEAR, wrap)
+    if mip:
+        glGenerateMipmap(GL_TEXTURE_2D)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(GL_LINEAR_MIPMAP_LINEAR))
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0)
+    Texture(id, w, h)
+
+# ---- full-screen passes ----
+struct FsVert:
+    pos: vec2
+
+fs_tri: Mesh
+__fs_ready = false
+fullscreen_mesh = () -> Mesh:
+    if not __fs_ready:
+        __fs_ready = true
+        fs_tri = mesh([FsVert(vec2(-1, -1)), FsVert(vec2(3, -1)), FsVert(vec2(-1, 3))])
+    fs_tri
+
+# ---- static instancing: the instance buffer is uploaded once (or when it changes) ----
+struct InstBuf:
+    vbo = 0
+    count = 0
+    stride = 0
+
+inst_buffer[I] = (items: I[]) -> InstBuf:
+    b = InstBuf(vbo = gl_create_buffer(), count = items.len(), stride = size_of(I))
+    glBindBuffer(GL_ARRAY_BUFFER, u32(b.vbo))
+    glBufferData(GL_ARRAY_BUFFER, max(items.len(), 1) * b.stride, data(items) as *u8, GL_STATIC_DRAW)
+    b
+
+inst_uploads = 0
+inst_bytes = 0
+
+inst_update[I] = (b: mut InstBuf, items: I[]):
+    glBindBuffer(GL_ARRAY_BUFFER, u32(b.vbo))
+    glBufferData(GL_ARRAY_BUFFER, max(items.len(), 1) * size_of(I), data(items) as *u8, GL_DYNAMIC_DRAW)
+    b.count = items.len()
+    inst_uploads += 1
+    inst_bytes += items.len() * size_of(I)
+
+draw_static[U] = (sh: Shader, m: Mesh, b: InstBuf, params: U, first: int = 0, count: int = -1):
+    n = count
+    if n < 0: n = b.count - first
+    if n <= 0: return
+    p = params
+    glUseProgram(u32(sh.prog))
+    __draw_uniforms(sh, p)
+    __bind_attribs(sh, m)
+    glBindBuffer(GL_ARRAY_BUFFER, u32(b.vbo))
+    base = sh.attribs.len()
+    loop i in 0.. and a in sh.iattribs:
+        loc = u32(base + i)
+        glEnableVertexAttribArray(loc)
+        glVertexAttribPointer(loc, i32(a.comps), GL_FLOAT, 0, i32(sh.istride), a.offset + first * sh.istride)
+        glVertexAttribDivisor(loc, 1)
+    if m.index_count > 0:
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, u32(m.ibo))
+        glDrawElementsInstanced(u32(m.mode), i32(m.index_count), GL_UNSIGNED_INT, 0, i32(n))
+    else: glDrawArraysInstanced(u32(m.mode), 0, i32(m.count), i32(n))
+    loop i in [0..sh.iattribs.len()):
+        glVertexAttribDivisor(u32(base + i), 0)
+        glDisableVertexAttribArray(u32(base + i))
+    glBindVertexArray(0)
+
+# Plain draws own a VAO per shader/mesh pair. Rebuilding its unchanged vertex
+# pointers/divisors on every boar limb and prop repeats native driver work. The
+# original mesh VAO remains available to instanced draws, which change divisors.
+# update_mesh keeps the VBO/stride; its new vertex count is read on every draw.
+__fast_vaos: {int: int} = {}
+
+# Cache reflected scalar uniforms only inside a game-owned draw scope. Direct
+# runtime/foreign writes outside that scope must never inherit the saved values.
+# Textures are always rebound: their bindings belong to global GL state, while
+# scalar uniforms belong to the program. Ignore padding and array ownership.
+@lib("libc.so.6")
+@symbol("memcmp")
+extern __draw_memcmp = (a: *u8, b: *u8, n: int) -> i32
+__draw_uniform_scope = false
+__draw_uniform_prog = 0
+__draw_uniform_bytes: u8[]
+draw_uniform_begin = ():
+    __draw_uniform_scope = true
+    __draw_uniform_prog = 0
+draw_uniform_end = ():
+    __draw_uniform_scope = false
+    __draw_uniform_prog = 0
+
+__draw_uniforms[U] = (sh: Shader, params: U):
+    p = params
+    ptr = (&p) as *u8
+    if not __draw_uniform_scope:
+        __bind_uniforms(sh, ptr)
+        return
+    same = __draw_uniform_prog == sh.prog and __draw_uniform_bytes.len() == size_of(U)
+    if not same: __draw_uniform_bytes.resize(size_of(U))
+    previous = data(__draw_uniform_bytes)
+    unit = 0
+    loop field in sh.uniforms:
+        if field.loc < 0: continue
+        q = ptr + field.offset
+        k = field.kind
+        loc = i32(field.loc)
+        if field.count > 0:
+            unit = __bind_uniform_array(field, loc, q, unit)
+            continue
+        bytes = if k == 'm': 64 else: (if k == 't' or k == 'i': size_of(int) else: (if k == 'd' or k == '2' or k == 'I': 8 else: (if k == '3': 12 else: (if k == '4': 16 else: (if k == 'b': 1 else: 4)))))
+        unchanged = same and __draw_memcmp(q, previous + field.offset, bytes) == 0
+        f = q as *f32
+        if k == 't':
+            glActiveTexture(GL_TEXTURE0 + u32(unit))
+            glBindTexture(GL_TEXTURE_2D, u32((q as *int)[0]))
+            if not unchanged: glUniform1i(loc, i32(unit))
+            unit += 1
+        else if not unchanged:
+            if k == 'f': glUniform1f(loc, f[0])
+            else if k == 'd': glUniform1f(loc, f32((q as *f64)[0]))
+            else if k == 'i': glUniform1i(loc, i32((q as *int)[0]))
+            else if k == 'b': glUniform1i(loc, i32(q[0]))
+            else if k == 'I': glUniform2iv(loc, 1, q)
+            else if k == '2': glUniform2f(loc, f[0], f[1])
+            else if k == '3': glUniform3f(loc, f[0], f[1], f[2])
+            else if k == '4': glUniform4f(loc, f[0], f[1], f[2], f[3])
+            else if k == 'm': glUniformMatrix4fv(loc, 1, 0, q)
+    mem_copy(previous, ptr, size_of(U))
+    __draw_uniform_prog = sh.prog
+
+# a plain draw without the 2D batch flush (we flush once before the 3D pass)
+draw_fast[U] = (sh: Shader, m: Mesh, params: U):
+    p = params
+    glUseProgram(u32(sh.prog))
+    __draw_uniforms(sh, p)
+    key = m.vao * 4294967296 + sh.prog
+    vao = __fast_vaos.get(key, 0)
+    if vao == 0:
+        if env("BOTW_GPU_FRAME_LOG") != none: eprint("vertex first use: frame {frame_number()} plain mesh {m.vao} shader {sh.prog}")
+        vao = gl_create_vertex_array()
+        bound = m
+        bound.vao = vao
+        __bind_attribs(sh, bound)
+        if m.ibo != 0: glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, u32(m.ibo))
+        __fast_vaos[key] = vao
+    else: glBindVertexArray(u32(vao))
+    if m.index_count > 0:
+        glDrawElements(u32(m.mode), i32(m.index_count), GL_UNSIGNED_INT, 0)
+    else: glDrawArrays(u32(m.mode), 0, i32(m.count))
+    glBindVertexArray(0)
+
+# ---- state helpers ----
+gl_opaque_state = ():
+    glEnable(GL_DEPTH_TEST)
+    glDepthFunc(GL_LEQUAL)
+    glDepthMask(1)
+    glEnable(GL_CULL_FACE)
+    glCullFace(GL_BACK)
+    glDisable(GL_BLEND)
+
+gl_blend_state = (additive: bool = false):
+    glEnable(GL_BLEND)
+    if additive: glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+    else: glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    glDepthMask(0)
+
+# back to what 2D drawing expects
+gl_restore_2d = ():
+    glDepthMask(1)
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    __bind_current()
+    __apply_blend(__blend)
+
+# ---- small math ----
+v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))
+hash11 = (n: f64) -> f64: fract(sin(n * 127.1) * 43758.5453)
+hash2 = (x: f64, y: f64) -> f64: fract(sin(x * 127.1 + y * 311.7) * 43758.5453)
+smooth01 = (x: f64) -> f64:
+    t = clamp(x, 0.0, 1.0)
+    t * t * (3.0 - 2.0 * t)
+
+# CPU asset preparation uses the same production builders without opening GL.
+static_mesh[V] = (vertices: V[], indices: u32[] = []) -> Mesh:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_ASSET_CHECK") != none: return Mesh()
+    mesh(vertices, indices)
+static_instances[I] = (items: I[]) -> InstBuf:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_ASSET_CHECK") != none: return InstBuf()
+    inst_buffer(items)

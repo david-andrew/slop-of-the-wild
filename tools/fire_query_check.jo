@@ -1,0 +1,49 @@
+# Differential queries through production heat/cover rules: bypass only the
+# conservative range rejection, then compare exact results at every sample.
+use 'tree_checks.jo'
+use '../game/elements.jo'
+use '../game/gfx.jo'
+use '../game/items.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+from 'tree_checks.jo' import __tree_course
+from '../game/elements.jo' import __burn_first, __burn_last
+
+__fire_queries = 0
+__query_grid = ():
+    first = __burn_first
+    last = __burn_last
+    loop z in [-31..31]:
+        loop x in [-31..31]:
+            if (x + 31) % 5 != 0 or (z + 31) % 5 != 0: continue
+            loop radius in [0.1, 1.4, 3.0, 8.0]:
+                p = v3(f64(x) + 0.5, 0.5, f64(z) + 0.5)
+                bounded = grass_fire_near(p, radius)
+                heat = heat_at(p)
+                __burn_first = -1 << 30
+                __burn_last = 1 << 30
+                assert(grass_fire_near(p, radius) == bounded, "grass range rejection changed cover/radius result")
+                assert(heat_at(p) == heat, "grass range rejection changed exact heat sum")
+                __burn_first = first
+                __burn_last = last
+                __fire_queries += 1
+
+__audio_state = 2
+items_init()
+__tree_course()
+add_box(vec3(1.5, 0, 0.5), vec3(0.1, 3, 4))
+assert(ignite_at(vec3(0.5, 0.1, 0.5)))
+assert(ignite_at(vec3(-25.5, 0.1, 22.5)))
+__query_grid()
+elements_update(1.0 / 60.0, pl.pos)
+__query_grid()
+# New cells must expand the range before the next update rebuilds it.
+assert(ignite_at(vec3(28.5, 0.1, -27.5)))
+__query_grid()
+loop mut f in flames: f.life = 0.0
+elements_update(1.0 / 60.0, pl.pos)
+assert(flames.len() == 0)
+__query_grid()
+assert(ignite_at(vec3(-15.5, 0.1, -15.5)))
+__query_grid()
+print("fire query PASS: {__fire_queries} exact bounded/unbounded grass and heat pairs; live ignition, cover, expiry and reignition")

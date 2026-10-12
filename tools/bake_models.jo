@@ -1,0 +1,2491 @@
+build:
+    opt = release
+
+# Bakes the characters the game needs from the glTF sources in assets/src into compact binary
+# files in assets/models (no JSON at game start). Run from the project root:
+#
+#   sloppy/bin/sloppy tools/bake_models.jo            (everything)
+#   sloppy/bin/sloppy tools/bake_models.jo hero anim  (some: anim hero bokoblin animals birds)
+#
+# Humanoid clips (Quaternius UAL 1+2, Mesh2Motion) are retargeted onto one canonical skeleton
+# (UAL's). Models are re-oriented onto that skeleton: every bone gets the canonical bone's rest
+# orientation (keeping its own position), so a clip's local rotations apply to any of them as
+# they are (the same as retargeting by world-space rotation deltas). See docs/CHARACTERS.md.
+
+use '../game/gltf.jo'
+use '../game/gfx.jo'
+use '../game/charshade.jo'
+use '../game/skel.jo'
+
+const SRC = "assets/src/"
+const OUT = "assets/models/"
+const FPS = 30.0
+
+# ---------------- skeletons ----------------
+struct Skel:
+    names: str[]
+    parent: int[]
+    node: int[]                 # glTF node
+    gm: mat4[]                  # rest transform in scene space
+    hip = 1.0                   # pelvis (hips) rest height
+
+__collect = (g: Gltf, n: int, keep: bool[], out: mut int[]) -> void:
+    if not keep[n]: return
+    out.push(n)
+    loop c in g.nodes[n].children: __collect(g, c, keep, out)
+
+# the skin's joints and their ancestors, parents first
+skel_of = (g: Gltf, si: int) -> Skel:
+    sk = Skel()
+    nn = g.nodes.len()
+    keep = fill(false, nn)
+    loop j in g.skins[si].joints:
+        k = j
+        loop k >= 0 and not keep[k]:
+            keep[k] = true
+            k = g.nodes[k].parent
+    order: int[]
+    loop r in g.roots: __collect(g, r, keep, order)
+    gl = node_globals(g)
+    at = fill(-1, nn)
+    loop i in [0..order.len()): at[order[i]] = i
+    loop n in order:
+        sk.names.push(g.nodes[n].name)
+        p = g.nodes[n].parent
+        sk.parent.push((if p >= 0: at[p] else: -1))
+        sk.node.push(n)
+        sk.gm.push(gl[n])
+    hp = skel_find(sk, "pelvis")
+    if hp < 0: hp = skel_find(sk, "hips")
+    if hp >= 0: sk.hip = f64(sk.gm[hp][3].y)
+    sk
+
+skel_find = (sk: Skel, name: str) -> int:
+    ln = lower(name)
+    loop i in [0..sk.names.len()):
+        if lower(sk.names[i]) == ln: return i
+    -1
+
+vcomp = (v: vec4, k: int) -> f32:
+    if k == 0: return v.x
+    if k == 1: return v.y
+    if k == 2: return v.z
+    v.w
+
+mrot = (m: mat4) -> vec4: mat3_quat(m[0].xyz, m[1].xyz, m[2].xyz)
+mpos = (m: mat4) -> vec3: m[3].xyz
+
+# ---------------- clips ----------------
+struct BClip:
+    name = ""
+    fps = 30.0
+    frames = 1
+    looping = false
+    motion = vec3(0, 0, 0)
+    r: vec4[][]
+    t: vec3[][]
+    s: vec3[][]
+
+struct BLib:
+    name = ""
+    skel = Skel()
+    clips: BClip[]
+    aliases: str[]
+    alias_to: str[]
+
+# sample a glTF animation onto the destination skeleton `dst`, retargeting by world-space
+# rotation deltas: L_dst = (Gd(parent)^-1 Gs(parent)) * L_src * (Gs(bone)^-1 Gd(bone)).
+# all_t: translation offsets of every bone (animals), else only of the bones in tbones.
+bake_clip = (g: Gltf, ss: Skel, an: GAnim, dst: Skel, all_t: bool, tbones: str[], name: str, start: f64 = 0.0) -> BClip:
+    nb = dst.names.len()
+    nn = g.nodes.len()
+    chr_ = fill(-1, nn)
+    cht = fill(-1, nn)
+    chs = fill(-1, nn)
+    loop k in [0..an.channels.len()):
+        c = an.channels[k]
+        if c.path == CH_R: chr_[c.node] = k
+        else if c.path == CH_T: cht[c.node] = k
+        else if c.path == CH_S: chs[c.node] = k
+    dur = max(an.duration - start, 0.0)
+    frames = max(int(round(dur * FPS)) + 1, 1)
+    bc = BClip(name = name, fps = FPS, frames = frames)
+    ratio = f32(dst.hip / ss.hip)
+    loop b in [0..nb):
+        m = skel_find(ss, dst.names[b])
+        rs: vec4[]
+        ts: vec3[]
+        scs: vec3[]
+        if m < 0:
+            # not in the source: the destination's rest
+            rs.push(mrot(__local(dst, b)))
+            bc.r.push(rs)
+            bc.t.push(ts)
+            bc.s.push(scs)
+            continue
+        pd = dst.parent[b]
+        ps = ss.parent[m]
+        gpd = QUAT_ID
+        if pd >= 0: gpd = mrot(dst.gm[pd])
+        gps = QUAT_ID
+        if ps >= 0: gps = mrot(ss.gm[ps])
+        qa = quat_mul(quat_conj(gpd), gps)
+        qb = quat_mul(quat_conj(mrot(ss.gm[m])), mrot(dst.gm[b]))
+        node = ss.node[m]
+        n = g.nodes[node]
+        want_t = all_t
+        loop tb in tbones:
+            if lower(tb) == lower(dst.names[b]): want_t = true
+        loop f in [0..frames):
+            tt = start + f64(f) / FPS
+            q = n.r
+            if chr_[node] >= 0: q = channel_at(an.channels[chr_[node]], tt)
+            q = normalize(quat_mul(quat_mul(qa, q), qb))
+            if rs.len() > 0 and dot(q, rs[rs.len() - 1]) < 0.0: q = q * -1.0
+            rs.push(q)
+            if want_t and cht[node] >= 0:
+                tv = channel_at(an.channels[cht[node]], tt).xyz - n.t
+                if all_t: ts.push(tv)
+                else: ts.push(quat_rotate(qa, tv) * ratio)
+            if chs[node] >= 0:
+                sv = channel_at(an.channels[chs[node]], tt).xyz
+                scs.push(vec3(sv.x / n.s.x, sv.y / n.s.y, sv.z / n.s.z))
+        bc.r.push(rs)
+        bc.t.push(ts)
+        bc.s.push(scs)
+    bc
+
+__local = (sk: Skel, b: int) -> mat4:
+    p = sk.parent[b]
+    if p < 0: return sk.gm[b]
+    inverse(sk.gm[p]) * sk.gm[b]
+
+# model-space position of a bone in frame f of a baked clip
+fk_pos = (sk: Skel, bc: BClip, f: int, bone: int) -> vec3:
+    m = mat4()
+    j = bone
+    loop j >= 0:
+        l = __local(sk, j)
+        rs = bc.r[j]
+        q = rs[min(f, rs.len() - 1)]
+        t = l[3].xyz
+        if bc.t[j].len() > 0: t = t + bc.t[j][min(f, bc.t[j].len() - 1)]
+        m = trs(t, q, vec3(1, 1, 1)) * m
+        j = sk.parent[j]
+    m[3].xyz
+
+# remove horizontal root drift (in place) when the whole body travels (both feet move with
+# the hips, not a pose that ends leaning or fallen); the removed motion is kept in clip.motion
+strip_motion = (bc: mut BClip, sk: Skel, bone: str):
+    b = skel_find(sk, bone)
+    if b < 0 or bc.t[b].len() < 2: return
+    ts = bc.t[b]
+    pr = QUAT_ID
+    if sk.parent[b] >= 0: pr = mrot(sk.gm[sk.parent[b]])
+    d = quat_rotate(pr, ts[ts.len() - 1] - ts[0])
+    d = vec3(d.x, 0, d.z)
+    if length(d) < 0.12: return
+    fl = skel_find(sk, "foot_l")
+    fr = skel_find(sk, "foot_r")
+    if fl >= 0 and fr >= 0:
+        last = bc.frames - 1
+        dl = fk_pos(sk, bc, last, fl) - fk_pos(sk, bc, 0, fl)
+        dr = fk_pos(sk, bc, last, fr) - fk_pos(sk, bc, 0, fr)
+        travel = min(dot(vec3(dl.x, 0, dl.z), normalize(d)), dot(vec3(dr.x, 0, dr.z), normalize(d)))
+        if travel < length(d) * 0.5:
+            print("  {bc.name}: hips move {d} but the feet stay (kept)")
+            return
+    n = ts.len()
+    loop k in [0..n):
+        ts[k] = ts[k] - quat_rotate(quat_conj(pr), d * (f32(k) / f32(n - 1)))
+    bc.t[b] = ts
+    bc.motion = bc.motion + d
+
+# drop frames before the pelvis comes within `h` meters of its rest height (a clip that
+# starts high in the air: Land_Three_Point)
+trim_until_low = (bc: mut BClip, sk: Skel, bone: str, h: f64):
+    b = skel_find(sk, bone)
+    if b < 0 or bc.t[b].len() < 2: return
+    pr = QUAT_ID
+    if sk.parent[b] >= 0: pr = mrot(sk.gm[sk.parent[b]])
+    first = 0
+    loop k in [0..bc.frames):
+        if f64(quat_rotate(pr, bc.t[b][k]).y) < h:
+            first = k
+            break
+    first = max(first - 3, 0)
+    if first == 0: return
+    loop i in [0..bc.r.len()):
+        if bc.r[i].len() > 1: bc.r[i] = bc.r[i][first..]
+        if bc.t[i].len() > 1: bc.t[i] = bc.t[i][first..]
+        if bc.s[i].len() > 1: bc.s[i] = bc.s[i][first..]
+    bc.frames -= first
+
+# one key when a track does not change; none when it is the identity (t = 0, s = 1)
+__pack_r = (rs: vec4[]) -> vec4[]:
+    if rs.len() <= 1: return rs
+    loop q in rs:
+        d = q - rs[0]
+        if abs(d.x) > 0.0002 or abs(d.y) > 0.0002 or abs(d.z) > 0.0002 or abs(d.w) > 0.0002: return rs
+    [rs[0]]
+
+__pack_v = (vs: vec3[], ident: vec3) -> vec3[]:
+    if vs.len() == 0: return vs
+    same = true
+    loop v in vs:
+        if length(v - vs[0]) > 0.00005: same = false
+    if not same: return vs
+    if length(vs[0] - ident) < 0.00005: return []
+    [vs[0]]
+
+write_anims = (lib: BLib, path: str):
+    w = BinW()
+    w_u32(w, ANM_MAGIC)
+    w_u32(w, ANM_VERSION)
+    w_str(w, lib.name)
+    sk = lib.skel
+    nb = sk.names.len()
+    w_u32(w, nb)
+    loop b in [0..nb):
+        l = __local(sk, b)
+        w_str(w, sk.names[b])
+        w_u32(w, sk.parent[b])
+        w_v3(w, mpos(l))
+        w_v4(w, mrot(l))
+        w_v3(w, vec3(length(l[0].xyz), length(l[1].xyz), length(l[2].xyz)))
+    w_f32(w, sk.hip)
+    w_u32(w, lib.clips.len())
+    rq: i16[]
+    tv: vec3[]
+    sv: vec3[]
+    loop c in lib.clips:
+        w_str(w, c.name)
+        w_f32(w, c.fps)
+        w_u32(w, c.frames)
+        w_u8(w, (if c.looping: 1 else: 0))
+        w_v3(w, c.motion)
+        loop b in [0..nb):
+            r = __pack_r(c.r[b])
+            t = __pack_v(c.t[b], vec3(0, 0, 0))
+            s = __pack_v(c.s[b], vec3(1, 1, 1))
+            w_u32(w, r.len())
+            w_u32(w, t.len())
+            w_u32(w, s.len())
+            loop q in r:
+                rq.push(i16(clamp(round(f64(q.x) * 32767.0), -32767.0, 32767.0)))
+                rq.push(i16(clamp(round(f64(q.y) * 32767.0), -32767.0, 32767.0)))
+                rq.push(i16(clamp(round(f64(q.z) * 32767.0), -32767.0, 32767.0)))
+                rq.push(i16(clamp(round(f64(q.w) * 32767.0), -32767.0, 32767.0)))
+            tv.extend(t)
+            sv.extend(s)
+    w_raw(w, rq)
+    w_raw(w, tv)
+    w_raw(w, sv)
+    w_u32(w, lib.aliases.len())
+    loop k in [0..lib.aliases.len()):
+        ci = -1
+        loop i in [0..lib.clips.len()):
+            if lib.clips[i].name == lib.alias_to[k]: ci = i
+        if ci < 0:
+            eprint("  alias {lib.aliases[k]}: no clip {lib.alias_to[k]}")
+            ci = 0
+        w_str(w, lib.aliases[k])
+        w_u32(w, ci)
+    write_bytes(path, w.b)
+    print("wrote {path}: {lib.clips.len()} clips, {nb} bones, {w.b.len() / 1024} KB")
+
+is_loop_name = (n: str) -> bool:
+    l = lower(n)
+    if contains(l, "hitreact") or contains(l, "break") or contains(l, "toidle") or contains(l, "_rail_call"): return false
+    (contains(l, "loop") or l == "walk" or l == "gallop" or l == "idle" or l == "idle_2" or l == "eating" or
+        l == "swim" or l == "flap" or l == "glide" or contains(l, "idle") or l == "walk_stealth" or l == "run_stealth" or
+        l == "strafe_left" or l == "strafe_right" or l == "walk_backwards" or l == "climb wall" or l == "climb ladder" or
+        l == "ladder_idle" or l == "ledge hang" or l == "shivering" or l == "fighting idle" or l == "pipe climb" or
+        l == "sleeping" or l == "meditate" or l == "bow pull hold" or l == "tired hunched")
+
+# ---------------- humanoid animation library ----------------
+canon_g = Gltf()
+canon = Skel()
+const HUM_T = ["root", "pelvis"]
+
+humanoid_canon = ():
+    if canon.names.len() > 0: return
+    canon_g = load_gltf(SRC + "anim/UAL1_Standard.glb")
+    canon = skel_of(canon_g, 0)
+
+addon_clips = ["Bow Pull Back", "Bow Pull Hold", "Bow Release", "Bow", "Climb Wall", "Climb Ladder", "Ledge Hang",
+    "Ladder_Idle", "Pipe Climb", "Glide", "Walk_Stealth", "Run_Stealth", "Dodge_back", "Dodge_left", "Dodge_right",
+    "Defend", "Death_A", "Death_B", "Death_C", "Backflip", "Run Jump", "Land_Three_Point", "Sword_Attack_Air_Vertical",
+    "Strafe_left", "Strafe_right", "Walk_Backwards", "Shivering", "Idle Hurt", "Kneeling Tired", "Victory",
+    "Victory Fist Pump", "Throw Object", "Head Nod", "Fighting Idle", "Angry", "Dizzy", "Tired Hunched", "Meditate",
+    "Sleeping", "Jump_2", "Attack_Ground_Pound", "Power Up", "Greeting", "Idle_Subtle", "Crawl", "Confused"]
+
+human_aliases = [
+    ("idle", "Idle_Loop"), ("idle_alt", "Idle_Subtle"), ("walk", "Walk_Loop"), ("run", "Jog_Fwd_Loop"),
+    ("sprint", "Sprint_Loop"), ("walk_back", "Walk_Backwards"), ("strafe_l", "Strafe_left"), ("strafe_r", "Strafe_right"),
+    ("jump", "Jump_Start"), ("fall", "Jump_Loop"), ("land", "Jump_Land"), ("land_hard", "Land_Three_Point"),
+    ("run_jump", "Run Jump"), ("backflip", "Backflip"), ("crouch", "Crouch_Idle_Loop"), ("crouch_walk", "Crouch_Fwd_Loop"),
+    ("sneak", "Walk_Stealth"), ("sneak_run", "Run_Stealth"), ("swim", "Swim_Fwd_Loop"), ("swim_idle", "Swim_Idle_Loop"),
+    ("climb", "Climb Wall"), ("climb_up", "ClimbUp_1m"), ("ledge_hang", "Ledge Hang"), ("ladder", "Climb Ladder"),
+    ("ladder_idle", "Ladder_Idle"), ("glide", "Glide"), ("roll", "Roll"), ("dodge_back", "Dodge_back"),
+    ("dodge_left", "Dodge_left"), ("dodge_right", "Dodge_right"), ("sword_idle", "Sword_Idle"), ("attack", "Sword_Attack"),
+    ("slash1", "Sword_Regular_A"), ("slash1_rec", "Sword_Regular_A_Rec"), ("slash2", "Sword_Regular_B"),
+    ("slash2_rec", "Sword_Regular_B_Rec"), ("slash3", "Sword_Regular_C"), ("combo", "Sword_Regular_Combo"),
+    ("heavy", "Sword_Heavy_Combo"), ("dash_attack", "Sword_Dash"), ("air_attack", "Sword_Attack_Air_Vertical"),
+    ("block", "Sword_Block"), ("shield_idle", "Idle_Shield_Loop"), ("shield_break", "Idle_Shield_Break"),
+    ("shield_bash", "Shield_OneShot"), ("shield_dash", "Shield_Dash"), ("defend", "Defend"),
+    ("bow_draw", "Bow Pull Back"), ("bow_hold", "Bow Pull Hold"), ("bow_release", "Bow Release"),
+    ("throw", "OverhandThrow"), ("carry", "Walk_Carry_Loop"), ("pickup", "PickUp_Table"), ("interact", "Interact"),
+    ("open_chest", "Chest_Open"), ("eat", "Consume"), ("hit", "Hit_Chest"), ("hit_head", "Hit_Head"),
+    ("knockback", "Hit_Knockback"), ("die", "Death01"), ("die_a", "Death_A"), ("die_b", "Death_B"), ("die_c", "Death_C"),
+    ("cold", "Shivering"), ("tired", "Kneeling Tired"), ("victory", "Victory"), ("nod", "Head Nod"),
+    ("talk", "Idle_Talking_Loop"), ("sit", "Sitting_Idle_Loop"), ("sleep", "Sleeping"), ("punch", "Punch_Jab"),
+    ("push", "Push_Loop"), ("chop", "TreeChopping_Loop"), ("slide", "Slide_Loop"), ("slide_start", "Slide_Start"),
+    ("slide_exit", "Slide_Exit"), ("taunt", "Angry"), ("dizzy", "Dizzy"), ("ground_pound", "Attack_Ground_Pound"),
+    ("hurt_idle", "Idle Hurt"), ("fight_idle", "Fighting Idle"), ("crawl", "Crawl")]
+
+__add_clips = (lib: mut BLib, path: str, only: str[], skip: str[]):
+    g = load_gltf(path)
+    ss = skel_of(g, 0)
+    loop an in g.anims:
+        if only.len() > 0 and not contains(only, an.name): continue
+        if contains(skip, an.name): continue
+        start = 0.0
+        bc = bake_clip(g, ss, an, lib.skel, false, HUM_T, an.name, start)
+        bc.looping = is_loop_name(an.name)
+        if an.name == "Land_Three_Point": trim_until_low(bc, lib.skel, "pelvis", 0.6)
+        strip_motion(bc, lib.skel, "pelvis")
+        strip_motion(bc, lib.skel, "root")
+        if length(bc.motion) > 0.0: print("  {an.name}: root motion removed {bc.motion}")
+        lib.clips.push(bc)
+
+bake_humanoid_anims = ():
+    humanoid_canon()
+    lib = BLib(name = "humanoid", skel = canon)
+    t0 = time()
+    __add_clips(lib, SRC + "anim/UAL1_Standard.glb", [], ["A_TPose"])
+    __add_clips(lib, SRC + "anim/UAL2_Standard.glb", [], ["A_TPose"])
+    __add_clips(lib, SRC + "anim/human-addon-animations.glb", addon_clips, [])
+    loop a, c in human_aliases:
+        lib.aliases.push(a)
+        lib.alias_to.push(c)
+    print("humanoid clips baked in {time() - t0:.2}s")
+    write_anims(lib, OUT + "humanoid.anim")
+
+# ---------------- textures ----------------
+srgb = (c: f64) -> f64:
+    x = clamp(c, 0.0, 1.0)
+    if x <= 0.0031308: return x * 12.92
+    1.055 * pow(x, 1.0 / 2.4) - 0.055
+
+# The game lights albedos that sit between display (sRGB) and linear values (the terrain's
+# grass is 0.3 0.5 0.14 under a sun of ~2.9): texture and material colors are display colors
+# raised to this power, so characters keep the terrain's value range.
+const ALBEDO_GAMMA = 1.45
+albedo = (display: f64) -> f64: pow(clamp(display, 0.0, 1.0), ALBEDO_GAMMA)
+
+img_albedo = (im: mut Image):
+    lut = fill(u8(0), 256)
+    loop k in [0..256): lut[k] = u8(clamp(round(albedo(f64(k) / 255.0) * 255.0), 0.0, 255.0))
+    loop i in [0..im.width * im.height):
+        im.pixels[i * 4] = lut[int(im.pixels[i * 4])]
+        im.pixels[i * 4 + 1] = lut[int(im.pixels[i * 4 + 1])]
+        im.pixels[i * 4 + 2] = lut[int(im.pixels[i * 4 + 2])]
+
+img_from = (g: Gltf, ii: int) -> Image:
+    if ii < 0: return image(1, 1, vec4(1, 1, 1, 0))
+    im = g.images[ii]
+    bytes = im.bytes
+    if im.uri != "": bytes = read_bytes(g.dir + im.uri) ?? []
+    load_png(bytes) ?? image(1, 1, vec4(1, 0, 1, 1))
+
+img_file = (path: str) -> Image: load_png(read_bytes(path) ?? []) ?? image(1, 1, vec4(1, 0, 1, 1))
+
+# box-filter down to at most maxs pixels on a side (power of two steps)
+img_down = (img: Image, maxs: int) -> Image:
+    f = 1
+    loop img.width / f > maxs or img.height / f > maxs: f *= 2
+    if f == 1: return img
+    w = img.width / f
+    h = img.height / f
+    sw = img.width
+    rows = parallel_range(h, (y: int):
+        row = fill(u8(0), w * 4)
+        loop x in [0..w):
+            loop c in [0..4):
+                acc = 0
+                loop dy in [0..f):
+                    o = ((y * f + dy) * sw + x * f) * 4 + c
+                    loop dx in [0..f): acc += int(img.pixels[o + dx * 4])
+                row[x * 4 + c] = u8(acc / (f * f))
+        row
+    )
+    out = image(w, h)
+    loop y in [0..h): mem_copy(data(out.pixels) + y * w * 4, data(rows[y]), w * 4)
+    out
+
+# alpha = emissive mask (luminance of an emissive map of the same layout), else 0
+img_set_alpha = (img: mut Image, emis: Image?):
+    img_albedo(img)
+    n = img.width * img.height
+    if emis is Image:
+        e = img_down(emis, img.width)
+        if e.width == img.width and e.height == img.height:
+            loop i in [0..n):
+                l = (int(e.pixels[i * 4]) * 3 + int(e.pixels[i * 4 + 1]) * 5 + int(e.pixels[i * 4 + 2]) * 2) / 10
+                img.pixels[i * 4 + 3] = u8(l)
+            return
+    loop i in [0..n): img.pixels[i * 4 + 3] = 0
+
+rgb_hsv = (r: f64, g: f64, b: f64) -> vec3:
+    mx = max(r, max(g, b))
+    mn = min(r, min(g, b))
+    d = mx - mn
+    h = 0.0
+    if d > 0.00001:
+        if mx == r: h = mod((g - b) / d, 6.0)
+        else if mx == g: h = (b - r) / d + 2.0
+        else: h = (r - g) / d + 4.0
+        h = h / 6.0
+    s = 0.0
+    if mx > 0.0: s = d / mx
+    v3(h, s, mx)
+
+hsv_rgb = (h: f64, s: f64, v: f64) -> vec3:
+    c = v * s
+    hh = mod(h, 1.0) * 6.0
+    x = c * (1.0 - abs(mod(hh, 2.0) - 1.0))
+    m = v - c
+    r = 0.0
+    g = 0.0
+    b = 0.0
+    if hh < 1.0:
+        r = c
+        g = x
+    else if hh < 2.0:
+        r = x
+        g = c
+    else if hh < 3.0:
+        g = c
+        b = x
+    else if hh < 4.0:
+        g = x
+        b = c
+    else if hh < 5.0:
+        r = x
+        b = c
+    else:
+        r = c
+        b = x
+    v3(r + m, g + m, b + m)
+
+# ---------------- models ----------------
+struct BPart:
+    name = ""
+    key = ""                    # texture slot key
+    two_sided = false
+    verts: ChVert[]
+    idx: u32[]
+
+struct BModel:
+    name = ""
+    skeleton = ""
+    skel = Skel()
+    parts: BPart[]
+    slot_keys: str[]
+    slot_imgs: Image[][]         # per slot: one image per variant
+    canon = Skel()               # skeleton to re-orient onto (empty: keep own bones)
+    tbones: str[]                # bones taking pose translations (with canon); all when empty
+
+
+# the triangles of one glTF primitive in the skeleton's rest pose (scene space),
+# joints as skeleton bone indices
+gather_prim = (g: Gltf, sk: Skel, gl: mat4[], node: int, p: GPrim) -> BPart:
+    bp = BPart()
+    nv = p.pos.len() / 3
+    n = g.nodes[node]
+    jm: int[]
+    sm: mat4[]
+    if n.skin >= 0:
+        s = g.skins[n.skin]
+        loop k in [0..s.joints.len()):
+            jm.push(skel_find(sk, g.nodes[s.joints[k]].name))
+            sm.push(gl[s.joints[k]] * s.ibm[k])
+    # rigid attachment: the nearest ancestor that is a bone
+    rigid = -1
+    if n.skin < 0:
+        a = node
+        loop a >= 0 and rigid < 0:
+            rigid = skel_find(sk, g.nodes[a].name)
+            if sk.names.len() > 0 and rigid >= 0 and sk.node[rigid] != a: rigid = -1
+            a = g.nodes[a].parent
+        if rigid < 0: rigid = 0
+    col = vec4(1, 1, 1, 1)
+    two = false
+    if p.material >= 0:
+        mt = g.materials[p.material]
+        col = vec4(f32(albedo(srgb(f64(mt.color.x)))), f32(albedo(srgb(f64(mt.color.y)))), f32(albedo(srgb(f64(mt.color.z)))), mt.color.w)
+        two = mt.double_sided
+    bp.two_sided = two
+    loop i in [0..nv):
+        v = vec3(p.pos[i * 3], p.pos[i * 3 + 1], p.pos[i * 3 + 2])
+        nr = vec3(0, 1, 0)
+        if p.nrm.len() >= nv * 3: nr = vec3(p.nrm[i * 3], p.nrm[i * 3 + 1], p.nrm[i * 3 + 2])
+        uv = vec2(0, 0)
+        if p.uv.len() >= nv * 2: uv = vec2(p.uv[i * 2], p.uv[i * 2 + 1])
+        c = col
+        if p.col.len() >= nv * 4: c = vec4(c.x * p.col[i * 4], c.y * p.col[i * 4 + 1], c.z * p.col[i * 4 + 2], c.w * p.col[i * 4 + 3])
+        jv = vec4(f32(rigid), 0, 0, 0)
+        wv = vec4(1, 0, 0, 0)
+        pos = v
+        nrm = nr
+        if n.skin >= 0 and p.joints.len() >= nv * 4:
+            pos = vec3(0, 0, 0)
+            nrm = vec3(0, 0, 0)
+            ws = [p.weights[i * 4], p.weights[i * 4 + 1], p.weights[i * 4 + 2], p.weights[i * 4 + 3]]
+            tot = ws[0] + ws[1] + ws[2] + ws[3]
+            if tot <= 0.0:
+                ws[0] = 1.0
+                tot = 1.0
+            js = [0, 0, 0, 0]
+            loop k in [0..4):
+                ws[k] = ws[k] / tot
+                ji = int(p.joints[i * 4 + k])
+                if ws[k] > 0.0:
+                    pos = pos + transform_point(sm[ji], v) * ws[k]
+                    nrm = nrm + transform_dir(sm[ji], nr) * ws[k]
+                    js[k] = max(jm[ji], 0)
+                else: ws[k] = 0.0
+            jv = vec4(f32(js[0]), f32(js[1]), f32(js[2]), f32(js[3]))
+            wv = vec4(ws[0], ws[1], ws[2], ws[3])
+        else:
+            pos = transform_point(gl[node], v)
+            nrm = transform_dir(gl[node], nr)
+        bp.verts.push(ChVert(pos, normalize(nrm), uv, c, jv, wv))
+    loop k in p.idx: bp.idx.push(u32(k))
+    bp
+
+# add primitive triangles to the model's parts, merging by texture (and part name, sidedness)
+add_part = (bm: mut BModel, part: BPart, key: str, name: str):
+    loop k in [0..bm.parts.len()):
+        q = bm.parts[k]
+        if q.key == key and q.name == name and q.two_sided == part.two_sided:
+            base = u32(q.verts.len())
+            q.verts.extend(part.verts)
+            loop i in part.idx: q.idx.push(i + base)
+            bm.parts[k] = q
+            return
+    p = part
+    p.key = key
+    p.name = name
+    bm.parts.push(p)
+
+# texture key of a material ("" = untextured)
+mat_key = (g: Gltf, mi: int) -> str:
+    if mi < 0: return ""
+    ii = g.materials[mi].image
+    if ii < 0: return ""
+    im = g.images[ii]
+    if im.uri != "": return g.dir + im.uri
+    g.path + "#" + im.name
+
+# keep only the triangles whose three vertices pass a test
+filter_tris = (p: BPart, keep: bool[]) -> BPart:
+    out = BPart(name = p.name, key = p.key, two_sided = p.two_sided)
+    remap = fill(-1, p.verts.len())
+    loop t in [0..p.idx.len() / 3):
+        a = int(p.idx[t * 3])
+        b = int(p.idx[t * 3 + 1])
+        c = int(p.idx[t * 3 + 2])
+        if not (keep[a] and keep[b] and keep[c]): continue
+        loop v in [a, b, c]:
+            if remap[v] < 0:
+                remap[v] = out.verts.len()
+                out.verts.push(p.verts[v])
+            out.idx.push(u32(remap[v]))
+    out
+
+# re-map joints of a part from one skeleton to another by bone names
+remap_joints = (p: mut BPart, from: Skel, to: Skel):
+    loop mut v in p.verts:
+        j = v.jnt
+        v.jnt = vec4(f32(max(skel_find(to, from.names[int(j.x)]), 0)), f32(max(skel_find(to, from.names[int(j.y)]), 0)),
+            f32(max(skel_find(to, from.names[int(j.z)]), 0)), f32(max(skel_find(to, from.names[int(j.w)]), 0)))
+
+# every mesh of a glTF that is skinned to (or hangs under) the skeleton
+gather_all = (bm: mut BModel, g: Gltf, sk: Skel, part_name: (str) -> str, skip: str[]):
+    gl = node_globals(g)
+    loop ni in [0..g.nodes.len()):
+        n = g.nodes[ni]
+        if n.mesh < 0: continue
+        if contains(skip, g.meshes[n.mesh].name) or contains(skip, n.name): continue
+        loop p in g.meshes[n.mesh].prims:
+            if p.mode != 4: continue
+            bp = gather_prim(g, sk, gl, ni, p)
+            add_part(bm, bp, mat_key(g, p.material), part_name(n.name))
+
+# scale (and turn) the model, re-orient bones, write the .mdl
+struct Fin:
+    scale = 1.0
+    yaw = 0.0
+
+finish_model = (bm: BModel, height: f64, yaw: f64, size_axis: int = 1) -> Fin:
+    # bounds in scene space
+    lo = vec3(1e9, 1e9, 1e9)
+    hi = vec3(-1e9, -1e9, -1e9)
+    loop p in bm.parts:
+        loop v in p.verts:
+            lo = min(lo, v.pos)
+            hi = max(hi, v.pos)
+    ext = hi - lo
+    e = f64(ext.y)
+    if size_axis == 0: e = f64(ext.x)
+    if size_axis == 2: e = f64(ext.z)
+    if size_axis == 3: e = max(f64(ext.x), max(f64(ext.y), f64(ext.z)))
+    s = 1.0
+    if height > 0.0 and e > 0.0: s = height / e
+    Fin(s, yaw)
+
+write_model = (bm: BModel, fin: Fin, path: str):
+    sk = bm.skel
+    nb = sk.names.len()
+    if nb > MAX_BONES: eprint("{bm.name}: {nb} bones > {MAX_BONES}")
+    x = rotation_y(fin.yaw) * scaling(v3(fin.scale, fin.scale, fin.scale))
+    xr = quat_axis_angle(vec3(0, 1, 0), fin.yaw)
+    # new rest transforms (model space)
+    gm: mat4[]
+    canon_of = fill(-1, nb)
+    reo = bm.canon.names.len() > 0
+    loop b in [0..nb):
+        g0 = x * sk.gm[b]
+        if reo:
+            c = skel_find(bm.canon, sk.names[b])
+            canon_of[b] = c
+            q = mrot(g0)
+            if c >= 0: q = quat_mul(xr, mrot(bm.canon.gm[c]))
+            m = quat_to_mat4(q)
+            m[3] = vec4(g0[3].x, g0[3].y, g0[3].z, 1)
+            gm.push(m)
+        else:
+            canon_of[b] = b
+            gm.push(g0)
+    hip = 1.0
+    hp = skel_find(sk, "pelvis")
+    if hp < 0: hp = skel_find(sk, "hips")
+    if hp >= 0: hip = f64(gm[hp][3].y)
+    tscale = 1.0
+    if reo: tscale = hip / bm.canon.hip
+    w = BinW()
+    w_u32(w, MDL_MAGIC)
+    w_u32(w, MDL_VERSION)
+    w_str(w, bm.name)
+    w_str(w, bm.skeleton)
+    w_u32(w, nb)
+    loop b in [0..nb):
+        p = sk.parent[b]
+        l = gm[b]
+        if p >= 0: l = inverse(gm[p]) * gm[b]
+        w_str(w, sk.names[b])
+        w_u32(w, p)
+        w_u32(w, canon_of[b])
+        ut = not reo
+        loop tb in bm.tbones:
+            if lower(tb) == lower(sk.names[b]): ut = true
+        w_u8(w, (if ut: 1 else: 0))
+        w_v3(w, l[3].xyz)
+        w_v4(w, mrot(l))
+        w_v3(w, vec3(length(l[0].xyz), length(l[1].xyz), length(l[2].xyz)))
+        w_m4(w, inverse(gm[b]))
+    w_f32(w, tscale)
+    lo = vec3(1e9, 1e9, 1e9)
+    hi = vec3(-1e9, -1e9, -1e9)
+    loop p in bm.parts:
+        loop v in p.verts:
+            q = transform_point(x, v.pos)
+            lo = min(lo, q)
+            hi = max(hi, q)
+    w_v3(w, lo)
+    w_v3(w, hi)
+    nvar = 1
+    loop si in bm.slot_imgs: nvar = max(nvar, si.len())
+    w_u32(w, bm.slot_keys.len())
+    w_u32(w, nvar)
+    tex_bytes = 0
+    loop v in [0..nvar):
+        loop s in [0..bm.slot_keys.len()):
+            imgs = bm.slot_imgs[s]
+            im = imgs[min(v, imgs.len() - 1)]
+            if im.width <= 1 and im.height <= 1:
+                w_u32(w, 0)
+                w_u32(w, 0)
+                continue
+            w_u32(w, im.width)
+            w_u32(w, im.height)
+            w_raw(w, im.pixels)
+            tex_bytes += im.pixels.len()
+    w_u32(w, bm.parts.len())
+    nverts = 0
+    ntris = 0
+    loop p in bm.parts:
+        w_str(w, p.name)
+        si = 0
+        loop k in [0..bm.slot_keys.len()):
+            if bm.slot_keys[k] == p.key: si = k
+        w_u32(w, si)
+        w_u8(w, (if p.two_sided: 1 else: 0))
+        vs = p.verts
+        loop mut v in vs:
+            v.pos = transform_point(x, v.pos)
+            v.nrm = normalize(transform_dir(x, v.nrm))
+        w_u32(w, vs.len())
+        w_raw(w, vs)
+        w_u32(w, p.idx.len())
+        w_raw(w, p.idx)
+        nverts += vs.len()
+        ntris += p.idx.len() / 3
+    write_bytes(path, w.b)
+    print("wrote {path}: {nb} bones, {bm.parts.len()} parts, {nverts} verts, {ntris} tris, textures {tex_bytes / 1024} KB, total {w.b.len() / 1024} KB")
+    print("  scale {fin.scale:.4}  size {hi - lo}  min {lo}  hip {hip:.3}  tscale {tscale:.3}")
+
+# texture slots: one per distinct key, a single variant loaded from the glTF
+default_slots = (bm: mut BModel, g: Gltf, maxs: int):
+    loop p in bm.parts:
+        if contains(bm.slot_keys, p.key): continue
+        bm.slot_keys.push(p.key)
+        im = image(1, 1, vec4(1, 1, 1, 0))
+        if p.key != "":
+            ii = -1
+            loop k in [0..g.images.len()):
+                if mat_key_img(g, k) == p.key: ii = k
+            im = img_down(img_from(g, ii), maxs)
+            img_set_alpha(im, none)
+        bm.slot_imgs.push([im])
+
+mat_key_img = (g: Gltf, ii: int) -> str:
+    im = g.images[ii]
+    if im.uri != "": return g.dir + im.uri
+    g.path + "#" + im.name
+
+no_name = (s: str) -> str: ""
+
+# ---------------- painting in texture space ----------------
+# rasterize triangles in UV space: for every covered pixel, call back with the interpolated
+# rest position (scene space); `cover` marks pixels touched
+struct UvHit:
+    x = 0
+    y = 0
+    pos = vec3(0, 0, 0)
+
+uv_raster = (p: BPart, w: int, h: int, cover: mut bool[]) -> UvHit[]:
+    out: UvHit[]
+    loop t in [0..p.idx.len() / 3):
+        va = p.verts[int(p.idx[t * 3])]
+        vb = p.verts[int(p.idx[t * 3 + 1])]
+        vc = p.verts[int(p.idx[t * 3 + 2])]
+        a = vec2(fract(va.uv.x) * f32(w), fract(va.uv.y) * f32(h))
+        b = vec2(fract(vb.uv.x) * f32(w), fract(vb.uv.y) * f32(h))
+        c = vec2(fract(vc.uv.x) * f32(w), fract(vc.uv.y) * f32(h))
+        # skip triangles that wrap across the texture edge
+        if length(a - b) > f32(w) * 0.5 or length(b - c) > f32(w) * 0.5 or length(a - c) > f32(w) * 0.5: continue
+        x0 = max(int(floor(f64(min(a.x, min(b.x, c.x))))) - 1, 0)
+        x1 = min(int(ceil(f64(max(a.x, max(b.x, c.x))))) + 1, w - 1)
+        y0 = max(int(floor(f64(min(a.y, min(b.y, c.y))))) - 1, 0)
+        y1 = min(int(ceil(f64(max(a.y, max(b.y, c.y))))) + 1, h - 1)
+        den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y)
+        if abs(den) < 0.000001: continue
+        loop y in [y0..y1]:
+            loop x in [x0..x1]:
+                q = vec2(f32(x) + 0.5, f32(y) + 0.5)
+                l0 = ((b.y - c.y) * (q.x - c.x) + (c.x - b.x) * (q.y - c.y)) / den
+                l1 = ((c.y - a.y) * (q.x - c.x) + (a.x - c.x) * (q.y - c.y)) / den
+                l2 = 1.0 - l0 - l1
+                e = -0.02
+                if l0 < e or l1 < e or l2 < e: continue
+                cover[y * w + x] = true
+                out.push(UvHit(x, y, va.pos * l0 + vb.pos * l1 + vc.pos * l2))
+    out
+
+# grow a mask by n pixels
+dilate = (m: bool[], w: int, h: int, n: int) -> bool[]:
+    cur = m
+    loop it in [0..n):
+        nxt = cur
+        loop y in [0..h):
+            loop x in [0..w):
+                if cur[y * w + x]: continue
+                if (x > 0 and cur[y * w + x - 1]) or (x < w - 1 and cur[y * w + x + 1]) or (y > 0 and cur[(y - 1) * w + x]) or (y < h - 1 and cur[(y + 1) * w + x]):
+                    nxt[y * w + x] = true
+        cur = nxt
+    cur
+
+# copy painted pixels outward into uncovered ones (so mip levels and seams keep the paint)
+bleed = (im: mut Image, painted: bool[], cover: bool[], n: int):
+    w = im.width
+    h = im.height
+    cur = painted
+    loop it in [0..n):
+        nxt = cur
+        loop y in [0..h):
+            loop x in [0..w):
+                k = y * w + x
+                if cur[k] or cover[k]: continue
+                src = -1
+                if x > 0 and cur[k - 1]: src = k - 1
+                else if x < w - 1 and cur[k + 1]: src = k + 1
+                else if y > 0 and cur[k - w]: src = k - w
+                else if y < h - 1 and cur[k + w]: src = k + w
+                if src >= 0:
+                    loop c in [0..3): im.pixels[k * 4 + c] = im.pixels[src * 4 + c]
+                    nxt[k] = true
+        cur = nxt
+
+hash_f = (x: f64) -> f64: fract(sin(x * 127.1) * 43758.5453)
+vnoise1 = (x: f64) -> f64:
+    i = floor(x)
+    f = x - i
+    u = f * f * (3.0 - 2.0 * f)
+    hash_f(i) * (1.0 - u) + hash_f(i + 1.0) * u
+
+# Link's hair painted onto the scalp of the head texture: blond, bangs parted in the middle
+# down to just above the brows, locks in front of the ears. `head` = Head joint, `brow` = brow
+# height (scene space, before scaling)
+hero_hair_coverage = (point: vec3, headp: vec3, brow: f64) -> f64:
+    q = point - headp
+    x = f64(q.x)
+    y = f64(point.y)
+    z = f64(q.z)
+    ax = abs(x)
+    # the fringe: strands (zigzag) a little above the brows, higher at the parting
+    strand = vnoise1(ax * 24.0 + 0.7)
+    front = brow + 0.022 + strand * 0.016 + 0.02 * exp(-(x / 0.012) * (x / 0.012))
+    # sides: locks down past the temples in front of the ears
+    side = brow - 0.05 + strand * 0.02
+    sk = smoothstep(0.045, 0.07, ax)
+    line_ = front * (1.0 - sk) + side * sk
+    # behind the ears: the nape
+    back = smoothstep(0.0, -0.03, z)
+    line_ = line_ * (1.0 - back) + (f64(headp.y) + 0.005) * back
+    smoothstep(line_ - 0.004, line_ + 0.004, y)
+
+paint_hair = (im: mut Image, head_parts: BPart[], headp: vec3, brow: f64):
+    w = im.width
+    h = im.height
+    cover = fill(false, w * h)
+    painted = fill(false, w * h)
+    loop p in head_parts:
+        hits = uv_raster(p, w, h, cover)
+        loop hit in hits:
+            amt = hero_hair_coverage(hit.pos,headp,brow)
+            if amt <= 0.0: continue
+            k = hit.y * w + hit.x
+            painted[k] = true
+            # Broad scalp washes continue beneath the overlapping locks.
+            q=hit.pos-headp
+            st = vnoise1(atan2(f64(q.x), f64(q.z) + 0.02) * 3.1 + f64(hit.pos.y) * 5.0)
+            # No high-frequency comb stripes at the chase-camera distance.
+            sh = 0.49 + 0.23 * st
+            hc = v3(0.72 * sh, 0.58 * sh, 0.28 * sh)
+            loop c in [0..3):
+                old = f64(im.pixels[k * 4 + c]) / 255.0
+                cc = f64(hc.x)
+                if c == 1: cc = f64(hc.y)
+                if c == 2: cc = f64(hc.z)
+                im.pixels[k * 4 + c] = u8(clamp((old * (1.0 - amt) + cc * amt) * 255.0, 0.0, 255.0))
+    bleed(im, painted, cover, 3)
+
+# the BotW Hylian palette: greens -> slate blue (hood, tunic, sleeves), the trousers -> brown
+recolor_ranger = (im: mut Image, legs: bool[]): recolor_ranger(im, legs, v3(0.6, 0.55, 0.82), v3(0.075, 0.5, 0.85))
+
+# the same with any cloth: tunic and trousers as (hue, saturation, value scale)
+recolor_ranger = (im: mut Image, legs: bool[], top: vec3, leg: vec3):
+    loop i in [0..im.width * im.height):
+        r = f64(im.pixels[i * 4]) / 255.0
+        g = f64(im.pixels[i * 4 + 1]) / 255.0
+        b = f64(im.pixels[i * 4 + 2]) / 255.0
+        hsv = rgb_hsv(r, g, b)
+        hh = f64(hsv.x)
+        sat = f64(hsv.y)
+        v = f64(hsv.z)
+        if hh < 0.17 or hh > 0.5 or sat < 0.18: continue
+        # how green: fade at the hue edges (keeps the leather and metal)
+        k = smoothstep(0.17, 0.22, hh) * smoothstep(0.5, 0.42, hh) * smoothstep(0.18, 0.3, sat)
+        c = v3(0, 0, 0)
+        if legs[i]:
+            c = hsv_rgb(f64(leg.x), f64(leg.y), min(v * f64(leg.z) + 0.06, 1.0))
+        else:
+            # lighter greens become the tunic's color, the darkest its deep shade
+            c = hsv_rgb(f64(top.x), f64(top.y) + sat * 0.2, min(v * f64(top.z) + 0.03 + (1.0 - f64(top.y)) * 0.12, 1.0))
+        im.pixels[i * 4] = u8(clamp((r * (1.0 - k) + f64(c.x) * k) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 1] = u8(clamp((g * (1.0 - k) + f64(c.y) * k) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 2] = u8(clamp((b * (1.0 - k) + f64(c.z) * k) * 255.0, 0.0, 255.0))
+
+# plain cloth for the plateau's outfits: the tunic's greens to (hue, saturation) lifted toward
+# a pale value, and everything dark in the trousers' area to a worn brown
+recolor_cloth = (im: mut Image, legs: bool[], top: vec3, top_lift: f64, leg: vec3, leg_lift: f64):
+    loop i in [0..im.width * im.height):
+        r = f64(im.pixels[i * 4]) / 255.0
+        g = f64(im.pixels[i * 4 + 1]) / 255.0
+        b = f64(im.pixels[i * 4 + 2]) / 255.0
+        hsv = rgb_hsv(r, g, b)
+        hh = f64(hsv.x)
+        sat = f64(hsv.y)
+        v = f64(hsv.z)
+        k = 0.0
+        c = v3(0, 0, 0)
+        if legs[i]:
+            k = 1.0 - smoothstep(0.3, 0.45, v)
+            c = hsv_rgb(f64(leg.x), f64(leg.y), min(leg_lift + v * f64(leg.z), 1.0))
+        else if hh >= 0.17 and hh <= 0.5 and sat >= 0.18:
+            k = smoothstep(0.17, 0.22, hh) * smoothstep(0.5, 0.42, hh) * smoothstep(0.18, 0.3, sat)
+            c = hsv_rgb(f64(top.x), f64(top.y), min(top_lift + v * f64(top.z), 1.0))
+        if k <= 0.0: continue
+        im.pixels[i * 4] = u8(clamp((r * (1.0 - k) + f64(c.x) * k) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 1] = u8(clamp((g * (1.0 - k) + f64(c.y) * k) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 2] = u8(clamp((b * (1.0 - k) + f64(c.z) * k) * 255.0, 0.0, 255.0))
+
+# Continuous bind-space shaping avoids the seams that independent animated
+# bone scales created at the deltoids and wrists. Bone/socket positions stay exact.
+hero_form_point = (p: vec3, shoulder: vec3, elbow: vec3, wrist: vec3, bare: bool) -> vec3:
+    q = p
+    x = abs(f64(p.x))
+    if bare:
+        arm = smoothstep(0.12,0.27,x)*(1.0-smoothstep(0.64,0.71,x))
+        arm *= smoothstep(1.15,1.32,f64(p.y))*(1.0-smoothstep(1.57,1.65,f64(p.y)))
+        t = clamp((x-f64(shoulder.x))/f64(wrist.x-shoulder.x),0.0,1.0)
+        center = mix(shoulder,wrist,f32(t))
+        center.z = f32(lerp(f64(shoulder.z),f64(elbow.z),smoothstep(0.0,0.5,t))*(1.0-smoothstep(0.5,1.0,t))+f64(wrist.z)*smoothstep(0.5,1.0,t))
+        radius = lerp(0.78,1.0,smoothstep(0.12,0.97,t))
+        q.y = f32(lerp(f64(p.y),f64(center.y)+(f64(p.y-center.y))*radius,arm))
+        q.z = f32(lerp(f64(p.z),f64(center.z)+(f64(p.z-center.z))*radius,arm))
+        chest = (1.0-smoothstep(0.10,0.25,x))*smoothstep(1.0,1.25,f64(p.y))*(1.0-smoothstep(1.45,1.55,f64(p.y)))
+        q.z *= f32(1.0-chest*0.16)
+        # Rebuild the bulky source deltoid's section as a rounded, slender
+        # envelope. Curved loops now trace this form through arm elevation.
+        dy=f64(q.y-center.y)
+        dz=f64(q.z-center.z)
+        r=sqrt(dy*dy+dz*dz)
+        rounded=smoothstep(0.13,0.23,x)*(1.0-smoothstep(0.36,0.46,x))*arm
+        # The cap must taper into the arm, not inflate into a sphere behind
+        # a raised humerus. In particular, never expand a thin source section:
+        # that expansion produced a second rounded mass at the posterior axilla.
+        target=0.035+0.008*exp(-pow((x-0.21)/0.08,2.0))
+        factor=lerp(1.0,clamp(target/max(r,0.001),0.40,1.0),rounded)
+        if rounded>0.0:
+            # A deltoid tapers onto the humerus; a circular upper/rear arc
+            # makes a separate muscle belly when that arc rolls toward the back.
+            # Flatten this arc smoothly, retaining the lower arm section.
+            cap=smoothstep(0.20,0.255,x)*(1.0-smoothstep(0.31,0.39,x))*arm
+            cap*=smoothstep(0.0,0.03,dy)
+            rear=1.0-smoothstep(-0.02,0.015,dz)
+            q.y=center.y+f32(dy*factor*(1.0-cap*0.40))
+            q.z=center.z+f32(dz*factor*(1.0-cap*rear*0.10))
+        # Relax the superhero asset's carved scapula ridges into a broad back.
+        back=(1.0-smoothstep(0.12,0.22,x))*smoothstep(1.04,1.19,f64(p.y))*(1.0-smoothstep(1.46,1.55,f64(p.y)))
+        back*=1.0-smoothstep(-0.04,-0.015,f64(p.z))
+        q.z=f32(lerp(f64(q.z),-0.095+0.018*pow(x/0.20,2.0),back*0.86))
+    # Softer jaw and cheek planes; preserve eyes, brow and the neck attachment.
+    jaw = smoothstep(1.54,1.59,f64(p.y))*(1.0-smoothstep(1.64,1.69,f64(p.y)))
+    q.x *= f32(1.0-jaw*0.12)
+    nose = smoothstep(0.073,0.110,f64(p.z))*(1.0-smoothstep(0.022,0.047,x))*smoothstep(1.61,1.64,f64(p.y))*(1.0-smoothstep(1.68,1.71,f64(p.y)))
+    q.z -= f32(nose*0.009)
+    q
+
+hero_vertex_key = (p: vec3) -> str: "{int(round(f64(p.x)*100000.0))},{int(round(f64(p.y)*100000.0))},{int(round(f64(p.z)*100000.0))}"
+hero_soft_normals = (part: mut BPart, amount: f32):
+    sums: {str: vec3} = {}
+    loop v in part.verts:
+        key = hero_vertex_key(v.pos)
+        sums[key] = (sums.get(key) ?? vec3(0,0,0))+v.nrm
+    loop mut v in part.verts:
+        n = sums.get(hero_vertex_key(v.pos)) ?? v.nrm
+        if length(n)>0.001: v.nrm = normalize(mix(v.nrm,normalize(n),amount))
+
+# Diffuse imported normal ridges across the welded one-ring surface. Preserve
+# facial planes, hands and soles. Joint normals then interpolate continuously
+# through run/attack/climb with the existing contact-preserving skin weights.
+hero_anatomy_normals = (part: mut BPart):
+    hero_soft_normals(part,1.0)
+    sums: {str: vec3} = {}
+    loop tri in [0..part.idx.len()/3):
+        loop k in [0..3):
+            v=part.verts[int(part.idx[tri*3+k])]
+            key=hero_vertex_key(v.pos)
+            loop other in [1,2]:
+                n=part.verts[int(part.idx[tri*3+(k+other)%3])].nrm
+                if dot(n,v.nrm)>0.25: sums[key]=(sums.get(key) ?? vec3(0,0,0))+n
+    loop mut v in part.verts:
+        mask=smoothstep(0.08,0.18,f64(v.pos.y))*(1.0-smoothstep(1.43,1.53,f64(v.pos.y)))
+        mask*=1.0-smoothstep(0.60,0.68,abs(f64(v.pos.x)))
+        n=sums.get(hero_vertex_key(v.pos)) ?? v.nrm
+        if length(n)>0.0001: v.nrm=normalize(mix(v.nrm,normalize(n),f32(mask*0.55)))
+    hero_soft_normals(part,1.0)
+
+# Recompute the finished skin surface, after bind-space shaping. Transforming
+# imported normals through the nonuniform shoulder/back corrective preserves
+# the source muscle's normal ridges even when its geometry has been relaxed.
+# Weld by position so UV borders cannot produce ankle or arm lighting seams.
+hero_finished_normals = (part: mut BPart):
+    sums: {str: vec3} = {}
+    loop tri in [0..part.idx.len()/3):
+        a=part.verts[int(part.idx[tri*3])].pos
+        b=part.verts[int(part.idx[tri*3+1])].pos
+        c=part.verts[int(part.idx[tri*3+2])].pos
+        n=cross(b-a,c-a)
+        loop p in [a,b,c]:
+            key=hero_vertex_key(p)
+            sums[key]=(sums.get(key) ?? vec3(0,0,0))+n
+    loop mut v in part.verts:
+        mask=smoothstep(0.015,0.05,f64(v.pos.y))*(1.0-smoothstep(1.43,1.53,f64(v.pos.y)))
+        mask*=1.0-smoothstep(0.60,0.68,abs(f64(v.pos.x)))
+        n=sums.get(hero_vertex_key(v.pos)) ?? v.nrm
+        if length(n)>0.000001: v.nrm=normalize(mix(v.nrm,normalize(n),f32(mask)))
+    hero_anatomy_normals(part)
+
+# Relax only the elbow/knee surface around the unchanged joint centres. A
+# welded neighbourhood and bounded displacement avoid seam cracks and preserve
+# the source weights, extremities and animation/contact skeleton in every pose.
+hero_joint_surface = (part: mut BPart, sk: Skel):
+    centers: vec3[]
+    loop name in ["lowerarm_l","lowerarm_r","calf_l","calf_r"]:
+        joint=skel_find(sk,name)
+        if joint>=0: centers.push(sk.gm[joint][3].xyz)
+    sums: {str: vec3} = {}
+    counts: {str: int} = {}
+    loop tri in [0..part.idx.len()/3):
+        loop k in [0..3):
+            v=part.verts[int(part.idx[tri*3+k])]
+            key=hero_vertex_key(v.pos)
+            loop other in [1,2]:
+                q=part.verts[int(part.idx[tri*3+(k+other)%3])].pos
+                sums[key]=(sums.get(key) ?? vec3(0,0,0))+q
+                counts[key]=(counts.get(key) ?? 0)+1
+    loop mut v in part.verts:
+        mask=0.0
+        loop c in centers: mask=max(mask,1.0-smoothstep(0.035,0.12,f64(length(v.pos-c))))
+        if mask<=0.0: continue
+        key=hero_vertex_key(v.pos)
+        count=counts.get(key) ?? 0
+        if count==0: continue
+        delta=((sums.get(key) ?? v.pos)/f32(count)-v.pos)*f32(mask*0.22)
+        delta*=min(1.0,0.0035/max(length(delta),0.000001))
+        v.pos+=delta
+
+# Refine the shoulder girdle without changing the contact rig or extremities.
+# Mid-edge loops follow the smoothed surface normals; shared position keys keep
+# UV seams welded while every midpoint retains its own UV and blended skin.
+hero_shoulder_mask = (p: vec3) -> f64:
+    smoothstep(1.10,1.25,f64(p.y))*(1.0-smoothstep(1.50,1.58,f64(p.y)))*(1.0-smoothstep(0.33,0.47,abs(f64(p.x))))
+
+hero_blend_vertex = (a: ChVert, b: ChVert, t: f32, bones: int) -> ChVert:
+    weights = fill(f32(0),bones)
+    loop k in [0..4):
+        weights[int(vcomp(a.jnt,k))] += vcomp(a.wgt,k)*(1-t)
+        weights[int(vcomp(b.jnt,k))] += vcomp(b.wgt,k)*t
+    js: f32[]
+    ws: f32[]
+    loop k in [0..4):
+        best = 0
+        loop j in [1..bones):
+            if weights[j]>weights[best]: best=j
+        js.push(f32(best))
+        ws.push(weights[best])
+        weights[best]=0
+    w = vec4(ws[0],ws[1],ws[2],ws[3])
+    w /= w.x+w.y+w.z+w.w
+    ChVert(mix(a.pos,b.pos,t),normalize(mix(a.nrm,b.nrm,t)),mix(a.uv,b.uv,t),mix(a.col,b.col,t),vec4(js[0],js[1],js[2],js[3]),w)
+
+hero_shoulder_loops = (part: mut BPart, bones: int):
+    hero_soft_normals(part,1.0)
+    # Fair the coarse source cage before refinement; smoothing only its dense
+    # descendants leaves the original axillary wedge visible between loops.
+    loop iteration in [0..4):
+        sums: {str: ChVert} = {}
+        counts: {str: int} = {}
+        loop tri in [0..part.idx.len()/3):
+            loop k in [0..3):
+                a=part.verts[int(part.idx[tri*3+k])]
+                key=hero_vertex_key(a.pos)
+                loop other in [1,2]:
+                    b=part.verts[int(part.idx[tri*3+(k+other)%3])]
+                    count=counts.get(key) ?? 0
+                    sums[key]=if count==0:b else:hero_blend_vertex(sums[key],b,1.0/f32(count+1),bones)
+                    counts[key]=count+1
+        old=part.verts
+        loop i in [0..old.len()):
+            a=old[i]
+            x=abs(f64(a.pos.x))
+            mask=hero_shoulder_mask(a.pos)*smoothstep(0.06,0.13,x)*(1.0-smoothstep(0.30,0.40,x))
+            if mask<=0.0: continue
+            avg=sums.get(hero_vertex_key(a.pos)) ?? a
+            v=hero_blend_vertex(a,avg,f32(mask*0.48),bones)
+            v.uv=a.uv
+            v.col=a.col
+            part.verts[i]=v
+    hero_soft_normals(part,1.0)
+    loop iteration in [0..2):
+        edges: {str: int} = {}
+        indices: u32[]
+        loop tri in [0..part.idx.len()/3):
+            ids = [int(part.idx[tri*3]),int(part.idx[tri*3+1]),int(part.idx[tri*3+2])]
+            mids = [-1,-1,-1]
+            count=0
+            loop k in [0..3):
+                ia=ids[k]
+                ib=ids[(k+1)%3]
+                a=part.verts[ia]
+                b=part.verts[ib]
+                if max(hero_shoulder_mask(a.pos),hero_shoulder_mask(b.pos))<0.001: continue
+                key="{min(ia,ib)},{max(ia,ib)}"
+                mid=edges.get(key) ?? -1
+                if mid<0:
+                    v=hero_blend_vertex(a,b,0.5,bones)
+                    edge=b.pos-a.pos
+                    # Cubic surface midpoint rounds the deltoid and trapezius
+                    # instead of merely adding coplanar triangles.
+                    v.pos += (b.nrm*dot(edge,b.nrm)-a.nrm*dot(edge,a.nrm))*f32(0.125*hero_shoulder_mask(v.pos))
+                    mid=part.verts.len()
+                    part.verts.push(v)
+                    edges[key]=mid
+                mids[k]=mid
+                count+=1
+            out: int[]
+            if count==0: out=ids
+            else if count==3:
+                out=[ids[0],mids[0],mids[2],mids[0],ids[1],mids[1],mids[2],mids[1],ids[2],mids[0],mids[1],mids[2]]
+            else:
+                k=0
+                loop k<3:
+                    if (count==1 and mids[k]>=0) or (count==2 and mids[k]<0): break
+                    k+=1
+                a=ids[k]
+                b=ids[(k+1)%3]
+                c=ids[(k+2)%3]
+                if count==1: out=[a,mids[k],c,mids[k],b,c]
+                else:
+                    ab=mids[(k+1)%3]
+                    ac=mids[(k+2)%3]
+                    out=[a,b,ab,a,ab,ac,ac,ab,c]
+            loop i in out: indices.push(u32(i))
+        part.idx=indices
+    # Relax the back's imported muscle ridges, and diffuse abrupt arm/chest
+    # influence boundaries. The weld map also prevents a split at UV seams.
+    loop iteration in [0..7):
+        sums: {str: ChVert} = {}
+        counts: {str: int} = {}
+        loop tri in [0..part.idx.len()/3):
+            loop k in [0..3):
+                a=part.verts[int(part.idx[tri*3+k])]
+                key=hero_vertex_key(a.pos)
+                loop other in [1,2]:
+                    b=part.verts[int(part.idx[tri*3+(k+other)%3])]
+                    count=counts.get(key) ?? 0
+                    sums[key]=if count==0:b else:hero_blend_vertex(sums[key],b,1.0/f32(count+1),bones)
+                    counts[key]=count+1
+        old=part.verts
+        loop i in [0..old.len()):
+            a=old[i]
+            mask=hero_shoulder_mask(a.pos)
+            if mask<=0: continue
+            avg=sums.get(hero_vertex_key(a.pos)) ?? a
+            axilla=smoothstep(0.10,0.17,abs(f64(a.pos.x)))*(1.0-smoothstep(0.25,0.33,abs(f64(a.pos.x))))
+            axilla*=1.0-smoothstep(1.31,1.39,f64(a.pos.y))
+            strength=if iteration<4:0.38 else:axilla*0.48
+            v=hero_blend_vertex(a,avg,f32(mask*strength),bones)
+            # Keep material coordinates; only the surface and deformation change.
+            v.uv=a.uv
+            v.col=a.col
+            part.verts[i]=v
+    # Area-weighted smooth normals on the finished, seam-welded shoulder loops.
+    normals: {str: vec3} = {}
+    loop tri in [0..part.idx.len()/3):
+        a=part.verts[int(part.idx[tri*3])].pos
+        b=part.verts[int(part.idx[tri*3+1])].pos
+        c=part.verts[int(part.idx[tri*3+2])].pos
+        n=cross(b-a,c-a)
+        loop pos in [a,b,c]:
+            key=hero_vertex_key(pos)
+            normals[key]=(normals.get(key) ?? vec3(0,0,0))+n
+    loop mut v in part.verts:
+        mask=hero_shoulder_mask(v.pos)
+        n=normals.get(hero_vertex_key(v.pos)) ?? v.nrm
+        if length(n)>0.000001: v.nrm=normalize(mix(v.nrm,normalize(n),f32(mask)))
+
+# The proximal posterior deltoid originates on the shoulder girdle. Imported
+# arm-heavy weights roll that origin behind the axilla when the upper arm rises.
+# Share only this attachment with the clavicle; the distal arm keeps its skin
+# and the lower torso, hands and contact rig remain untouched.
+hero_deltoid_attachment = (v: ChVert, sk: Skel) -> ChVert:
+    p=v.pos
+    x=abs(f64(p.x))
+    attachment=(1.0-smoothstep(0.205,0.29,x))*smoothstep(0.14,0.20,x)
+    attachment*=smoothstep(1.31,1.43,f64(p.y))*(1.0-smoothstep(1.53,1.60,f64(p.y)))
+    attachment*=(1.0-smoothstep(-0.045,0.005,f64(p.z)))*0.5
+    if attachment<=0.0: return v
+    side=if p.x>0:"l" else:"r"
+    arm=skel_find(sk,"upperarm_"+side)
+    shoulder=skel_find(sk,"clavicle_"+side)
+    if arm<0 or shoulder<0: return v
+    arm_weight=0.0
+    loop k in [0..4):
+        if int(vcomp(v.jnt,k))==arm: arm_weight+=f64(vcomp(v.wgt,k))
+    if arm_weight<=0.0: return v
+    anchored=v
+    js: f32[]
+    loop k in [0..4):
+        j=int(vcomp(v.jnt,k))
+        js.push(f32(if j==arm:shoulder else:j))
+    anchored.jnt=vec4(js[0],js[1],js[2],js[3])
+    hero_blend_vertex(v,anchored,f32(attachment),sk.names.len())
+
+# Fair the finished surface, after the anatomical envelope has been applied.
+# Work on welded positions only: the existing topology, UVs and every influence
+# are retained, including the already solved shoulder attachment and contacts.
+hero_surface_fair = (part: mut BPart):
+    original = part.verts
+    loop iteration in [0..8):
+        sums: {str: vec3} = {}
+        counts: {str: int} = {}
+        loop tri in [0..part.idx.len()/3):
+            loop k in [0..3):
+                a=part.verts[int(part.idx[tri*3+k])].pos
+                key=hero_vertex_key(a)
+                loop other in [1,2]:
+                    b=part.verts[int(part.idx[tri*3+(k+other)%3])].pos
+                    sums[key]=(sums.get(key) ?? vec3(0,0,0))+b
+                    counts[key]=(counts.get(key) ?? 0)+1
+        old=part.verts
+        loop i in [0..old.len()):
+            p=original[i].pos
+            x=abs(f64(p.x))
+            y=f64(p.y)
+            # Broad scapular/spinal surface and the deltoid insertion; no face,
+            # wrist, pelvis, toes or soles participate in this relaxation.
+            upper=smoothstep(1.00,1.16,y)*(1.0-smoothstep(1.37,1.46,y))*(1.0-smoothstep(0.40,0.57,x))
+            leg=smoothstep(0.10,0.24,y)*(1.0-smoothstep(0.62,0.77,y))
+            mask=max(upper,leg)
+            if mask<=0.0: continue
+            key=hero_vertex_key(old[i].pos)
+            count=counts.get(key) ?? 0
+            if count==0: continue
+            q=mix(old[i].pos,sums[key]/f32(count),f32(mask*0.46))
+            delta=q-p
+            # Bound cumulative movement; smoother knees retain their kneecap,
+            # and the calf still tapers into the unchanged ankle/contact region.
+            limit=if leg>upper:0.014 else:0.010
+            delta*=f32(min(1.0,limit/max(0.000001,f64(length(delta)))))
+            part.verts[i].pos=p+delta
+
+# Slim each finger around its own bind-space phalanx, preserving joint lengths
+# and influences. The back of the palm loses bulk; its supporting surface stays
+# within 1 mm while wrist/grip sockets stay fixed. Smooth weights avoid seams.
+hero_hand_point = (p: vec3, joints: vec4, weights: vec4, sk: Skel) -> vec3:
+    if abs(p.x)<0.63: return p
+    delta=vec3(0,0,0)
+    loop k in [0..4):
+        j=int(vcomp(joints,k))
+        w=vcomp(weights,k)
+        name=lower(sk.names[j])
+        origin=sk.gm[j][3].xyz
+        finger=contains(name,"index") or contains(name,"middle") or contains(name,"ring") or contains(name,"pinky") or contains(name,"thumb")
+        if finger:
+            end=origin
+            loop child in [j+1..sk.names.len()):
+                if sk.parent[child]==j:
+                    end=sk.gm[child][3].xyz
+                    break
+            axis=end-origin
+            if length(axis)<0.0001: axis=origin-sk.gm[sk.parent[j]][3].xyz
+            axis=normalize(axis)
+            radial=p-origin-axis*dot(p-origin,axis)
+            delta-=radial*w*0.24
+        else if starts_with(name,"hand_"):
+            # Fade shaping off toward the underside at wrist.y - 22 mm.
+            back=smoothstep(-0.022,0.014,f64(p.y-origin.y))
+            fade=smoothstep(0.635,0.68,abs(f64(p.x)))
+            delta.y-=f32(max(0.0,f64(p.y-origin.y)+0.022)*back*fade*0.25)*w
+    p+delta
+
+hero_form = (bm: mut BModel, sk: Skel, bare: bool):
+    shoulder = sk.gm[skel_find(sk,"upperarm_l")][3].xyz
+    elbow = sk.gm[skel_find(sk,"lowerarm_l")][3].xyz
+    wrist = sk.gm[skel_find(sk,"hand_l")][3].xyz
+    loop mut part in bm.parts:
+        skin_part = contains(part.key,"Superhero") or contains(part.key,"Regular_Male")
+        if skin_part and bare: hero_shoulder_loops(part,sk.names.len())
+        if skin_part: hero_soft_normals(part,1.0)
+        if skin_part and bare:
+            hero_joint_surface(part,sk)
+            hero_anatomy_normals(part)
+        loop mut v in part.verts:
+            if skin_part and bare: v=hero_deltoid_attachment(v,sk)
+            if contains(part.key,"Hair"):
+                v.pos.y = 1.708+(v.pos.y-1.708)*0.66
+            p = v.pos
+            n = v.nrm
+            tangent = normalize(cross(n,(if abs(n.y)<0.9:vec3(0,1,0) else:vec3(1,0,0))))
+            bitangent = cross(n,tangent)
+            v.pos = hero_form_point(p,shoulder,elbow,wrist,bare)
+            a = hero_form_point(p+tangent*0.0005,shoulder,elbow,wrist,bare)-hero_form_point(p-tangent*0.0005,shoulder,elbow,wrist,bare)
+            b = hero_form_point(p+bitangent*0.0005,shoulder,elbow,wrist,bare)-hero_form_point(p-bitangent*0.0005,shoulder,elbow,wrist,bare)
+            v.nrm = normalize(cross(a,b))
+            if abs(p.x)>0.63:
+                # Transport the normal through the same local hand shaping.
+                hp=v.pos
+                hn=v.nrm
+                ht=normalize(cross(hn,(if abs(hn.y)<0.9:vec3(0,1,0) else:vec3(1,0,0))))
+                hb=cross(hn,ht)
+                v.pos=hero_hand_point(hp,v.jnt,v.wgt,sk)
+                ha=hero_hand_point(hp+ht*0.0005,v.jnt,v.wgt,sk)-hero_hand_point(hp-ht*0.0005,v.jnt,v.wgt,sk)
+                hc=hero_hand_point(hp+hb*0.0005,v.jnt,v.wgt,sk)-hero_hand_point(hp-hb*0.0005,v.jnt,v.wgt,sk)
+                v.nrm=normalize(cross(ha,hc))
+            if skin_part and not bare:
+                # A warm face core and neck occlusion, painted into existing vertices.
+                side=1.0-smoothstep(-0.15,0.65,f64(v.nrm.z))
+                neck=exp(-pow((f64(p.y)-1.54)/0.055,2.0))
+                wash=1.0-side*0.12-neck*0.13
+                v.col=vec4(v.col.xyz*f32(wash),v.col.w)
+            if abs(p.x)>0.76:
+                # Finger joints already exist. A quiet crease separates their segments
+                # at gameplay scale while preserving all glove/skin grip vertices.
+                crease = 0.0
+                loop k in [0..4):
+                    j = int(vcomp(v.jnt,k))
+                    name = lower(sk.names[j])
+                    if contains(name,"index") or contains(name,"middle") or contains(name,"ring") or contains(name,"pinky") or contains(name,"thumb"):
+                        dx = abs(f64(p.x-sk.gm[j][3].x))
+                        crease += f64(vcomp(v.wgt,k))*exp(-pow(dx/0.007,2.0))
+                light = 1.0-0.18*crease+0.04*max(0.0,f64(v.nrm.y))
+                v.col = vec4(v.col.xyz*f32(light),v.col.w)
+        if skin_part and bare:
+            hero_surface_fair(part)
+            hero_finished_normals(part)
+
+# Bake-only silhouette and painted form. Contacts, topology and influences remain
+# those of the source mesh; the hand/grip positions are deliberately untouched.
+hero_cloth_point = (p: vec3, name: str) -> vec3:
+    q = p
+    if name == "Male_Ranger_Body":
+        hem = 1.0-smoothstep(0.92,1.16,f64(p.y))
+        q.x *= f32(1.0+0.10*hem)
+        q.z *= f32(1.0+0.08*hem)
+        # A soft, slightly uneven hanging edge instead of a rigid level tube.
+        q.y -= f32(0.012*hem*(0.5+0.5*cos(f64(p.x)*24.0)))
+    # The duplicate second belt is excluded by its source mesh name. Seat the
+    # retained belt slightly lower over the cloth, closing the detached bright gap.
+    if name == "Male_Ranger_Body_Belt_1": q.y -= 0.016
+    q
+
+hero_cloth_form = (part: mut BPart, name: str):
+    if name == "Male_Ranger_Body" or name == "Male_Ranger_Body_Belt_1" or name == "Male_Ranger_Legs": hero_soft_normals(part,0.7)
+    loop mut v in part.verts:
+        p = v.pos
+        n = v.nrm
+        t = normalize(cross(n,(if abs(n.y)<0.9:vec3(0,1,0) else:vec3(1,0,0))))
+        b = cross(n,t)
+        v.pos = hero_cloth_point(p,name)
+        u = hero_cloth_point(p+t*0.0005,name)-hero_cloth_point(p-t*0.0005,name)
+        w = hero_cloth_point(p+b*0.0005,name)-hero_cloth_point(p-b*0.0005,name)
+        v.nrm = normalize(cross(u,w))
+
+# Keep the source's seams and folds, but make the skirt the same material as the
+# shirt. Its old orange diamond pattern read as an unrelated armoured hip block.
+hero_cloth_paint = (im: mut Image, parts: BPart[], cloth: vec3, soft_waist: bool = false):
+    cover = fill(false,im.width*im.height)
+    painted = cover
+    loop part in parts:
+        loop hit in uv_raster(part,im.width,im.height,cover):
+            k = hit.y*im.width+hit.x
+            if painted[k]: continue
+            painted[k] = true
+            y = f64(hit.pos.y)
+            if y > 1.16: continue
+            r = f64(im.pixels[k*4])/255.0
+            g = f64(im.pixels[k*4+1])/255.0
+            b = f64(im.pixels[k*4+2])/255.0
+            l = (r+g+b)/3.0
+            panel = 1.0-smoothstep((if soft_waist:1.04 else:1.115),(if soft_waist:1.16 else:1.15),y)
+            # Broad folds survive gameplay framing; narrow hem stitch remains quiet.
+            a = atan2(f64(hit.pos.x),f64(hit.pos.z))
+            fold = 0.94+0.06*cos(a*7.0+0.3)+0.025*cos(a*13.0-y*8.0)
+            hem = 1.0-0.22*(1.0-smoothstep(0.918,0.937,y))
+            shade = (0.83+0.28*l)*fold*hem
+            loop c in [0..3):
+                old = f64(im.pixels[k*4+c])/255.0
+                value = lerp(old,f64(vcomp(vec4(cloth,1),c))*shade,panel*0.92)
+                im.pixels[k*4+c] = u8(clamp(value*255.0,0.0,255.0))
+    bleed(im,painted,cover,3)
+
+# Paint the complete boot/bracer/belt UV islands together, including their
+# pale bands. A hue-only leather mask left bright orange-and-white stripes at
+# gameplay distance. Preserve source seams in a soft umber value range after
+# value grouping, without touching skin, cloth or the old man's variant.
+hero_trim_values = (im: mut Image, parts: BPart[]):
+    cover=fill(false,im.width*im.height)
+    painted=cover
+    loop part in parts:
+        loop hit in uv_raster(part,im.width,im.height,cover):
+            k=hit.y*im.width+hit.x
+            if painted[k]: continue
+            painted[k]=true
+            old=v3(f64(im.pixels[k*4])/255.0,f64(im.pixels[k*4+1])/255.0,f64(im.pixels[k*4+2])/255.0)
+            hsv=rgb_hsv(f64(old.x),f64(old.y),f64(old.z))
+            pale=(1.0-smoothstep(0.22,0.48,f64(hsv.y)))*smoothstep(0.24,0.46,f64(hsv.z))
+            value=f64(hsv.z)
+            leather=v3(0.43,0.335,0.255)*f32(0.70+0.44*smoothstep(0.12,0.78,value))
+            band=v3(0.46,0.415,0.35)*f32(0.82+0.16*smoothstep(0.24,0.80,value))
+            color=mix(leather,band,f32(pale))
+            # Deep original creases keep their depth, never lift to flat brown.
+            color*=f32(smoothstep(0.015,0.16,value)*0.72+0.28)
+            loop c in [0..3): im.pixels[k*4+c]=u8(clamp(f64(vcomp(vec4(color,1),c))*255.0,0.0,255.0))
+    bleed(im,painted,cover,3)
+
+# Broad cloth folds, knee wear and side shadows in bind space. Multiplicative
+# washes retain the Old Shirt's established middle-value group and source seams.
+hero_worn_cloth = (im: mut Image, parts: BPart[], trousers: bool):
+    cover=fill(false,im.width*im.height)
+    painted=cover
+    groups=fill(-1,im.width*im.height)
+    old_energy=fill(0.0,8)
+    new_energy=fill(0.0,8)
+    loop part in parts:
+        loop hit in uv_raster(part,im.width,im.height,cover):
+            k=hit.y*im.width+hit.x
+            if painted[k]: continue
+            painted[k]=true
+            x=f64(hit.pos.x)
+            y=f64(hit.pos.y)
+            z=f64(hit.pos.z)
+            a=atan2(x,z)
+            group=if trousers:(if z < -0.035:0 else:1) else if y<1.16:(if z<0.0:2 else:3) else if abs(x)>0.22:(if z< -0.055:4 else:5) else:(if z<0.0:6 else:7)
+            groups[k]=group
+            shade=1.0
+            if trousers:
+                leg=abs(x)-0.105
+                side=smoothstep(0.035,0.085,abs(leg))
+                knee=exp(-pow((y-0.49)/0.065,2.0))*smoothstep(-0.015,0.05,z)
+                crease=exp(-pow((y-0.43-0.12*leg)/0.020,2.0))
+                fold=cos(leg*63.0+y*7.0)*0.09
+                shade=0.98+fold-side*0.17+knee*0.16-crease*0.18
+            else:
+                side=pow(abs(sin(a)),3.0)
+                fold=cos(a*6.0+y*11.0)*0.12+cos(a*11.0-y*9.0)*0.05
+                under=exp(-pow((y-1.16)/0.026,2.0))*0.14
+                hem=exp(-pow((y-0.943)/0.015,2.0))*0.13
+                core=exp(-pow(x/0.075,2.0)-pow((y-1.36)/0.16,2.0))*(1.0-smoothstep(-0.10,0.0,z))
+                shoulder=exp(-pow((y-1.52)/0.050,2.0))*0.10
+                shade=1.045+fold-side*0.19-under+hem-core*0.16+shoulder
+                if abs(x)>0.22:
+                    sleeve=atan2(y-1.45,z+0.055)
+                    cuff=exp(-pow((abs(x)-0.51)/0.023,2.0))
+                    crease=exp(-pow((abs(x)-0.39)/0.028,2.0))
+                    shade=0.97+cos(sleeve)*0.14+sin(abs(x)*34.0+sleeve)*0.07+cuff*0.10-crease*0.16
+            loop c in [0..3):
+                old=f64(im.pixels[k*4+c])
+                value=clamp(old*shade,0.0,255.0)
+                old_energy[group]+=old*old
+                new_energy[group]+=value*value
+                im.pixels[k*4+c]=u8(value)
+    # Preserve each garment region's approximate linear-light energy, including
+    # its shadow-facing back. Fold contrast must not shift the Old Shirt's
+    # established average value against storm-darkened forest litter.
+    loop k in [0..groups.len()):
+        group=groups[k]
+        if group<0: continue
+        gain=sqrt(old_energy[group]/max(new_energy[group],1.0))
+        loop c in [0..3): im.pixels[k*4+c]=u8(clamp(f64(im.pixels[k*4+c])*gain+0.5,0.0,255.0))
+    bleed(im,painted,cover,3)
+
+# The face has real eyelids, cheekbones and fingers in the source; clarify those
+# planes with low-frequency paint rather than more geometry or outline draws.
+hero_face_paint = (im: mut Image, parts: BPart[]):
+    cover = fill(false,im.width*im.height)
+    painted = cover
+    loop part in parts:
+        loop hit in uv_raster(part,im.width,im.height,cover):
+            k = hit.y*im.width+hit.x
+            if painted[k]: continue
+            painted[k] = true
+            x = abs(f64(hit.pos.x))
+            y = f64(hit.pos.y)
+            z = f64(hit.pos.z)
+            front = smoothstep(0.025,0.065,z)
+            cheek = exp(-pow((x-0.042)/0.027,2.0)-pow((y-1.671)/0.024,2.0))*front
+            lid = exp(-pow((x-0.036)/0.022,2.0)-pow((y-1.708)/0.0045,2.0))*front
+            under = exp(-pow((x-0.035)/0.027,2.0)-pow((y-1.682)/0.004,2.0))*front
+            mouth = exp(-pow(x/0.026,4.0)-pow((y-1.626)/0.004,2.0))*front
+            loop c in [0..3):
+                old = f64(im.pixels[k*4+c])/255.0
+                warm = if c == 0: 1.035 else if c == 1: 0.98 else: 0.945
+                value = old*lerp(1.0,warm,cheek)*(1.0-0.30*lid-0.09*under-0.10*mouth)
+                im.pixels[k*4+c] = u8(clamp(value*255.0,0.0,255.0))
+    bleed(im,painted,cover,3)
+
+hero_iris = (im: mut Image):
+    loop i in [0..im.width*im.height):
+        r = f64(im.pixels[i*4])/255.0
+        g = f64(im.pixels[i*4+1])/255.0
+        b = f64(im.pixels[i*4+2])/255.0
+        h = rgb_hsv(r,g,b)
+        if h.y<0.16 or h.z<0.12: continue
+        c = hsv_rgb(0.56,0.57,min(0.78,f64(h.z)*1.15))
+        im.pixels[i*4] = u8(c.x*255)
+        im.pixels[i*4+1] = u8(c.y*255)
+        im.pixels[i*4+2] = u8(c.z*255)
+
+hero_hair_material = (bm: mut BModel, headp: vec3, brow: f64):
+    loop mut part in bm.parts:
+        loop mut v in part.verts:
+            if contains(part.key,"Hair"): v.col.w=0.0
+            else if contains(part.key,"Superhero") or contains(part.key,"Regular_Male"):
+                v.col.w=f32(1.0-hero_hair_coverage(v.pos,headp,brow))
+
+# ---------------- the hero ----------------
+# the ranger outfit (no head) + the head, eyes and brows of the full-body base mesh
+bake_hero = ():
+    humanoid_canon()
+    t0 = time()
+    g = load_gltf(SRC + "hero/Male_Ranger.gltf")
+    sk = skel_of(g, 0)
+    bm = BModel(name = "hero", skeleton = "humanoid", skel = sk, canon = canon, tbones = HUM_T)
+    # Keep the exact source part order/merging and apply cloth shaping before it.
+    cloth_parts: BPart[]
+    wear_parts: BPart[]
+    trim_parts: BPart[]
+    globals = node_globals(g)
+    loop ni in [0..g.nodes.len()):
+        n = g.nodes[ni]
+        if n.mesh < 0: continue
+        skip = ["Male_Ranger_Acc_Pauldron","Male_Ranger_Body_Belt_1.001"]
+        if contains(skip,n.name) or contains(skip,g.meshes[n.mesh].name): continue
+        loop pr in g.meshes[n.mesh].prims:
+            if pr.mode != 4: continue
+            bp = gather_prim(g,sk,globals,ni,pr)
+            if n.name == "Male_Ranger_Arms_Bracer" or n.name == "Male_Ranger_Feet_Boots" or n.name == "Male_Ranger_Body_Belt_1" or n.name == "Male_Ranger_Body_Belt_2": trim_parts.push(bp)
+            if n.name == "Male_Ranger_Body": cloth_parts.push(bp)
+            if (n.name=="Male_Ranger_Body" or n.name=="Male_Ranger_Arms") and contains(mat_key(g,pr.material),"Ranger_BaseColor"): wear_parts.push(bp)
+            hero_cloth_form(bp,n.name)
+            add_part(bm,bp,mat_key(g,pr.material),(if n.name == "Male_Ranger_Head_Hood": "hood" else: ""))
+    # the trousers' texture area (to recolor them apart from the tunic)
+    gl = node_globals(g)
+    legs_parts: BPart[]
+    loop ni in [0..g.nodes.len()):
+        n = g.nodes[ni]
+        if n.mesh >= 0 and g.meshes[n.mesh].name == "Male_Ranger_Legs":
+            loop p in g.meshes[n.mesh].prims: legs_parts.push(gather_prim(g, sk, gl, ni, p))
+    # the head from the full body (same skeleton: joints match by name and position)
+    g2 = load_gltf(SRC + "hero/Superhero_Male_FullBody.gltf")
+    sk2 = skel_of(g2, 0)
+    gl2 = node_globals(g2)
+    hb = [skel_find(sk2, "Head"), skel_find(sk2, "neck_01")]
+    head_parts: BPart[]
+    brow = 0.0
+    nbrow = 0
+    loop ni in [0..g2.nodes.len()):
+        n = g2.nodes[ni]
+        if n.mesh < 0: continue
+        loop p in g2.meshes[n.mesh].prims:
+            bp = gather_prim(g2, sk2, gl2, ni, p)
+            if n.name == "SuperHero_Male":
+                keep = fill(false, bp.verts.len())
+                loop i in [0..bp.verts.len()):
+                    v = bp.verts[i]
+                    hw = 0.0
+                    loop k in [0..4):
+                        if contains(hb, int(vcomp(v.jnt, k))): hw += f64(vcomp(v.wgt, k))
+                    keep[i] = hw > 0.5
+                bp = filter_tris(bp, keep)
+                head_parts.push(bp)
+            if n.name == "Eyebrows":
+                loop v in bp.verts:
+                    brow += f64(v.pos.y)
+                    nbrow += 1
+            remap_joints(bp, sk2, sk)
+            add_part(bm, bp, mat_key(g2, p.material), "")
+    brow = brow / f64(max(nbrow, 1))
+    headp = mpos(sk2.gm[skel_find(sk2, "Head")])
+    print("  head joint {headp}, brows at {brow:.3}")
+    # textures
+    loop p in bm.parts:
+        if contains(bm.slot_keys, p.key): continue
+        bm.slot_keys.push(p.key)
+        im = image(1, 1, vec4(1, 1, 1, 0))
+        maxs = 512
+        if contains(p.key, "Ranger_BaseColor"): maxs = 1024
+        if contains(p.key, "Superhero_Male"): maxs = 1024
+        if contains(p.key, "Eye"): maxs = 128
+        if p.key != "":
+            im = img_down(img_file(p.key), maxs)
+            if contains(p.key, "Hair"): recolor_lum(im, v3(0.92, 0.76, 0.40), 1.5)
+        if contains(p.key,"Eye"): hero_iris(im)
+        # variants 2 and 3: the Old Shirt (washed-out grey linen over worn brown trousers) and the
+        # Warm Doublet (rust-red wool)
+        shirt = im
+        doublet = im
+        if p.key != "":
+            if contains(p.key, "Ranger_BaseColor"):
+                cover = fill(false, im.width * im.height)
+                loop lp in legs_parts: uv_raster(lp, im.width, im.height, cover)
+                legs = dilate(cover, im.width, im.height, 3)
+                shirt = im
+                recolor_cloth(shirt, legs, v3(0.1, 0.12, 0.8), 0.3, v3(0.075, 0.42, 1.4), 0.3)
+                doublet = im
+                recolor_cloth(doublet, legs, v3(0.025, 0.55, 0.85), 0.18, v3(0.075, 0.42, 1.4), 0.3)
+                recolor_ranger(im, legs)
+                hero_cloth_paint(im,cloth_parts,v3(0.27,0.43,0.62))
+                # Worn linen shares the torso's middle value group. A pale skirt
+                # blends the body's average value into overcast leaf litter.
+                hero_cloth_paint(shirt,cloth_parts,v3(0.35,0.344,0.321),true)
+                hero_cloth_paint(doublet,cloth_parts,v3(0.56,0.29,0.20),true)
+            if contains(p.key, "Superhero_Male"):
+                hero_face_paint(im,head_parts)
+                paint_hair(im, head_parts, headp, brow)
+            if not contains(p.key, "Ranger_BaseColor"):
+                shirt = im
+                doublet = im
+        # variant 1: the old man (a weathered brown cloak where the ranger wears blue, white hair)
+        old = im
+        if p.key != "": old_man_colors(old, contains(p.key, "Hair"))
+        # Keep the old man variant unchanged; only the dressed hero wears these washes.
+        if contains(p.key,"Ranger_BaseColor"):
+            hero_worn_cloth(shirt,wear_parts,false)
+            hero_worn_cloth(shirt,legs_parts,true)
+            hero_worn_cloth(doublet,wear_parts,false)
+            hero_worn_cloth(doublet,legs_parts,true)
+        painted_values(im)
+        painted_values(old)
+        painted_values(shirt)
+        painted_values(doublet)
+        if contains(p.key,"Ranger_BaseColor"):
+            hero_trim_values(im,trim_parts)
+            hero_trim_values(shirt,trim_parts)
+            hero_trim_values(doublet,trim_parts)
+        img_set_alpha(im, none)
+        img_set_alpha(old, none)
+        img_set_alpha(shirt, none)
+        img_set_alpha(doublet, none)
+        bm.slot_imgs.push([im, old, shirt, doublet])
+        print("  slot {p.key} {im.width}x{im.height}")
+    hero_hair_material(bm,headp,brow)
+    hero_form(bm,sk,false)
+    fin = finish_model(bm, 1.66, 0.0)
+    hair_tail(bm, sk, head_parts, brow)
+    write_model(bm, fin, OUT + "hero.mdl")
+    if env("BAKE_DUMP") != none:
+        loop k in [0..bm.slot_keys.len()): save_png(bm.slot_imgs[k][0], "/tmp/chr/hero_slot{k}.png")
+    print("hero baked in {time() - t0:.2}s")
+
+old_man_colors = (im: mut Image, has_hair: bool):
+    loop i in [0..im.width * im.height):
+        r = f64(im.pixels[i * 4]) / 255.0
+        g = f64(im.pixels[i * 4 + 1]) / 255.0
+        b = f64(im.pixels[i * 4 + 2]) / 255.0
+        hsv = rgb_hsv(r, g, b)
+        h = f64(hsv.x)
+        c = vec3(f32(r), f32(g), f32(b))
+        # blue cloth: earthy brown
+        if h > 0.5 and h < 0.75 and f64(hsv.y) > 0.15: c = hsv_rgb(0.07, 0.45, min(f64(hsv.z) * 1.35 + 0.06, 0.55))
+        # golden hair: white
+        else if has_hair and h > 0.05 and h < 0.17 and f64(hsv.y) > 0.3: c = hsv_rgb(0.1, 0.08, min(f64(hsv.z) * 1.3 + 0.2, 0.95))
+        im.pixels[i * 4] = u8(clamp(f64(c.x) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 1] = u8(clamp(f64(c.y) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 2] = u8(clamp(f64(c.z) * 255.0, 0.0, 255.0))
+
+# Compress imported muscle highlights into a broad skin wash. Derive pigment
+# from the source skin itself so chamber light cannot turn a hand-picked swatch
+# grey or yellow. Model-space and hue masks protect face, hands and underwear.
+hero_body_paint = (im: mut Image, parts: BPart[]):
+    cover=fill(false,im.width*im.height)
+    painted=cover
+    weights=fill(0.0,im.width*im.height)
+    pigment=vec3(0,0,0)
+    total=0.0
+    loop part in parts:
+        if not contains(part.key,"Superhero"): continue
+        loop hit in uv_raster(part,im.width,im.height,cover):
+            k=hit.y*im.width+hit.x
+            if painted[k]: continue
+            painted[k]=true
+            p=hit.pos
+            body=1.0-smoothstep(1.42,1.55,f64(p.y))
+            body*=1.0-smoothstep(0.66,0.79,abs(f64(p.x)))
+            old=v3(f64(im.pixels[k*4])/255.0,f64(im.pixels[k*4+1])/255.0,f64(im.pixels[k*4+2])/255.0)
+            hsv=rgb_hsv(f64(old.x),f64(old.y),f64(old.z))
+            skin_=smoothstep(0.18,0.32,f64(hsv.z))*smoothstep(0.15,0.30,f64(hsv.y))
+            skin_*=smoothstep(0.0,0.025,f64(hsv.x))*(1.0-smoothstep(0.12,0.16,f64(hsv.x)))
+            weight=body*skin_
+            weights[k]=weight
+            pigment+=old*f32(weight)
+            total+=weight
+    if total<=0.0: return
+    pigment/=f32(total)
+    loop k in [0..weights.len()):
+        if weights[k]<=0.0: continue
+        old=v3(f64(im.pixels[k*4])/255.0,f64(im.pixels[k*4+1])/255.0,f64(im.pixels[k*4+2])/255.0)
+        # Retain a quiet trace of the painted joint creases; the lit mesh now
+        # carries the arm, knee and back planes instead of a second muscle map.
+        c=mix(old,pigment,f32(weights[k]*0.92))
+        loop channel in [0..3):
+            im.pixels[k*4+channel]=u8(clamp(vcomp(vec4(c,1),channel)*255,0,255))
+    bleed(im,painted,cover,3)
+
+# the hero as he wakes: bare-chested in dark shorts (the full body asset), blond hair painted on
+bake_hero_bare = ():
+    humanoid_canon()
+    t0 = time()
+    g = load_gltf(SRC + "hero/Superhero_Male_FullBody.gltf")
+    sk = skel_of(g, 0)
+    bm = BModel(name = "hero_bare", skeleton = "humanoid", skel = sk, canon = canon, tbones = HUM_T)
+    gather_all(bm, g, sk, no_name, [])
+    # the head's triangles and the brow line, to paint the hair on as the dressed hero has it
+    gl = node_globals(g)
+    hb = [skel_find(sk, "Head"), skel_find(sk, "neck_01")]
+    head_parts: BPart[]
+    brow = 0.0
+    nbrow = 0
+    loop ni in [0..g.nodes.len()):
+        n = g.nodes[ni]
+        if n.mesh < 0: continue
+        loop pr in g.meshes[n.mesh].prims:
+            bp = gather_prim(g, sk, gl, ni, pr)
+            if n.name == "SuperHero_Male":
+                keep = fill(false, bp.verts.len())
+                loop i in [0..bp.verts.len()):
+                    v = bp.verts[i]
+                    hw = 0.0
+                    loop k in [0..4):
+                        if contains(hb, int(vcomp(v.jnt, k))): hw += f64(vcomp(v.wgt, k))
+                    keep[i] = hw > 0.5
+                head_parts.push(filter_tris(bp, keep))
+            if n.name == "Eyebrows":
+                loop v in bp.verts:
+                    brow += f64(v.pos.y)
+                    nbrow += 1
+    brow = brow / f64(max(nbrow, 1))
+    headp = mpos(sk.gm[skel_find(sk, "Head")])
+    loop p in bm.parts:
+        if contains(bm.slot_keys, p.key): continue
+        bm.slot_keys.push(p.key)
+        im = image(1, 1, vec4(1, 1, 1, 0))
+        if p.key != "":
+            im = img_down(img_file(p.key), (if contains(p.key, "Eye"): 128 else: 1024))
+            if contains(p.key,"Eye"): hero_iris(im)
+            # golden hair (the asset's is dark: keep its strands' light and shade, set the hue)
+            if contains(p.key, "Hair"): recolor_lum(im, v3(0.92, 0.72, 0.36), 1.9)
+            # a fair skin: the asset's body texture is darker than the head the dressed hero wears
+            if contains(p.key, "Superhero"):
+                tint_image(im, v3(1.28, 1.16, 1.06))
+                hero_body_paint(im,bm.parts)
+                hero_face_paint(im,head_parts)
+                paint_hair(im, head_parts, headp, brow)
+            painted_values(im)
+            img_set_alpha(im, none)
+        bm.slot_imgs.push([im])
+    hero_hair_material(bm,headp,brow)
+    hero_form(bm,sk,true)
+    fin = finish_model(bm, 1.62, 0.0)
+    hair_tail(bm, sk, head_parts, brow)
+    write_model(bm, fin, OUT + "hero_bare.mdl")
+    print("hero_bare baked in {time() - t0:.2}s")
+
+# replace the colors with one hue, keeping the luminance (scaled by k)
+recolor_lum = (im: mut Image, c: vec3, k: f64):
+    loop i in [0..im.width * im.height):
+        l = (f64(im.pixels[i * 4]) * 0.3 + f64(im.pixels[i * 4 + 1]) * 0.55 + f64(im.pixels[i * 4 + 2]) * 0.15) / 255.0
+        v = clamp(l * k, 0.0, 1.0)
+        im.pixels[i * 4] = u8(clamp(f64(c.x) * v * 255.0 * 1.3, 0.0, 255.0))
+        im.pixels[i * 4 + 1] = u8(clamp(f64(c.y) * v * 255.0 * 1.3, 0.0, 255.0))
+        im.pixels[i * 4 + 2] = u8(clamp(f64(c.z) * v * 255.0 * 1.3, 0.0, 255.0))
+
+tint_image = (im: mut Image, c: vec3):
+    loop i in [0..im.width * im.height):
+        im.pixels[i * 4] = u8(clamp(f64(im.pixels[i * 4]) * f64(c.x), 0.0, 255.0))
+        im.pixels[i * 4 + 1] = u8(clamp(f64(im.pixels[i * 4 + 1]) * f64(c.y), 0.0, 255.0))
+        im.pixels[i * 4 + 2] = u8(clamp(f64(im.pixels[i * 4 + 2]) * f64(c.z), 0.0, 255.0))
+
+# ---------------- bokoblins ----------------
+puglin_part = (n: str) -> str:
+    if n == "Puglin_Stick": return "club"
+    ""
+
+# Broad facial marks survive minification: pale muzzle, paired nostrils,
+# a dark mouth and ivory teeth, using the existing texture slot and UV layout.
+boko_face_paint = (im: mut Image, parts: BPart[], scale: f64, blue: bool = false):
+    cover=fill(false,im.width*im.height)
+    painted=cover
+    loop part in parts:
+        if part.name != "": continue
+        loop hit in uv_raster(part,im.width,im.height,cover):
+            k=hit.y*im.width+hit.x
+            if painted[k]: continue
+            painted[k]=true
+            p=hit.pos*f32(scale)
+            x=abs(f64(p.x))
+            y=f64(p.y)
+            z=f64(p.z)
+            old=v3(f64(im.pixels[k*4])/255.0,f64(im.pixels[k*4+1])/255.0,f64(im.pixels[k*4+2])/255.0)
+            face=smoothstep(0.32,0.48,z)*(1.0-smoothstep(0.21,0.29,x))
+            snout=face*smoothstep(1.08,1.14,y)*(1.0-smoothstep(1.24,1.29,y))
+            nose=exp(-pow((x-0.095)/0.037,4.0)-pow((y-1.19)/0.027,4.0))*face
+            mouth=face*(1.0-smoothstep(0.14,0.21,x))*smoothstep(1.00,1.04,y)*(1.0-smoothstep(1.095,1.12,y))
+            tooth=mouth*exp(-pow((x-0.115)/0.025,6.0))*smoothstep(1.05,1.065,y)
+            c=mix(old,v3(0.63,0.34,0.29),f32(snout*0.92))
+            if blue:
+                # The old rectangular mouth swallowed the lower muzzle. Wrap
+                # slate skin around a shallow curved opening, with small nares
+                # and two ivory teeth. Eye islands stay white, including padding.
+                pigment=rgb_hsv(f64(old.x),f64(old.y),f64(old.z))
+                if min(old.x,min(old.y,old.z))>0.78 or (pigment.x>0.08 and pigment.x<0.20 and pigment.y>0.4): continue
+                face=smoothstep(0.28,0.43,z)*(1.0-smoothstep(0.235,0.31,x))
+                muzzle=face*smoothstep(0.96,1.01,y)*(1.0-smoothstep(1.24,1.29,y))
+                c=mix(old,v3(0.48,0.55,0.59),f32(muzzle*0.94))
+                # Recessed cheek texels share x/y with the nostrils. Limit the
+                # marks to the forward snout so no detached bar lands by an eye.
+                nose=exp(-pow((x-0.095)/0.023,4.0)-pow((y-1.19)/0.018,4.0))*face*smoothstep(0.50,0.56,z)
+                mouth=face*(1.0-smoothstep(0.88,1.12,pow(x/0.165,4.0)+pow((y-1.053)/0.027,2.0)))
+                tooth=mouth*exp(-pow((x-0.105)/0.025,6.0))*smoothstep(1.05,1.063,y)
+            c=mix(c,(if blue:v3(0.095,0.115,0.13) else:v3(0.065,0.030,0.035)),f32(max(nose,mouth)*0.96))
+            c=mix(c,v3(0.85,0.76,0.58),f32(tooth))
+            loop channel in [0..3):
+                value=if channel==0:c.x else if channel==1:c.y else:c.z
+                im.pixels[k*4+channel]=u8(clamp(value*255,0,255))
+    bleed(im,painted,cover,3)
+
+# Compress slate mottling into a broad wash; model-space values keep
+# back, belly and muzzle distinct without recoloring teeth, clubs or eyes.
+boko_blue_paint = (im: mut Image, parts: BPart[], scale: f64):
+    cover=fill(false,im.width*im.height)
+    painted=cover
+    loop part in parts:
+        if part.name!="": continue
+        loop hit in uv_raster(part,im.width,im.height,cover):
+            k=hit.y*im.width+hit.x
+            if painted[k]: continue
+            painted[k]=true
+            old=v3(f64(im.pixels[k*4])/255.0,f64(im.pixels[k*4+1])/255.0,f64(im.pixels[k*4+2])/255.0)
+            hsv=rgb_hsv(f64(old.x),f64(old.y),f64(old.z))
+            # The source white eye islands must not inherit any model-space
+            # body wash (their UV padding can rasterize over adjacent triangles).
+            if min(old.x,min(old.y,old.z))>0.78: continue
+            skin_=not ((hsv.x>0.05 and hsv.x<0.43) or hsv.y<0.12)
+            p=hit.pos*f32(scale)
+            x=abs(f64(p.x))
+            y=f64(p.y)
+            z=f64(p.z)
+            belly=exp(-pow(x/0.23,4.0)-pow((y-0.85)/0.27,4.0))*smoothstep(0.05,0.16,z)
+            if not skin_ and belly<0.01: continue
+            back=1.0-smoothstep(-0.15,0.09,z)
+            value=(0.40+0.16*f64(hsv.z))*(1.0-back*0.22)
+            c=if skin_:hsv_rgb(0.595,0.22,value) else:old
+            c=mix(c,v3(0.48,0.53,0.54),f32(belly*0.90))
+            loop channel in [0..3):
+                im.pixels[k*4+channel]=u8(clamp(vcomp(vec4(c,1),channel)*255,0,255))
+    bleed(im,painted,cover,3)
+
+bake_bokoblin = ():
+    humanoid_canon()
+    t0 = time()
+    g = load_gltf(SRC + "enemy/Puglin.glb")
+    sk = skel_of(g, 0)
+    bm = BModel(name = "bokoblin", skeleton = "humanoid", skel = sk, canon = canon, tbones = HUM_T)
+    gather_all(bm, g, sk, puglin_part, [])
+    emis = img_down(img_file(SRC + "enemy/T_Puglin_Emissive.png"), 1024)
+    loop p in bm.parts:
+        if contains(bm.slot_keys, p.key): continue
+        bm.slot_keys.push(p.key)
+        red = img_down(img_file(SRC + "enemy/T_Puglin_BaseColor_2.png"), 1024)
+        blue = img_down(img_file(SRC + "enemy/T_Puglin_BaseColor_3.png"), 1024)
+        green = img_down(img_file(SRC + "enemy/T_Puglin_BaseColor_1.png"), 1024)
+        skin_contrast(red)
+        boko_face_paint(red,bm.parts,finish_model(bm,1.42,0.0).scale)
+        boko_blue_paint(blue,bm.parts,finish_model(bm,1.42,0.0).scale)
+        boko_face_paint(blue,bm.parts,finish_model(bm,1.42,0.0).scale,true)
+        skin_contrast(green)
+        black = red
+        darken_skin(black)
+        img_set_alpha(red, emis)
+        img_set_alpha(blue, emis)
+        img_set_alpha(black, emis)
+        img_set_alpha(green, emis)
+        bm.slot_imgs.push([red, blue, black, green])
+    fin = finish_model(bm, 1.42, 0.0)
+    boko_form(bm, sk, fin)
+    boko_extras(bm, sk, fin)
+    boko_sculpt_head(bm, sk, fin)
+    write_model(bm, fin, OUT + "bokoblin.mdl")
+    print("bokoblin baked in {time() - t0:.2}s")
+
+# Model-space shaping is applied after the original scale is fixed. The contact rig,
+# imported skin influences, hand vertices and soles remain byte-for-byte unchanged.
+boko_form_point = (p: vec3, head: f64) -> vec3:
+    q = p
+    x = abs(f64(p.x))
+    belly = smoothstep(0.59,0.70,f64(p.y))*(1.0-smoothstep(0.83,0.99,f64(p.y)))*(1.0-smoothstep(0.19,0.30,x))*(1.0-head)
+    q.z += f32(belly*smoothstep(-0.12,0.16,f64(p.z))*0.075)
+    q.x *= f32(1.0+belly*0.10)
+    # Outward ears with raised tips, a narrower jaw, and a broad blunt pig snout.
+    ear = smoothstep(0.31,0.61,x)*head
+    q.x *= f32(1.0-ear*0.10)
+    q.y += f32(ear*0.075)
+    jaw = (1.0-smoothstep(0.99,1.18,f64(p.y)))*(1.0-smoothstep(0.27,0.39,x))*head
+    q.x *= f32(1.0-jaw*0.10)
+    muzzle = smoothstep(0.42,0.65,f64(p.z))*head
+    q.z -= f32(muzzle*0.065)
+    q.x *= f32(1.0+muzzle*0.12)
+    brow=head*exp(-pow((f64(p.y)-1.30)/0.09,2.0))*(1.0-smoothstep(0.22,0.35,x))*smoothstep(0.14,0.32,f64(p.z))
+    q.z+=f32(brow*0.022)
+    cheek=head*exp(-pow((f64(p.y)-1.13)/0.12,2.0))*smoothstep(0.12,0.23,x)*(1.0-smoothstep(0.28,0.40,x))
+    q.x*=f32(1.0+cheek*0.055)
+    q
+
+boko_form = (bm: mut BModel, sk: Skel, fin: Fin):
+    hj = skel_find(sk,"Head")
+    loop mut part in bm.parts:
+        if part.name != "": continue
+        loop mut v in part.verts:
+            head = 0.0
+            loop k in [0..4):
+                if int(vcomp(v.jnt,k)) == hj: head += f64(vcomp(v.wgt,k))
+            p = v.pos*f32(fin.scale)
+            n = v.nrm
+            t = normalize(cross(n,(if abs(n.y)<0.9:vec3(0,1,0) else:vec3(1,0,0))))
+            b = cross(n,t)
+            shaped = boko_form_point(p,head)
+            if shaped != p: v.pos = shaped/f32(fin.scale)
+            a = boko_form_point(p+t*0.0005,head)-boko_form_point(p-t*0.0005,head)
+            c = boko_form_point(p+b*0.0005,head)-boko_form_point(p-b*0.0005,head)
+            v.nrm = normalize(cross(a,c))
+            # Pigment washes clarify the temples and belly without shiny highlights.
+            belly=smoothstep(-0.08,0.18,f64(p.z))*(1.0-head)
+            back=1.0-smoothstep(-0.16,0.02,f64(p.z))
+            # Broad front/back pigment groups; the light supplies the small planes.
+            wash=0.84+0.27*belly-0.27*back
+            # Pigment models the underside of the snout, recessed ear and brow.
+            underside=head*smoothstep(0.28,0.50,f64(p.z))*(1.0-smoothstep(1.04,1.15,f64(p.y)))
+            ear=head*smoothstep(0.30,0.48,abs(f64(p.x)))*(1.0-smoothstep(1.20,1.36,f64(p.y)))
+            wash*=1.0-0.28*underside-0.38*ear
+            crease = 0.0
+            loop k in [0..4):
+                j = int(vcomp(v.jnt,k))
+                name = lower(sk.names[j])
+                if contains(name,"index") or contains(name,"middle") or contains(name,"ring") or contains(name,"thumb"):
+                    dx = abs(f64((v.pos-sk.gm[j][3].xyz).x))*fin.scale
+                    crease += f64(vcomp(v.wgt,k))*exp(-pow(dx/0.009,2.0))
+            v.col = vec4(v.col.xyz*f32(wash*(1.0-crease*0.20)),v.col.w)
+
+# the Bokoblin's horn and loincloth, which the source model lacks: rigid to the head and the
+# pelvis (the flaps' hems follow the thighs), in a plain white slot colored by vertex colors
+__xp_tri = (bp: mut BPart, a: vec3, b: vec3, c: vec3, col: vec4, ja: vec4, wa: vec4, jb: vec4, wb: vec4, jc: vec4, wc: vec4):
+    n = normalize(cross(b - a, c - a))
+    base = u32(bp.verts.len())
+    bp.verts.push(ChVert(a, n, vec2(0.5, 0.5), col, ja, wa))
+    bp.verts.push(ChVert(b, n, vec2(0.5, 0.5), col, jb, wb))
+    bp.verts.push(ChVert(c, n, vec2(0.5, 0.5), col, jc, wc))
+    loop k in [0..3): bp.idx.push(base + u32(k))
+
+# The hero's hair: a recessed crown and tapered locks, gathered at the nape.
+# The lower tail drapes between existing neck/head bones; no extra rig or draw.
+hair_tail = (bm: mut BModel, sk: Skel, head_parts: BPart[], brow: f64):
+    head = skel_find(sk, "Head")
+    if head < 0: return
+    # the back of the skull: the backmost head vertex a little above the brow
+    back = vec3(0, 0, 1e9)
+    loop hp in head_parts:
+        loop v in hp.verts:
+            if f64(v.pos.y) > brow - 0.02 and f64(v.pos.y) < brow + 0.06 and abs(f64(v.pos.x)) < 0.03 and v.pos.z < back.z: back = v.pos
+    if back.z > 1e8: return
+    gold = vec4(f32(albedo(0.72)), f32(albedo(0.58)), f32(albedo(0.28)), 0)
+    band = vec4(f32(albedo(0.35)), f32(albedo(0.22)), f32(albedo(0.14)), 1)
+    jh = vec4(f32(head), 0, 0, 0)
+    w1 = vec4(1, 0, 0, 0)
+    bp = BPart(key = "plain")
+    # A gathered, curved tail: short leather tie, broad middle and a swept tip.
+    pts = [back+v3(0.0,0.008,0.020),back+v3(0.0,-0.012,-0.021),back+v3(0.004,-0.041,-0.041),back+v3(0.008,-0.086,-0.049),back+v3(0.020,-0.137,-0.040),back+v3(0.032,-0.164,-0.024)]
+    rad = [0.040,0.031,0.038,0.032,0.022,0.002]
+    neck=skel_find(sk,"neck_01")
+    loop lock in [0..3):
+        sides=8
+        rings: vec3[][]
+        loop i in [0..pts.len()):
+            rr: vec3[]
+            t=f64(i)/f64(pts.len()-1)
+            offset=v3((f64(lock)-1.0)*0.016*t,0.009*sin(f64(lock)*2.0)*t,-0.007*sin(f64(lock)*1.7)*t)
+            loop k in [0..sides):
+                a=TAU*f64(k)/f64(sides)
+                radius=rad[i]*(if i<2:0.62 else:0.58)
+                rr.push(pts[i]+offset+v3(cos(a)*radius,0,sin(a)*radius*0.68))
+            rings.push(rr)
+        loop i in [0..pts.len()-1):
+            # Lower locks drape between the existing head and neck transforms.
+            # No bones or grip/contact transforms are added or changed.
+            ja=vec4(f32(head),f32(neck),0,0)
+            wa=vec4(1.0-f32(i)*0.022,f32(i)*0.022,0,0)
+            wb=vec4(1.0-f32(i+1)*0.022,f32(i+1)*0.022,0,0)
+            loop k in [0..sides):
+                k2=(k+1)%sides
+                col=if i==0:band else:gold*f32(0.84+0.045*f64(lock)+0.025*cos(f64(k)))
+                __xp_tri(bp,rings[i][k],rings[i][k2],rings[i+1][k],col,ja,wa,ja,wa,ja,wb)
+                __xp_tri(bp,rings[i][k2],rings[i+1][k2],rings[i+1][k],col,ja,wa,ja,wb,ja,wb)
+    # A smooth recessed crown closes the scalp. Individual curved locks cover
+    # it and end at different heights, breaking the former rigid helmet rim.
+    crown: vec3[][]
+    loop row in [0..9):
+        ring: vec3[]
+        loop k in [0..32):
+            a = TAU*f64(k)/32.0
+            front = max(0.0,cos(a))
+            t = f64(row)/8.0
+            low = brow-0.025+0.060*front
+            y = lerp(low,brow+0.111,t)
+            radius = sqrt(max(0.001,1.0-pow(t,2.1)))*0.95
+            ring.push(v3(sin(a)*0.093*radius-0.008*t,y,-0.023+cos(a)*0.116*radius))
+        crown.push(ring)
+    loop row in [0..8):
+        loop k in [0..32):
+            k2=(k+1)%32
+            col=gold*0.87
+            __xp_tri(bp,crown[row][k],crown[row][k2],crown[row+1][k],col,jh,w1,jh,w1,jh,w1)
+            __xp_tri(bp,crown[row][k2],crown[row+1][k2],crown[row+1][k],col,jh,w1,jh,w1,jh,w1)
+    # Seven broad locks share a warm underlayer. Uneven spacing and swept
+    # tips describe the masses without dark stripes across the 45-pixel head.
+    loop lock in [0..7):
+        a=TAU*f64(lock)/7.0+0.12*sin(f64(lock)*2.3)
+        front=max(0.0,cos(a))
+        side=abs(sin(a))
+        tip=brow-0.106+front*0.125+side*0.019+0.018*sin(f64(lock)*2.7)
+        rows: vec3[][]
+        loop row in [0..9):
+            t=f64(row)/8.0
+            angle=a+0.36*sin(t*PI)+0.23*t*(if sin(a)<0.0:-1.0 else:1.0)
+            y=lerp(brow+0.110,tip,pow(t,1.30))
+            low=brow-0.025+0.060*front
+            crown_t=clamp((y-low)/(brow+0.111-low),0.0,1.0)
+            radius=sqrt(max(0.001,1.0-pow(crown_t,2.1)))*0.96+0.025
+            radius*=1.0-0.17*smoothstep(low,tip,y)
+            width=max(0.006,0.52*sin(pow(t,0.48)*PI))* (0.94+0.15*sin(f64(lock)*1.8))
+            ring: vec3[]
+            loop cross_section in [0..5):
+                u=f64(cross_section)/2.0-1.0
+                aa=angle+u*width
+                lift=0.005*(1.0-u*u)*sin(PI*t)
+                ring.push(v3(sin(aa)*(0.093*radius+lift)-0.008*(1.0-t),y+0.002*(1.0-u*u),-0.023+cos(aa)*(0.116*radius+lift)))
+            rows.push(ring)
+        loop row in [0..8):
+            loop k in [0..4):
+                value=0.88+0.10*(0.5+0.5*cos(a-0.7))
+                value*=0.91+0.09*sin(PI*(f64(row)+0.5)/8.0)
+                col=gold*f32(value)
+                __xp_tri(bp,rows[row][k],rows[row+1][k],rows[row][k+1],col,jh,w1,jh,w1,jh,w1)
+                __xp_tri(bp,rows[row][k+1],rows[row+1][k],rows[row+1][k+1],col,jh,w1,jh,w1,jh,w1)
+    hero_soft_normals(bp,1.0)
+    add_part(bm, bp, "plain", "tail")
+    plain = image(4, 4, vec4(1, 1, 1, 1))
+    img_set_alpha(plain, none)
+    bm.slot_keys.push("plain")
+    var_imgs: Image[]
+    loop k in [0..bm.slot_imgs[0].len()): var_imgs.push(plain)
+    bm.slot_imgs.push(var_imgs)
+
+boko_extras = (bm: mut BModel, sk: Skel, fin: Fin):
+    u = 1.0 / fin.scale                     # a meter in scene units
+    head = skel_find(sk, "Head")
+    pelvis = skel_find(sk, "pelvis")
+    tl = skel_find(sk, "thigh_l")
+    tr = skel_find(sk, "thigh_r")
+    if head < 0 or pelvis < 0 or tl < 0 or tr < 0:
+        eprint("bokoblin extras: bones not found")
+        return
+    # the crown above the brow (the head's vertex near the middle furthest up and forward)
+    top = vec3(0, -1e9, 0)
+    best = -1e18
+    py = f64(sk.gm[pelvis][3].y)
+    front = -1e9
+    back = 1e9
+    halfw = 0.0
+    loop p in bm.parts:
+        if p.name != "": continue
+        loop v in p.verts:
+            if int(v.jnt.x + 0.5) == head and f64(v.wgt.x) > 0.6 and abs(f64(v.pos.x)) < 0.04 * u and f64(v.pos.y) + 0.5 * f64(v.pos.z) > best:
+                best = f64(v.pos.y) + 0.5 * f64(v.pos.z)
+                top = v.pos
+            if abs(f64(v.pos.y) - (py - 0.03 * u)) < 0.03 * u:
+                if abs(f64(v.pos.x)) < 0.05 * u:
+                    front = max(front, f64(v.pos.z))
+                    back = min(back, f64(v.pos.z))
+                halfw = max(halfw, abs(f64(v.pos.x)))
+    bp = BPart(key = "plain")
+    jh = vec4(f32(head), 0, 0, 0)
+    w1 = vec4(1, 0, 0, 0)
+    # horn: a curved cone out of the crown, leaning forward
+    ivory = vec4(f32(albedo(0.93)), f32(albedo(0.86)), f32(albedo(0.68)), 1)
+    tip_col = vec4(f32(albedo(0.55)), f32(albedo(0.45)), f32(albedo(0.33)), 1)
+    sides = 8
+    rings = 4
+    pts: vec3[][]
+    loop r in [0..rings + 1):
+        t = f64(r) / f64(rings)
+        c = top + vec3(0, f32((t * 0.235 - 0.035) * u), f32((t * 0.04 + t * t * 0.07 - 0.01) * u))
+        rad = (0.047 * pow(1.0 - t, 0.85) + 0.0015) * u
+        ring_: vec3[]
+        loop k in [0..sides):
+            a = TAU * f64(k) / f64(sides)
+            ring_.push(c + vec3(f32(cos(a) * rad), 0, f32(sin(a) * rad)))
+        pts.push(ring_)
+    loop r in [0..rings):
+        loop k in [0..sides):
+            k2 = (k + 1) % sides
+            col = mix(ivory,tip_col,f32(pow(f64(r)/f64(rings),2.0)*0.7))
+            __xp_tri(bp, pts[r][k], pts[r + 1][k], pts[r][k2], col, jh, w1, jh, w1, jh, w1)
+            __xp_tri(bp, pts[r][k2], pts[r + 1][k], pts[r + 1][k2], col, jh, w1, jh, w1, jh, w1)
+    # belt and loincloth
+    jp = vec4(f32(pelvis), 0, 0, 0)
+    jhem = vec4(f32(pelvis), f32(tl), f32(tr), 0)
+    whem = vec4(0.4, 0.3, 0.3, 0)
+    cloth = vec4(f32(albedo(0.4)), f32(albedo(0.29)), f32(albedo(0.2)), 1)
+    cloth_dk = vec4(f32(albedo(0.28)), f32(albedo(0.2)), f32(albedo(0.14)), 1)
+    belt = vec4(f32(albedo(0.3)), f32(albedo(0.2)), f32(albedo(0.13)), 1)
+    cz = (front + back) * 0.5
+    rz = (front - back) * 0.5 + 0.015 * u
+    rx = halfw + 0.012 * u
+    by = py - 0.03 * u
+    bh = 0.045 * u
+    seg = 16
+    loop k in [0..seg):
+        a0 = TAU * f64(k) / f64(seg)
+        a1 = TAU * f64(k + 1) / f64(seg)
+        p0 = vec3(f32(sin(a0) * rx), f32(by), f32(cz + cos(a0) * rz))
+        p1 = vec3(f32(sin(a1) * rx), f32(by), f32(cz + cos(a1) * rz))
+        up = vec3(0, f32(bh), 0)
+        __xp_tri(bp, p0, p1, p1 + up, belt, jp, w1, jp, w1, jp, w1)
+        __xp_tri(bp, p0, p1 + up, p0 + up, belt, jp, w1, jp, w1, jp, w1)
+    # a flap: top edge on the belt, the hem lower and a little out (both faces)
+    flap = (zc: f64, dir: f64, w: f64, len_: f64):
+        th = 0.008 * u
+        loop side in [0..2):
+            off = if side == 0: 0.0 else: -th
+            col = if side == 0: cloth else: cloth_dk
+            a = vec3(f32(-w * 0.5), f32(by + bh * 0.5), f32(zc + dir * off))
+            b = vec3(f32(w * 0.5), f32(by + bh * 0.5), f32(zc + dir * off))
+            c = vec3(f32(w * 0.42), f32(by - len_), f32(zc + dir * (0.05 * u + off)))
+            d = vec3(f32(-w * 0.42), f32(by - len_), f32(zc + dir * (0.05 * u + off)))
+            # ragged hem: a notch in the middle
+            m = vec3(0, f32(by - len_ * 0.8), f32(zc + dir * (0.045 * u + off)))
+            if (side == 0) == (dir > 0.0):
+                __xp_tri(bp, a, d, b, col, jp, w1, jhem, whem, jp, w1)
+                __xp_tri(bp, b, d, m, col, jp, w1, jhem, whem, jhem, whem)
+                __xp_tri(bp, b, m, c, col, jp, w1, jhem, whem, jhem, whem)
+            else:
+                __xp_tri(bp, a, b, d, col, jp, w1, jp, w1, jhem, whem)
+                __xp_tri(bp, b, m, d, col, jp, w1, jhem, whem, jhem, whem)
+                __xp_tri(bp, b, c, m, col, jp, w1, jhem, whem, jhem, whem)
+    flap(cz + rz, 1.0, rx * 1.35, 0.3 * u)
+    flap(cz - rz, -1.0, rx * 1.4, 0.24 * u)
+    add_part(bm, bp, "plain", "")
+    plain = image(4, 4, vec4(1, 1, 1, 1))
+    img_set_alpha(plain, none)
+    bm.slot_keys.push("plain")
+    bm.slot_imgs.push([plain, plain, plain, plain])
+
+# Rounded head surfaces share the existing extras draw and its four tiny palettes.
+# Coordinates are metres in bind space; every vertex follows the original Head bone.
+boko_head_ellipsoid = (bp: mut BPart, center: vec3, radius: vec3, pigment: int, head: int, u: f64, seg: int = 16):
+    base = u32(bp.verts.len())
+    rows = seg / 2
+    loop i in [0..rows + 1):
+        th = PI * f64(i) / f64(rows)
+        loop j in [0..seg + 1):
+            ph = TAU * f64(j) / f64(seg)
+            n = v3(sin(th)*cos(ph), cos(th), sin(th)*sin(ph))
+            pos = center + n * radius
+            normal = normalize(n / radius)
+            shade = 0.88 + 0.12 * smoothstep(-0.6,0.6,f64(normal.y))
+            bp.verts.push(ChVert(pos*f32(u), normal, vec2(f32((f64(pigment)+0.5)/16.0),0.5), vec4(f32(shade),f32(shade),f32(shade),1), vec4(f32(head),0,0,0),vec4(1,0,0,0)))
+    loop i in [0..rows):
+        loop j in [0..seg):
+            a = base + u32(i*(seg+1)+j)
+            d = a+u32(seg+1)
+            # One fan triangle at each pole, rather than collapsed triangles.
+            if i > 0:
+                loop k in [a,a+1,d]: bp.idx.push(k)
+            if i < rows-1:
+                loop k in [a+1,d+1,d]: bp.idx.push(k)
+
+boko_sculpt_head = (bm: mut BModel, sk: Skel, fin: Fin):
+    h = skel_find(sk,"Head")
+    u = 1.0/fin.scale
+    # Only replace triangles dominated by the head. Mixed neck boundary weights,
+    # source body vertices, fingers, soles and the club remain exact.
+    loop mut part in bm.parts:
+        if part.key == "plain" or part.name != "": continue
+        kept: u32[]
+        loop t in [0..part.idx.len()/3):
+            rigid = true
+            loop k in [0..3):
+                v = part.verts[int(part.idx[t*3+k])]
+                if int(v.jnt.x) != h or v.wgt.x < 0.5: rigid = false
+            if not rigid:
+                loop k in [0..3): kept.push(part.idx[t*3+k])
+        # Compact unused head vertices without changing any surviving attributes.
+        remap = fill(-1,part.verts.len())
+        verts: ChVert[]
+        loop mut idx in kept:
+            old = int(idx)
+            if remap[old] < 0:
+                remap[old] = verts.len()
+                verts.push(part.verts[old])
+            idx = u32(remap[old])
+        part.verts = verts
+        part.idx = kept
+    bp = bm.parts[bm.parts.len()-1]
+    ell = (c: vec3, r: vec3, pigment: int, seg: int = 16): boko_head_ellipsoid(bp,c,r,pigment,h,u,seg)
+    # Skull, cheek planes and chin: a low, forward-heavy pig head.
+    ell(v3(0,1.205,0.240),v3(0.257,0.222,0.220),0,14)
+    ell(v3(0,1.040,0.370),v3(0.210,0.120,0.206),0,12)
+    loop side in [-1.0,1.0]:
+        ell(v3(side*0.201,1.140,0.367),v3(0.093,0.125,0.107),0,10)
+    # Muzzle is a volume with a distinct oval nose pad, not a painted box.
+    ell(v3(0,1.141,0.495),v3(0.228,0.132,0.163),1,16)
+    ell(v3(0,1.180,0.625),v3(0.176,0.079,0.050),1,16)
+    ell(v3(0,1.060,0.602),v3(0.169,0.032,0.037),3,10)
+    ell(v3(0,1.024,0.569),v3(0.163,0.031,0.058),1,12)
+    loop side in [-1.0,1.0]:
+        # Nostrils nest in the nose pad; beady ochre eyes hide under the brow.
+        ell(v3(side*0.078,1.187,0.668),v3(0.025,0.018,0.011),3,10)
+        ell(v3(side*0.178,1.290,0.417),v3(0.060,0.041,0.038),3,10)
+        ell(v3(side*0.184,1.290,0.447),v3(0.026,0.018,0.012),4,10)
+        ell(v3(side*0.180,1.290,0.457),v3(0.010,0.014,0.005),3,10)
+        ell(v3(side*0.173,1.298,0.460),v3(0.004,0.004,0.003),5,8)
+        # Three blended lobes slope down toward the nose into a sculpted ridge.
+        loop k in [0..3):
+            t=f64(k)/2.0
+            ell(v3(side*(0.083+0.137*t),1.335+0.016*sin(t*PI),0.421-0.011*t),v3(0.054,0.032,0.050),0,10)
+        # Two ivory tusks emerge from the lower lip and hook upward.
+        loop k in [0..3):
+            t=f64(k)/2.0
+            ell(v3(side*(0.148+0.010*t),1.060+0.063*t,0.625+0.013*t),v3(0.020*(1.0-t*0.68),0.028,0.019*(1.0-t*0.68)),5,10)
+        # Wide pointed ears: curved outer rim, dark bowl, fleshy inner leaf.
+        # Reusing a gridded leaf keeps them thin without an intersecting sphere.
+        loop back in [0..2):
+            base=u32(bp.verts.len())
+            loop row in [0..7):
+                t=f64(row)/6.0
+                width=0.095*pow(sin(PI*max(0.001,min(0.999,t))),0.8)
+                loop col in [0..5):
+                    q=f64(col)/2.0-1.0
+                    pos=v3(side*(0.216+t*0.385),1.262+t*0.145+q*width,0.233-t*0.093+(if back==0:0.030+q*q*0.040 else:-0.018))
+                    n=normalize(v3(side*0.20,-q*0.40,(if back==0:1.0 else:-1.0)))
+                    pigment=if back==1 or abs(q)>0.8:0 else:2
+                    bp.verts.push(ChVert(pos*f32(u),n,vec2(f32((f64(pigment)+0.5)/16.0),0.5),vec4(1,1,1,1),vec4(f32(h),0,0,0),vec4(1,0,0,0)))
+            loop row in [0..6):
+                loop col in [0..4):
+                    a=base+u32(row*5+col)
+                    d=a+5
+                    if (side>0.0)==(back==0):
+                        loop k in [a,d,a+1,a+1,d,d+1]: bp.idx.push(k)
+                    else:
+                        loop k in [a,a+1,d,a+1,d+1,d]: bp.idx.push(k)
+    # Dark rooted collar makes the retained single horn grow from the forehead.
+    ell(v3(0,1.384,0.414),v3(0.074,0.037,0.067),2,12)
+    bm.parts[bm.parts.len()-1]=bp
+    # Keep the existing plain slot and all four variant IDs. Centre stays white
+    # for the original horn/loincloth UV; skin uses six discrete padded swatches.
+    palettes=[[v3(0.53,0.265,0.245),v3(0.65,0.385,0.345),v3(0.34,0.16,0.145)],
+              [v3(0.32,0.405,0.50),v3(0.48,0.56,0.60),v3(0.19,0.265,0.34)],
+              [v3(0.23,0.195,0.28),v3(0.40,0.335,0.42),v3(0.125,0.09,0.16)],
+              [v3(0.29,0.44,0.27),v3(0.49,0.59,0.36),v3(0.17,0.28,0.15)]]
+    imgs: Image[]
+    loop palette in palettes:
+        im=image(16,4,vec4(1,1,1,1))
+        colors=[palette[0],palette[1],palette[2],v3(0.065,0.041,0.043),v3(0.86,0.57,0.19),v3(0.89,0.81,0.62)]
+        loop y in [0..4):
+            loop x in [0..16):
+                c=if x<colors.len():colors[x] else:vec3(1,1,1)
+                loop channel in [0..3): im.pixels[(y*16+x)*4+channel]=u8(vcomp(vec4(c,1),channel)*255)
+        img_set_alpha(im,none)
+        imgs.push(im)
+    bm.slot_imgs[bm.slot_imgs.len()-1]=imgs
+
+
+# Remove the source asset's pale rounded highlight lobes at bake time. Skin pigment
+# has three broad value groups; bone, wood, eye whites and the emissive mask stay intact.
+skin_contrast = (im: mut Image):
+    loop i in [0..im.width * im.height):
+        r = f64(im.pixels[i * 4]) / 255.0
+        g = f64(im.pixels[i * 4 + 1]) / 255.0
+        b = f64(im.pixels[i * 4 + 2]) / 255.0
+        hsv = rgb_hsv(r, g, b)
+        h = f64(hsv.x)
+        sat = f64(hsv.y)
+        if sat < 0.22 or (h > 0.08 and h < 0.20): continue
+        v = f64(hsv.z)
+        group = 0.29 + 0.24 * smoothstep(0.24, 0.46, v) + 0.07 * smoothstep(0.57, 0.80, v)
+        # Compress the bright pink/cyan patches back into the main skin wash.
+        red_skin = h < 0.07 or h > 0.88
+        pigment = if red_skin: clamp(sat * 0.85, 0.48, 0.66) else: clamp(sat, 0.66, 0.82)
+        # Compress source mottling: belly/back form is painted in model space.
+        if red_skin:
+            group = 0.43+0.12*v
+            pigment = clamp(sat*0.59,0.42,0.47)
+            h = 0.995
+        blend = if red_skin: smoothstep(0.20, 0.42, v) else: smoothstep(0.30, 0.52, v)
+        c = hsv_rgb(h, lerp(sat, pigment, blend), group)
+        im.pixels[i * 4] = u8(clamp(f64(c.x) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 1] = u8(clamp(f64(c.y) * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 2] = u8(clamp(f64(c.z) * 255.0, 0.0, 255.0))
+
+# Keep the human palette, seams and face details, compressing smooth anatomical
+# gradients into washes before conversion to the world's albedo range.
+painted_values = (im: mut Image):
+    if im.width <= 128: return
+    loop i in [0..im.width * im.height):
+        r = f64(im.pixels[i * 4]) / 255.0
+        g = f64(im.pixels[i * 4 + 1]) / 255.0
+        b = f64(im.pixels[i * 4 + 2]) / 255.0
+        v = max(r, max(g, b))
+        groups = 0.22 + 0.30 * smoothstep(0.20, 0.45, v) + 0.24 * smoothstep(0.60, 0.83, v)
+        target = lerp(v, groups, smoothstep(0.14, 0.32, v) * 0.72)
+        scale = target / max(v, 0.001)
+        im.pixels[i * 4] = u8(clamp(r * scale * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 1] = u8(clamp(g * scale * 255.0, 0.0, 255.0))
+        im.pixels[i * 4 + 2] = u8(clamp(b * scale * 255.0, 0.0, 255.0))
+
+# black bokoblin: the red skin turned to a dark slate purple
+darken_skin = (im: mut Image):
+    loop i in [0..im.width * im.height):
+        r = f64(im.pixels[i * 4]) / 255.0
+        g = f64(im.pixels[i * 4 + 1]) / 255.0
+        b = f64(im.pixels[i * 4 + 2]) / 255.0
+        hsv = rgb_hsv(r, g, b)
+        h = f64(hsv.x)
+        # reddish hues (the skin) only; wood, bone and eyes stay
+        if (h < 0.05 or h > 0.85) and f64(hsv.y) > 0.25:
+            c = hsv_rgb(0.72, f64(hsv.y) * 0.35, f64(hsv.z) * 0.55)
+            im.pixels[i * 4] = u8(clamp(f64(c.x) * 255.0, 0.0, 255.0))
+            im.pixels[i * 4 + 1] = u8(clamp(f64(c.y) * 255.0, 0.0, 255.0))
+            im.pixels[i * 4 + 2] = u8(clamp(f64(c.z) * 255.0, 0.0, 255.0))
+
+# ---------------- animals ----------------
+struct AnimalSpec:
+    file: str
+    name: str
+    size: f64
+    axis: int               # bounds axis the size is measured along (0 x, 1 y, 2 z, 3 largest)
+
+animal_specs = [
+    AnimalSpec("animals/fox.glb", "fox", 0.62, 1),
+    AnimalSpec("animals/wolf.glb", "wolf", 0.95, 1),
+    AnimalSpec("animals/deer.glb", "deer", 1.45, 1),
+    AnimalSpec("animals/stag.glb", "stag", 2.1, 1),
+    AnimalSpec("animals/horse.glb", "horse", 2.0, 1),
+    AnimalSpec("animals/bull.glb", "bull", 1.6, 1),
+    AnimalSpec("animals/fish1.glb", "fish1", 0.3, 3),
+    AnimalSpec("animals/fish2.glb", "fish2", 0.35, 3),
+    AnimalSpec("animals/fish3.glb", "fish3", 0.35, 3),
+]
+
+animal_aliases = [("idle", ["Idle"]), ("idle_alt", ["Idle_2"]), ("graze", ["Idle_Headlow", "Idle_2_HeadLow"]),
+    ("walk", ["Walk"]), ("run", ["Gallop"]), ("jump", ["Gallop_Jump"]), ("land", ["Jump_toIdle", "Jump_ToIdle"]),
+    ("eat", ["Eating"]), ("attack", ["Attack", "Attack_Headbutt"]), ("kick", ["Attack_Kick"]), ("die", ["Death"]),
+    ("hit", ["Idle_HitReact_Left"]), ("hit_r", ["Idle_HitReact_Right"]), ("swim", ["Swim"])]
+
+clip_short = (n: str) -> str:
+    k = rfind(n, "|")
+    if k >= 0: return n[k + 1..]
+    n
+
+bake_animal = (sp: AnimalSpec):
+    t0 = time()
+    g = load_gltf(SRC + sp.file)
+    sk = skel_of(g, 0)
+    # the animal's own skeleton is its library's skeleton
+    lib = BLib(name = sp.name, skel = sk)
+    seen: str[]
+    # bare names first, prefixed duplicates only when no bare one exists
+    loop pass_ in [0..2):
+        loop an in g.anims:
+            short = clip_short(an.name)
+            has_bar = contains(an.name, "|")
+            if (pass_ == 0) == has_bar: continue
+            if contains(seen, short): continue
+            seen.push(short)
+            bc = bake_clip(g, sk, an, sk, true, [], short)
+            bc.looping = is_loop_name(short)
+            lib.clips.push(bc)
+    # short names shared by all animals
+    loop a, cands in animal_aliases:
+        loop c in cands:
+            if contains(seen, c):
+                lib.aliases.push(a)
+                lib.alias_to.push(c)
+                break
+    write_anims(lib, OUT + sp.name + ".anim")
+    bm = BModel(name = sp.name, skeleton = sp.name, skel = sk)
+    gather_all(bm, g, sk, no_name, [])
+    default_slots(bm, g, 256)
+    # face +z: the head bone in front of the hips
+    yaw = 0.0
+    hb = skel_find(sk, "Head")
+    if hb < 0: hb = skel_find(sk, "Face")
+    if hb >= 0:
+        ctr = vec3(0, 0, 0)
+        loop m in sk.gm: ctr = ctr + mpos(m)
+        ctr = ctr / f32(sk.gm.len())
+        d = mpos(sk.gm[hb]) - ctr
+        if abs(d.x) > abs(d.z):
+            yaw = (if d.x > 0.0: -PI / 2.0 else: PI / 2.0)
+        else if d.z < 0.0: yaw = PI
+        print("  {sp.name}: head offset {d}, yaw {yaw:.2}")
+    fin = finish_model(bm, sp.size, yaw, sp.axis)
+    write_model(bm, fin, OUT + sp.name + ".mdl")
+    print("{sp.name} baked in {time() - t0:.2}s")
+
+# ---------------- birds ----------------
+# move UVs between cells of an 8x8 color palette texture: (from x, from y, to x, to y)
+palette_remap = (bm: mut BModel, moves: (int, int, int, int)[]):
+    loop k in [0..bm.parts.len()):
+        p = bm.parts[k]
+        loop mut v in p.verts:
+            cx = int(floor(f64(v.uv.x) * 8.0))
+            cy = int(floor(f64(v.uv.y) * 8.0))
+            loop mv in moves:
+                if cx == mv.0 and cy == mv.1:
+                    v.uv = v.uv + vec2(f32(mv.2 - mv.0) / 8.0, f32(mv.3 - mv.1) / 8.0)
+                    break
+        bm.parts[k] = p
+bake_birds = ():
+    t0 = time()
+    ga = load_gltf(SRC + "birds/bird-animations.glb")
+    bsk = skel_of(ga, 0)
+    lib = BLib(name = "bird", skel = bsk)
+    loop an in ga.anims:
+        if an.name == "Rest Pose": continue
+        bc = bake_clip(ga, bsk, an, bsk, false, ["root", "hips"], an.name)
+        bc.looping = true
+        lib.clips.push(bc)
+    loop a, c in [("fly", "Flap"), ("glide", "Glide"), ("idle", "Idle"), ("walk", "Walk")]:
+        lib.aliases.push(a)
+        lib.alias_to.push(c)
+    write_anims(lib, OUT + "bird.anim")
+    loop name, size in [("eagle", 2.0), ("seagull", 1.25)]:
+        g = load_gltf(SRC + "birds/" + name + ".glb")
+        sk = skel_of(g, 0)
+        bm = BModel(name = name, skeleton = "bird", skel = sk, canon = bsk, tbones = ["root", "hips"])
+        gather_all(bm, g, sk, no_name, [])
+        if name == "eagle":
+            # the source eagle is maroon and orange: make it a brown hawk/eagle
+            palette_remap(bm, [(0, 5, 0, 7), (2, 6, 1, 7), (0, 4, 1, 6)])
+        default_slots(bm, g, 256)
+        fin = finish_model(bm, size, 0.0, 0)
+        write_model(bm, fin, OUT + name + ".mdl")
+    print("birds baked in {time() - t0:.2}s")
+
+# ---------------- main ----------------
+what = args()[1..]
+want = (k: str) -> bool: what.len() == 0 or contains(what, k)
+mkdir(OUT)
+if want("anim"): bake_humanoid_anims()
+if want("hero"): bake_hero()
+if want("hero"): bake_hero_bare()
+if want("bokoblin"): bake_bokoblin()
+if want("animals"):
+    loop sp in animal_specs: bake_animal(sp)
+if want("birds"): bake_birds()

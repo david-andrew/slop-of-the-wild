@@ -1,0 +1,123 @@
+use '../game/matter.jo'
+use '../game/hero_motion.jo'
+from '../game/save.jo' import __save_file
+
+# Read-only observations around the unmodified production update/draw. The only
+# state mutation after startup is the actual isolated save/reload transaction.
+ei_mode = env("ELEMENT_INPUT_MODE") ?? ""
+ei_out = env("ELEMENT_INPUT_OUT") ?? "build/element-input-check"
+ei_save = env("ELEMENT_INPUT_SAVE") ?? "build/element-input-check/mid-burn.save"
+ei_ignites = 0
+ei_fizzes = 0
+ei_swings = 0
+ei_blades = 0
+ei_warn_frames = 0
+ei_breath_frames = 0
+ei_first_warn = -1
+ei_cold_entry = -1
+ei_start = vec3(0, 0, 0)
+ei_uid = 0
+ei_loaded = false
+
+element_input_carried_observe = ():
+    loop event in elem_events:
+        if event.kind == "ignite": ei_ignites += 1
+        if event.kind == "fizz": ei_fizzes += 1
+    if (ei_mode == "read" or (ei_mode == "chain" and frame_number() >= 420)) and ei_fizzes > 0 and env.rain > 0.5:
+        assert(not torch_lit and not burning(gear_element(.weapon, 0)), "rain-doused torch stays extinguished on every production tick")
+
+element_input_observe = ():
+    loop event in pl.events:
+        if event == "swing": ei_swings += 1
+    if player_hits.len() > 0: ei_blades += 1
+
+update = (dt: f64):
+    f = frame_number()
+    if not ei_loaded:
+        ei_loaded = true
+        if ei_mode == "write":
+            save_enabled = true
+            __save_file = ei_save
+            save_update(0.0)
+        if ei_mode == "read":
+            disk = save_decode(read_file(ei_save) ?? "")
+            assert(disk != none, "fresh process decodes saved burning equipment")
+            save_apply(disk!)
+            assert(equipped_weapon() == "torch" and burning(gear_element(.weapon, inv.weapon)), "fresh process restores equipped burning torch")
+            assert(slot_gear_index(0) == inv.weapon, "reload preserves exact-copy equipment binding")
+            ei_uid = gear_instance(.weapon, inv.weapon)
+            print("PASS element restored burning copy uid={ei_uid} burn={held_el.burning} wet={held_el.wet}")
+        ei_start = pl.pos
+        if ei_mode == "cold": assert(not player_cold and not is_snow_area(f64(pl.pos.x), f64(pl.pos.z)) and not has_key("warm_doublet"))
+    element_input_update(dt)
+    if f % 60 == 0:
+        print("TRACE element {ei_mode} f={f} pos={pl.pos} hp={pl.hp} weapon={equipped_weapon()} burn={held_el.burning:.3} wet={held_el.wet:.3} rain={env.rain:.3} grass={flames.len()} swings={ei_swings} blades={ei_blades} warn={lightning_warn:.3} cold={player_cold}")
+    if ei_mode == "chain" and f == 420:
+        ei_uid = gear_instance(.weapon, inv.weapon)
+        assert(torch_lit and burning(gear_element(.weapon, inv.weapon)), "continuous chain retains burning equipment without reload")
+    if ei_mode == "write" or (ei_mode == "chain" and f < 420):
+        if f == 22:
+            assert(invui.open and invui.msg == "Torch" and slot_gear_index(0) == inv.weapon, "native n1 input binds the selected torch through inventory")
+        if f == 110:
+            assert(equipped_weapon() == "torch" and torch_lit and ei_ignites > 0 and ei_swings > 0, "input draws and lights wooden torch at real campfire")
+            assert(slot_gear_index(0) == inv.weapon, "inventory input binds the carried copy")
+            print("PASS element campfire ignition via production input")
+        if f == 419:
+            assert(length(pl.pos-ei_start) > 6.0 and torch_lit and flames.len() > 0 and ei_blades > 0, "input carries fire from campfire and ignites grass with blade contact")
+            if ei_mode == "write":
+                save_enabled = true
+                __save_file = ei_save
+                save_now()
+                save_enabled = false
+                disk = save_decode(read_file(ei_save) ?? "")
+                assert(disk != none and burning(disk!.held), "actual file records carried mid-burn state")
+            print("PASS element write carried ignition grass={flames.len()} distance={length(pl.pos-ei_start):.3}m save={ei_save}")
+    else if ei_mode == "read" or ei_mode == "chain":
+        if ei_mode == "chain": f -= 420
+        if f == 980:
+            assert(not torch_lit and not burning(gear_element(.weapon, inv.weapon)) and held_el.wet > 0.1 and ei_fizzes > 0, "production rain transition douses restored torch")
+            if ei_mode == "chain": assert(flames.len() == 0, "rain extinguishes propagated grass before equipment selection and reuse")
+            print("PASS element rain douses restored equipment rain={env.rain:.3} wet={held_el.wet:.3}")
+        if f == 1080:
+            assert(equipped_weapon() == "travelers_sword", "ordinary inventory input equips alternate weapon")
+        if f == 1102:
+            assert(equipped_weapon() == "torch" and gear_instance(.weapon, inv.weapon) == ei_uid, "native n1 input re-equips the exact doused copy")
+        if f == 1199:
+            assert(equipped_weapon() == "torch" and gear_instance(.weapon, inv.weapon) == ei_uid and not torch_lit and held_el.wet > 0.1 and ei_swings > 0 and ei_blades > 0, "ordinary slot and attack reuse exact doused weapon")
+            print("PASS element read doused/re-equipped/reused copy uid={ei_uid} swings={ei_swings} blades={ei_blades}")
+            if ei_mode == "chain":
+                assert(flames.len() == 0, "rain extinguishes propagated grass before equipment reuse")
+                print("PASS element chain uninterrupted ignition/propagation/rain/exact-copy reuse")
+    else if ei_mode == "storm":
+        if lightning_warn > 0.0:
+            ei_warn_frames += 1
+            if ei_first_warn < 0: ei_first_warn = f
+        if (ei_first_warn >= 0 and f == ei_first_warn+130) or f == 7199:
+            assert(ei_warn_frames > 30 and ei_first_warn >= 0, "natural storm schedules visible metal warning without a bolt preset")
+            print("PASS element storm natural_warning={ei_first_warn} frames={ei_warn_frames}")
+            quit()
+    else if ei_mode == "cold":
+        if player_cold and ei_cold_entry < 0: ei_cold_entry = f
+        loop p in particles:
+            if p.kind == .breath:
+                ei_breath_frames += 1
+                break
+        if f == 299:
+            assert(ei_cold_entry > 10 and player_cold and ei_breath_frames > 30 and pl.speed < 0.5 and not has_key("warm_doublet"), "normal input crosses snow boundary then breathes and shivers")
+            print("PASS element cold snow_entry={ei_cold_entry} breath_frames={ei_breath_frames}")
+
+draw = ():
+    element_input_draw()
+    flush()
+    f = frame_number()
+    capture = false
+    if ei_mode == "write": capture = f == 110 or f == 250 or f == 340 or f == 419
+    else if ei_mode == "chain": capture = [110,250,419,1400,1500,1555,1619].contains(f)
+    else if ei_mode == "read": capture = f == 1 or f == 980 or f == 1080 or f == 1135 or f == 1199
+    else if ei_mode == "storm": capture = ei_first_warn >= 0 and (f == ei_first_warn+15 or f == ei_first_warn+60 or f == ei_first_warn+110)
+    else if ei_mode == "cold": capture = f == 5 or f == 60 or f == 140 or f == 200 or f == 240
+    if capture: save_png(screenshot(), ei_out + "/frame-{f}.png")
+
+    if env("ELEMENT_INPUT_RECORD") != none and f % 4 == 0:
+        if ei_mode != "storm" or (ei_first_warn >= 0 and f < ei_first_warn+130):
+            save_png(screenshot(), ei_out + "/clip/frame-{f:05}.png")

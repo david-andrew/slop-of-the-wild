@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Production-input traversal at 20/30/60/120/240 Hz and irregular intervals; full trajectories and locked frame strips.
+
+Default: headless checks plus rendered sequences. --headless skips GPU work.
+--baseline REV also runs the identical course against a frozen git revision under build/.
+All output is isolated below --out (default build/traversal-check).
+"""
+import argparse
+import csv
+import json
+import math
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+os.chdir(ROOT)
+CASES = ('slope_walk', 'slope_run', 'slope_sprint', 'mantle_complete', 'mantle_release',
+         'mantle_stamina', 'corner', 'corner_press', 'jump_sprint', 'fall_sprint', 'chain', 'rain', 'lift')
+IRREGULAR_CASES = ('temporal_run', 'temporal_jump', 'temporal_attack', 'temporal_camera', 'hitch_wall')
+SCHEDULES = {1: 'alternating_8_25ms', 2: 'random_5_50ms', 3: 'hitches_100ms', 4: 'boundary_frames', 5: 'reference_120Hz', 6: 'single_250ms', 7: 'single_500ms'}
+HZ = (20, 30, 60, 120, 240)
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--locked', action='store_true', help=argparse.SUPPRESS)
+parser.add_argument('--headless', action='store_true')
+parser.add_argument('--render-only', action='store_true')
+parser.add_argument('--render-cases', nargs='+', choices=(*CASES, *IRREGULAR_CASES), default=(*CASES, *IRREGULAR_CASES), help='render a subset of cases')
+parser.add_argument('--verify-rendered', action='store_true', help='verify and rebuild strips from existing captures')
+parser.add_argument('--baseline', help='git revision to measure before, without modifying working files')
+parser.add_argument('--out', type=Path, default=Path('build/traversal-check'))
+args = parser.parse_args()
+if args.verify_rendered: args.render_only = True
+out = args.out.resolve()
+out.mkdir(parents=True, exist_ok=True)
+clean = {k: v for k, v in os.environ.items() if not k.startswith(('BOTW_', 'SLOPPY_', 'TRAVERSAL_'))}
+errors = []
+checks = 0
+
+def check(ok, message):
+    global checks
+    checks += 1
+    if not ok:
+        errors.append(message)
+        print('FAIL:', message)
+
+def run(command, log, env=None, timeout=180):
+    with log.open('w') as f:
+        subprocess.run(command, env=env or clean, stdout=f, stderr=subprocess.STDOUT,
+                       check=True, timeout=timeout)
+
+def build(source, binary):
+    subprocess.run(['sloppy/bin/sloppy', 'build', str(source), '-o', str(binary)], check=True)
+
+def trajectories(directory):
+    result = {}
+    for name in CASES:
+        for hz in HZ:
+            rows = list(csv.DictReader((directory / f'{name}-{hz}.csv').open()))
+            result[name, hz] = [{k: (v if k in ('state', 'grounded', 'sprinting', 'events') else float(v))
+                                for k, v in row.items()} for row in rows]
+    return result
+
+def distance(a, b, keys):
+    return math.sqrt(sum((a[k] - b[k]) ** 2 for k in keys))
+
+def interpolate(rows, t, keys):
+    f = t * (len(rows) / rows[-1]["t"]) - 1
+    i = max(0, min(len(rows) - 1, int(math.floor(f))))
+    j = min(len(rows) - 1, i + 1)
+    k = max(0, min(1, f - i))
+    return {key: rows[i][key] + (rows[j][key] - rows[i][key]) * k for key in keys}
+
+def landmarks(rows):
+    # Align the complete continuous intervals between observed state transitions.
+    # A rain slip is intentionally a 0.9 m discrete event; compare either side,
+    # never interpolate across its discontinuity as if it were foot/camera jitter.
+    marks = [(0.0, rows[0]['state'])]
+    if 'slip;' in rows[0]['events']: marks.append((rows[0]['t'], 'slip'))
+    for prev, row in zip(rows, rows[1:]):
+        if row['state'] != prev['state']:
+            marks.append((row['t'], row['state']))
+        if 'slip;' in row['events']:
+            marks.append((row['t'], 'slip'))
+    marks.append((rows[-1]['t'], 'end'))
+    return marks
+
+def aligned_error(a, b, keys):
+    ma, mb = landmarks(a), landmarks(b)
+    if [m[1] for m in ma] != [m[1] for m in mb]:
+        return None
+    if len(ma) == 2:
+        return max(distance(q, interpolate(b, q['t'], keys), keys) for q in a)
+    peak = 0
+    for (ta, _), (na, _) , (tb, _), (nb, _) in zip(ma, ma[1:], mb, mb[1:]):
+        for i in range(1, 100):
+            k = i / 100
+            if na == ma[-1][0] and nb == mb[-1][0]:
+                elapsed = k * min(na - ta, nb - tb)
+                qa = interpolate(a, ta + elapsed, keys)
+                qb = interpolate(b, tb + elapsed, keys)
+                peak = max(peak, distance(qa, qb, keys))
+                continue
+            # The step before a discrete event must stay on its own side.
+            qa = interpolate(a, min(ta + k * (na - ta), na - 1 / (len(a) / a[-1]["t"])), keys)
+            qb = interpolate(b, min(tb + k * (nb - tb), nb - 1 / (len(b) / b[-1]["t"])), keys)
+            peak = max(peak, distance(qa, qb, keys))
+    return peak
+
+report = {}
+if not args.render_only:
+    after = out / 'after'
+    after.mkdir(exist_ok=True)
+    binary = out / 'check'
+    build('tools/traversal_check.jo', binary)
+    run([str(binary)], after / 'run.log', {**clean, 'TRAVERSAL_OUT': str(after)})
+    data = trajectories(after)
+    if args.baseline:
+        # Freeze every imported game module, not just the three changed files.
+        baseline = out / 'baseline-source'
+        game = baseline / 'game'
+        tools = baseline / 'tools'
+        game.mkdir(parents=True, exist_ok=True)
+        tools.mkdir(exist_ok=True)
+        names = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', args.baseline, 'game'], text=True)
+        for name in names.splitlines():
+            if name.endswith('.jo'):
+                (game / Path(name).name).write_bytes(subprocess.check_output(['git', 'show', f'{args.baseline}:{name}']))
+        for name in ('traversal_course.jo', 'traversal_check.jo'):
+            shutil.copyfile(ROOT / 'tools' / name, tools / name)
+        before = out / 'before'
+        before.mkdir(exist_ok=True)
+        build(tools / 'traversal_check.jo', out / 'before-check')
+        run([str(out / 'before-check')], before / 'run.log', {**clean, 'TRAVERSAL_OUT': str(before)})
+        old = trajectories(before)
+        report['before'] = {name: {str(hz): {**{k: max(q[k] for q in old[name, hz])
+                              for k in ('camera_step', 'penetration', 'drift', 'hand_gap')},
+                              'toe_gap_min_m':min(q['gap'] for q in old[name,hz]),
+                              'stale_grounded_frames':sum(q['grounded']=='true' and q['state'] in ('air','climb','mantle','glide') for q in old[name,hz]),
+                              'let_go_events':sum('let_go;' in q['events'] for q in old[name,hz])}
+                              for hz in HZ} for name in CASES}
+        report['baseline_revision'] = args.baseline
+    report['cases'] = {}
+    for name in CASES:
+        summary = report['cases'][name] = {}
+        for hz in HZ:
+            r = data[name, hz]
+            label = f'{name}/{hz}Hz'
+            check(len(r) == hz * 12, f'{label}: full frame coverage')
+            check(all(math.isfinite(v) for q in r for v in q.values() if isinstance(v, float)), f'{label}: finite trajectory')
+            check(max(q['penetration'] for q in r) < 0.001, f'{label}: camera lens in a solid')
+            check(max(q['camera_step'] for q in r) < 40 / min(hz, 120) + 0.025, f'{label}: camera pop independent of update rate')
+            check(max(q['drift'] for q in r) < 0.001, f'{label}: planted foot drift')
+            check(min(q['sole'] for q in r) > -0.005, f'{label}: foot below surface')
+            check(min(q['gap'] for q in r) > 0.04, f'{label}: feet crossed')
+            check(all(q['grounded'] == 'false' for q in r if q['state'] in ('air', 'climb', 'mantle', 'glide')), f'{label}: airborne grounded flag')
+            check(all(q['active_contacts'] == 0 for q in r if q['state'] != 'ground'), f'{label}: foot contacts disabled during traversal')
+            check(max(q['hand_gap'] for q in r) < 0.02, f'{label}: mantle grips timed to production duration')
+            events = [(q['t'], e) for q in r for e in q['events'].split(';') if e]
+            states = [s for _, s in landmarks(r) if s not in ('slip', 'end')]
+            if name.startswith('slope'):
+                check(all(q['state'] == 'ground' for q in r), f'{label}: ground continuity')
+                check(r[-1]['contacts'] > hz, f'{label}: contacts actually measured')
+                check(max(q['camera_step'] for q in r) < 10 / min(hz, 120), f'{label}: slope camera jitter')
+            if name.startswith('mantle'):
+                check('mantle' in states, f'{label}: climb-to-mantle reached through input')
+                if name == 'mantle_complete':
+                    check(states[:3] == ['ground', 'climb', 'mantle'] and 'ground' in states[3:], f'{label}: mantle completed')
+                    mantle = [q for q in r if q['state'] == 'mantle']
+                    check(0.75 < mantle[-1]['t'] - mantle[0]['t'] + 1 / hz < 0.85, f'{label}: mantle duration')
+                else:
+                    at = states.index('mantle') if 'mantle' in states else -1
+                    check(at >= 0 and states[at + 1:at + 2] == ['air'], f'{label}: interruption falls')
+                    check(any(e == 'let_go' for _, e in events), f'{label}: interruption event')
+                    if name == 'mantle_stamina': check(any(e == 'exhausted' for _, e in events), f'{label}: stamina ran out')
+            if name == 'corner_press':
+                check(all(q['state'] == 'ground' for q in r), f'{label}: holds ground while pushing against corner')
+            if name == 'corner':
+                check(r[-1]['x'] > 5 and r[-1]['z'] < -7, f'{label}: doorway and right corner traversed')
+            if name in ('jump_sprint', 'fall_sprint'):
+                lands = [q for q in r if 'land;' in q['events'] or 'hard_land;' in q['events']]
+                check(len(lands) == 1, f'{label}: one landing')
+                if lands:
+                    land = lands[0]
+                    lag = land['land_t']
+                    check(0 <= (0.08 if name == 'jump_sprint' else 0.65) - lag < 1 / hz + 0.001, f'{label}: landing lag')
+                    nextrow = next(q for q in r[r.index(land) + 1:] if q['substeps'] > land['substeps'])
+                    check(nextrow['sprinting'] == 'true', f'{label}: held sprint survives landing')
+                    if name == 'fall_sprint':
+                        during = [q for q in r if land['t'] < q['t'] < land['t'] + lag - 1 / hz]
+                        check(all(q['speed'] <= max(0.001, land['speed']) for q in during), f'{label}: hard landing blocks acceleration')
+                    fast = next((q['t'] - land['t'] for q in r if q['t'] > land['t'] and q['speed'] > 7), 100)
+                    check(fast < (0.12 if name == 'jump_sprint' else 1.05), f'{label}: resumes sprint promptly')
+                    check(max(q['landing_pose'] for q in r) > 0.25 if name == 'jump_sprint' else True, f'{label}: landing pose')
+            if name == 'chain': check(states == ['climb', 'air', 'glide', 'climb'], f'{label}: climb/fall/glide/regrab sequence ({states})')
+            if name == 'rain':
+                slips = [(t, e) for t, e in events if e == 'slip']
+                check(690 < r[-1]['stamina'] < 695, f'{label}: wet climb and slip stamina drain')
+                check(len(slips) == 3, f'{label}: repeated deterministic wet slips')
+                check(all(1.95 < b[0] - a[0] < 4.05 for a, b in zip(slips, slips[1:])), f'{label}: slip cadence')
+                check(all(0.84 < q['player_step'] < 0.92 for q in r if 'slip;' in q['events']), f'{label}: slip distance')
+            if name == 'lift':
+                check('air' in states and 'ground' in states[states.index('air') + 1:], f'{label}: moving lift departure and landing')
+                check(abs(r[hz // 2]['y'] - (103.6 + math.sin(r[hz // 2]['t']) * 1.2)) < 0.001, f'{label}: production carry callback')
+            # Stationary tail: final position/target error, signed overshoot, settle
+            # time and maximum frame step. Require a full remaining settled second.
+            moving_end = max((q['t'] for q in r if q['player_step'] > 0.0005), default=0)
+            if moving_end < 8:
+                final = r[-1]
+                tail = [q for q in r if q['t'] > moving_end]
+                goal = {k: final[k] for k in ('cx', 'cy', 'cz')}
+                settle = max((q['t'] for q in tail if distance(q, goal, goal) > 0.02), default=moving_end) - moving_end
+                check(settle < (5 if name == 'chain' else 3.5), f'{label}: camera settling {settle:.3f}s')
+                check(max(q['camera_step'] for q in r[-hz:]) < 0.001, f'{label}: stationary camera jitter')
+                # Overshoot beyond the final lens along its initial residual.
+                start = tail[0] if tail else final
+                vec = [goal[k] - start[k] for k in goal]
+                length = math.sqrt(sum(v*v for v in vec))
+                overshoot = max((sum((q[k] - goal[k]) * v for k, v in zip(goal, vec)) / max(length, 1e-9) for q in tail), default=0)
+            else:
+                settle, overshoot = None, None
+            check(overshoot is None or overshoot < 0.15, f'{label}: camera overshoot {overshoot}')
+            summary[str(hz)] = {'max_player_step_m': max(q['player_step'] for q in r), 'max_camera_step_m': max(q['camera_step'] for q in r),
+                                'lens_overlap_m': max(q['penetration'] for q in r), 'foot_drift_m': r[-1]['drift'], 'sole_min_m': r[-1]['sole'],
+                                'toe_gap_min_m': r[-1]['gap'], 'mantle_hand_gap_m':max(q['hand_gap'] for q in r), 'settle_s': settle, 'overshoot_m': overshoot, 'events': events}
+        differences = []
+        for hz in (20, 30, 60, 240):
+            r, ref = data[name, hz], data[name, 120]
+            raw_p = max(distance(q, ref[max(0, int(q['substeps']) - 1)], ('x','y','z')) for i,q in enumerate(r) if q['substeps'] > 0)
+            raw_c = max(distance(q, ref[max(0, int(q['substeps']) - 1)], ('cx','cy','cz')) for i,q in enumerate(r) if q['substeps'] > 0)
+            yaw_error = max(abs(math.remainder(q['yaw'] - ref[max(0, int(q['substeps']) - 1)]['yaw'], math.tau)) for i,q in enumerate(r) if q['substeps'] > 0)
+            pitch_error = max(abs(q['pitch'] - ref[max(0, int(q['substeps']) - 1)]['pitch']) for i,q in enumerate(r) if q['substeps'] > 0)
+            check(yaw_error < 0.08 and pitch_error < 0.05, f'{name}/{hz}Hz camera angles agree across rates')
+            aligned_p = aligned_error(r, ref, ('x','y','z'))
+            aligned_c = aligned_error(r, ref, ('cx','cy','cz'))
+            # Absolute-time bounds apply to every course, including discrete slips.
+            # Aligned diagnostics are retained; sampled transition timestamps have
+            # up to one displayed frame of uncertainty, so alignment is not a bound.
+            limit_p = limit_c = (0.3 if hz == 20 else 0.15)
+            check(raw_p < limit_p and raw_c < limit_c, f'{name}/{hz}Hz full trajectory vs 120Hz: player {raw_p:.3f}, camera {raw_c:.3f}m')
+            check(aligned_p is not None and aligned_c is not None, f'{name}/{hz}Hz same transition sequence')
+            differences.append({'hz':hz, 'player_max_m':raw_p, 'camera_max_m':raw_c, 'aligned_player_max_m':aligned_p, 'aligned_camera_max_m':aligned_c, 'yaw_max_rad':yaw_error, 'pitch_max_rad':pitch_error})
+        settles = [summary[str(hz)]['settle_s'] for hz in HZ if summary[str(hz)]['settle_s'] is not None]
+        check(not settles or max(settles) - min(settles) < 0.15, f'{name}: settling agrees across update rates')
+        summary['rate_comparison'] = differences
+        print(f'{name}: full trajectories 20/30/60/120/240Hz checked; player/camera max differences ' + ', '.join(f"{d['player_max_m']:.3f}/{d['camera_max_m']:.3f}m" for d in differences))
+    report['irregular'] = {}
+    for name in IRREGULAR_CASES:
+        def read_schedule(schedule, directory=after):
+            path = directory / f'{name}-irregular-{schedule}.csv'
+            return [{k: (v if k in ('state', 'grounded', 'sprinting', 'events') else float(v))
+                     for k, v in q.items()} for q in csv.DictReader(path.open())]
+        reference = {}
+        for row in read_schedule(5):
+            reference.setdefault(int(row['substeps']), row)
+        check(set(reference) >= set(range(1, 1441)), f'{name}: reference covers every physics tick')
+        summary = report['irregular'][name] = {}
+        if args.baseline:
+            old_reference = {}
+            for row in read_schedule(5, before): old_reference.setdefault(int(row['substeps']), row)
+            old_summary = report.setdefault('irregular_before', {})[name] = {}
+            for schedule, title in SCHEDULES.items():
+                old_rows = read_schedule(schedule, before)
+                pairs = [(row, row if schedule == 5 else old_reference[int(row['substeps'])]) for row in old_rows if row['substeps'] > 0]
+                old_summary[title] = {'player_max_m':max(distance(a,b,('x','y','z')) for a,b in pairs),
+                                      'camera_max_m':max(distance(a,b,('cx','cy','cz')) for a,b in pairs)}
+        for schedule, title in SCHEDULES.items():
+            rows = read_schedule(schedule)
+            label = f'{name}/{title}'
+            check(abs(rows[-1]['t'] - 12) < 1e-6 and rows[-1]['substeps'] == 1440,
+                  f'{label}: exact elapsed time and 1440 physics ticks, no discarded hitch time')
+            check(all(math.isfinite(v) for row in rows for v in row.values() if isinstance(v, float)), f'{label}: finite trajectory')
+            check(all(abs(row['substeps'] - math.floor(row['t'] * 120 + 0.0002)) < 1 for row in rows), f'{label}: bounded accumulator remainder')
+            check(max(row['penetration'] for row in rows) < 0.001, f'{label}: lens outside solids')
+            # The displayed state is the last completed tick, not an interpolated
+            # trajectory through a jump/landing. Match that tick on the independent
+            # 120 Hz run; compare every irregular frame, including zero-tick frames.
+            pairs = [(row, row if schedule == 5 else reference[int(row['substeps'])]) for row in rows if row['substeps'] > 0]
+            pe = max(distance(a, b, ('x','y','z')) for a,b in pairs)
+            ce = max(distance(a, b, ('cx','cy','cz')) for a,b in pairs)
+            ye = max(abs(math.remainder(a['yaw']-b['yaw'], math.tau)) for a,b in pairs)
+            check(pe < 0.15 and ce < 0.15, f'{label}: complete trajectory vs 120Hz: player {pe:.6f}, camera {ce:.6f}m')
+            check(ye < 0.025, f'{label}: camera turn vs 120Hz {ye:.6f}rad')
+            jumps = sum(row['events'].split(';').count('jump') for row in rows)
+            swings = sum(row['events'].split(';').count('swing') for row in rows)
+            check(rows[-1]['jump_inputs'] == (3 if name == 'temporal_jump' else 0), f'{label}: jump press edges delivered')
+            check(jumps == (3 if name == 'temporal_jump' else 0), f'{label}: no lost or doubled jump presses')
+            check(rows[-1]['attack_inputs'] == (3 if name == 'temporal_attack' else 0), f'{label}: attack press edges delivered')
+            check(rows[-1]['swings'] == swings == (3 if name == 'temporal_attack' else 0), f'{label}: no lost or doubled attacks')
+            if schedule == 3:
+                check(sum(row['dt'] >= 0.099999 for row in rows) >= 10, f'{label}: repeated actual 100ms updates')
+            if schedule in (6, 7):
+                check(sum(abs(row['dt'] - (0.25 if schedule == 6 else 0.5)) < 1e-6 for row in rows) == 1, f'{label}: one complete long hitch delivered')
+            if schedule == 4:
+                check(any(a['substeps'] == b['substeps'] for a,b in zip(rows, rows[1:])), f'{label}: zero-tick frames actually exercised')
+            if name == 'temporal_camera':
+                check(rows[-1]['camera_idle'] > 7.4, f'{label}: released look returns to idle, no residual look input')
+            if name == 'hitch_wall':
+                check(min(row['min_substep_z'] for row in rows) >= 0.37 - 1e-5, f'{label}: capsule stays on approach side of 4cm wall at every substep')
+                check(abs(rows[-1]['z'] - 0.37) < 0.001, f'{label}: actually reached thin wall')
+                if schedule == 3:
+                    check(any(row['dt'] >= 0.099999 and before['z'] > 0.371 and row['z'] <= 0.371
+                              for before,row in zip(rows,rows[1:])), f'{label}: a 100ms hitch actually reaches wall contact')
+                    check(any(row['dt'] >= 0.099999 and abs(before['z']-0.37) < 0.001
+                              and row['speed'] * row['dt'] > 0.72 and abs(row['z']-0.37) < 0.001
+                              for before,row in zip(rows,rows[1:])), f'{label}: hitch wall pressure exceeds entire wall/capsule thickness')
+            summary[title] = {'frames':len(rows), 'substeps':int(rows[-1]['substeps']),
+                              'player_max_m':pe, 'camera_max_m':ce, 'yaw_max_rad':ye,
+                              'jump_inputs':int(rows[-1]['jump_inputs']), 'jump_events':jumps,
+                              'attack_inputs':int(rows[-1]['attack_inputs']), 'swing_events':swings,
+                              'hitches':sum(row['dt'] >= 0.099999 for row in rows),
+                              'min_substep_z':min(row['min_substep_z'] for row in rows)}
+            print(f'{label}: {len(rows)} frames; player/camera {pe:.6f}/{ce:.6f}m; jumps {jumps}, attacks {swings}')
+    report['checks'] = checks
+    report['failures'] = errors
+    (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+
+if not args.headless:
+    from PIL import Image, ImageDraw
+    binary = out / 'render-sequence'
+    if not args.verify_rendered: build('tools/traversal_render.jo', binary)
+    for name in args.render_cases:
+        dest = out / 'render' / name
+        dest.mkdir(parents=True, exist_ok=True)
+        if not args.verify_rendered:
+            for old in dest.glob('*.png'): old.unlink()
+        settings = {**clean, 'TRAVERSAL_CASE':name, 'TRAVERSAL_OUT':str(dest), 'SLOPPY_PLATFORM':'x11',
+                    'SLOPPY_WINDOW':'960x540', 'SLOPPY_FRAMES':'600', 'SLOPPY_SCREENSHOT':str(dest/'final.png')}
+        if not args.verify_rendered:
+            command = ['timeout', '180', str(binary)]
+            if not args.locked: command = ['flock', '/tmp/botw-render.lock', *command]
+            # Only the game holds the lock. Compile, verify and encode outside it;
+            # the game's timeout starts after acquisition, regardless of queue wait.
+            run(command, dest / 'run.log', settings, timeout=None)
+        expected_path = out/'after'/(f'{name}-irregular-3.csv' if name in IRREGULAR_CASES else f'{name}-60.csv')
+        if expected_path.exists():
+            expected = list(csv.DictReader(expected_path.open()))
+            actual = list(csv.DictReader((dest/'trajectory.csv').open()))
+            check(len(actual) == len(expected) if name in IRREGULAR_CASES else len(actual) >= 590, f'{name}: rendered trajectory coverage')
+            error = max(abs(float(row[k])-float(expected[i][k])) for i,row in enumerate(actual) for k in ('x','y','z','cx','cy','cz'))
+            check(error < 0.002, f'{name}: render/headless trajectory agreement {error:.6f}m')
+        frames = sorted(dest.glob('frame-*.png'), key=lambda p:int(p.stem.split('-')[1]))
+        check(len(frames) == 40, f'{name}: captured all 15-frame intervals')
+        # Contact/camera overview plus event-local frames, all from the continuous run.
+        event_times = {'mantle_complete':[3.75,4.0,4.25,4.5,4.75,5.0], 'mantle_release':[3.75,4.0,4.25,4.5,4.75,5.0],
+                       'mantle_stamina':[3.75,4.0,4.25,4.5,4.75,5.0], 'corner':[1.5,2.0,2.25,2.5,3.25,3.75], 'corner_press':[1.0,1.5,2.0,2.5,3.0,3.5],
+                       'jump_sprint':[0.5,0.75,1.0,1.25,1.5,1.75], 'fall_sprint':[0.5,0.75,1.0,1.5,1.75,2.0],
+                       'chain':[0.25,0.5,0.75,1.0,1.25,1.5], 'rain':[0.25,0.5,3.25,3.5,5.5,5.75],
+                       'lift':[0.5,0.75,1.0,1.25,1.75,2.0],
+                       'temporal_run':[0.5,1.5,2,3,4,5], 'temporal_jump':[0.5,0.7,1,2.5,4.5,4.8],
+                       'temporal_attack':[0.5,0.65,1,2.5,4.5,4.7], 'temporal_camera':[0.5,1,2,3,4,4.5],
+                       'hitch_wall':[0.6,0.884,1.15,1.42,2,6]}
+        chosen = event_times.get(name,[0.5,1,1.5,2,2.5,3])
+        strip = Image.new('RGB', (960, 440), '#19232a')
+        draw = ImageDraw.Draw(strip)
+        rate_label = '5-50 ms jitter + 100 ms hitches' if name in IRREGULAR_CASES else '60 Hz'
+        draw.text((8,4), f'{name} | continuous production input, player, camera and hero animation | {rate_label}', fill='white')
+        for i,t in enumerate(chosen):
+            if name in IRREGULAR_CASES:
+                trajectory = list(csv.DictReader((dest/'trajectory.csv').open()))
+                # screenshot() reads the preceding draw, and frame numbering
+                # starts after the initial update: CSV index is frame - 3.
+                at = min(range(len(trajectory)), key=lambda i:abs(float(trajectory[i]['t']) - t)) + 3
+                frame = max(15, round(at/15)*15)
+            else: frame = round(t*60/15)*15
+            picture = Image.open(dest / f'frame-{frame}.png').convert('RGB')
+            check(picture.getbbox() is not None and picture.getextrema() != ((0,0),(0,0),(0,0)), f'{name}: nonempty rendered frame {frame}')
+            picture.thumbnail((320,270))
+            x,y = (i%3)*320, 24+(i//3)*208
+            strip.paste(picture,(x,y))
+            stamp = float(trajectory[min(max(0,frame-3),len(trajectory)-1)]['t']) if name in IRREGULAR_CASES else frame/60
+            draw.text((x+8,y+picture.height+5),f'{stamp:.2f} s',fill='white')
+        strip.save(dest / 'strip.png')
+        # Full sequence, not merely the selected stills.
+        images = [Image.open(p).convert('RGB').resize((480,270)) for p in frames]
+        images[0].save(dest/'sequence.webp', save_all=True, append_images=images[1:], duration=250, loop=0)
+        print(f'{name}: {len(frames)} rendered frames; {dest / "strip.png"}')
+if not args.headless:
+    (out/'render-report.json').write_text(json.dumps({'checks':checks, 'failures':errors, 'cases':list(args.render_cases), 'frames_per_case':40}, indent=2)+'\n')
+print(f'traversal: {checks-len(errors)}/{checks} checks passed; {out}')
+sys.exit(bool(errors))

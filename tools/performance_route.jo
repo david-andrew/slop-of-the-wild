@@ -1,0 +1,89 @@
+build:
+    opt = release
+use '../game/main.jo'
+use 'performance_output.jo'
+use '../game/gfx.jo'
+use '../game/env.jo'
+use '../game/player.jo'
+use '../game/camera.jo'
+use '../game/combat.jo'
+use '../game/enemies.jo'
+use '../game/terrain.jo'
+use '../game/elements.jo'
+use '../game/fx.jo'
+use '../game/post.jo'
+use '../game/physics.jo'
+use '../game/frametime.jo'
+from '../game/shrines.jo' import __start_trans, __teleport, __entrance_spot
+
+# Protocol mixed-v1: 7,200 frames / 120 simulated seconds, production update/draw.
+# The explicit fixture relocations join distant workloads without waiting to walk
+# between them. Movement, combat, fire spread, camera and shrine fades remain production.
+# This measures performance, not earned progression or an uninterrupted gameplay route.
+route_distance = 0.0
+route_engaged = 0
+route_attacks = 0
+route_fire_frames = 0
+route_inside_frames = 0
+route_camera_distance = 0.0
+route_reset = (x: f64, z: f64, yaw: f64):
+    __teleport(v3(x, height_at(x, z), z), yaw, false)
+    pl.state = .ground
+    pl.hp = pl.hp_max
+    pl.stamina = pl.stamina_max
+    pl.speed = 0.0
+    fight = Fight()
+    post.fade = 0.0
+
+route_update = (dt: f64):
+    n = frame_number()
+    if n == 0:
+        pl.hp_max = 1200
+        pl.hp = pl.hp_max
+        eprint("perf phase: forest-traversal frame {n}")
+    if n == 1200:
+        route_reset(-1439.0, 1614.0, 0.0)
+        fight.weapon_out = true
+        eprint("perf phase: combat frame {n}")
+    if n == 2400:
+        route_reset(-1000.0, 1620.0, 3.14)
+        loop k in [0..5):
+            q = pl.pos + vec3(f32(k - 2), 0, -9)
+            q.y = f32(height_at(f64(q.x), f64(q.z)) + 0.3)
+            ignite_at(q)
+        eprint("perf phase: fire frame {n}")
+    if n == 3600:
+        __teleport(__entrance_spot(0), 0.0, false)
+        pl.state = .ground
+        __start_trans(1, 0)
+        eprint("perf phase: shrine-entry frame {n}")
+    if n == 4500:
+        __start_trans(2, 0)
+        eprint("perf phase: shrine-exit frame {n}")
+    if n == 4800:
+        route_reset(-1060.0, 2230.0, 2.0)
+        eprint("perf phase: snow frame {n}")
+    if n == 6000:
+        route_reset(-1000.0, 1620.0, 3.14)
+        eprint("perf phase: return-forest frame {n}")
+    p = pl.pos
+    c = cam.pos
+    update(dt)
+    route_distance += f64(length(pl.pos - p))
+    route_camera_distance += f64(length(cam.pos - c))
+    if fight.act == .swing: route_attacks += 1
+    loop e in enemies:
+        if length(e.pos - pl.pos) < 40.0 and (e.state == .chase or e.state == .attack or e.state == .windup or e.state == .recover):
+            route_engaged += 1
+            break
+    if particles.len() > 0 and n >= 2400 and n < 3600: route_fire_frames += 1
+    if not use_terrain: route_inside_frames += 1
+    if n % 120 == 0:
+        usage = fill(i64(0), 18)
+        getrusage(0, data(usage))
+        eprint("perf memory: frame {n} hwm_kib {usage[4]}")
+        eprint("perf route: frame {n} distance {route_distance:.3} camera {route_camera_distance:.3} engaged {route_engaged} swing {route_attacks} fire_fx {route_fire_frames} indoor {route_inside_frames}")
+
+main = ():
+    if env("BOTW_BENCH_CLIENT_SIZE") != none: performance_output_run(route_update, draw)
+    else: __game_run(route_update, draw)

@@ -1,0 +1,65 @@
+# CPU geometry and solve feedback contract; GPU evidence checks 15 m readability.
+use '../game/shrines.jo'
+use '../game/build.jo'
+use '../game/gfx.jo'
+use '../game/physics.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/audio_cache.jo'
+from '../game/build.jo' import __named_b
+from '../game/shrines.jo' import __wall_bays, __stage_front, __stage_path, __enter_now, __stage_feedback, __stage_pulse, __stage_seen, __preset
+
+__audio_state = 2
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+find_shrines()
+shrines_build()
+shrines_setup()
+loop id in [0..4):
+    count = colliders.len()
+    name = "relief_check_{id}"
+    begin_named(name)
+    __wall_bays(mat4(), id, 15.0, 7.0)
+    end_named()
+    assert(colliders.len() == count, "wall relief must not change trial collision")
+    b = __named_b[name]
+    depth = 0.0
+    faces = 0
+    loop v in b.verts:
+        depth = max(depth, f64(v.pos.z))
+        if abs(v.normal.x) > 0.5 or abs(v.normal.y) > 0.5: faces += 1
+        assert(v.mat.z == 0.0, "relief must leave emission to working circuits")
+    assert(depth >= 0.59 and faces > 300, "wall relief needs real half-metre side faces at gameplay distance")
+    loop stage in [0..2):
+        previous = -1.0
+        coverage = fill(false, SHR_STAGE_SEGMENTS)
+        loop frame in [0..204):
+            remaining = SHR_STAGE_SECONDS - f64(frame) / 60.0
+            weighted = 0.0
+            total = 0.0
+            loop n in [0..SHR_STAGE_SEGMENTS):
+                front = __stage_front(remaining, n)
+                if front > 0.5: coverage[n] = true
+                weighted += front * f64(n)
+                total += front
+                name = srec[id].key + "_solve_{stage}_{n}"
+                assert(__named_b.has(name), "every stage segment exists in production geometry")
+            if total > 0.01:
+                centre = weighted / total
+                assert(centre >= previous - 0.0001, "pulse must travel toward the solved signal")
+                previous = centre
+        loop reached in coverage: assert(reached, "solve must reach every circuit section")
+        assert(__stage_front(0.0, 0) == 0.0 and __stage_front(-1.0, 20) == 0.0, "no pulse outside stage timer")
+    print("PASS {srec[id].name}: solid wall relief without collision/emission; both complete, monotonic circuit pulses")
+# Exercise the existing solve latch, using the actual Ja Baij stage transitions.
+__enter_now(JABAIJ)
+__preset(JABAIJ, 2)
+__stage_feedback(1.0 / 60.0)
+loop j in [2..4): assert(__stage_seen[j] and __stage_pulse[j] == SHR_STAGE_SECONDS)
+loop frame in [0..240): __stage_feedback(1.0 / 60.0)
+loop j in [2..4): assert(__stage_seen[j] and __stage_pulse[j] == 0.0, "solved stages must not retrigger their chime/pulse")
+print("PASS existing stage feedback: both solves latch once and pulse expires without retrigger")

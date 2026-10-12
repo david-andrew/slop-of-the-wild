@@ -1,0 +1,1474 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'env.jo'
+use 'shadows.jo'
+use 'scene.jo'
+use 'skel.jo'
+use 'clips.jo'
+use 'charshade.jo'
+use 'player.jo'
+use 'input.jo'
+use 'combat.jo'
+use 'camera.jo'
+use 'physics.jo'
+use 'structures.jo'
+from 'structures.jo' import __cliff_inside, __cliff_segment_gap
+use 'items.jo'
+use 'elements.jo'
+use 'enemies.jo'
+use 'talus.jo'
+use 'enemy_footing.jo'
+use 'terrain.jo'
+use 'fx.jo'
+use 'hero_motion.jo'
+use 'interiors.jo'
+use 'weapon_tracks.jo'
+use 'enemy_contacts.jo'
+use 'enemy_weapon_pose.jo'
+use 'enemy_camp.jo'
+use 'sheath.jo'
+
+# The living things on screen: the hero (animation chosen from the player's state, combat on the
+# upper body, weapons in hand or on the back, the paraglider), the old man, monsters and their
+# weapons, and the small procedural creatures (Chuchus, Keese, Guardians).
+
+hero_m = Model()            # the player's model as he is now (bare as he wakes, then dressed)
+ranger_m = Model()          # dressed (the old man and the monks wear it too, in their colors)
+hero_bare_m = Model()
+hero_dressed = false
+boko_m = Model()
+stalko_m = Model()
+human = AnimLib()
+upper_mask: f32[]
+__combat_lower_mask: f32[]
+__walk_arms_mask: f32[]
+__shield_arm_mask: f32[]
+__walk_arms_weight = 0.0
+hero_anim = Animator()
+hero_skin = Skin()
+hero_world = mat4()
+hero_motion = HeroMotion()
+hero_contacts = env("BOTW_CONTACTS") != none
+boko_club_part = -1
+chars_ready = false
+
+# per-enemy animation state (parallel to enemies)
+struct EAnim:
+    a: Animator
+    skin: Skin
+    world: mat4
+    footing = BokoFooting()
+
+eanims: EAnim[]
+
+# old man (a hooded figure in brown): drawn with the hero's model, tinted
+struct Npc:
+    pos: vec3
+    face = 0.0
+    clip = "idle"
+    visible = false
+    anim: Animator
+    skin: Skin
+    glide = false
+
+old_man = Npc(vec3(0, 0, 0), anim = Animator(), skin = Skin())
+
+chars_init = ():
+    ranger_m = load_model("assets/models/hero.mdl")
+    hero_bare_m = load_model("assets/models/hero_bare.mdl")
+    hero_m = hero_bare_m
+    if not hero_bare_m.ok: hero_m = ranger_m
+    boko_m = load_model("assets/models/bokoblin.mdl")
+    stalko_m = stalkoblin_model(boko_m)
+    human = load_humanoid_anims()
+    upper_mask = bone_mask(human, "spine_01")
+    __combat_lower_mask = [loop weight in upper_mask: 1.0 - weight]
+    left = bone_mask(human, "upperarm_l")
+    __shield_arm_mask = left
+    right = bone_mask(human, "upperarm_r")
+    __walk_arms_mask = [loop i in [0..left.len()): max(left[i], right[i])]
+    weapon_tracks_init(hero_m, human)
+    boko_club_part = part_index(boko_m, "club")
+    chars_ready = ranger_m.ok and human.bones.len() > 0
+
+# Bone geometry shares the Bokoblin bind rig exactly, including fingers and feet.
+# Body and skull are separate parts; no flesh surface is reused or recolored.
+stalkoblin_model = (rig: Model) -> Model:
+    m = rig
+    m.name = "stalkoblin"
+    m.parts = []
+    m.slots = 1
+    m.variants = 1
+    # Two texels in the existing slot: matte bone and amber eye emission.
+    # Constant texel-centre UVs prevent emissive filtering onto the skull.
+    m.textures = [bytes_texture(2, 1, [u8(255), 255, 255, 0, 255, 112, 16, 255], false, false)]
+    ivory = rgb(0.76, 0.72, 0.63)
+    worn = rgb(0.40, 0.37, 0.32)
+    socket = rgb(0.065, 0.056, 0.045)
+    vs: ChVert[]
+    idx: u32[]
+    append = (b: MeshB, joint: int):
+        base = u32(vs.len())
+        loop v in b.vs:
+            # Warm-grey ageing and a darker underside retain ivory crowns.
+            # Exclude the emissive texel so the eye sockets keep their amber glow.
+            p=v.pos
+            age=0.5+0.5*sin(f64(p.x)*19.0+f64(p.y)*14.0+sin(f64(p.z)*23.0))
+            wash = if v.uv.x>0.5:1.0 else:0.68+0.25*smoothstep(-0.5,0.6,f64(v.normal.y))+0.07*age
+            vs.push(ChVert(v.pos, v.normal, vec2((if v.uv.x > 0.5: 0.75 else: 0.25), 0.5), vec4(v.color.xyz * f32(wash), v.color.w), vec4(f32(joint), 0, 0, 0), vec4(1, 0, 0, 0)))
+        loop k in b.idx: idx.push(base + k)
+    point = (name: str) -> vec3: inverse(rig.ibm[bone_index(rig, name)])[3].xyz
+    # Long bones have widened ends, narrow shafts and open space between radius/ulna.
+    loop joint in [0..rig.bones.len()):
+        name = rig.bones[joint]
+        if not (starts_with(name, "upperarm") or starts_with(name, "lowerarm") or starts_with(name, "thigh") or starts_with(name, "calf") or starts_with(name, "index_") or starts_with(name, "middle_") or starts_with(name, "ring_") or starts_with(name, "thumb_")): continue
+        loop child in [0..rig.bones.len()):
+            if rig.parent[child] != joint: continue
+            a = inverse(rig.ibm[joint])[3].xyz
+            z = inverse(rig.ibm[child])[3].xyz
+            finger = length(z - a) < 0.10
+            r = if finger: 0.012 else: 0.030
+            b = MeshB()
+            mb_cyl(b, a, z, r, r * 0.80, ivory, 7)
+            mb_sphere(b, a, v3(r * 1.45, r * 1.3, r * 1.45), worn, 8)
+            mb_sphere(b, z, v3(r * 1.25, r * 1.25, r * 1.25), ivory, 8)
+            if starts_with(name, "lowerarm") or starts_with(name, "calf"):
+                off = vec3(0, 0, 0.040)
+                mb_cyl(b, a + off, z + off * 0.45, 0.015, 0.012, worn, 6)
+            append(b, joint)
+    loop side in ["l", "r"]:
+        hand = point("hand_" + side)
+        b = MeshB()
+        loop finger in ["index_01_", "middle_01_", "ring_01_", "thumb_01_"]:
+            mb_cyl(b, hand, point(finger + side), 0.018, 0.013, ivory, 6)
+        append(b, bone_index(rig, "hand_" + side))
+        b = MeshB()
+        foot = point("foot_" + side)
+        loop toe in [-1.0, 0.0, 1.0]:
+            tip = point("ball_" + side) + v3(toe * 0.036, 0.005, 0.07)
+            mb_cyl(b, foot, tip, 0.023, 0.016, ivory, 6)
+            mb_sphere(b, tip, v3(0.021, 0.017, 0.030), worn, 8)
+        append(b, bone_index(rig, "foot_" + side))
+    # Open pelvis and five paired ribs; the dark background shows through the cage.
+    b = MeshB()
+    hip = point("pelvis")
+    loop side in [-1.0, 1.0]:
+        last = hip + v3(side * 0.025, -0.06, 0.02)
+        loop k in [1..9):
+            a = f64(k) / 8.0 * TAU
+            q = hip + v3(side * (0.095 - cos(a) * 0.065), sin(a) * 0.063, sin(a) * 0.025)
+            mb_cyl(b, last, q, 0.022, 0.025, ivory, 6)
+            last = q
+    append(b, bone_index(rig, "pelvis"))
+    loop k in [0..5):
+        y = 0.70 + f64(k) * 0.046
+        joint = bone_index(rig, if k < 2: "spine_01" else: (if k < 4: "spine_02" else: "spine_03"))
+        b = MeshB()
+        rx = 0.13 + sin(f64(k) / 5.0 * PI) * 0.065
+        cz = -0.008 + f64(k) * 0.02
+        loop side in [-1.0, 1.0]:
+            last = v3(0.0, y, cz - 0.075)
+            loop q in [1..9):
+                a = f64(q) / 8.0 * PI
+                next = v3(side * sin(a) * rx, y - sin(a) * 0.025, cz - cos(a) * 0.105)
+                mb_cyl(b, last, next, 0.016, 0.014, ivory, 6)
+                last = next
+        mb_sphere(b, v3(0.0, y, cz - 0.075), v3(0.032, 0.032, 0.027), worn, 8)
+        mb_cyl(b, v3(0.0, y - 0.022, cz + 0.105), v3(0.0, y + 0.027, cz + 0.105), 0.019, 0.017, ivory, 6)
+        append(b, joint)
+    loop side in ["l", "r"]:
+        b = MeshB()
+        mb_cyl(b, point("neck_01"), point("upperarm_" + side), 0.028, 0.032, ivory, 8)
+        append(b, bone_index(rig, "clavicle_" + side))
+    m.parts.push(ModelPart(name = "bones", mesh = mesh(vs, idx), verts = vs.len(), tris = idx.len() / 3))
+    vs = []
+    idx = []
+    b = MeshB()
+    h = point("Head") + v3(0.0, 0.11, 0.025)
+    mb_sphere(b, h, v3(0.245, 0.210, 0.185), ivory, 20)
+    # Broad brow, tucked cheek plates and a clear space above the lower jaw.
+    # Deform the existing cranium rather than layering a second shell on it.
+    loop mut v in b.vs:
+        q = v.pos - h
+        tuck = smoothstep(0.035, 0.16, -f64(q.y))
+        v.pos.x = h.x + q.x * f32(1.0 - tuck * 0.28)
+        v.pos.z -= f32(tuck * smoothstep(0.0, 0.10, f64(q.z)) * 0.045)
+        v.normal = normalize(v3(f64(q.x) / (0.245 * 0.245), f64(q.y) / (0.210 * 0.210), f64(q.z) / (0.185 * 0.185)))
+    # Deep sockets, heavy brow, nasal cavity, separate jaw and spaced teeth.
+    loop side in [-1.0, 1.0]:
+        mb_sphere(b, h + v3(side * 0.109, 0.010, 0.157), v3(0.083, 0.066, 0.032), socket, 12)
+        mb_cyl(b, h + v3(side * 0.025, 0.063, 0.19), h + v3(side * 0.18, 0.091, 0.13), 0.036, 0.026, ivory, 8)
+        eye_start = b.vs.len()
+        mb_sphere(b, h + v3(side * 0.109, 0.009, 0.188), v3(0.026, 0.026, 0.013), vec4(1, 1, 1, 1), 8)
+        loop k in [eye_start..b.vs.len()): b.vs[k].uv = vec2(0.75, 0.5)
+        mb_cyl(b, h + v3(side * 0.18, -0.075, 0.04), h + v3(side * 0.16, -0.20, 0.19), 0.030, 0.025, ivory, 8)
+        mb_cyl(b, h + v3(side * 0.16, -0.20, 0.19), h + v3(0.0, -0.22, 0.235), 0.025, 0.024, ivory, 8)
+        mb_cyl(b, h + v3(side * 0.21, 0.015, 0.0), h + v3(side * 0.40, 0.10, -0.05), 0.055, 0.004, ivory, 8)
+        mb_cyl(b, h + v3(side * 0.15, -0.16, 0.215), h + v3(side * 0.17, -0.095, 0.255), 0.025, 0.001, ivory, 8)
+    mb_sphere(b, h + v3(0.0, -0.07, 0.192), v3(0.040, 0.048, 0.028), socket, 10)
+    loop k in [-2..3):
+        x = f64(k) * 0.039
+        mb_cyl(b, h + v3(x, -0.115, 0.19), h + v3(x, -0.154, 0.23), 0.018, 0.014, ivory, 6)
+    mb_cyl(b, h + v3(0.0, 0.19, 0.02), h + v3(0.0, 0.37, 0.12), 0.055, 0.003, ivory, 10)
+    append(b, bone_index(rig, "Head"))
+    m.parts.push(ModelPart(name = "skull", mesh = mesh(vs, idx), verts = vs.len(), tris = idx.len() / 3))
+    m
+
+ci = (name: str) -> int: clip_index(human, name)
+
+# the player's model matrix (models face +z; the player's forward is (sin, 0, -cos))
+facing_mat = (pos: vec3, face: f64) -> mat4: translation(pos) * rotation_y(PI - face)
+
+
+__clip_time = 0.0
+__last_upper = -1
+__upper_t = 0.0
+__guard_weight = 0.0
+
+# a clip the game asks for while he is busy (kneeling at a pot); "" for none
+hero_busy_clip = ""
+# Set by story.jo through black/wake; independent of the old 3.5-second blend argument.
+hero_wake_t = -1.0
+
+# Settle the seated body into the restoration water without moving the loaded
+# left wrist from the lip. The authored pose and planted-palm orientation survive.
+wake_settle_pose = (m: Model, lib: AnimLib, p: mut Pose, t: f64):
+    sink = smoothstep(1.25, 1.8, t) * (1.0 - smoothstep(2.45, 3.2, t)) * 0.035
+    pelvis = bone_index(m, "pelvis")
+    h = bone_index(m, "hand_l")
+    if sink <= 0.0 or pelvis < 0 or h < 0: return
+    hand = motion_point(m, p, h)
+    wrist = pose_rot(lib, p, m.canon[h])
+    parent = bone_world(m, p, m.parent[pelvis])
+    p.t[m.canon[pelvis]] += transform_dir(inverse(parent), v3(0.0, -sink, 0.0)) / f32(m.tscale)
+    motion_arm(m, lib, p, bone_index(m, "upperarm_l"), bone_index(m, "lowerarm_l"), h, hand)
+    wrist_parent = pose_rot(lib, p, lib.parent[m.canon[h]])
+    p.r[m.canon[h]] = normalize(quat_mul(quat_conj(wrist_parent), wrist))
+
+hero_animate = (dt: f64, waking: f64):
+    pl.body_delta = mat4()
+    if not chars_ready: return
+    st = pl.state
+    clip = "idle"
+    speed = 1.0
+    loop_ = true
+    fade = 0.2
+    hs = f64(length(vec3(pl.vel.x, 0, pl.vel.z)))
+    match st:
+        ground, cutscene:
+            sp = if st == .cutscene: pl.speed else: hs
+            if pl.sneaking:
+                clip = if sp > 0.3: "sneak" else: "crouch"
+                speed = locomotion_rate("sneak", sp)
+            else if sp < 0.2: clip = (if fight.weapon_out: "sword_idle" else: "idle")
+            else if sp < 2.2:
+                clip = "walk"
+                speed = locomotion_rate("walk", sp)
+            else if pl.sprinting:
+                clip = "sprint"
+                speed = locomotion_rate("sprint", sp)
+            else:
+                clip = "run"
+                speed = locomotion_rate("run", sp)
+            if pl.exhausted and sp < 0.2: clip = "tired"
+            if pl.land_t > 0.0 and pl.land_hard: clip = "land_hard"
+            if pl.skid_t > 0.0:
+                clip = "slide_exit"
+                fade = 0.08
+        air:
+            if pl.jump_t < 0.35 and pl.vel.y > 0.0:
+                # (a running jump: one knee tucked, leaning into it; standing, both feet)
+                moving_ = f64(length(vec3(pl.vel.x, 0, pl.vel.z))) > 2.5
+                clip = if moving_ and ci("run_jump") >= 0: "run_jump" else: "jump"
+                loop_ = false
+                fade = 0.08
+                speed = if clip == "run_jump": 1.2 else: 1.4
+            else: clip = "fall"
+        climb:
+            clip = "climb"
+            moving = length(act.move) > 0.15 or pl.climb_jump_t > 0.0
+            speed = if moving: CLIMB_SPEED / 1.4 else: 0.0
+            if pl.climb_jump_t > 0.0: speed = 2.2
+        mantle:
+            clip = "climb_up"
+            loop_ = false
+            fade = 0.1
+        glide: clip = "glide"
+        swim:
+            clip = if pl.speed > 0.2: "swim" else: "swim_idle"
+            speed = max(pl.speed / 1.2, 0.7)
+        slide, surf: clip = "slide"
+        hurt:
+            clip = "knockback"
+            loop_ = false
+            fade = 0.05
+        dead:
+            clip = "die"
+            loop_ = false
+    # Waking is sampled as one supported rise, independent of locomotion playback.
+    if len(hero_busy_clip) > 0 and pl.state == .cutscene: clip = hero_busy_clip
+    if hero_wake_t >= 0.0:
+        clip = "idle"
+        fade = 0.6
+    c = ci(clip)
+    if c < 0: c = ci("idle")
+    anim_play(hero_anim, c, fade, loop_, false, speed)
+    hero_anim.speed = speed
+    anim_update(hero_anim, dt)
+    pose = anim_pose(human, hero_anim)
+    # The imported sword idle drops the hips 14 cm below ordinary standing.
+    # Keep a loaded fighting stance without carrying that deep squat through
+    # every shield raise and slash. Heavy weapons retain more knee compression.
+    if clip == "sword_idle" and st == .ground:
+        ready = sample_clip(human, ci("idle"), hero_anim.t, true)
+        heavy = len(equipped_weapon()) > 0 and item(equipped_weapon()).two_handed
+        layer_into(pose, ready, __combat_lower_mask, (if heavy: 0.35 else: 0.65))
+    if st == .mantle: sample_into(human, ci("climb_up"), clamp(pl.st_t / 0.55, 0.0, 1.0) * clip_duration(human, ci("climb_up")), false, pose)
+    if hero_wake_t >= 0.0:
+        pose = wake_pose(hero_m, human, hero_wake_t)
+        wake_settle_pose(hero_m, human, pose, hero_wake_t)
+        wake_arm_deformation(hero_m, human, pose, hero_wake_t)
+    # The shortened jog retains its broad, bent-elbow mean pose. In the SoR passage
+    # borrow the ordinary walk's lowered arms, timed to the jog's foot cycle.
+    # The raised elbows are in the source jog, before the pelvis/foot corrections.
+    # The collision zone ends before the chase camera clears the mouth. Keep the
+    # lower pose through that apron, then blend back once he is out under the sky.
+    in_passage = zone_at(pl.pos + vec3(0, 1, 0)) == "sor" or length(pl.pos - SOR_MOUTH_IN) < 8.0
+    relaxed = clip == "run" and st == .ground and in_passage
+    __walk_arms_weight = approach(__walk_arms_weight, (if relaxed: 1.0 else: 0.0), 5.0, dt)
+    if __walk_arms_weight > 0.0 and st == .ground and fight.act == .idle and hero_wake_t < 0.0:
+        phase = hero_anim.t / max(clip_duration(human, c), 0.001)
+        top = sample_clip(human, ci("walk"), phase * clip_duration(human, ci("walk")), true)
+        layer_into(pose, top, __walk_arms_mask, __walk_arms_weight)
+    __guard_weight = approach(__guard_weight, (if fight.act == .guard: 1.0 else: 0.0), 10.0, dt)
+    # the upper body: whatever the fight is doing
+    up = -1
+    ut = fight.t
+    match fight.act:
+        swing, spin, jump_attack, flurry:
+            d = item(equipped_weapon())
+            k = attack_clip(d)
+            up = ci(BLADE_CLIPS[k])
+            ut = BLADE_TIMES[k] * clamp(attack_phase(d, fight.t), 0.0, 1.0)
+        charge:
+            up = ci("heavy")
+            ut = BLADE_TIMES[4] * 0.58
+        guard: up = ci(if len(equipped_shield()) > 0: "shield_idle" else: "block")
+        aim:
+            up = ci("bow_hold")
+            ut = fight.t
+        throw_:
+            up = ci("throw")
+            ut = fight.t * 2.0
+        eat: up = ci("eat")
+        _: pass
+    if fight.act == .hop:
+        # a side hop: upright in the air, legs tucked, shield up, leaning a little the way he goes
+        airborne = sample_clip(human, ci("fall"), fight.t, true)
+        tucked = smoothstep(0.0, 0.06, fight.t) * (1.0 - smoothstep(0.28, 0.42, fight.t))
+        pose = blend_pose(pose, airborne, tucked)
+        gu = ci(if len(equipped_shield()) > 0: "shield_idle" else: "block")
+        if gu >= 0: layer_into(pose, sample_clip(human, gu, fight.t, true), upper_mask, 1.0)
+        rotate_bone(human, pose, lib_bone(human, "spine_01"), v3(0.0, 0.0, 1.0), -fight.hop_dir * 0.28)
+    else if fight.act == .backflip:
+        flip = sample_clip(human, ci("backflip"), fight.t * 1.6, false)
+        pose = blend_pose(pose, flip, smoothstep(0.0, 0.045, fight.t) * (1.0 - smoothstep(0.45, 0.58, fight.t)))
+        if act.lock and len(equipped_shield()) > 0:
+            layer_into(pose, sample_clip(human, ci("shield_idle"), fight.t, true), __shield_arm_mask, 1.0)
+    else if up >= 0 and (st == .ground or st == .air or st == .cutscene):
+        top = sample_clip(human, up, ut, fight.act == .guard or fight.act == .aim or fight.act == .charge)
+        if fight.act == .jump_attack: pose = top
+        else if fight.act == .swing or fight.act == .spin or fight.act == .flurry:
+            weapon_layer(hero_m, human, pose, top, upper_mask)
+        else: layer_into(pose, top, upper_mask, (if fight.act == .guard: __guard_weight else: 1.0))
+    if fight.act == .swing or fight.act == .jump_attack or fight.act == .flurry or fight.act == .spin:
+        d = item(equipped_weapon())
+        attack_key_pose(hero_m, human, pose, attack_clip(d), attack_phase(d, fight.t))
+        if fight.act == .spin:
+            # A final overextended shoulder settles while the existing spin window runs.
+            attack_key_pose(hero_m, human, pose, 4, 0.84, smoothstep(0.44, 0.57, fight.t))
+    if fight.act == .charge:
+        attack_key_pose(hero_m, human, pose, 4, 0.0, 0.7 + fight.charge * 0.3)
+    if fight.act == .idle and __guard_weight > 0.0:
+        layer_into(pose, sample_clip(human, ci("shield_idle"), fight.t, true), upper_mask, __guard_weight)
+    # An exposed idle body hunches and trembles before the first cold damage tick.
+    # Apply above the pelvis before foot planting; weapon contacts remain unchanged.
+    if player_cold and st == .ground and pl.speed < 0.5 and fight.act == .idle and not fight.weapon_out:
+        envelope = min(1.0, player_cold_t * 3.0)
+        tremble = sin(player_cold_t * 31.0) * 0.055 * envelope
+        rotate_bone(human, pose, lib_bone(human, "spine_01"), vec3(1, 0, 0), 0.18 * envelope)
+        rotate_bone(human, pose, lib_bone(human, "spine_02"), vec3(0, 0, 1), tremble)
+        rotate_bone(human, pose, lib_bone(human, "upperarm_l"), vec3(1, 0, 0), -0.28 * envelope + tremble)
+        rotate_bone(human, pose, lib_bone(human, "upperarm_r"), vec3(1, 0, 0), -0.28 * envelope - tremble)
+    # An idle brand stays upright and readable; an ordinary idle wrist aimed
+    # it into the grass while the flame was drawn at an unrelated fixed point.
+    if equipped_weapon() == "torch" and fight.act == .idle and (fight.weapon_out or torch_lit) and st == .ground:
+        motion_arm(hero_m, human, pose, bone_index(hero_m, "upperarm_r"),
+            bone_index(hero_m, "lowerarm_r"), bone_index(hero_m, "hand_r"), v3(0.25, 0.86, 0.35))
+    # lean into turns and while gliding
+    if st == .glide: rotate_bone(human, pose, lib_bone(human, "spine_01"), v3(0.0, 0.0, 1.0), pl.lean * 0.4)
+    # aim the bow up and down with the spine
+    if fight.act == .aim: rotate_bone(human, pose, lib_bone(human, "spine_02"), v3(1.0, 0.0, 0.0), -fight.aim_pitch * 0.8)
+    # dressed once he has the old shirt from the chest
+    want = inv.keys.contains("old_shirt")
+    if want != hero_dressed:
+        hero_dressed = want
+        hero_m = if want or not hero_bare_m.ok: ranger_m else: hero_bare_m
+        weapon_tracks_init(hero_m, human)
+    hero_world = facing_mat(pl.pos + (if pl.state == .surf: vec3(0, 0.1, 0) else: vec3(0, 0, 0)), pl.face)
+    if not hero_dressed and hero_bare_m.ok: hero_world = hero_world * scaling(v3(0.86, 1.0, 0.88))
+    physical = hero_wake_t < 0.0 and fight.act != .hop and fight.act != .backflip and fight.act != .jump_attack
+    hero_motion_apply(hero_motion, hero_m, human, pose, hero_world, dt, physical)
+    # The restoration slab is decorative masonry above the collision floor.
+    # Preserve its visible contact surface through waking and the first step off.
+    bed = pl.pos - SOR_BED
+    bed_weight = (1.0 - smoothstep(0.46, 0.7, abs(f64(bed.x)))) * (1.0 - smoothstep(1.0, 1.2, abs(f64(bed.z))))
+    on_bed = bed_weight > 0.0 and abs(f64(bed.y)) < 0.3
+    if on_bed and (hero_wake_t >= 1.45 or (hero_wake_t < 0.0 and pl.state == .ground)):
+        if hero_wake_t < 0.0:
+            motion_shift(hero_motion, hero_m, human, pose, max(0.0, 0.11 - f64(bed.y)) * bed_weight)
+        loop side in [0..2):
+            toe = motion_point(hero_m, pose, hero_motion.legs[side * 4 + 3])
+            contact = if hero_wake_t >= 0.0: smoothstep(1.45, 1.75, hero_wake_t) else: bed_weight
+            toe.y = lerp(toe.y, max(toe.y, f32(0.145 - f64(bed.y))), f32(contact))
+            motion_leg(hero_motion, hero_m, human, pose, side, toe)
+    if hero_contacts:
+        hero_motion_measure(hero_motion, hero_m, pose, hero_world)
+        if frame_number() % 120 == 0:
+            print("contacts samples {hero_motion.samples} max drift {hero_motion.drift:.4} m lowest sole {hero_motion.sole:.4} m separation {hero_motion.separation:.4} m")
+    if (fight.act == .swing or fight.act == .flurry) and item(equipped_weapon()).spear: spear_grip(hero_m, pose)
+    if fight.act == .swing or fight.act == .charge or fight.act == .spin or fight.act == .flurry or fight.act == .jump_attack:
+        d = item(equipped_weapon())
+        if d.two_handed or d.spear: weapon_support_grip(hero_m, human, pose, (if d.spear: -0.42 else: -0.20))
+    if st == .mantle: mantle_arms(hero_m, human, pose, hero_world)
+    hero_skin = skin(hero_m, pose)
+
+# Keep sub-frame baked paths on the final posed socket (including pelvis/foot corrections).
+hero_blade_hits = ():
+    # A hitch can finish a swing or advance its combo before this pose is drawn.
+    # Its accepted historical contacts keep their baked attack frame; aligning
+    # them to the new idle/next-combo socket rotates the past blade away from hits.
+    if player_hits.len() == 0 or not chars_ready or player_hits[0].action != fight.act or player_hits[0].combo != fight.combo:
+        fight.blade_pos = pl.pos
+        fight.blade_face = pl.face
+        fight.blade_ready = true
+        return
+    d = item(equipped_weapon())
+    p = blade_pose(attack_clip(d), attack_phase(d, fight.t))
+    socket = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_R)
+    expected = transform_point(hero_world, p.grip)
+    expected_tip = transform_point(hero_world, p.grip + p.axis * f32(weapon_length(d)))
+    grip = transform_point(socket, vec3(0, 0, 0))
+    tip = transform_point(socket, v3(0.0, weapon_length(d), 0.0))
+    from = normalize(expected_tip - expected)
+    to = normalize(tip - grip)
+    axis = cross(from, to)
+    turn = mat4()
+    if length(axis) > 0.00001: turn = quat_to_mat4(quat_axis_angle(normalize(axis), acos(clamp(f64(dot(from, to)), -1.0, 1.0))))
+    scale = length(tip - grip) / max(length(expected_tip - expected), 0.0001)
+    loop mut h in player_hits:
+        h.grip = grip + transform_dir(turn, h.grip - expected) * scale
+        h.tip = grip + transform_dir(turn, h.tip - expected) * scale
+        h.pos = (h.grip + h.tip) * 0.5
+    fight.blade_pos = pl.pos
+    fight.blade_face = pl.face
+    fight.blade_ready = true
+
+# Optional contact trace for verifying sword/body alignment in scripted scenes.
+blade_debug = ():
+    if env("BOTW_BLADEDEBUG") == none or player_hits.len() == 0 or fight.target < 0: return
+    e = enemies[fight.target]
+    gap = 10000.0
+    loop h in player_hits:
+        loop k in [0..5):
+            p = e.pos + v3(0.0, 0.4 + f64(k) * 0.27, 0.0)
+            gap = min(gap, f64(length(p - blade_nearest(h, p))))
+    print("blade frame {frame_number()} act {fight.act} phase {attack_phase(item(equipped_weapon()), fight.t):.3} gap {gap:.3} target distance {length(e.pos - pl.pos):.3}")
+
+# Shoulder and wrist taper is baked continuously into the mesh. Keep the
+# animated palette rigid at joints so flesh, palm contacts and weapon sockets agree.
+
+# ---------------- drawing ----------------
+cur_scene = () -> CharScene:
+    s = char_scene(sc.vp, sc.cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze,
+        env.density, 0.004, cascades.vps[0], cascades.vps[1], cascades.vps[2],
+        shadow_tex(0), shadow_tex(1), shadow_tex(2), elapsed())
+    s.lp = sc_lp
+    s.lc = sc_lc
+    s.wet = f32(if env.indoor > 0.5: 0.0 else: env.wet)
+    # (under a heavy sky figures darken with the land around them: the ground has cloud shadow and
+    # wet earth, they would otherwise glow out of it)
+    if env.indoor < 0.5:
+        k = f32(1.0 - env.dark * 0.55)
+        s.sky = s.sky * k
+        s.ground = s.ground * k
+    s
+
+# Shared canopy lift retains NPC/creature brightness in open storm meadows.
+# The negative meadow adjustment belongs only to the opted-in hero material.
+character_weather_look = (pos: vec3, p: CharParams) -> CharParams:
+    look = p
+    canopy = character_storm_fill(pos, p.hero_material > 0.0) - 1.0
+    look.fill += canopy * 1.2
+    look.rim += canopy * 1.8
+    look
+
+draw_char = (m: Model, world: mat4, sk: Skin, p: CharParams):
+    if sc.shadow: draw_character_shadow(m, world, sk, cascades.vps[sc.shadow_k], p)
+    else:
+        look = character_weather_look(transform_point(world, vec3(0, 0, 0)), p)
+        draw_character(m, world, sk, cur_scene(), look)
+
+__item_at = (id: str, m: mat4, glow: f64 = 0.0):
+    if len(id) == 0: return
+    if sc.shadow: return
+    draw_prop(shape_mesh(item(id).shape), m, vec4(1, 1, 1, 1), glow, 0.3)
+
+# Coordinates on a framed canvas: a shallow transverse bow and a billow between the spars.
+__glider_point = (x: f64, t: f64) -> vec3:
+    v3(x * 1.16, 0.36 + (1.0 - x * x) * 0.27 + sin(t * PI) * (1.0 - x * x) * 0.15 - t * 0.06, -0.82 + t * 1.64)
+
+# Inlaid colour on both faces, in the same mesh/draw as the cloth; no decals or textures.
+__glider_patch = (b: mut MeshB, pts: vec2[], col: vec4, lift: f64 = 0.012):
+    area = 0.0
+    loop k in [0..pts.len()):
+        a = pts[k]
+        c = pts[(k + 1) % pts.len()]
+        area += f64(a.x * c.y - c.x * a.y)
+    loop side in [-1.0, 1.0]:
+        base = u32(b.vs.len())
+        loop uv in pts:
+            x = f64(uv.x)
+            t = f64(uv.y)
+            dx = __glider_point(x + 0.001, t) - __glider_point(x - 0.001, t)
+            dz = __glider_point(x, t + 0.001) - __glider_point(x, t - 0.001)
+            n = normalize(cross(dz, dx)) * f32(side)
+            b.vs.push(Vertex3D(__glider_point(x, t) + n * f32(lift), n, uv, col))
+        loop k in [1..pts.len() - 1):
+            order = if side * area > 0.0: [base, base + u32(k + 1), base + u32(k)] else: [base, base + u32(k), base + u32(k + 1)]
+            loop q in order: b.idx.push(q)
+
+glider_mesh: Mesh
+__glider_ready = false
+__glider = () -> Mesh:
+    if not __glider_ready:
+        __glider_ready = true
+        b = MeshB()
+        # Warm, weathered linen; the sewn hem carries the restrained stitched border.
+        n = 16
+        loop i in [0..n):
+            x0 = -1.0 + 2.0 * f64(i) / f64(n)
+            x1 = -1.0 + 2.0 * f64(i + 1) / f64(n)
+            loop j in [0..8):
+                t0 = f64(j) / 8.0
+                t1 = f64(j + 1) / 8.0
+                col = rgb(0.79, 0.74, 0.61)
+                if j == 0 or j == 7 or i == 0 or i == n - 1: col = rgb(0.34, 0.16, 0.105)
+                __glider_patch(b, [vec2(f32(x0), f32(t0)), vec2(f32(x1), f32(t0)), vec2(f32(x1), f32(t1)), vec2(f32(x0), f32(t1))], col, 0.0)
+        # Paired angular stitches: a repeating border, never a stripe across the canvas.
+        loop i in [0..12):
+            x = -0.84 + f64(i) * 0.14
+            loop t in [0.045, 0.92]:
+                __glider_patch(b, [vec2(f32(x - 0.048), f32(t)), vec2(f32(x), f32(t + 0.045)), vec2(f32(x + 0.048), f32(t)), vec2(f32(x), f32(t + 0.02))], rgb(0.65, 0.48, 0.31))
+        # A faded three-leaf clover in the canvas's original pale pigment.
+        crest = rgb(0.70, 0.64, 0.51)
+        loop leaf in [0..3):
+            a = PI * 0.5 + TAU * f64(leaf) / 3.0
+            pts: vec2[]
+            loop k in [0..20):
+                t = TAU * f64(k) / 20.0
+                along = 0.13 + cos(t) * 0.16
+                across = sin(t) * 0.15
+                pts.push(vec2(f32(cos(a) * along - sin(a) * across), f32(0.52 + (sin(a) * along + cos(a) * across) * 0.65)))
+            __glider_patch(b, pts, crest)
+        __glider_patch(b, [vec2(-0.02, 0.51), vec2(0.02, 0.51), vec2(0.08, 0.29), vec2(0.045, 0.29)], crest)
+        wood = rgb(0.16, 0.085, 0.045)
+        # Two exposed side poles and a bowed front crossbar, lashed at their intersections.
+        loop side in [-1.0, 1.0]:
+            mb_cyl(b, __glider_point(side, -0.045), __glider_point(side, 1.05), 0.032, 0.024, wood, 6)
+            loop t in [0.04, 0.94]:
+                joint = __glider_point(side, t)
+                mb_cyl(b, joint - vec3(0, 0, 0.035), joint + vec3(0, 0, 0.035), 0.042, 0.042, rgb(0.48, 0.37, 0.22), 6)
+        loop i in [0..12):
+            x0 = -1.06 + f64(i) * 2.12 / 12.0
+            x1 = -1.06 + f64(i + 1) * 2.12 / 12.0
+            mb_cyl(b, __glider_point(x0, 0.025), __glider_point(x1, 0.025), 0.029, 0.029, wood, 6)
+        glider_mesh = mesh(b.vs, b.idx)
+    glider_mesh
+
+# Cords follow the actual grip sockets; the banked canopy cannot leave the
+# hands behind. One six-instance batch contains four cords and two handgrips.
+glider_cord_transform = (a: vec3, b: vec3, radius: f64) -> mat4:
+    delta = b - a
+    direction = normalize(delta)
+    axis = cross(vec3(0, 1, 0), direction)
+    turn = if length(axis) > 0.00001: rotation(normalize(axis), acos(clamp(f64(direction.y), -1.0, 1.0))) else: rotation_x(if direction.y < 0.0: PI else: 0.0)
+    translation(a) * turn * scaling(v3(radius, f64(length(delta)), radius))
+
+glider_rig_instances = (canopy: mat4, left: vec3, right: vec3) -> PropI[]:
+    strands: PropI[]
+    along = normalize(transform_dir(canopy,vec3(0,0,1))) * 0.065
+    loop side in [-1.0,1.0]:
+        grip = if side < 0.0: left else: right
+        loop t in [0.04,0.94]:
+            end = grip + along * f32(if t < 0.5: -1.0 else: 1.0)
+            joint = transform_point(canopy,__glider_point(side,t))
+            strands.push(PropI(glider_cord_transform(end,joint,0.012),vec4(1,1,1,1)))
+        strands.push(PropI(glider_cord_transform(grip-along,grip+along,0.021),vec4(0.55,0.48,0.40,1)))
+    strands
+
+__glider_cord_mesh: Mesh
+__glider_cord_buffer: InstBuf
+__glider_cord_ready = false
+__glider_rig = (canopy: mat4, left: vec3, right: vec3):
+    if not __glider_cord_ready:
+        __glider_cord_ready = true
+        b = MeshB()
+        mb_cyl(b, vec3(0,0,0), vec3(0,1,0), 1.0, 1.0, rgb(0.42,0.32,0.20), 6)
+        __glider_cord_mesh = mesh(b.vs,b.idx)
+        __glider_cord_buffer = inst_buffer([PropI(mat4(),vec4(1,1,1,1))])
+    strands = glider_rig_instances(canopy,left,right)
+    inst_update(__glider_cord_buffer,strands)
+    draw_props(__glider_cord_mesh,__glider_cord_buffer)
+
+# how wet the hero is: soaked swimming or in the rain, dries over a minute
+hero_wet = 0.0
+hero_wet_update = (dt: f64, rain: f64, swimming: bool):
+    if swimming: hero_wet = 1.0
+    else if rain > 0.3: hero_wet = min(1.0, hero_wet + dt * 0.1 * rain)
+    else: hero_wet = max(0.0, hero_wet - dt / 60.0)
+
+# the bit for one part in CharParams.hide (0 if the model has no such part)
+part_bit = (m: Model, name: str) -> int:
+    k = part_index(m, name)
+    if k < 0: 0 else: 1 << k
+
+# The hero's wet cloth keeps a dark silhouette against open storm meadows;
+# other figures retain their existing canopy lift. Bilinear habitat sampling
+# and smooth weather/interior ramps keep the value grouping continuous.
+character_storm_fill = (pos: vec3, hero: bool = false) -> f64:
+    strength = env.storm_k * env.rain * (1.0 - smoothstep(0.0, 0.5, env.indoor))
+    if strength <= 0.0 or hf.n < 2 or hf.mat.len() < hf.n * hf.n * 4: return 1.0
+    x = clamp((f64(pos.x) - hf.x0) / hf.cell, 0.0, f64(hf.n - 1))
+    z = clamp((f64(pos.z) - hf.z0) / hf.cell, 0.0, f64(hf.n - 1))
+    ix = min(int(floor(x)), hf.n - 2)
+    iz = min(int(floor(z)), hf.n - 2)
+    forest = (dx: int, dz: int) -> f64: f64(hf.mat[((iz + dz) * hf.n + ix + dx) * 4]) / 255.0
+    cover = lerp(lerp(forest(0, 0), forest(1, 0), x - f64(ix)),
+                 lerp(forest(0, 1), forest(1, 1), x - f64(ix)), z - f64(iz))
+    habitat = smoothstep(0.35, 0.75, cover)
+    1.0 + (if hero: lerp(-0.50, 0.30, habitat) else: 0.30 * habitat) * strength
+
+hero_storm_fill = (pos: vec3) -> f64: character_storm_fill(pos, true)
+
+hero_shield_matrix = () -> mat4:
+    if pl.state == .surf or (pl.surfing and pl.state == .air): return facing_mat(pl.pos + vec3(0,0.06,0),pl.face) * rotation_x(-PI/2.0)
+    w = equipped_weapon()
+    two_grip = len(w) > 0 and (item(w).two_handed or item(w).spear) and (fight.act == .swing or fight.act == .charge or fight.act == .spin or fight.act == .jump_attack or fight.act == .flurry)
+    hand = not two_grip and pl.state != .mantle and (fight.act == .guard or fight.act == .hop or fight.act == .backflip or (act.lock and (pl.state == .ground or pl.state == .air)) or ((fight.weapon_out or (fight.act != .idle and fight.act != .aim and fight.act != .eat and fight.act != .throw_ and fight.act != .pickup)) and (pl.state == .ground or pl.state == .air)))
+    if hand: socket_world(hero_m,hero_world,hero_skin,SOCKET_SHIELD)
+    else: shield_back_transform(socket_world(hero_m,hero_world,hero_skin,SOCKET_BACK))
+
+# Capture-only body mask: hidden keeps normal shadow casting, mask replaces
+# visible body colour. Neither mode changes animation, physics or the scene.
+__hero_capture = env("BOTW_LINK_CAPTURE") ?? ""
+hero_draw = ():
+    if not chars_ready or pl.state == .dead and fight.t > 4.0: return
+    if not sc.shadow and __hero_capture == "hidden": return
+    p = CharParams(hero_material = 1.0)
+    if hero_wake_t>=0.0 and not hero_dressed: p.wake_shape=wake_deformation_weight(hero_wake_t)
+    if not sc.shadow: p.fill = hero_storm_fill(pl.pos)
+    if pl.invuln > 0.0 and pl.state == .hurt: p.flash = vec4(1.0, 0.3, 0.2, f32(pl.invuln * 0.5))
+    if pl.frozen > 0.0: p.flash = vec4(0.6, 0.85, 1.0, 0.7)
+    # soaked clothes are darker
+    k = f32(hero_wet * 0.25)
+    p.tint = vec4(1.0 - k, 1.0 - k, 1.0 - k * 0.7, 1)
+    # (the old shirt has no hood)
+    # the Old Shirt, and the Warm Doublet over it once the old man has given it
+    if hero_dressed:
+        p.hide = part_bit(hero_m, "hood")
+        p.variant = if inv.keys.contains("warm_doublet"): 3 else: 2
+    if not sc.shadow and __hero_capture == "mask": p.flash = vec4(1, 0, 1, 1)
+    draw_char(hero_m, hero_world, hero_skin, p)
+    if sc.shadow or __hero_capture == "mask": return
+    # what is in the hands and on the back
+    w = equipped_weapon()
+    lit = len(w) > 0 and torch_lit
+    if len(w) > 0:
+        in_hand = fight.weapon_out or fight.act != .idle or lit
+        if pl.state == .climb or pl.state == .mantle or pl.state == .glide or pl.state == .swim or fight.act == .aim: in_hand = false
+        sock = if in_hand: SOCKET_HAND_R else: SOCKET_BACK
+        m = socket_world(hero_m, hero_world, hero_skin, sock)
+        if in_hand and w == "torch" and fight.act == .idle and pl.state == .ground: m = torch_idle_socket(m)
+        shape = item(w).shape
+        sword = shape == .sword or shape == .broadsword or shape == .claymore
+        # The closed scabbard ends at the opposite hip; its hilt clears the shoulder.
+        if not in_hand: m = sword_back_transform(m, shape)
+        if not in_hand and sword: draw_prop(sheathed_sword(shape), m, vec4(1, 1, 1, 1), 0.0, 0.3)
+        else: __item_at(w, m, (if lit: 0.8 else: 0.0))
+    s = equipped_shield()
+    if len(s) > 0:
+        __item_at(s, hero_shield_matrix())
+    b = equipped_bow()
+    if len(b) > 0:
+        if fight.act == .aim:
+            bm = socket_world(hero_m, hero_world, hero_skin, SOCKET_HAND_L) * rotation_y(1.2) * rotation_x(-0.25)
+            __item_at(b, bm)
+            # the arrow on the string, pulled back with the draw
+            if inv.arrows > 0:
+                d = aim_dir()
+                grip = vec3(bm[3].x, bm[3].y, bm[3].z)
+                # the arrow along the aim: its +y (the tip) turned onto d
+                m = translation(grip - d * f32(0.3 + 0.25 * fight.draw)) * rotation(normalize(cross(vec3(0, 1, 0), d) + vec3(0.0001, 0, 0)), acos(clamp(f64(d.y), -1.0, 1.0)))
+                __item_at("arrow", m * translation(v3(0.0, 0.45, 0.0)))
+        else: __item_at(b, bow_back_transform(socket_world(hero_m, hero_world, hero_skin, SOCKET_BACK)))
+    if pl.state == .glide:
+        hl = hero_world * bone_world(hero_m, hero_skin, "hand_l")
+        hr = hero_world * bone_world(hero_m, hero_skin, "hand_r")
+        mid = (vec3(hl[3].x, hl[3].y, hl[3].z) + vec3(hr[3].x, hr[3].y, hr[3].z)) * 0.5
+        loft = if pl.updraft > 0.0: 0.10 + sin(pl.anim_t * 7.0) * 0.025 else: 0.0
+        canopy = translation(mid + vec3(0, 0.75, 0)) * rotation_y(PI - pl.face) * rotation_z(pl.lean * 0.3 + pl.glide_lean) * rotation_x(-0.4 + loft)
+        draw_prop(__glider(), canopy, vec4(1, 1, 1, 1), 0.0, 0.3)
+        # The canopy faces the opposite way to the actor: its negative x is
+        # the hero's right hand. Socket translations are the centre of each palm.
+        __glider_rig(canopy, socket_world(hero_m,hero_world,hero_skin,SOCKET_HAND_R)[3].xyz,
+            socket_world(hero_m,hero_world,hero_skin,SOCKET_HAND_L)[3].xyz)
+
+torch_idle_socket = (hand: mat4) -> mat4: translation(hand[3].xyz) * rotation_y(pl.face)
+
+torch_lit = false
+
+# ---------------- the old man ----------------
+old_man_update = (dt: f64):
+    if not chars_ready or not old_man.visible: return
+    c = ci(old_man.clip)
+    anim_play(old_man.anim, (if c >= 0: c else: ci("idle")), 0.3, true)
+    anim_update(old_man.anim, dt)
+    pose = anim_pose(human, old_man.anim)
+    # Rounded shoulders and a lowered chin keep the greeting an elderly silhouette.
+    rotate_bone(human, pose, lib_bone(human, "spine_02"), v3(1.0, 0.0, 0.0), 0.34)
+    rotate_bone(human, pose, lib_bone(human, "spine_03"), v3(1.0, 0.0, 0.0), 0.10)
+    # The cloak has no open sleeves: keep both imported hands beneath its front.
+    # Solve after the spine bend so greeting/sit clips cannot poke a hand sideways.
+    loop side in ["l", "r"]:
+        hand = bone_index(ranger_m, "hand_" + side)
+        motion_arm(ranger_m, human, pose, bone_index(ranger_m, "upperarm_" + side),
+            bone_index(ranger_m, "lowerarm_" + side), hand,
+            v3((if side == "l": 0.11 else: -0.11), (if old_man.clip == "sit": 0.62 else: 0.94), 0.12),
+            vec3(0,-1,-0.3))
+    old_man.skin = skin(ranger_m, pose)
+
+old_man_draw = ():
+    if not chars_ready or not old_man.visible: return
+    sitting = old_man.clip == "sit"
+    # the sit clip seats him 0.45 m up, his hips 0.3 m behind his feet: on the log
+    world = facing_mat(old_man.pos, old_man.face)
+    if sitting and not sc.shadow:
+        # the log he sits on
+        draw_prop(__old_props(3), facing_mat(old_man.pos, old_man.face) * translation(v3(0.0, 0.03, -0.3)) * rotation_y(PI / 2.0), vec4(1, 1, 1, 1), 0.0, 0.15)
+    # The ranger supplies the animation skeleton only. Its sleeves, gauntlets
+    # and bent trousers intersect a closed cloak, particularly when seated.
+    # The opaque robe and its cached boots provide the visible body instead.
+    # These props cast the same readable hood/staff silhouette as the visible mesh.
+    hm = world * bone_world(ranger_m, old_man.skin, "Head")
+    draw_prop(__old_props(5), hm, vec4(1, 1, 1, 1), 0.0, 0.05)
+    # Cache the replacement in the old man's own prop bank. All construction
+    # stays here so shared hero/Bokoblin meshes and shading remain independent.
+    if __old_meshes.len() == 6:
+        face = MeshB()
+        # A lightless lining behind the skin, rather than the cloak's pale return.
+        mb_sphere(face, v3(0.0, 0.085, 0.085), v3(0.169, 0.191, 0.050), rgb(0.012, 0.009, 0.006), 14)
+        # Warm cheek and forehead volumes reach the hood opening. Deep shade
+        # is confined to eyelids/nostrils, not a face-sized brown mask.
+        mb_sphere(face, v3(0.0, 0.073, 0.158), v3(0.115, 0.139, 0.075), rgb(0.36, 0.245, 0.164), 16)
+        loop side in [-1.0, 1.0]:
+            mb_sphere(face, v3(side*0.063, 0.047, 0.211), v3(0.039, 0.046, 0.027), rgb(0.40, 0.274, 0.186), 12)
+            mb_sphere(face, v3(side*0.047, 0.107, 0.222), v3(0.030, 0.013, 0.010), rgb(0.080, 0.050, 0.030), 12)
+            mb_sphere(face, v3(side*0.045, 0.105, 0.232), v3(0.017, 0.005, 0.005), rgb(0.29, 0.26, 0.19), 10)
+            mb_sphere(face, v3(side*0.043, 0.105, 0.237), v3(0.005, 0.005, 0.002), rgb(0.045, 0.039, 0.027), 8)
+            mb_cyl(face, v3(side*0.020, 0.133, 0.226), v3(side*0.078, 0.127, 0.207), 0.014, 0.010, rgb(0.46, 0.427, 0.35), 10)
+            mb_sphere(face, v3(side*0.021, 0.046, 0.249), v3(0.016, 0.011, 0.013), rgb(0.32, 0.205, 0.132), 10)
+            mb_sphere(face, v3(side*0.022, 0.039, 0.255), v3(0.007, 0.004, 0.004), rgb(0.09, 0.05, 0.027), 8)
+        mb_sphere(face, v3(0.0, 0.079, 0.232), v3(0.020, 0.052, 0.028), rgb(0.43, 0.298, 0.196), 12)
+        mb_sphere(face, v3(0.0, 0.052, 0.256), v3(0.026, 0.023, 0.026), rgb(0.46, 0.315, 0.211), 12)
+        mb_sphere(face, v3(0.0, -0.004, 0.239), v3(0.037, 0.008, 0.010), rgb(0.105, 0.059, 0.033), 10)
+        __old_meshes.push(mesh(face.vs, face.idx))
+        # The hair projects past the shoulder cloth, leaving the warm cheeks
+        # uncovered. Separate fill retains grey in the hood's deep self-shadow.
+        hair = old_man_beard_mesh()
+        __old_meshes.push(mesh(hair.vs, hair.idx))
+    draw_prop(__old_meshes[6], hm, vec4(1, 1, 1, 1), 0.50, 0.0)
+    draw_prop(__old_meshes[7], hm, vec4(1, 1, 1, 1), 0.35, 0.0)
+    if not sc.shadow:
+        # a lantern at his hip
+        hip = world * bone_world(ranger_m, old_man.skin, "pelvis")
+        draw_prop(__old_props(2), hip * translation(v3(0.22, -0.05, 0.05)), vec4(1, 1, 1, 1), 0.0, 0.2)
+    # Staff rests beside the cloak; both hands stay warm inside it.
+    rh = world * translation(v3(0.48, 1.1, 0.08)) * rotation_z(-0.07)
+    draw_prop(__old_props(1), rh, vec4(1, 1, 1, 1), 0.0, 0.2)
+    # the cloak: a heavy bell of cloth from his shoulders to the ground, wherever his hips are
+    pv = transform_point(bone_world(ranger_m, old_man.skin, "pelvis"), vec3(0, 0, 0))
+    ch = transform_point(bone_world(ranger_m, old_man.skin, "spine_03"), vec3(0, 0, 0))
+    top = f64(ch.y) + 0.14
+    draw_prop(__old_props(4), world * translation(v3(f64(pv.x), 0.04, f64(pv.z) + (if sitting: 0.12 else: 0.0))) * scaling(v3((if sitting: 1.15 else: 1.0), top - 0.04, (if sitting: 1.3 else: 1.0))), vec4(1, 1, 1, 1), 0.0, 0.25)
+    if old_man.glide and not sc.shadow:
+        canopy = translation(old_man.pos + vec3(0, 2.4, 0)) * rotation_y(PI - old_man.face)
+        draw_prop(__glider(), canopy, vec4(1, 1, 1, 1), 0.0, 0.3)
+        __glider_rig(canopy,transform_point(canopy,v3(-0.22,-1.0,0.1)),transform_point(canopy,v3(0.22,-1.0,0.1)))
+
+# Build once in the prop cache; exposed as CPU geometry for the seam/index check.
+# Unit-height robe, scaled by the animated chest. The hands remain concealed
+# at their existing pose targets; the boot and staff contacts are unchanged.
+old_cloak_point = (a: f64, t: f64) -> vec3:
+    # A waist below the shoulder mantle, then heavy cloth released to the hem.
+    rx = lerp(0.47, 0.27, pow(t, 0.72)) + 0.095 * exp(-pow((t - 0.83) * 9.0, 2.0))
+    rz = lerp(0.385, 0.185, pow(t, 0.8)) + 0.025 * exp(-pow((t - 0.8) * 7.0, 2.0))
+    fold = (sin(a * 9.0 + t * 1.4) + 0.35 * sin(a * 5.0 - t * 2.0)) * (0.034 * (1.0 - t) + 0.010)
+    # A raised front hem falls between and around the toes, with unequal lobes.
+    front = pow(max(cos(a), 0.0), 8.0)
+    hem = 0.013 + front * 0.055 + 0.015 * (0.5 + 0.5 * sin(a * 5.0 + 0.6))
+    y = t + hem * pow(1.0 - t, 5.0)
+    v3(sin(a) * (rx + fold), y, cos(a) * (rz + fold) + t * t * 0.09)
+
+old_man_cloak_mesh = () -> MeshB:
+    b = MeshB()
+    cloak = rgb(0.27, 0.235, 0.19)
+    const ROWS = 16
+    const COLS = 48
+    loop i in [0..ROWS):
+        t = f64(i) / f64(ROWS - 1)
+        loop j in [0..COLS + 1):
+            a = TAU * f64(j) / f64(COLS)
+            p = old_cloak_point(a,t)
+            da = old_cloak_point(a+0.001,t)-old_cloak_point(a-0.001,t)
+            dt = old_cloak_point(a,min(1.0,t+0.001))-old_cloak_point(a,max(0.0,t-0.001))
+            n = normalize(cross(da,dt))
+            shade = 0.79 + 0.15 * sin(a*9.0+t*1.4) * (1.0-t*0.6) + 0.06*t
+            b.vs.push(Vertex3D(p,n,vec2(0,0),vec4(cloak.xyz*f32(shade),1)))
+    loop i in [0..ROWS-1):
+        loop j in [0..COLS):
+            a=u32(i*(COLS+1)+j)
+            d=a+u32(COLS+1)
+            loop q in [a,a+1,d,a+1,d+1,d]: b.idx.push(q)
+    # Bent, closed sleeves tuck into the front wrap. Broad elbow folds describe
+    # the hidden arms instead of exposing imported gauntlets through the robe.
+    loop side in [-1.0,1.0]:
+        off=u32(b.vs.len())
+        loop i in [0..9):
+            t=f64(i)/8.0
+            center=v3(side*(0.22+0.17*sin(t*PI)-0.04*t),0.90-0.36*t,0.075+0.235*t*t)
+            axis=normalize(v3(side*(0.17*PI*cos(t*PI)-0.04),-0.36,0.47*t))
+            right=normalize(cross(axis,vec3(0,0,1)))
+            up=normalize(cross(right,axis))
+            radius=0.065+0.070*sin(t*PI)+0.008*t
+            loop j in [0..17):
+                a=TAU*f64(j)/16.0
+                r=radius*(1.0+0.10*sin(a*5.0+t*2.0))
+                n=right*f32(cos(a))+up*f32(sin(a))
+                p=center+n*f32(r)
+                shade=0.77+0.10*sin(a*5.0+t*2.0)-0.07*sin(t*PI)
+                b.vs.push(Vertex3D(p,n,vec2(0,0),vec4(cloak.xyz*f32(shade),1)))
+        loop i in [0..8):
+            loop j in [0..16):
+                a=off+u32(i*17+j)
+                d=a+17
+                loop q in [a,d,a+1,a+1,d,d+1]: b.idx.push(q)
+        mb_sphere(b,v3(side*0.16,0.023,0.38),v3(0.09,0.045,0.16),rgb(0.115,0.075,0.044),10)
+    b
+
+old_man_beard_mesh = () -> MeshB:
+    hair = MeshB()
+    loop side in [-1.0, 1.0]:
+        mb_sphere(hair, v3(side * 0.032, 0.008, 0.253), v3(0.039, 0.020, 0.024), rgb(0.47, 0.448, 0.39), 12)
+        mb_sphere(hair, v3(side*0.086, -0.005, 0.205), v3(0.033, 0.068, 0.032), rgb(0.39, 0.373, 0.326), 12)
+    # A continuous oval taper avoids a stack of bright chin-sized beads.
+    # It bows clear of the raised cloak as the lowered chin tilts forward.
+    beard_base = u32(hair.vs.len())
+    const BR = 10
+    const BC = 20
+    loop i in [0..BR):
+        t = f64(i) / f64(BR - 1)
+        width = 0.080 * pow(1.0 - t, 0.65) + 0.004
+        depth = 0.040 * pow(1.0 - t, 0.7) + 0.008
+        center = 0.272 + 0.215 * t
+        loop j in [0..BC + 1):
+            a = TAU * f64(j) / f64(BC)
+            lock = 1.0 + sin(a * 7.0 + t * 0.5) * 0.065
+            pos = v3(sin(a) * width * lock, -0.038 - t * 0.235, center + cos(a) * depth * lock)
+            n = normalize(v3(sin(a) / width, 1.8, cos(a) / depth))
+            shade = 0.91 + 0.09 * sin(a * 5.0 + t * 1.2)
+            col = mix(rgb(0.38, 0.365, 0.319), rgb(0.48, 0.46, 0.406), f32(t * 0.7 + 0.15)) * vec4(f32(shade), f32(shade), f32(shade), 1)
+            hair.vs.push(Vertex3D(pos, n, vec2(0, 0), col))
+    loop i in [0..BR - 1):
+        loop j in [0..BC):
+            a = beard_base + u32(i * (BC + 1) + j)
+            d = a + u32(BC + 1)
+            loop k in [a, d, a + 1, a + 1, d, d + 1]: hair.idx.push(k)
+    hair
+
+__old_meshes: Mesh[]
+__old_props = (k: int) -> Mesh:
+    if __old_meshes.len() == 0:
+        b = MeshB()
+        # A warm face sits behind the hood lip, with brows/eye sockets and a nose.
+        # Keep the beard below the mouth so it cannot cover the whole face.
+        skin_col = rgb(0.40, 0.27, 0.19)
+        mb_sphere(b, v3(0.0, 0.075, 0.08), v3(0.105, 0.13, 0.074), skin_col, 12)
+        mb_sphere(b, v3(0.0, 0.06, 0.166), v3(0.026, 0.045, 0.039), rgb(0.49, 0.335, 0.225), 8)
+        loop side in [-1.0, 1.0]:
+            mb_sphere(b, v3(side*0.048, 0.111, 0.139), v3(0.039, 0.024, 0.02), rgb(0.105, 0.075, 0.059), 8)
+            mb_sphere(b, v3(side*0.049, 0.112, 0.157), v3(0.016, 0.007, 0.004), rgb(0.23, 0.205, 0.15), 6)
+            mb_cyl(b, v3(side*0.019, 0.141, 0.149), v3(side*0.081, 0.132, 0.128), 0.015, 0.011, rgb(0.48, 0.455, 0.39), 7)
+            # Separated moustache lobes leave the nose and cheek planes visible.
+            mb_sphere(b, v3(side*0.032, -0.011, 0.137), v3(0.045, 0.025, 0.032), rgb(0.59, 0.57, 0.50), 8)
+        mb_sphere(b, v3(0.0, -0.075, 0.18), v3(0.080, 0.092, 0.055), rgb(0.56, 0.54, 0.47), 10)
+        mb_cyl(b, v3(0.0, -0.12, 0.19), v3(0.0, -0.36, 0.18), 0.067, 0.016, rgb(0.62, 0.60, 0.53), 10)
+        __old_meshes.push(mesh(b.vs, b.idx))
+        b2 = MeshB()
+        wood = rgb(0.32, 0.23, 0.14)
+        mb_cyl(b2, v3(0.0, -1.1, 0.0), v3(-0.025, 0.35, 0.0), 0.029, 0.024, wood, 7)
+        mb_cyl(b2, v3(-0.025, 0.35, 0.0), v3(0.02, 0.63, 0.0), 0.024, 0.033, wood, 7)
+        mb_cyl(b2, v3(0.02, 0.63, 0.0), v3(0.10, 0.68, 0.0), 0.033, 0.025, wood, 7)
+        mb_sphere(b2, v3(0.10, 0.68, 0.0), v3(0.031, 0.032, 0.03), wood, 7)
+        __old_meshes.push(mesh(b2.vs, b2.idx))
+        b3 = MeshB()
+        mb_cyl(b3, v3(0.0, -0.18, 0.0), v3(0.0, 0.0, 0.0), 0.06, 0.06, rgb(1.4, 1.0, 0.45), 8)
+        mb_box(b3, v3(0.0, 0.02, 0.0), v3(0.07, 0.015, 0.07), rgb(0.3, 0.25, 0.2))
+        mb_box(b3, v3(0.0, -0.2, 0.0), v3(0.07, 0.015, 0.07), rgb(0.3, 0.25, 0.2))
+        __old_meshes.push(mesh(b3.vs, b3.idx))
+        b4 = MeshB()
+        mb_cyl(b4, v3(-0.8, 0.2, 0.0), v3(0.8, 0.2, 0.0), 0.2, 0.19, rgb(0.42, 0.3, 0.2), 10)
+        __old_meshes.push(mesh(b4.vs, b4.idx))
+        cloak = rgb(0.27, 0.235, 0.19)
+        b5 = old_man_cloak_mesh()
+        __old_meshes.push(mesh(b5.vs, b5.idx))
+        # Deep oval hood: a projecting brow and dark return around the face opening.
+        # Each depth ring is closed, so the crown has no slit over the forehead.
+        b6 = MeshB()
+        const HR = 12
+        const HC = 28
+        loop i in [0..HR):
+            t = f64(i) / f64(HR - 1)
+            radius = sqrt(max(0.002, 1.0 - t * t))
+            loop j in [0..HC + 1):
+                a = TAU * f64(j) / f64(HC)
+                peak = pow(max(0.0, cos(a)), 6.0) * 0.035
+                q = v3(sin(a) * 0.205 * radius, 0.085 + (cos(a) * 0.225 + peak) * radius, 0.205 - t * 0.39)
+                n = normalize(v3(sin(a), cos(a), -t))
+                b6.vs.push(Vertex3D(q, n, vec2(0, 0), cloak))
+        loop i in [0..HR - 1):
+            loop j in [0..HC):
+                a = u32(i * (HC + 1) + j)
+                d = a + u32(HC + 1)
+                loop q in [a, a + 1, d, a + 1, d + 1, d, a, d, a + 1, a + 1, d, d + 1]: b6.idx.push(q)
+        # Rolled cloth lip leads back into shade instead of a bright face-sized cap.
+        loop j in [0..HC):
+            a = TAU * f64(j) / f64(HC)
+            z = TAU * f64(j + 1) / f64(HC)
+            outer = (angle: f64) -> vec3: v3(sin(angle) * 0.205, 0.085 + cos(angle) * 0.225 + pow(max(0.0, cos(angle)), 6.0) * 0.035, 0.205)
+            inner = (angle: f64) -> vec3: v3(sin(angle) * 0.174, 0.085 + cos(angle) * 0.191, 0.14)
+            base = u32(b6.vs.len())
+            loop q in [outer(a), outer(z), inner(z), inner(a)]:
+                b6.vs.push(Vertex3D(q, normalize(v3(-sin(a), -cos(a), 0.3)), vec2(0, 0), rgb(0.105, 0.085, 0.067)))
+            loop q in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]: b6.idx.push(base + u32(q))
+        __old_meshes.push(mesh(b6.vs, b6.idx))
+    __old_meshes[k]
+
+# ---------------- monsters ----------------
+chuchu_mesh: Mesh
+keese_body: Mesh
+keese_wing: Mesh
+guardian_mesh: Mesh
+guardian_eye: Mesh
+laser_mesh: Mesh
+
+monsters_init = ():
+    # Chuchu: a squat jelly drop with a pointed top, big glossy eyes and a little mouth
+    b = MeshB()
+    mb_sphere(b, v3(0.0, 0.4, 0.0), v3(0.52, 0.4, 0.52), rgb(1, 1, 1), 18)
+    mb_cyl(b, v3(0.0, 0.7, 0.0), v3(0.0, 0.98, -0.05), 0.24, 0.0, rgb(1, 1, 1), 12)
+    loop sx in [-1.0, 1.0]:
+        mb_sphere(b, v3(sx * 0.17, 0.52, 0.42), v3(0.1, 0.13, 0.06), rgb(0.03, 0.03, 0.05), 10)
+        mb_sphere(b, v3(sx * 0.17 + 0.03, 0.57, 0.47), v3(0.03, 0.035, 0.02), rgb(2.0, 2.0, 2.0), 6)
+    mb_sphere(b, v3(0.0, 0.33, 0.48), v3(0.07, 0.03, 0.02), rgb(0.1, 0.03, 0.05), 8)
+    chuchu_mesh = mesh(b.vs, b.idx)
+    # Keese: a round furry body, big ears, glowing eyes; the wings are separate (they flap)
+    b2 = MeshB()
+    mb_sphere(b2, v3(0.0, 0.0, 0.0), v3(0.13, 0.12, 0.15), rgb(0.22, 0.14, 0.26), 10)
+    loop sx in [-1.0, 1.0]:
+        mb_cyl(b2, v3(sx * 0.07, 0.08, 0.02), v3(sx * 0.12, 0.22, 0.0), 0.05, 0.0, rgb(0.28, 0.18, 0.32), 5)
+        mb_sphere(b2, v3(sx * 0.055, 0.03, 0.13), v3(0.035, 0.03, 0.02), rgb(2.5, 1.9, 0.4), 6)
+    mb_cyl(b2, v3(0.0, -0.06, 0.12), v3(0.0, -0.12, 0.13), 0.02, 0.0, rgb(0.9, 0.85, 0.8), 4)
+    keese_body = mesh(b2.vs, b2.idx)
+    # a membrane wing: a fan of three fingers with webbing between (both faces)
+    b3 = MeshB()
+    wc = rgb(0.32, 0.2, 0.36)
+    tips = [v3(0.42, 0.12, 0.02), v3(0.5, -0.02, -0.06), v3(0.36, -0.12, -0.14), v3(0.12, -0.08, -0.12)]
+    loop k in [0..tips.len() - 1):
+        a0 = v3(0.04, 0.0, 0.0)
+        p1 = tips[k]
+        p2 = tips[k + 1]
+        n = normalize(cross(p1 - a0, p2 - a0))
+        base = u32(b3.vs.len())
+        b3.vs.push(Vertex3D(a0, n, vec2(0, 0), wc))
+        b3.vs.push(Vertex3D(p1, n, vec2(0, 0), wc))
+        b3.vs.push(Vertex3D(p2, n, vec2(0, 0), wc))
+        loop q in [base, base + 1, base + 2, base, base + 2, base + 1]: b3.idx.push(q)
+    loop t in tips: mb_cyl(b3, v3(0.04, 0.0, 0.0), t, 0.012, 0.004, rgb(0.18, 0.1, 0.2), 4)
+    keese_wing = mesh(b3.vs, b3.idx)
+    b4 = MeshB()
+    metal = rgb(0.48, 0.38, 0.28)
+    mb_sphere(b4, v3(0.0, 2.4, 0.0), v3(2.0, 1.4, 2.0), metal, 16)
+    mb_cyl(b4, v3(0.0, 0.0, 0.0), v3(0.0, 2.2, 0.0), 1.3, 1.7, metal, 12)
+    loop k in [0..6):
+        a = f64(k) / 6.0 * TAU
+        mb_cyl(b4, v3(cos(a) * 1.4, 1.2, sin(a) * 1.4), v3(cos(a) * 3.0, 0.0, sin(a) * 3.0), 0.25, 0.18, metal, 6)
+    guardian_mesh = mesh(b4.vs, b4.idx)
+    b5 = MeshB()
+    mb_cyl(b5, v3(0.0, 0.0, 0.0), v3(0.0, 0.0, 0.25), 0.45, 0.4, rgb(0.2, 0.2, 0.22), 12)
+    mb_sphere(b5, v3(0.0, 0.0, 0.26), v3(0.25, 0.25, 0.08), rgb(0.3, 0.7, 1.0), 10)
+    guardian_eye = mesh(b5.vs, b5.idx)
+    b6 = MeshB()
+    mb_cyl(b6, v3(0.0, 0.0, 0.0), v3(0.0, 0.0, 1.0), 0.03, 0.03, rgb(1, 0.15, 0.1), 5)
+    laser_mesh = mesh(b6.vs, b6.idx)
+
+# Live windup and the CPU attack tracks share the same hand overlay.
+boko_weapon_pose = (p: mut Pose, e: Enemy):
+    if e.state == .chase and not e.archer and len(e.weapon) > 0:
+        enemy_waiting_weapon_pose(boko_m, human, p, item(e.weapon).spear)
+        return
+    if (len(e.weapon) == 0 and e.move < 3) or (e.state != .windup and e.state != .attack and e.state != .recover): return
+    if e.state == .recover and (e.stun > 0.0 or e.move >= 2): return
+    enemy_weapon_pose(boko_m, human, p, e.move, e.t, e.state == .windup, e.state == .recover, len(e.weapon) > 0 and item(e.weapon).spear)
+
+# Fire light and particles already identify the burn. A small ochre veil
+# preserves the creature's painted skin at night instead of a self-lit orange.
+boko_burn_flash = () -> vec4: vec4(0.48,0.34,0.23,0.12)
+
+boko_hit_flash = (remaining: f64) -> vec4:
+    # (a brief partial flash at the blow, about 0.06 s, not the whole body turned solid white)
+    vec4(2.6, 2.6, 2.7, f32(0.55 * smoothstep(0.13, 0.19, remaining)))
+
+enemy_anim_update = (dt: f64):
+    # Enemy movement happens after hero_animate: carry the already posed hero now.
+    hero_world = pl.body_delta * hero_world
+    pl.body_delta = mat4()
+    if not chars_ready: return
+    loop eanims.len() < enemies.len(): eanims.push(EAnim(Animator(), Skin(), mat4()))
+    loop i in [0..enemies.len()):
+        e = enemies[i]
+        if e.kind != .bokoblin and e.kind != .blue_bokoblin and e.kind != .stalkoblin: continue
+        if e.state == .gone or e.state == .buried: continue
+        de = f64(length(e.pos - sc.cam))
+        if de > 140.0: continue
+        # (the far ones every other frame, by halves)
+        if de > 45.0 and (frame_number() + i) % 2 == 0 and eanims[i].skin.mats.len() > 0: continue
+        dtk = if de > 45.0: 2.0 else: 1.0
+        clip = "idle"
+        loop_ = true
+        sp = 1.0
+        personality = fract(f64(i) * 0.61803398875)
+        stance = i % 3
+        match e.state:
+            idle:
+                clip = if e.lookout: "idle" else: (if stance == 0: "crouch" else: "idle_alt")
+                sp = 0.82 + personality * 0.3
+                # round the fire: some squat by it, some stand about, now and then one dances
+                if e.camp == 1:
+                    ph = fract(e.anim_t / 40.0 + f64(i) * 0.37)
+                    clip = if ph < 0.35: "sit" else: (if ph < 0.85: "idle_alt" else: "victory")
+                clip = camp_idle_clip(e, clip)
+            wander:
+                clip = "walk"
+                sp = 0.9
+            sleep:
+                clip = "sleep"
+                # (each breathing at its own pace: a row of them in step looked set out)
+                sp = 0.75 + 0.5 * fract(f64(i) * 0.618)
+            notice:
+                clip = if stance == 0: "crouch" else: (if stance == 1: "taunt" else: "sword_idle")
+                sp = 0.85 + personality * 0.3
+                loop_ = false
+            chase:
+                if e.speed > 2.5: clip = "run"
+                else if not e.may_engage and e.speed > 0.35:
+                    # Ring movement faces Link: sideways feet, independently jeering torsos.
+                    clip = if fract(f64(e.home.x) * 0.37) < 0.5: "strafe_l" else: "strafe_r"
+                    # Planted-foot speeds on the 1.14-scale rig (same sampling as clips.jo).
+                    sp = e.speed / (if clip == "strafe_l": 0.854 else: 1.029)
+                else if e.speed > 0.35: clip = "walk"
+                else:
+                    clip = if stance == 0: "crouch" else: (if stance == 1: "sword_idle" else: "fight_idle")
+                    if e.taunt > 0.5: clip = "taunt"
+                    sp = 0.78 + personality * 0.38
+            windup:
+                clip = if e.move == 1: "heavy" else: "attack"
+                sp = if e.move == 2: 0.6 else: 0.35
+                loop_ = false
+            attack:
+                clip = enemy_attack_clip(e.move)
+                sp = 1.3
+                loop_ = false
+            recover:
+                clip = if e.stun > 0.0: "dizzy" else: (if e.move == 1: "crouch" else: (if stance == 0: "hurt_idle" else: "slash1_rec"))
+                loop_ = e.stun > 0.0
+                sp = 0.85 + personality * 0.25
+            seek_skull:
+                clip = if e.speed > 0.35: "walk" else: "dizzy"
+                sp = 0.85
+            reassemble:
+                clip = "crouch"
+                loop_ = false
+            gather:
+                clip = if e.speed > 0.35: "walk" else: "crouch"
+            celebrate:
+                clip = "victory"
+                sp = 1.2
+            retreat:
+                clip = "run"
+            shoot: clip = "bow_hold"
+            stagger:
+                clip = "hit"
+                loop_ = false
+            knocked:
+                clip = "knockback"
+                loop_ = false
+            dead:
+                clip = "die"
+                loop_ = false
+            _: pass
+        # on fire: running about in a panic
+        if e.burning > 0.0 and e.state != .dead:
+            clip = "run"
+            loop_ = true
+            sp = 1.4
+        c = ci(clip)
+        if c < 0: c = ci("idle")
+        if clip == "walk" or clip == "run": sp = e.speed / (if clip == "walk": BOKO_WALK else: BOKO_RUN)
+        loop_changed = eanims[i].a.looping != loop_
+        restart = (e.state == .stagger and eanims[i].footing.reaction != e.reaction) or loop_changed
+        changed = eanims[i].a.clip != c or loop_changed
+        anim_play(eanims[i].a, c, 0.15, loop_, restart, sp)
+        # Only ambient loops get a phase offset; attack and hit events retain their timing.
+        if changed and loop_ and (e.state == .idle or e.state == .chase or e.state == .sleep):
+            eanims[i].a.t = personality * clip_duration(human, c)
+        anim_update(eanims[i].a, dt * dtk * (if e.frozen > 0.0: 0.0 else: 1.0))
+        pose = anim_pose(human, eanims[i].a)
+        # Waiting, threatening and recovering silhouettes remain different in a group.
+        # Upper-body-only adjustments leave locomotion and planted feet to the footing pass.
+        if e.state == .chase and not e.may_engage and e.speed < 2.5 and e.burning <= 0.0:
+            top = if e.taunt > 0.5 or stance == 1: "taunt" else: (if stance == 0: "sword_idle" else: "fight_idle")
+            layer_into(pose, sample_clip(human, ci(top), eanims[i].a.t * (0.78 + personality * 0.3) + personality * 2.0, true), upper_mask, 0.8)
+        if e.state == .chase or e.state == .idle or e.state == .recover:
+            rotate_bone(human, pose, lib_bone(human, "spine_01"), vec3(0, 0, 1), (personality - 0.5) * 0.16)
+            rotate_bone(human, pose, lib_bone(human, "Head"), vec3(0, 1, 0), (personality - 0.5) * 0.18)
+        if e.state == .windup:
+            pose = sample_clip(human, ci((if e.move == 3: "fight_idle" else: (if e.move == 4: "throw" else: "attack"))), min(e.t * 0.35, 0.18), false)
+        if e.state == .attack and e.burning <= 0.0:
+            # A socket pinned to the contact track cannot wait for a windup/idle
+            # crossfade: its forearm must sample the very same state-time pose.
+            pose = sample_clip(human, ci(enemy_attack_clip(e.move)), e.t * 1.3, false)
+        if e.state == .seek_skull:
+            # Groping arms are upper-body only; footing still plants the walking soles.
+            layer_into(pose, sample_clip(human, ci("dizzy"), e.anim_t, true), upper_mask, 0.8)
+        camp_idle_pose(boko_m, human, pose, e)
+        camp_notice_pose(boko_m, human, pose, e)
+        if e.burning <= 0.0: boko_weapon_pose(pose, e)
+        # Modest build variation within the same species; footing uses this same matrix.
+        build_ = e.contact_scale
+        eanims[i].world = facing_mat(e.pos + vec3(0, f32(e.lift), 0), e.face) * scaling(build_)
+        # asleep, each turned its own way from the fire and rolled a little onto a side
+        if e.state == .sleep:
+            hs = fract(f64(i) * 0.7548)
+            eanims[i].world = facing_mat(e.pos, e.face + (hs - 0.5) * 2.6) * rotation_z((fract(f64(i) * 0.5698) - 0.5) * 0.5) * scaling(build_)
+        # Sample the recoil clip immediately so hit-stop freezes a struck pose,
+        # rather than the previous idle/attack stance during the animator fade.
+        if e.state == .stagger and e.burning <= 0.0:
+            pose = sample_clip(human, ci("hit"), 0.11 + e.t * 0.8, false)
+            local_recoil = transform_dir(inverse(eanims[i].world), e.blow_dir)
+            recoil_weight = 1.0 - smoothstep(0.16, 0.48, e.t)
+            rotate_bone(human, pose, lib_bone(human, "spine_01"), normalize(cross(vec3(0, 1, 0), local_recoil)), recoil_weight * 0.32)
+            rotate_bone(human, pose, lib_bone(human, "spine_02"), vec3(0, 1, 0), f64(local_recoil.x) * recoil_weight * 0.25)
+        if e.state == .knocked and e.burning <= 0.0:
+            pose = sample_clip(human, ci("knockback"), 0.12 + e.t, false)
+        punch = (1.0 - smoothstep(0.0, 0.16, 0.16 - e.impact_t)) * e.impact
+        if punch > 0.0:
+            local_recoil = transform_dir(inverse(eanims[i].world), e.recoil)
+            rotate_bone(human, pose, lib_bone(human, "spine_01"), normalize(cross(vec3(0, 1, 0), local_recoil)), punch * 0.18)
+            if e.state != .attack: eanims[i].world = eanims[i].world * scaling(v3(1.0 + punch * 0.035, 1.0 - punch * 0.06, 1.0 + punch * 0.035))
+        if de < 45.0: boko_footing(boko_m, pose, e, eanims[i].footing, eanims[i].world)
+        else:
+            eanims[i].footing.reaction = e.reaction
+            eanims[i].footing.state = .gone
+            eanims[i].footing.feet.clear()
+        camp_settle_poker(boko_m, human, pose, e)
+        if e.state == .attack and e.move == 3:
+            # Pin the drawn boot to the same baked kick track after the footing pass.
+            foot = bone_index(boko_m, "foot_r")
+            contact = enemy_contact_socket(3, e.t, true)
+            boko_plant(boko_m, pose, [bone_index(boko_m, "thigh_r"), bone_index(boko_m, "calf_r"), foot], contact[3].xyz)
+            eanims[i].skin = skin_at(boko_m, pose, foot, contact)
+        else if e.state == .attack:
+            # State time drives both sides of the blow. Clip blending, footing and recoil
+            # can move the torso, but never move the drawn grip off its collision track.
+            eanims[i].world = enemy_contact_world(e.pos, e.face, e.move, e.t, build_)
+            hand = enemy_contact_socket(e.move, e.t, len(e.weapon) > 0 or e.move == 4) * inverse(SOCKET_HAND_R.offset)
+            h = bone_index(boko_m, "hand_r")
+            loop solve in [0..3):
+                enemy_contact_reach(boko_m, human, pose, hand[3].xyz)
+                motion_arm(boko_m, human, pose, bone_index(boko_m, "upperarm_r"), bone_index(boko_m, "lowerarm_r"), h, hand[3].xyz)
+            eanims[i].skin = skin_at(boko_m, pose, h, hand)
+        else: eanims[i].skin = skin(boko_m, pose)
+        if e.kind == .stalkoblin and not e.skull_out:
+            head = bone_index(boko_m, "Head")
+            centre = inverse(boko_m.ibm[head])[3].xyz + vec3(0, 0.11, 0.025)
+            enemies[i].skull_head = transform_point(eanims[i].world * bone_world(boko_m, eanims[i].skin, head) * boko_m.ibm[head], centre)
+
+# The prop pass and geometry checks read this exact final draw matrix.
+boko_weapon_draw_transform = (i: int) -> mat4:
+    enemy_weapon_draw_transform(socket_world(boko_m, eanims[i].world, eanims[i].skin, SOCKET_HAND_R), enemies[i].weapon)
+
+# The skull prop and geometry regressions share this final physical-object transform.
+stalk_skull_draw_transform = (i: int) -> mat4:
+    e = enemies[i]
+    head = bone_index(boko_m, "Head")
+    head_world = eanims[i].world * bone_world(boko_m, eanims[i].skin, head)
+    centre = inverse(boko_m.ibm[head])[3].xyz + vec3(0, 0.11, 0.025)
+    local_centre = transform_point(boko_m.ibm[head], centre)
+    translation(e.skull_pos) * rotation_x(e.skull_roll) * scaling(e.contact_scale) * translation(-local_centre) * inverse(head_world) * eanims[i].world
+
+monsters_draw = ():
+    loop i in 0.. and e in enemies:
+        if e.state == .gone or e.state == .buried: continue
+        if f64(length(e.pos - sc.cam)) > (if sc.shadow: 45.0 else: 160.0): continue
+        # White through the existing hit-stop, fading with the existing reaction timer.
+        flash = boko_hit_flash(e.flash)
+        if e.burning > 0.0: flash = boko_burn_flash()
+        match e.kind:
+            bokoblin, blue_bokoblin, stalkoblin:
+                if not chars_ready or i >= eanims.len(): continue
+                # (far off a strong rim of light keeps the figure readable: horns, arms, the club)
+                de2 = f64(length(e.pos - sc.cam))
+                p = CharParams(flash = flash, glow = 1.0, creature = 0.85, rim = 1.0 + smoothstep(20.0, 70.0, de2) * 1.6)
+                tone = fract(f64(i) * 0.61803398875)
+                # Stable value variation and a near-camera sky edge separate a melee
+                # group without extra passes, lights, geometry or distance popping.
+                p.tint = vec4(f32(0.87 + tone * 0.18), f32(0.87 + tone * 0.16), f32(0.88 + tone * 0.14), 1)
+                p.rim += (1.0-smoothstep(12.0,28.0,de2))*0.75
+                if e.kind == .blue_bokoblin:
+                    p.variant = 1
+                    # Slate back, pale belly and muzzle are authored in the texture.
+                if e.kind == .stalkoblin:
+                    p.tint = vec4(1, 1, 1, 1)
+                    p.rim = 2.2
+                    p.fill = 1.45
+                if e.state == .dead: p.dissolve = f32(clamp((e.t - 1.0) / 0.12, 0.0, 1.0))
+                # (one standing right between the camera and Link thins out so he stays in sight)
+                else if not sc.shadow:
+                    cp_ = pl.pos + vec3(0, 1.0, 0) - sc.cam
+                    lc_ = f64(length(cp_))
+                    tt_ = f64(dot(e.pos + vec3(0, 1.0, 0) - sc.cam, cp_)) / max(lc_ * lc_, 0.01)
+                    if tt_ > 0.0 and tt_ < 0.85:
+                        off_ = f64(length(sc.cam + cp_ * f32(tt_) - (e.pos + vec3(0, 1.0, 0))))
+                        p.dissolve = f32(0.55 * smoothstep(1.1, 0.4, off_))
+                club = e.weapon == "boko_club" or e.weapon == "spiked_club"
+                if boko_club_part >= 0: p.hide = 1 << boko_club_part
+                if e.kind == .stalkoblin:
+                    p.hide = 0
+                    detached = e.skull_out or e.skull_hp <= 0.0
+                    if detached: p.hide = 2
+                    draw_char(stalko_m, eanims[i].world, eanims[i].skin, p)
+                    if e.skull_out and e.skull_hp > 0.0:
+                        # Cancel the animated head transform: the drawn skull centre and
+                        # roll are the same object used by collision and weapon queries.
+                        p.hide = 1
+                        draw_char(stalko_m, stalk_skull_draw_transform(i), eanims[i].skin, p)
+                else: draw_char(boko_m, eanims[i].world, eanims[i].skin, p)
+                if camp_day_activity(e) == 1:
+                    draw_prop(camp_meat(), socket_world(boko_m, eanims[i].world, eanims[i].skin, SOCKET_HAND_L), vec4(1, 1, 1, 1), 0.0, 0.25)
+                if e.held != "" and e.state != .dead:
+                    __item_at(e.held, socket_world(boko_m, eanims[i].world, eanims[i].skin, SOCKET_HAND_R))
+                if len(e.weapon) > 0 and e.state != .dead:
+                    if e.held != "" or e.move == 4:
+                        if not sc.shadow: __item_at(e.weapon, socket_world(boko_m, eanims[i].world, eanims[i].skin, SOCKET_BACK))
+                        continue
+                    draw = if camp_has_poker(e):socket_world(boko_m, eanims[i].world, eanims[i].skin, SOCKET_HAND_R) else:boko_weapon_draw_transform(i)
+                    if camp_ground_weapon(e): draw = enemy_weapon_draw_transform(camp_ground_grip(e), e.weapon)
+                    if club:
+                        # Replace the small baked club at the same hand socket (also in shadows).
+                        draw_prop((if camp_has_poker(e):camp_poker() else:shape_mesh(.club)), draw, vec4(1, 1, 1, 1), f64(flash.w) * 1.8, 0.3)
+                    else if not sc.shadow: __item_at(e.weapon, draw)
+                if e.archer and not sc.shadow and e.state != .dead:
+                    __item_at("boko_bow", socket_world(boko_m, eanims[i].world, eanims[i].skin, SOCKET_HAND_L))
+            chuchu, ice_chuchu:
+                if sc.shadow: continue
+                sq = 1.0 + 0.15 * sin(e.bob * PI * 2.0)
+                col = if e.kind == .ice_chuchu: rgba(0.32, 0.55, 0.95, 1) else: rgba(0.18, 0.42, 0.85, 1)
+                s = if e.kind == .ice_chuchu: 1.4 else: 0.9
+                m = facing_mat(e.pos, e.face) * scaling(v3(s * (2.0 - sq), s * sq, s * (2.0 - sq)))
+                # jelly: a soft inner glow and a strong rim, as if light passes through it
+                draw_prop(chuchu_mesh, m, col + flash * flash.w, 0.25, 0.8)
+                if e.kind == .ice_chuchu: emit(.snow, e.pos + v3(random(-0.4, 0.4), 1.1, random(-0.4, 0.4)), vec3(0, -0.3, 0), 0.6, 0.04, rgba(0.9, 0.95, 1.0, 0.7))
+            keese:
+                if sc.shadow: continue
+                m = facing_mat(e.pos, e.face)
+                draw_prop(keese_body, m, vec4(1, 1, 1, 1) + flash * flash.w, 0.1)
+                flap = sin(e.anim_t * 18.0) * 0.7
+                draw_prop(keese_wing, m * translation(v3(0.08, 0.04, 0.0)) * rotation_z(flap), vec4(1, 1, 1, 1), 0.1, 0.4)
+                draw_prop(keese_wing, m * translation(v3(-0.08, 0.04, 0.0)) * scaling(v3(-1.0, 1.0, 1.0)) * rotation_z(flap), vec4(1, 1, 1, 1), 0.1, 0.4)
+            talus: talus_draw(e)
+            guardian:
+                m = translation(e.pos) * rotation_y(PI - e.face)
+                if sc.shadow: continue
+                draw_prop(guardian_mesh, m, rgba(1, 1, 1, 1), 0.0, 0.2)
+                glow = if e.state == .laser: 2.5 + 2.0 * sin(e.laser_t * 12.0) else: 0.8
+                eye = translation(e.pos + vec3(0, 2.6, 0)) * rotation_y(PI - e.face) * translation(v3(0.0, 0.3, 1.8))
+                draw_prop(guardian_eye, eye, (if e.state == .laser: rgba(1.0, 0.4, 0.4, 1) else: rgba(0.5, 0.8, 1.0, 1)), glow)
+            _: pass
+
+# the guardian's red sight line (additive, after the opaque scene)
+lasers_draw = ():
+    loop e in enemies:
+        if e.kind != .guardian or e.state != .laser: continue
+        a = e.pos + vec3(0, 2.9, 0) + transform_dir(rotation_y(PI - e.face), v3(0.0, 0.0, 1.9))
+        d = e.laser_target - a
+        l = f64(length(d))
+        yaw = atan2(f64(d.x), f64(d.z))
+        pitch = -asin(clamp(f64(d.y) / l, -1.0, 1.0))
+        m = translation(a) * rotation_y(yaw) * rotation_x(pitch) * scaling(v3(1.0, 1.0, l))
+        draw_prop(laser_mesh, m, rgba(1, 0.2, 0.15, 1), 6.0)
+
+# Keep the final posed bodies and the drawn blade separate on the hit-pause frame.
+# Contacts are evaluated first; this visible recoil moves the actual enemy root.
+# Only nearby bodies are skinned on CPU, reusing retained source vertices.
+__combat_hero_points: vec3[]
+__combat_enemy_points: vec3[]
+__combat_body_indices: u32[]
+__blade_near_triangle = (a: vec3,b: vec3,p: vec3,q: vec3,r: vec3) -> bool:
+    cross_ = cross(q-p,r-p)
+    if length(cross_) < 0.000001: return false
+    n = normalize(cross_)
+    da = f64(dot(a-p,n))
+    db = f64(dot(b-p,n))
+    f = if da*db <= 0.0 and abs(da-db)>0.000001: clamp(da/(da-db),0.0,1.0) else: (if abs(da)<abs(db): 0.0 else: 1.0)
+    axis = mix(a,b,f32(f))
+    signed = f64(dot(axis-p,n))
+    projected = axis-n*f32(signed)
+    triangle = CliffTriangle(p,q,r,n, min(p,min(q,r)),max(p,max(q,r)))
+    if abs(signed)<0.085 and __cliff_inside(projected,triangle): return true
+    loop gap in [__cliff_segment_gap(a,b,p,q),__cliff_segment_gap(a,b,q,r),__cliff_segment_gap(a,b,r,p)]:
+        if length(gap)<0.085: return true
+    false
+__posed_body_points = (model_: Model, palette: Skin, world: mat4, points: mut vec3[]):
+    points.clear()
+    if palette.mats.len() == 0: return
+    a = palette.mats
+    loop part_index in [0..model_.parts.len()):
+        vertices = model_body_vertices.get("{model_.name}:{part_index}") ?? []
+        loop v in vertices:
+            q = vec3(0,0,0)
+            p = vec4(v.pos,1)
+            loop k in [0..4):
+                weight = v.wgt[k]
+                if weight <= 0.0: continue
+                o = int(v.jnt[k]) * 12
+                q += vec3(dot(vec4(a[o],a[o+1],a[o+2],a[o+3]),p), dot(vec4(a[o+4],a[o+5],a[o+6],a[o+7]),p), dot(vec4(a[o+8],a[o+9],a[o+10],a[o+11]),p)) * weight
+            points.push(transform_point(world,q))
+
+combat_presentation_clear = ():
+    if not chars_ready or cam.override: return
+    count = 0
+    loop e in enemies:
+        if enemy_melee_body(e) and e.state != .gone and e.state != .buried and not e.skull_out and length(e.pos-pl.pos) < 15.0: count += 1
+    if count == 0: return
+    if __combat_body_indices.len() == 0:
+        base = 0
+        loop part_index in [0..boko_m.parts.len()):
+            key = "{boko_m.name}:{part_index}"
+            indices = model_body_indices.get(key) ?? []
+            vertices = model_body_vertices.get(key) ?? []
+            loop index in indices: __combat_body_indices.push(index+u32(base))
+            base += vertices.len()
+    __posed_body_points(hero_m,hero_skin,hero_world,__combat_hero_points)
+    if __combat_hero_points.len() == 0: return
+    # A teleport/LOD handoff can leave last frame's pose at its old location.
+    # It cannot constrain bodies in the new scene until animation catches up.
+    if length(hero_world[3].xyz-pl.pos) > 2.0: return
+    weapon = equipped_weapon()
+    hand = socket_world(hero_m,hero_world,hero_skin,SOCKET_HAND_R)
+    grip = hand[3].xyz
+    tip = transform_point(hand,v3(0.0,weapon_length(item(weapon)),0.0))
+    blade_out = weapon != "" and (fight.weapon_out or fight.act != .idle) and fight.act != .aim and pl.state != .climb and pl.state != .swim and pl.state != .glide
+    vp = perspective(view_fov()*PI/180.0,aspect_ratio(),0.1,1000.0)*look_at(view_pos(),view_target(),vec3(0,1,0))
+    loop i in [0..min(enemies.len(),eanims.len())):
+        e = enemies[i]
+        if not enemy_melee_body(e) or e.state == .gone or e.state == .buried or e.skull_out or length(e.pos-pl.pos) >= 15.0: continue
+        if length(eanims[i].world[3].xyz-(e.pos+vec3(0,f32(e.lift),0))) > 2.0: continue
+        __posed_body_points(boko_m,eanims[i].skin,eanims[i].world,__combat_enemy_points)
+        if __combat_enemy_points.len() == 0: continue
+        start = enemies[i].pos
+        shift = vec3(0,0,0)
+        loop pass_ in [0..8):
+            # Replay the lens constraint after the camera's current-frame turn.
+            candidate = enemy_camera_clear(enemies[i].pos,if i%2==0: 1.0 else: -1.0)
+            push_out(candidate,enemy_body_radius(e),enemy_body_height(e))
+            shift += candidate-enemies[i].pos
+            enemies[i].pos = candidate
+            away = enemies[i].pos-pl.pos
+            n = normalize(vec3(away.x,0,away.z)+vec3(0.0001,0,0))
+            hero_edge = -1e9
+            enemy_edge = 1e9
+            loop q in __combat_hero_points: hero_edge = max(hero_edge,f64(dot(q,n)))
+            loop q in __combat_enemy_points: enemy_edge = min(enemy_edge,f64(dot(q+shift,n)))
+            need = max(0.0,hero_edge+0.025-enemy_edge)
+            if blade_out:
+                axis = tip-grip
+                middle = enemies[i].pos+vec3(0,1,0)
+                nearest = grip+axis*clamp(dot(middle-grip,axis)/max(dot(axis,axis),0.0001),0.0,1.0)
+                if length((nearest-middle).xz) < 1.3 and abs(nearest.y-middle.y) < 1.7:
+                    touching = false
+                    loop triangle in [0..__combat_body_indices.len()/3):
+                        k = triangle*3
+                        a = __combat_enemy_points[int(__combat_body_indices[k])]+shift
+                        b = __combat_enemy_points[int(__combat_body_indices[k+1])]+shift
+                        c = __combat_enemy_points[int(__combat_body_indices[k+2])]+shift
+                        if not __blade_near_triangle(grip,tip,a,b,c): continue
+                        enemy_surface_hit(i,grip+axis*clamp(dot((a+b+c)/3.0-grip,axis)/max(dot(axis,axis),0.0001),0.0,1.0))
+                        touching = true
+                        break
+                    if touching:
+                        blade_edge = max(f64(dot(grip,n)),f64(dot(tip,n)))+0.085
+                        need = max(need,blade_edge+0.025-enemy_edge)
+            if need > 0.0:
+                d = n*f32(min(need,0.35))
+                enemies[i].pos += d
+                shift += d
+            # A bounding rectangle is a conservative upper bound on body pixels.
+            # Six percent is a hard per-frame maximum, including near-lens ears/arms.
+            lo = vec2(1e9,1e9)
+            hi = vec2(-1e9,-1e9)
+            in_front = false
+            loop q in __combat_enemy_points:
+                clip = vp*vec4(q+shift,1)
+                if clip.w <= 0.1: continue
+                # Only the viewport contributes visible body coverage. A mesh
+                # straddling the lens can project a vertex thousands of pixels
+                # away; using that unbounded rectangle launched foes out of the
+                # encounter when the camera orbited past them.
+                xy = clamp(clip.xy/clip.w,vec2(-1,-1),vec2(1,1))
+                lo = min(lo,xy)
+                hi = max(hi,xy)
+                in_front = true
+            area = max(0.0,f64(hi.x-lo.x))*max(0.0,f64(hi.y-lo.y))*0.25
+            if in_front and area > 0.055:
+                away_cam = enemies[i].pos-view_pos()
+                flat = normalize(vec3(away_cam.x,0,away_cam.z)+vec3(0.0001,0,0))
+                # Keep the iterative clearance local even at the near plane.
+                # The next actual pose/view provides fresh coverage feedback.
+                d = flat*f32(min(0.35,length(away_cam)*(sqrt(area/0.055)-1.0)+0.08))
+                enemies[i].pos += d
+                shift += d
+            else if need < 0.0001: break
+        # Preserve the final animation/recoil palette; only its world placement changes.
+        delta = enemies[i].pos-start
+        eanims[i].world = translation(delta)*eanims[i].world

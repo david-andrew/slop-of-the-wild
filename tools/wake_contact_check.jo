@@ -1,0 +1,97 @@
+# Palm contact, shoulder loading, lift-off clearance and continuity in both hero models.
+# No window. Complements tools/opening_test.jo's interrupted camera coverage.
+use '../game/hero_motion.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/gfx.jo'
+use '../game/charshade.jo'
+from '../game/interiors.jo' import SOR_POD_WATER, SOR_POD_LIP
+from '../game/chars.jo' import wake_settle_pose
+
+lib = load_humanoid_anims()
+loop name in ["hero_bare", "hero"]:
+    m = load_model("assets/models/{name}.mdl")
+    h = bone_index(m, "hand_l")
+    u = bone_index(m, "upperarm_l")
+    l = bone_index(m, "lowerarm_l")
+    points = ["head", "pelvis", "upperarm_l", "lowerarm_l", "hand_l", "upperarm_r", "lowerarm_r", "hand_r", "spine_02", "ball_l", "ball_r"]
+    reference = wake_pose(m, lib, 1.6)
+    wake_settle_pose(m, lib, reference, 1.6)
+    wake_arm_deformation(m, lib, reference, 1.6)
+    anchor = motion_point(m, reference, h)
+    previous = wake_pose(m, lib, 0.0)
+    wake_settle_pose(m, lib, previous, 0.0)
+    wake_arm_deformation(m, lib, previous, 0.0)
+    twist_drift = 0.0
+    drift = 0.0
+    tilt = 0.0
+    step = 0.0
+    lift = 0.0
+    face_gap = 100.0
+    loop frame in [1..350):
+        t = f64(frame) / 60.0
+        p = wake_pose(m, lib, t)
+        wake_settle_pose(m, lib, p, t)
+        before = [loop b in [u,l,h,bone_index(m,"hand_r")]: motion_point(m,p,b)]
+        palm_before = bone_world(m,p,h)
+        wake_arm_deformation(m,lib,p,t)
+        loop i in 0.. and b in [u,l,h,bone_index(m,"hand_r")]:
+            twist_drift=max(twist_drift,f64(length(motion_point(m,p,b)-before[i])))
+        palm_after=bone_world(m,p,h)
+        loop axis in [0..3): assert(length(palm_before[axis].xyz-palm_after[axis].xyz)<0.0001,"wake roll correction preserves palm orientation")
+        hand = motion_point(m, p, h)
+        if t >= 1.6 and t <= 2.55:
+            drift = max(drift, f64(length(hand - anchor)))
+            # Bind-space hand +y is the palm normal in these baked models.
+            up = normalize(transform_dir(bone_world(m, p, h) * m.ibm[h], vec3(0, 1, 0)))
+            tilt = max(tilt, f64(length(up - vec3(0, 1, 0))))
+            assert(abs(f64(hand.y) - 0.135) < 0.001)
+            assert(abs(f64(hand.x) - 0.60) < 0.001)
+            # Match the production world transform and the palm thickness. The
+            # contact solver stays planted while the water reaches its underside.
+            palm = 0.11 + f64(hand.y) - 0.025
+            assert(abs(palm - SOR_POD_LIP) < 0.001, "palm planted on actual stone lip")
+            assert(SOR_POD_WATER - palm >= 0.0 and SOR_POD_WATER - palm < 0.012, "palm meets pod water")
+            if t <= 2.1:
+                seat = 0.11 + f64(motion_point(m, p, bone_index(m, "pelvis")).y)
+                assert(seat < SOR_POD_WATER, "seated hips remain in shallow water")
+            # A loaded arm remains bent; the wrist cannot be pinned beyond reach.
+            shoulder = motion_point(m, p, u)
+            elbow = motion_point(m, p, l)
+            assert(length(hand - shoulder) < length(elbow - shoulder) + length(hand - elbow) - 0.008)
+        if t >= 2.7 and t <= 2.8:
+            lift = max(lift, f64(hand.y - anchor.y))
+            assert(hand.y > 0.14)
+        if t >= 1.6 and t <= 4.4:
+            gap = f64(length(motion_point(m, p, bone_index(m, "hand_r")) - motion_point(m, p, bone_index(m, "head"))))
+            face_gap = min(face_gap, gap)
+            assert(gap > 0.30, "free hand stays clear of the face")
+            loop finger in ["index_04_leaf_r", "middle_04_leaf_r"]:
+                tip = motion_point(m, p, bone_index(m, finger))
+                assert(length(tip - motion_point(m, p, bone_index(m, "head"))) > 0.26, "fingertips stay clear of the face")
+        if t >= 2.05 and t <= 3.4:
+            knee = motion_point(m, p, bone_index(m, "calf_r"))
+            wrist = motion_point(m, p, bone_index(m, "hand_r"))
+            assert(length(wrist - knee) < 0.23 and wrist.y > knee.y - 0.03, "free palm remains over the raised thigh through the push")
+        loop bone in points:
+            b = bone_index(m, bone)
+            step = max(step, f64(length(motion_point(m, p, b) - motion_point(m, previous, b))))
+        previous = p
+    assert(twist_drift<0.0001,"wake roll correction preserves shoulder, elbow and grips")
+    print("PASS wake roll {name}: maximum joint/contact drift {twist_drift:.7} m")
+    assert(drift < 0.001 and tilt < 0.001 and step < 0.065 and lift > 0.005)
+    print("PASS wake {name}: wrist drift {drift:.6} m, palm normal error {tilt:.6}, lift-off {lift:.4} m, largest joint step {step:.5} m, free wrist/head gap {face_gap:.3} m")
+
+# The same corrective runs in both lit and shadow vertex shaders. It must be
+# completely absent at the grips and when the wake has ended.
+shape_max=0.0
+loop ix in [-80..81):
+    loop iy in [0..181):
+        v=v3(f64(ix)*0.01,f64(iy)*0.01,-0.14)
+        assert(ch_wake_point(v,0.0)==v,"no wake corrective in ordinary gameplay")
+        q=ch_wake_point(v,1.0)
+        shape_max=max(shape_max,f64(length(q-v)))
+        if abs(v.x)>=0.60 or v.y<0.10:
+            assert(q==v,"wake corrective cannot move grips or sole vertices")
+assert(shape_max<0.045,"bounded soft-tissue correction")
+print("PASS wake surface: grip/sole mask exact, maximum correction {shape_max:.5} m")

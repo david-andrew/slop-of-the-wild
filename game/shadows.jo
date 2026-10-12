@@ -1,0 +1,79 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'env.jo'
+
+# Cascaded shadow maps: three square maps around the camera (near, middle, far), each
+# snapped to its texel grid so shadows do not shimmer as the camera moves.
+
+const SHADOW_RES = 2048
+
+struct Cascades:
+    maps: Target[]
+    vps: mat4[]
+    radii = [20.0, 70.0, 400.0]
+    ready = false
+
+cascades = Cascades()
+
+shadow_setup = ():
+    if cascades.ready: return
+    cascades.ready = true
+    loop k in [0..3):
+        cascades.maps.push(make_depth_target(SHADOW_RES))
+        cascades.vps.push(mat4())
+
+# the far cascade (400 m) is redrawn every other frame: it barely changes, and keeps its matrix
+# in step with the map it was drawn with
+shadow_frame = 0
+# (the near cascade every frame; the middle and far ones take turns)
+shadow_due = (k: int) -> bool: k == 0 or shadow_frame % 2 == k - 1
+
+# A homogeneous scale leaves NDC/depth and rasterization unchanged. Orthographic
+# W is constant, so 1 + cloud cover also transports the filter's weather to every
+# existing receiver without adding uniforms or changing its material interface.
+shadow_weather_projection = (vp0: mat4, cover: f64) -> mat4:
+    vp = vp0
+    weather_w = f32(1.0 + cover)
+    loop column in [0..4): vp[column] = vp[column] * weather_w
+    vp
+
+shadow_matrices = (cam: vec3, fwd: vec3, light: vec3):
+    shadow_setup()
+    shadow_frame += 1
+    l = normalize(light)
+    up = vec3(0, 1, 0)
+    if abs(l.y) > 0.98: up = vec3(1, 0, 0)
+    loop k in [0..3):
+        if not shadow_due(k): continue
+        r = cascades.radii[k]
+        center = cam + normalize(vec3(fwd.x, 0, fwd.z) + vec3(0.0001, 0, 0)) * f32(r * 0.55)
+        view = look_at(vec3(0, 0, 0), vec3(-l.x, -l.y, -l.z), up)
+        # snap the center to whole texels in light space
+        lc = transform_point(view, center)
+        texel = f32(2.0 * r / f64(SHADOW_RES))
+        lc = vec3(floor(lc.x / texel) * texel, floor(lc.y / texel) * texel, lc.z)
+        inv = inverse(view)
+        c2 = transform_point(inv, lc)
+        depth = r * 2.0 + 600.0
+        eye = c2 + l * f32(depth * 0.5)
+        v2 = look_at(eye, c2, up)
+        vp = orthographic(-r, r, -r, r, 1.0, depth) * v2
+        cascades.vps[k] = shadow_weather_projection(vp, env.clouds)
+
+shadow_begin = (k: int):
+    bind_target(cascades.maps[k])
+    glClear(GL_DEPTH_BUFFER_BIT)
+    glEnable(GL_DEPTH_TEST)
+    glDepthFunc(GL_LEQUAL)
+    glDepthMask(1)
+    glDisable(GL_BLEND)
+    glColorMask(0, 0, 0, 0)
+    glEnable(GL_POLYGON_OFFSET_FILL)
+    glPolygonOffset(1.5, 2.0)
+    glDisable(GL_CULL_FACE)
+
+shadow_end = ():
+    glColorMask(1, 1, 1, 1)
+    glDisable(GL_POLYGON_OFFSET_FILL)
+
+shadow_tex = (k: int) -> Texture: cascades.maps[k].depth

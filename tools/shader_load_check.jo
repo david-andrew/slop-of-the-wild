@@ -1,0 +1,76 @@
+# GPU equivalence of async loading and runtime compilation, including array reflection.
+# Caller owns flock /tmp/botw-render.lock.
+use '../game/gfx.jo'
+use '../game/shader_load.jo'
+from '../game/gfx.jo' import __patch_glsl
+
+struct LoadCheckU:
+    tex: Texture
+    gain: f32
+    shifts: vec2[2]
+struct LoadCheckO:
+    pos: vec4
+    uv: vec2
+load_check_vs = (v: FsVert, u: LoadCheckU) -> LoadCheckO:
+    LoadCheckO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+load_check_fs = (i: LoadCheckO, u: LoadCheckU) -> vec4:
+    sample(u.tex, i.uv + u.shifts[0]) * u.gain + vec4(u.shifts[1], 0, 0)
+
+window("Shader load equality", 32, 32)
+# Creating a texture establishes the native/software GL context before extension discovery.
+tex = bytes_texture(1, 1, [u8(40), u8(80), u8(120), u8(255)], false, false)
+src = shader(load_check_vs, load_check_fs)
+a = shader_load_submit(src)
+b = shader_load_submit(src)
+shifted = src
+shifted.vs = replace(shifted.vs, "S_LoadCheckO_", "S_LoadCheckO_100")
+shifted.fs = replace(shifted.fs, "S_LoadCheckO_", "S_LoadCheckO_100")
+canonical = shader_load_canonical(src)
+changed = shader_load_canonical(shifted)
+assert(canonical.vs == changed.vs and canonical.fs == changed.fs)
+c = shader_load_submit(shifted)
+# Completion order deliberately differs from submission order.
+csh = shader_load_finish(c)
+ash = shader_load_finish(a)
+bsh = shader_load_finish(b)
+# A linked program must release stage objects; delete alone keeps them attached.
+@lib("libGLESv2.so.2")
+extern glGetAttachedShaders = (program: u32, size: i32, count: *i32, stages: *u32)
+loop pending in [a, b, c]:
+    if pending.program != 0:
+        count = i32(-1)
+        stages = [u32(0), u32(0)]
+        glGetAttachedShaders(pending.program, 2, &count, data(stages))
+        assert(count == 0, "completed native program releases attached compiler stages")
+original = src
+original.vs = __patch_glsl(src.vs)
+original.fs = __patch_glsl(src.fs)
+reference = make_shader(original)
+target = make_target(32, 32, false, false)
+u = LoadCheckU(tex, 0.5, [vec2(0, 0), vec2(0.03, 0.07)])
+render_bytes = (sh: Shader) -> u8[]:
+    bind_target(target)
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    glDisable(GL_BLEND)
+    draw_fast(sh, fullscreen_mesh(), u)
+    out = fill(u8(0), 32 * 32 * 4)
+    gl_read_pixels(0, 0, 32, 32, data(out))
+    out
+expected = render_bytes(reference)
+# Independent nonzero/known-color check prevents a failed or software GL readback
+# from making two empty buffers look like a successful native equivalence test.
+assert(expected[0] >= 27 and expected[0] <= 29)
+assert(expected[1] >= 57 and expected[1] <= 59)
+assert(expected[2] >= 59 and expected[2] <= 61)
+assert(expected[3] >= 127 and expected[3] <= 129)
+loop sh in [ash, bsh, csh]:
+    assert(sh.stride == reference.stride and sh.usize == reference.usize)
+    assert(sh.uniforms.len() == reference.uniforms.len())
+    loop i in [0..sh.uniforms.len()):
+        x = sh.uniforms[i]
+        y = reference.uniforms[i]
+        assert(x.kind == y.kind and x.offset == y.offset and x.count == y.count and x.stride == y.stride)
+    actual = render_bytes(sh)
+    loop i in [0..actual.len()): assert(actual[i] == expected[i])
+print("shader load: 3 out-of-order completions; stable import IDs; texture/array reflection; 12288 RGBA bytes identical PASS")

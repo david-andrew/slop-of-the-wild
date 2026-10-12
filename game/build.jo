@@ -1,0 +1,683 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'terrain.jo'
+use 'physics.jo'
+
+# Architecture: a little construction kit (boxes, cylinders, arches, gables, steps) baked into
+# static meshes, chunked by area for culling, with a stone shader: masonry courses, ivy on the
+# walls, moss on ledges, weathering, and a glow channel for Sheikah stone.
+
+struct BVert:
+    pos: vec3
+    normal: vec3
+    color: vec4          # rgb albedo, a = ambient occlusion
+    mat: vec4            # x block size, y ivy, z glow, w surface (-1 dressed stone, 0 neutral, 1 wood, 2 hide, 3 rock, 4 cliff, 5 cliff, 6 cave, 7 weathered brow)
+    light = vec3(0, 0, 0) # baked fixture irradiance; separate from material pigment
+
+struct BuildU:
+    vp: mat4
+    cam: vec3
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    falloff: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+    time: f32
+    wet: f32
+    glow_color: vec3     # Sheikah glow (orange before, blue after)
+    shadow_pass: f32
+    lift: vec3           # offset for moving pieces (the tower rising)
+    lp = vec4(0, 0, 0, 0)
+    lc = vec3(0, 0, 0)
+    clouds = 0.0
+    player = vec3(0, -1000, 0)
+    char = 0.0
+    collapse = 0.0
+    base = vec3(0, 0, 0)
+    fade_width = 1.0
+    keep_center = vec2(0, 0)
+    keep_radius = 0.0
+
+struct BuildO:
+    pos: vec4
+    world: vec3
+    normal: vec3
+    color: vec4
+    mat: vec4
+    light = vec3(0, 0, 0)
+
+build_vs = (v: BVert, u: BuildU) -> BuildO:
+    w = v.pos + u.lift
+    w.y = u.base.y + (w.y - u.base.y) * (1.0 - u.collapse * 0.94)
+    w.xz = u.base.xz + (w.xz - u.base.xz) * (1.0 + u.collapse * 0.12)
+    BuildO(u.vp * vec4(w, 1), w, v.normal, v.color, v.mat, v.light)
+
+masonry = (w: vec3, n: vec3, size: f32) -> f32:
+    # Narrow mortar beds with unequal course lengths and offset bond. Dimensions
+    # are in metres; low block contrast keeps the wall's larger light masses intact.
+    an = abs(n)
+    p = vec2(w.x, w.y)
+    if an.x > an.z: p = vec2(w.z, w.y)
+    if an.y > 0.7: p = vec2(w.x, w.z)
+    wob = (vnoise(p * 1.7) - 0.5) * 0.028
+    yy = (p.y + wob) / size
+    row = floor(yy)
+    bond = hash12(vec2(row, 3.0))
+    width = size * (1.5 + bond * 0.65)
+    xx = p.x / width + bond * 3.0
+    f = fract(vec2(xx, yy))
+    edge = min(min(f.x, 1.0 - f.x) * width, min(f.y, 1.0 - f.y) * size)
+    joint = smoothstep(0.006, 0.025, edge)
+    tone = 0.94 + 0.07 * hash12(vec2(floor(xx), row)) + (vnoise(p * 0.6) - 0.5) * 0.10
+    joint * tone + (1.0 - joint) * 0.84
+
+# Sheikah stone: smooth dark slate, engraved with circuit traces (a trace per grid cell, turning
+# at its centre, with round nodes) that carry the glow
+sheikah_traces = (w: vec3, n: vec3, sparse: f32) -> f32:
+    an = abs(n)
+    p = vec2(w.x, w.y)
+    if an.x > an.z: p = vec2(w.z, w.y)
+    if an.y > 0.7: p = vec2(w.x, w.z)
+    q = p * 0.45
+    cell = floor(q)
+    f = fract(q) - vec2(0.5, 0.5)
+    h = hash12(cell)
+    h2 = hash12(cell + vec2(7.0, 3.0))
+    lw = 0.035
+    # an L or a straight run through the cell
+    a = smoothstep(lw, lw * 0.4, abs(f.y)) * step(f.x, 0.0)
+    b = smoothstep(lw, lw * 0.4, abs(f.x)) * (if h < 0.5: step(0.0, f.y) else: step(f.y, 0.0))
+    c = smoothstep(lw, lw * 0.4, abs(f.y)) * step(0.0, f.x) * step(0.6, h2)
+    node = smoothstep(0.1, 0.07, length(f)) * step(0.65, h)
+    ring = smoothstep(0.02, 0.0, abs(length(f) - 0.09)) * step(0.65, h)
+    # (sparse: fewer cells carry a trace, for big walls)
+    t = (max(max(a, b), c) * step(0.45, h2) + ring) * step(sparse, hash12(cell + vec2(11.0, 5.0)))
+    clamp(t + node * 0.3, 0.0, 1.0)
+
+build_fs = (i: BuildO, u: BuildU) -> vec4:
+    if u.collapse > 0.0:
+        holes = hash12(floor(i.world.xz * 12.0) + vec2(floor(i.world.y * 10.0), 0))
+        glsl_discard(holes < smoothstep(0.35, 1.0, u.collapse))
+    if u.shadow_pass > 0.5: return vec4(1, 1, 1, 1)
+    # whatever stands between the camera and the player dissolves (a stake, a pillar, a wall's end)
+    cp = u.player + vec3(0, 1.0, 0) - u.cam
+    tt = clamp(dot(i.world - u.cam, cp) / max(dot(cp, cp), 0.01), 0.0, 1.0)
+    # (not what stands right beside the camera: the camera keeps clear of it, and in a narrow cave
+    # that is every wall)
+    fade = smoothstep(u.fade_width, u.fade_width * 0.45, length(u.cam + cp * tt - i.world)) * smoothstep(0.8, 0.6, tt) * smoothstep(0.08, 0.25, tt)
+    # Broad lens fade takes over at architectural corners while the camera steers.
+    fade = max(fade, smoothstep(u.fade_width * 1.5, u.fade_width * 0.75, length(i.world - u.cam)) * (u.fade_width - 1.0))
+    # Splayed tower supports can fill the frame even at the player depth.
+    # Keep the shaft he holds; fade its outer supports across the full frame.
+    if u.fade_width > 1.1 and u.keep_radius > 0.0:
+        outer = smoothstep(u.keep_radius, u.keep_radius + 0.6, length(i.world.xz - u.keep_center))
+        fade = max(fade, outer * smoothstep(1.15, 0.95, tt))
+    if u.player.y < -500.0: fade = 0.0
+    # Climbing uses a broad lens/support clearance region. Averaging partially
+    # discarded beam pixels in the paint pass left a brown ghost over the legs.
+    # Remove those foreground supports completely, preserving the held shaft.
+    if u.fade_width > 1.1 and fade > 0.001: fade = 1.0
+    glsl_discard(fade > glsl_occluder_dither(0.0))
+    n = normalize(i.normal)
+    w = i.world
+    alb = i.color.xyz
+    traces: f32 = 1.0
+    if i.mat.x > 0.0:
+        courses = masonry(w, n, i.mat.x)
+        # The perimeter's distant value masses must not become square tiles.
+        # Its vertex pigments and broken crown carry weathering at that scale.
+        if i.mat.w < -1.5: courses = mix(courses, f32(1.0), smoothstep(35.0, 110.0, length(w-u.cam)))
+        alb = alb * courses
+    if i.mat.x < -0.5:
+        traces = sheikah_traces(w, n, i.mat.y)
+        alb = alb * (0.88 + 0.18 * vnoise(w.xz * 0.2 + vec2(w.y * 0.2, 0))) * (1.0 - traces * 0.35)
+        # carved panels: big slabs with grooves between them, each its own tone
+        an = abs(n)
+        pp = vec2(w.x, w.y)
+        if an.x > an.z: pp = vec2(w.z, w.y)
+        if an.y > 0.7: pp = vec2(w.x, w.z)
+        pq = pp / vec2(3.2, 2.4)
+        pf = fract(pq)
+        groove = smoothstep(0.035, 0.0, min(min(pf.x, 1.0 - pf.x) * 3.2, min(pf.y, 1.0 - pf.y) * 2.4) * 0.3)
+        alb = alb * (0.85 + 0.3 * hash12(floor(pq) + vec2(5.0, 1.0))) * (1.0 - groove * 0.55)
+    if i.mat.w > 5.5:
+        # The cave's relief owns its planes and undercuts. Pigment groups those
+        # planes into cool recesses and warm exposed beds, without a crack grid.
+        q = vec2(w.x + w.z * 0.7, w.y + (w.x - w.z) * 0.18)
+        wash = vnoise(q * vec2(0.065, 0.085))
+        bed = vnoise(q * vec2(0.045, 0.15) + vec2(7, 3))
+        alb = alb * mix(vec3(0.72, 0.83, 0.98), vec3(1.02, 1.0, 0.93), smoothstep(0.22, 0.76, wash))
+        # Vertical and inward planes keep their stone value through daylight
+        # adaptation; the existing light separates exposed lips from recesses.
+        plane = smoothstep(-0.35, 0.65, n.y)
+        alb = alb * (0.84 + bed * 0.18) * (0.55 + plane * 0.35)
+        exposed = clamp(i.mat.w-6.0,0.0,1.0)
+        if exposed > 0.0:
+            mineral = cave_weathered_stone(w) * (0.82 + i.color.x * 0.65)
+            # Dark fractured recesses and pale shelf tops belong to the rock,
+            # even where the exterior shell overlaps the heightfield.
+            mineral = mineral * (0.78 + plane * 0.32 + bed * 0.16)
+            alb = mix(alb, mineral, exposed)
+    else if i.mat.w > 4.5:
+        # Keep the authored warm stone and its local darkening beneath strata.
+        # Replacing the vertex colour entirely bleached the near cave lining.
+        alb = rock_color(w, n, length(w - u.cam)) * mix(vec3(1, 1, 1), i.color.xyz * 2.0, 0.65)
+    else if i.mat.w > 3.5:
+        # Ordinary cliff ribs (including the camp outcrop at -1454,1547):
+        # metre-scale tilted beds, continuous mineral washes and sparse joints.
+        q = vec2(w.x + w.z * 0.7, w.y + (w.x - w.z) * 0.10)
+        wash = vnoise(q * vec2(0.055, 0.035))
+        warp = vnoise(q * vec2(0.11, 0.065))
+        bed = sin(q.y * 0.85 + warp * 2.0) * 0.5 + 0.5
+        joint = abs(sin(q.x * 0.30 + warp * 1.7))
+        crack = (1.0 - smoothstep(0.025, 0.10, joint)) * smoothstep(0.58, 0.78, wash)
+        alb = mix(vec3(0.245, 0.27, 0.28), vec3(0.42, 0.405, 0.34), wash)
+        alb = alb * (0.76 + bed * 0.30) * (1.0 - crack * 0.30)
+        t = normalize(cross(n, vec3(0, 1, 0)) + vec3(0.0001, 0, 0))
+        n = normalize(n + t * (warp - 0.5) * 0.18)
+        cover = west_rock_cover(w)
+        if cover > 0.0:
+            alb = mix(alb, rock_color(w, normalize(i.normal), length(w - u.cam)), cover)
+            n = normalize(mix(n, normalize(i.normal), cover))
+    else if i.mat.w > 2.5:
+        # Broken oblique beds and branching joints retain relief in the mouth wash.
+        # Use slanted mineral grain, not round mottling across flat beige stone.
+        q3 = vec2(w.x + w.z * 0.7, w.y + (w.x - w.z) * 0.35)
+        mot = vnoise(q3 * vec2(0.38, 0.8))
+        joint = abs(sin(q3.x * 2.4 + q3.y * 0.75 + mot * 2.0))
+        bed = abs(sin(q3.y * 5.0 - q3.x * 0.45 + mot * 1.4))
+        cracks = (1.0 - smoothstep(0.025, 0.10, min(joint, bed))) * smoothstep(0.3, 0.65, mot)
+        grain = vnoise(q3 * vec2(1.7, 5.1))
+        alb = alb * mix(vec3(0.78, 0.85, 0.94), vec3(1.08, 1.01, 0.87), mot)
+        alb = alb * (0.82 + grain * 0.24) * (1.0 - cracks * 0.40)
+        alb = alb * (0.86 + 0.14 * n.y)
+    else if i.mat.w > 1.5:
+        # hide: mottled light and dark, the hair's grain in short streaks, darker at the edges
+        mot = fbm3(vec2(w.x + w.z, w.y + w.x * 0.5) * 1.6)
+        hair = vnoise(vec2((w.x - w.z) * 9.0, w.y * 2.5))
+        # (patches of hides stitched together: each its own tone, a dark seam between)
+        # (the patches irregular: their seams wander, as skins of different beasts would)
+        pq0 = vec2(w.x + w.z, w.y + (w.x - w.z) * 0.3) * 1.1
+        pq = vec2(pq0.x * 0.8 + pq0.y * 0.6, pq0.y * 0.8 - pq0.x * 0.6) + (vec2(vnoise(pq0 * 0.9), vnoise(pq0 * 0.9 + vec2(7.0, 3.0))) - vec2(0.5, 0.5)) * 0.9
+        pc = floor(pq)
+        pf = fract(pq)
+        seam = smoothstep(0.05, 0.0, min(min(pf.x, 1.0 - pf.x), min(pf.y, 1.0 - pf.y)))
+        alb = alb * (0.5 + 0.8 * mot) * (0.85 + 0.25 * hair) * (0.75 + 0.5 * hash12(pc)) * (1.0 - seam * 0.5)
+    else if i.mat.w > 0.5:
+        # wood: grain along the length
+        g = vnoise(vec2(w.x + w.z, w.y * 8.0) * vec2(0.6, 1.0))
+        alb = alb * (0.8 + 0.3 * g)
+    # weathering: streaks down the walls, darker near the ground
+    streak = vnoise(vec2(w.x * 0.7 + w.z * 0.7, w.y * 0.05))
+    alb = alb * (0.85 + 0.25 * streak)
+    # moss on top faces and ivy creeping up from the base
+    moss: f32 = 0.0
+    # (Sheikah stone stays clean, unless it has lain out in the weather: w between 0.1 and 0.5)
+    if i.mat.x < -0.5:
+        # weathered: moss settles broadly over the upper faces
+        mw = clamp((i.mat.w - 0.1) * 5.0, 0.0, 1.0)
+        if mw > 0.0:
+            moss = mw * smoothstep(0.25, 0.75, n.y) * smoothstep(0.35, 0.6, fbm3(w.xz * 0.6 + vec2(w.y * 0.3, 0.0)))
+    else if i.mat.y >= 0.01:
+        moss = smoothstep(0.6, 0.9, n.y) * smoothstep(0.45, 0.7, fbm3(w.xz * 0.3)) * 0.8
+    alb = mix(alb, vec3(0.2, 0.32, 0.12), moss * (1.0 - i.mat.z))
+    if i.mat.y > 0.0 and i.mat.x > -0.5 and i.mat.w < 3.5:
+        if i.mat.w < -0.5:
+            # Painted damp on dressed Temple stone: oblique, warped cushions
+            # with soft broken margins. Four noise taps, as in the old ivy path.
+            p = vec2(w.x + w.z, w.y)
+            q = vec2(p.x * 0.86 + p.y * 0.51, p.y * 0.86 - p.x * 0.51)
+            wash = vnoise(q * 0.24)
+            broken = vnoise(vec2(q.x * 0.71 - q.y * 0.39, q.y * 0.71 + q.x * 0.39) + vec2(wash * 1.3, wash * 0.7))
+            grain = vnoise(q * 2.2 + vec2(broken * 0.7, wash))
+            edge = wash * 0.58 + broken * 0.29 + grain * 0.13
+            ivy = smoothstep(0.38, 0.65, edge) * i.mat.y * (1.0 - abs(n.y))
+            leaf = vnoise(q * 4.3)
+            pigment = mix(vec3(0.17, 0.235, 0.12), vec3(0.27, 0.315, 0.17), broken) * (0.93 + leaf * 0.14)
+            alb = mix(alb, pigment, clamp(ivy * 0.88, 0.0, 0.82))
+        else:
+            ivy = smoothstep(0.42, 0.6, fbm3(vec2(w.x + w.z, w.y) * 0.25 + vec2(w.y * 0.05, 0))) * i.mat.y
+            ivy = ivy * (1.0 - abs(n.y))
+            leaf = 0.75 + 0.35 * vnoise(vec2(w.x + w.z, w.y) * 3.0)
+            alb = mix(alb, vec3(0.15, 0.3, 0.1) * leaf, clamp(ivy, 0.0, 1.0))
+    alb = alb * (1.0 - u.wet * 0.25)
+    if u.char > 0.0:
+        scorch = smoothstep(0.0, 0.8, u.char + (vnoise(w.xz * 2.1 + vec2(w.y * 1.3, 0)) - 0.5) * 0.35)
+        alb = mix(alb, vec3(0.045, 0.035, 0.028), scorch)
+    l = normalize(u.sun_dir)
+    v = normalize(u.cam - w)
+    sh = cascade_shadow(w, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) * cloud_shade(w.xz, u.time, u.clouds)
+    exterior = if i.mat.w > 5.5: clamp(i.mat.w-6.0,0.0,1.0) else: f32(0.0)
+    stone_sky = mix(u.sky,luma(u.sky)*vec3(0.96,1.0,1.03),exterior*0.92)
+    stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(0.97,1.0,1.02),exterior*0.9)
+    c = paint_light(alb, n, l, v, stone_sun, stone_sky, u.ground, sh, (if i.mat.w > 5.5: 0.1+exterior*0.16 else if i.mat.w > 3.5: 0.45 else: 0.1)) * i.color.w
+    # Daylight reflected from the meadow joins the exposed brow to its host cliff.
+    c = c + alb*stone_sun*vec3(0.98,1.0,1.02)*0.10*exterior*clamp(1.0-n.y*1.4,0.0,1.0)*(1.0-clamp(dot(n,l),0.0,1.0)*sh)
+    if i.mat.w > 3.5 and i.mat.w < 4.5:
+        c = c + alb * u.sun_color * vec3(1.0, 0.8, 0.55) * 0.2 * clamp(1.0 - n.y * 1.4, 0.0, 1.0) * (1.0 - clamp(dot(n, l), 0.0, 1.0) * sh)
+    c = c + alb * i.light + point_light(alb, n, w, u.lp, u.lc)
+    # Sheikah glow lines
+    if i.mat.z > 0.0:
+        # on Sheikah stone, light runs along the traces in slow pulses
+        run = if i.mat.x < -0.5: smoothstep(0.85, 1.0, fract((w.x + w.z) * 0.04 + w.y * 0.03 - u.time * 0.25)) * 0.9 else: 0.0
+        c = c + u.glow_color * i.mat.z * traces * (0.75 + 0.2 * sin(u.time * 2.0 + w.y * 0.5) + run)
+    c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
+    # Negative alpha marks occluders for the existing paint resolve (no extra pass).
+    vec4(c, (if fade > 0.001: -8.0 else: (if i.mat.w < -0.5 or i.mat.w > 5.5: 0.85 else: 1.0)))
+
+# ---------------- the builder ----------------
+struct Builder:
+    verts: BVert[]
+    idx: u32[]
+
+struct BChunk:
+    key: int
+    mesh: Mesh
+    lo: vec3
+    hi: vec3
+    count: int
+
+const BCHUNK = 128.0
+__bchunks: {int: Builder} = {}
+bchunks: BChunk[]
+build_chunk_order: int[]
+build_chunk_bounds: {int: (vec3, vec3)} = {}
+build_sh: Shader
+glow_build_sh: Shader      # (same shader; glow colors differ per draw)
+build_ready = false
+
+__bkey = (p: vec3) -> int: int(floor(f64(p.x) / BCHUNK)) * 1000 + int(floor(f64(p.z) / BCHUNK))
+
+__quad = (b: mut Builder, a: vec3, bb: vec3, c: vec3, d: vec3, n: vec3, col: vec4, mat: vec4):
+    base = u32(b.verts.len())
+    b.verts.push(BVert(a, n, col, mat))
+    b.verts.push(BVert(bb, n, col, mat))
+    b.verts.push(BVert(c, n, col, mat))
+    b.verts.push(BVert(d, n, col, mat))
+    loop k in [base, base + 1, base + 2, base, base + 2, base + 3]: b.idx.push(k)
+    if n.y > 0.15:
+        add_rain_face(a, bb, c, __named)
+        add_rain_face(a, c, d, __named)
+
+# (a normal at each corner: curved surfaces shade smoothly across their facets)
+__quad_n = (b: mut Builder, a: vec3, bb: vec3, c: vec3, d: vec3, na: vec3, nb: vec3, nc: vec3, nd: vec3, col: vec4, mat: vec4):
+    if (na.y + nb.y + nc.y + nd.y) > 0.6:
+        add_rain_face(a, bb, c, __named)
+        add_rain_face(a, c, d, __named)
+    base = u32(b.verts.len())
+    b.verts.push(BVert(a, na, col, mat))
+    b.verts.push(BVert(bb, nb, col, mat))
+    b.verts.push(BVert(c, nc, col, mat))
+    b.verts.push(BVert(d, nd, col, mat))
+    loop k in [base, base + 1, base + 2, base, base + 2, base + 3]: b.idx.push(k)
+
+__tri = (b: mut Builder, a: vec3, bb: vec3, c: vec3, col: vec4, mat: vec4):
+    n = normalize(cross(bb - a, c - a))
+    if n.y > 0.15: add_rain_face(a, bb, c, __named)
+    base = u32(b.verts.len())
+    b.verts.push(BVert(a, n, col, mat))
+    b.verts.push(BVert(bb, n, col, mat))
+    b.verts.push(BVert(c, n, col, mat))
+    loop k in [base, base + 1, base + 2]: b.idx.push(k)
+
+__builder_for = (p: vec3) -> int: __bkey(p)
+
+# add geometry to the chunk around a point: __begin(p) ... (into cur) ... __end()
+cur = Builder()
+__cur_key = 0
+__named = ""
+__named_b: {str: Builder} = {}
+named_meshes: {str: Mesh} = {}
+__begin = (p: vec3):
+    if len(__named) > 0:
+        cur = __named_b.get(__named) ?? Builder()
+        __named_b[__named] = Builder()
+        return
+    __cur_key = __bkey(p)
+    cur = __bchunks.get(__cur_key) ?? Builder()
+    __bchunks[__cur_key] = Builder()
+__end = ():
+    if len(__named) > 0:
+        __named_b[__named] = cur
+    else: __bchunks[__cur_key] = cur
+    cur = Builder()
+
+# geometry that moves or glows on its own goes into a named mesh
+begin_named = (name: str): __named = name
+end_named = (): __named = ""
+
+# a box: m maps the unit cube [-0.5, 0.5]^3 to the world
+box_m = (m: mat4, col: vec4, mat: vec4, collide: bool = false, climb: bool = true):
+    corners = [v3(-0.5, -0.5, -0.5), v3(0.5, -0.5, -0.5), v3(0.5, 0.5, -0.5), v3(-0.5, 0.5, -0.5),
+               v3(-0.5, -0.5, 0.5), v3(0.5, -0.5, 0.5), v3(0.5, 0.5, 0.5), v3(-0.5, 0.5, 0.5)]
+    w = [loop c in corners: transform_point(m, c)]
+    faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 4, 7, 3), (1, 2, 6, 5), (3, 7, 6, 2), (0, 1, 5, 4)]
+    center = transform_point(m, vec3(0, 0, 0))
+    __begin(center)
+    loop f in faces:
+        n = normalize(cross(w[f.1] - w[f.0], w[f.3] - w[f.0]))
+        # the bottom face is rarely seen: darker
+        c = col
+        if f64(n.y) < -0.5: c.w *= 0.6
+        __quad(cur, w[f.0], w[f.1], w[f.2], w[f.3], n, c, mat)
+    __end()
+    if collide:
+        sx = length(transform_dir(m, vec3(1, 0, 0)))
+        sy = length(transform_dir(m, vec3(0, 1, 0)))
+        sz = length(transform_dir(m, vec3(0, 0, 1)))
+        xd = transform_dir(m, vec3(1, 0, 0))
+        yaw = atan2(-f64(xd.z), f64(xd.x))
+        add_box(center - vec3(0, sy * 0.5, 0), vec3(sx * 0.5, sy * 0.5, sz * 0.5), yaw, climb, .stone)
+
+# an axis box from its base center, size and yaw
+box = (base: vec3, size: vec3, yaw: f64, col: vec4, mat: vec4, collide: bool = true, climb: bool = true):
+    m = translation(base + vec3(0, size.y * 0.5, 0)) * rotation_y(yaw) * scaling(size)
+    box_m(m, col, mat, collide, climb)
+
+# a column (n-gon prism), optionally tapering
+column = (base: vec3, r0: f64, r1: f64, h: f64, sides: int, col: vec4, mat: vec4, collide: bool = true):
+    __begin(base)
+    loop i in [0..sides):
+        a0 = TAU * f64(i) / f64(sides)
+        a1 = TAU * f64(i + 1) / f64(sides)
+        p0 = base + v3(cos(a0) * r0, 0.0, sin(a0) * r0)
+        p1 = base + v3(cos(a1) * r0, 0.0, sin(a1) * r0)
+        q0 = base + v3(cos(a0) * r1, h, sin(a0) * r1)
+        q1 = base + v3(cos(a1) * r1, h, sin(a1) * r1)
+        # (smooth round, unless it is meant to be a prism)
+        n0 = normalize(v3(cos(a0), (r0 - r1) / h, sin(a0)))
+        n1 = normalize(v3(cos(a1), (r0 - r1) / h, sin(a1)))
+        if sides >= 10: __quad_n(cur, p0, q0, q1, p1, n0, n0, n1, n1, col, mat)
+        else: __quad(cur, p0, q0, q1, p1, normalize(n0 + n1), col, mat)
+        __tri(cur, base + v3(0.0, h, 0.0), q1, q0, col, mat)
+    __end()
+    if collide: add_cyl(base, max(r0, r1), h, true, .stone)
+
+# a tube from a to c (radii r0 to r1), smooth-shaded, capped with a rounded knob at each end
+tube = (a: vec3, c: vec3, r0: f64, r1: f64, sides: int, col: vec4, mat: vec4):
+    __begin(a)
+    d = c - a
+    ax = normalize(d)
+    up = if abs(f64(ax.y)) < 0.9: vec3(0, 1, 0) else: vec3(1, 0, 0)
+    u = normalize(cross(ax, up))
+    v = cross(ax, u)
+    loop i in [0..sides):
+        a0 = TAU * f64(i) / f64(sides)
+        a1 = TAU * f64(i + 1) / f64(sides)
+        n0 = u * f32(cos(a0)) + v * f32(sin(a0))
+        n1 = u * f32(cos(a1)) + v * f32(sin(a1))
+        p0 = a + n0 * f32(r0)
+        p1 = a + n1 * f32(r0)
+        q0 = c + n0 * f32(r1)
+        q1 = c + n1 * f32(r1)
+        __quad_n(cur, p0, q0, q1, p1, n0, n0, n1, n1, col, mat)
+        # (the ends: a shallow cone, a rounded look at a distance)
+        __tri(cur, c + ax * f32(r1 * 0.6), q1, q0, col, mat)
+        __tri(cur, a - ax * f32(r0 * 0.6), p0, p1, col, mat)
+    __end()
+
+# smooth value noise in 3D (for shaping rock on the CPU)
+__h3 = (x: f64, y: f64, z: f64) -> f64: fract(sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453)
+__n3 = (p: vec3) -> f64:
+    fx = floor(f64(p.x))
+    fy = floor(f64(p.y))
+    fz = floor(f64(p.z))
+    tx = f64(p.x) - fx
+    ty = f64(p.y) - fy
+    tz = f64(p.z) - fz
+    tx = tx * tx * (3.0 - 2.0 * tx)
+    ty = ty * ty * (3.0 - 2.0 * ty)
+    tz = tz * tz * (3.0 - 2.0 * tz)
+    a = lerp(lerp(__h3(fx, fy, fz), __h3(fx + 1.0, fy, fz), tx), lerp(__h3(fx, fy + 1.0, fz), __h3(fx + 1.0, fy + 1.0, fz), tx), ty)
+    b = lerp(lerp(__h3(fx, fy, fz + 1.0), __h3(fx + 1.0, fy, fz + 1.0), tx), lerp(__h3(fx, fy + 1.0, fz + 1.0), __h3(fx + 1.0, fy + 1.0, fz + 1.0), tx), ty)
+    lerp(a, b, tz)
+
+# a lump of rock: an ellipsoid (radii r, turned by m) pushed in and out by noise, broad bulges
+# and smaller knobs; cap cuts a level shelf at that fraction of the vertical radius
+rock_lump = (c: vec3, r: vec3, m: mat4, seed: f64, col: vec4, mat: vec4 = vec4(0, 0, 0, 0), cap: f64 = 2.0):
+    __begin(c)
+    const SEG = 20
+    const RINGS = 12
+    sv = v3(seed * 13.1, seed * 7.7, seed * 3.3)
+    pt = (i: int, j: int) -> vec3:
+        th = PI * f64(j) / f64(RINGS)
+        ph = TAU * f64(i % SEG) / f64(SEG)
+        d = v3(sin(th) * cos(ph), cos(th), sin(th) * sin(ph))
+        k = 1.0 + (__n3(d * 1.6 + sv) - 0.5) * 0.55 + (__n3(d * 4.0 + sv) - 0.5) * 0.18
+        # (a flat face or two, where the rock split)
+        k = min(k, 0.98 + 0.3 * __n3(d * 0.9 + sv + v3(5.0, 0.0, 0.0)))
+        c + transform_dir(m, v3(f64(d.x) * k, min(f64(d.y) * k, cap), f64(d.z) * k) * r)
+    ps: vec3[]
+    loop j in [0..RINGS + 1):
+        loop i in [0..SEG): ps.push(pt(i, j))
+    at = (i: int, j: int) -> vec3: ps[j * SEG + (i + SEG) % SEG]
+    nrm = (i: int, j: int) -> vec3:
+        if j == 0: return transform_dir(m, v3(0.0, 1.0, 0.0))
+        if j == RINGS: return transform_dir(m, v3(0.0, -1.0, 0.0))
+        nn = normalize(cross(at(i + 1, j) - at(i - 1, j), at(i, j + 1) - at(i, j - 1)))
+        # (pointing out of the rock)
+        if dot(nn, at(i, j) - c) < 0.0: nn = vec3(-nn.x, -nn.y, -nn.z)
+        nn
+    loop j in [0..RINGS):
+        loop i in [0..SEG):
+            __quad_n(cur, at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1), nrm(i, j), nrm(i + 1, j), nrm(i + 1, j + 1), nrm(i, j + 1), col, mat)
+    __end()
+
+# The daylight end of the passage: one continuous rock lining joins the exterior overhang.
+cave_lining = (a: vec3, b: vec3):
+    __begin((a + b) * 0.5)
+    side = normalize(vec3(-(b.z - a.z), 0, b.x - a.x))
+    xs = [-2.8, -2.8, -2.5, -1.8, -0.7, 0.8, 1.7, 2.5, 2.8, 2.8]
+    ys = [-1.0, 1.5, 3.3, 4.0, 4.3, 4.4, 4.1, 3.5, 1.7, -1.0]
+    p = (j: int, k: int) -> vec3:
+        t = f32(k) / 5.0
+        mid = mix(a, b, t)
+        wob = sin(f64(j) * 2.1 + f64(k) * 1.7) * 0.12
+        mid + side * f32(xs[j] + wob) + v3(0.0, ys[j] + wob, 0.0)
+    # Shared normals carry the brow's curve across its broad lining faces.
+    # Face normals had made the eye-adaptation wash reveal white triangles.
+    normal = (j: int, k: int) -> vec3:
+        along = p(j, min(k + 1, 5)) - p(j, max(k - 1, 0))
+        across = p(min(j + 1, 9), k) - p(max(j - 1, 0), k)
+        normalize(cross(along, across))
+    loop k in [0..5):
+        loop j in [0..9):
+            aa = p(j, k)
+            bb = p(j + 1, k)
+            cc = p(j + 1, k + 1)
+            dd = p(j, k + 1)
+            __quad_n(cur, aa, dd, cc, bb, normal(j, k), normal(j, k + 1), normal(j + 1, k + 1), normal(j + 1, k), stone(0.44, 0.385, 0.335), vec4(0, 0, 0, 5))
+    __end()
+
+# A continuous eroded cliff cut: the opening, underside and bedding shelves share vertices.
+# The outer shell retreats into the hillside; it is not a ring of freestanding boulders.
+cliff_mouth = (o: vec3, yaw: f64):
+    __begin(o)
+    p = (j: int, layer: int) -> vec3:
+        t = f64(j) / 16.0
+        a = PI * t
+        # Vertical jambs at the ends and an asymmetric flattened crown over the passage.
+        xx = -cos(a)
+        yy = pow(max(0.0, sin(a)), 0.46)
+        # The recessed edge overlaps the passage ceiling, closing the soffit from both sides.
+        widths = [2.7, 3.05, 4.3, 5.2, 6.5, 8.6, 13.5]
+        heights = [4.5, 6.0, 7.1, 8.0, 9.4, 12.0, 19.0]
+        depths = [-3.0, 1.15, 1.3, 0.65, 0.9, -1.8, -7.0]
+        x = xx * widths[layer] + yy * sin(a * 2.0 + 0.4) * 0.4
+        y = -1.0 + yy * heights[layer] + sin(a * 3.0) * 0.4 + sin(a * 7.0) * 0.15
+        z = depths[layer] + sin(a * 5.0 + f64(layer) * 0.6) * 0.45
+        o + transform_dir(rotation_y(yaw), v3(x, y, z))
+    normal = (j: int, layer: int) -> vec3:
+        across = p(min(j + 1, 16), layer) - p(max(j - 1, 0), layer)
+        outward = p(j, min(layer + 1, 6)) - p(j, max(layer - 1, 0))
+        normalize(cross(across, outward))
+    loop k in [0..6):
+        loop j in [0..16):
+            a = p(j, k)
+            b = p(j + 1, k)
+            c = p(j + 1, k + 1)
+            d = p(j, k + 1)
+            __quad_n(cur, a, b, c, d, normal(j, k), normal(j + 1, k), normal(j + 1, k + 1), normal(j, k + 1), stone(0.44, 0.385, 0.335), vec4(0, 0, 0, 5))
+    __end()
+
+# a pointed or round arch spanning `span` meters, `thick` deep, standing on its base center
+arch = (base: vec3, yaw: f64, span: f64, rise: f64, thick: f64, depth: f64, col: vec4, mat: vec4, pointed: bool = true):
+    seg = 10
+    r = span / 2.0
+    loop i in [0..seg):
+        t0 = PI * f64(i) / f64(seg)
+        t1 = PI * f64(i + 1) / f64(seg)
+        x0 = -cos(t0) * r
+        x1 = -cos(t1) * r
+        y0 = sin(t0) * rise
+        y1 = sin(t1) * rise
+        if pointed:
+            y0 = rise * pow(sin(t0), 0.7)
+            y1 = rise * pow(sin(t1), 0.7)
+        mx = (x0 + x1) / 2.0
+        my = (y0 + y1) / 2.0
+        len_ = hypot(x1 - x0, y1 - y0)
+        ang = atan2(y1 - y0, x1 - x0)
+        m = translation(base) * rotation_y(yaw) * translation(v3(mx, my, 0.0)) * rotation_z(ang) * scaling(v3(len_ + 0.15, thick, depth))
+        box_m(m, col, mat)
+
+# square masonry around an open circular window
+oculus = (base: vec3, yaw: f64, radius: f64, half: f64, depth: f64, col: vec4, mat: vec4):
+    m = translation(base) * rotation_y(yaw)
+    p = (a: f64, rad: f64, z: f64) -> vec3: transform_point(m, v3(cos(a) * rad, sin(a) * rad, z))
+    __begin(base)
+    loop i in [0..32):
+        a = TAU * f64(i) / 32.0
+        b = TAU * f64(i + 1) / 32.0
+        ra = half / max(abs(cos(a)), abs(sin(a)))
+        rb = half / max(abs(cos(b)), abs(sin(b)))
+        loop side in [-1.0, 1.0]:
+            z = side * depth * 0.5
+            n = transform_dir(m, v3(0.0, 0.0, side))
+            if side > 0.0: __quad(cur, p(a, radius, z), p(a, ra, z), p(b, rb, z), p(b, radius, z), n, col, mat)
+            else: __quad(cur, p(b, radius, z), p(b, rb, z), p(a, ra, z), p(a, radius, z), n, col, mat)
+        n = transform_dir(m, v3(-cos((a + b) * 0.5), -sin((a + b) * 0.5), 0.0))
+        __quad(cur, p(a, radius, -depth * 0.5), p(a, radius, depth * 0.5), p(b, radius, depth * 0.5), p(b, radius, -depth * 0.5), n, col, mat)
+    __end()
+
+# a gabled roof over a rectangle (ridge along local x)
+gable = (base: vec3, yaw: f64, length_: f64, width: f64, rise: f64, col: vec4, mat: vec4):
+    m = translation(base) * rotation_y(yaw)
+    hl = length_ / 2.0
+    hw = width / 2.0
+    a = transform_point(m, v3(-hl, 0.0, -hw))
+    bq = transform_point(m, v3(hl, 0.0, -hw))
+    c = transform_point(m, v3(hl, rise, 0.0))
+    d = transform_point(m, v3(-hl, rise, 0.0))
+    e = transform_point(m, v3(-hl, 0.0, hw))
+    f = transform_point(m, v3(hl, 0.0, hw))
+    __begin(base)
+    __quad(cur, a, d, c, bq, normalize(cross(d - a, bq - a)), col, mat)
+    __quad(cur, e, f, c, d, normalize(cross(f - e, d - e)), col, mat)
+    __tri(cur, a, e, d, col, mat)
+    __tri(cur, bq, c, f, col, mat)
+    __end()
+
+# a dome (part of a sphere above its base ring): radius, height, rings of quads
+dome = (base: vec3, radius: f64, height: f64, sides: int, rings: int, col: vec4, mat: vec4, m: mat4 = mat4()):
+    __begin(base)
+    loop r in [0..rings):
+        t0 = f64(r) / f64(rings)
+        t1 = f64(r + 1) / f64(rings)
+        a0 = t0 * PI / 2.0
+        a1 = t1 * PI / 2.0
+        loop k in [0..sides):
+            b0 = TAU * f64(k) / f64(sides)
+            b1 = TAU * f64(k + 1) / f64(sides)
+            p = (a: f64, b: f64) -> vec3: base + transform_dir(m, v3(cos(b) * cos(a) * radius, sin(a) * height, sin(b) * cos(a) * radius))
+            q00 = p(a0, b0)
+            q01 = p(a0, b1)
+            q10 = p(a1, b0)
+            q11 = p(a1, b1)
+            nf = (a: f64, b: f64) -> vec3: normalize(transform_dir(m, v3(cos(b) * cos(a) / radius, sin(a) / height, sin(b) * cos(a) / radius)))
+            __quad_n(cur, q00, q10, q11, q01, nf(a0, b0), nf(a1, b0), nf(a1, b1), nf(a0, b1), col, mat)
+    __end()
+
+# a pyramid roof (n sides) from a base polygon of radius r up to a point
+spire = (base: vec3, r: f64, h: f64, sides: int, rot: f64, col: vec4, mat: vec4):
+    __begin(base)
+    top = base + v3(0.0, h, 0.0)
+    loop k in [0..sides):
+        a0 = rot + TAU * f64(k) / f64(sides)
+        a1 = rot + TAU * f64(k + 1) / f64(sides)
+        p0 = base + v3(cos(a0) * r, 0.0, sin(a0) * r)
+        p1 = base + v3(cos(a1) * r, 0.0, sin(a1) * r)
+        __tri(cur, p0, top, p1, col, mat)
+    __end()
+
+# flight of steps rising along local +z
+steps = (base: vec3, yaw: f64, width: f64, rise: f64, run: f64, count: int, col: vec4, mat: vec4):
+    loop i in [0..count):
+        p = base + transform_dir(rotation_y(yaw), v3(0.0, 0.0, f64(i) * run))
+        box(p, v3(width, rise * f64(i + 1), run), yaw, col, mat, true, false)
+
+# ---------------- finalize and draw ----------------
+build_prepare_bounds = ():
+    if build_chunk_order.len() > 0: return
+    loop k, b in __bchunks:
+        if b.verts.len() == 0: continue
+        lo = vec3(1e9, 1e9, 1e9)
+        hi = vec3(-1e9, -1e9, -1e9)
+        loop v in b.verts:
+            lo = min(lo, v.pos)
+            hi = max(hi, v.pos)
+        build_chunk_order.push(k)
+        build_chunk_bounds[k] = (lo, hi)
+
+build_finish = ():
+    build_sh = make_sh(shader(build_vs, build_fs))
+    build_prepare_bounds()
+    loop k in build_chunk_order:
+        b = __bchunks[k]
+        bounds = build_chunk_bounds[k]
+        if env("BOTW_DEBUG") != none and b.verts.len() > 40000: eprint("chunk {k}: {b.verts.len()} verts {b.idx.len()} idx")
+        bchunks.push(BChunk(k, static_mesh(b.verts, b.idx), bounds.0, bounds.1, b.idx.len()))
+    if env("BOTW_BAKE_ASSETS") == none and env("BOTW_ASSET_CHECK") == none: __bchunks = {}
+    # Packs restore sorted names. Match that insertion/draw order when generated
+    # too, so overlapping faces cannot change pixels with the asset-cache mode.
+    loop k in sorted(__named_b.keys()):
+        b = __named_b[k]
+        if b.verts.len() > 0: named_meshes[k] = static_mesh(b.verts, b.idx)
+    if env("BOTW_BAKE_ASSETS") == none and env("BOTW_ASSET_CHECK") == none: __named_b = {}
+    build_ready = true
+
+draw_named = (name: str, u: BuildU):
+    if let m = named_meshes.get(name): draw_fast(build_sh, m, u)
+
+build_extra_draw: (BuildU, mat4, vec3, f64) -> void = (u: BuildU, vp: mat4, cam: vec3, distance: f64): pass
+
+build_draw = (u: BuildU, vp: mat4, cam: vec3, max_dist: f64):
+    if not build_ready: return
+    f = frustum_from(vp)
+    loop c in bchunks:
+        mid = (c.lo + c.hi) * 0.5
+        if f64(length(mid - cam)) - f64(length(c.hi - c.lo)) * 0.5 > max_dist: continue
+        if not box_visible(f, c.lo, c.hi): continue
+        draw_fast(build_sh, c.mesh, u)
+    build_extra_draw(u, vp, cam, max_dist)
+
+stone = (r: f64, g: f64, b: f64) -> vec4: vec4(f32(r), f32(g), f32(b), 1)
+
+# materials: x masonry block size, y ivy, z glow, w wood
+BLOCK = vec4(1.2, 0.0, 0.0, 0.0)            # masonry, no ivy
+BLOCK_IVY = vec4(1.2, 0.7, 0.0, 0.0)
+PLAIN = vec4(0.0, 0.0, 0.0, 0.0)
+WOODM = vec4(0.0, 0.0, 0.0, 1.0)
+HIDEM = vec4(0.0, 0.0, 0.0, 2.0)
+ROCKM = vec4(0.0, 0.0, 0.0, 3.0)
+SHEIKAH_M = vec4(-1.0, 0.0, 0.0, 0.0)          # Sheikah stone, traces dark
+SHEIKAH_LIT = vec4(-1.0, 0.0, 1.3, 0.0)        # traces glowing
+

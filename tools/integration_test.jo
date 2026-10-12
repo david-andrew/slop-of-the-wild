@@ -1,0 +1,1734 @@
+use 'enemy_spacing_checks.jo'
+use 'wildlife_voice_checks.jo'
+use 'stalkoblin_checks.jo'
+# Round-51/52/53/54/55 regressions through the production update paths, without a window.
+# sloppy/bin/sloppy tools/integration_test.jo
+use 'talus_checks.jo'
+use 'tree_checks.jo'
+use '../game/save.jo'
+use '../game/interact.jo'
+use '../game/ui.jo'
+use '../game/story.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/water.jo'
+use '../game/player.jo'
+use '../game/combat.jo'
+use '../game/items.jo'
+use '../game/enemies.jo'
+from '../game/enemies.jo' import __take_hit
+use '../game/enemy_contacts.jo'
+use '../game/enemy_weapon_pose.jo'
+use '../game/inventory.jo'
+use '../game/slate_map.jo'
+use '../game/input.jo'
+use '../game/camera.jo'
+use '../game/elements.jo'
+use '../game/fx.jo'
+use '../game/env.jo'
+use '../game/worldgen.jo'
+use '../game/build.jo'
+use '../game/shrines.jo'
+use '../game/structures.jo'
+use '../game/vegetation.jo'
+use '../game/matter.jo'
+use '../game/element_puzzles.jo'
+use '../game/wildlife.jo'
+use '../game/clips.jo'
+use '../game/skel.jo'
+use '../game/weapon_tracks.jo'
+from '../game/shrines.jo' import __enter_now, __keh_set_active, __boom, __barrels, __cracks, __pillar_pivot, __pillar_t, __pillar_stand
+
+const DT = 1.0 / 60.0
+checks = 0
+failures = 0
+check = (name: str, ok: bool, numbers: str = ""):
+    checks += 1
+    if not ok: failures += 1
+    print("{(if ok: "PASS" else: "FAIL")} {name}: {numbers}")
+
+flat_course = ():
+    hf.n = 64
+    hf.cell = 1.0
+    hf.x0 = -32.0
+    hf.z0 = -32.0
+    hf.h = fill(f32(0), 4096)
+    hf.mat = fill(u8(0), 4096 * 4)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+    areas = fill(u8(46), 4096)
+    edge_sd = fill(f32(-100), 4096)
+
+# Exercise the actual inventory key event while gameplay is paused.
+drop_selected = (tab: int, index: int = 0):
+    invui = InvUI(open = true, tab = tab, sel = index, t = 1.0)
+    act = Actions()
+    __key_event(int(Key.x), true)
+    input_update(DT, false)
+    inventory_update(DT)
+    __input_end_frame()
+    __key_event(int(Key.x), false)
+    __input_end_frame()
+
+fire_tests = ():
+    high = ignite_at(vec3(0, 30, 0))
+    low = ignite_at(vec3(0, -30, 0))
+    check("fire_vertical_ignition", not high and not low and flames.len() == 0, "above={high} below={low} flames={flames.len()}")
+    # Keep going on the unfixed build too: it already lit this cell.
+    ground = ignite_at(vec3(0, 0, 0)) or flames.len() > 0
+    check("fire_ground_ignition", ground, "flames={flames.len()}")
+    below = heat_at(vec3(0, -180, 0))
+    far = fire_near(vec3(0, 100, 0), 4.0)
+    check("fire_vertical_queries", below == 0.0 and not far, "heat_180m_below={below} near_100m_above={far}")
+    check("fire_local_heat", heat_at(vec3(0, 1, 0)) > 0.0 and fire_near(vec3(0, 1, 0), 4.0))
+    loop y in [30.0, -30.0]:
+        pl = Player(pos = v3(0.0, y, 0.0), state = .air)
+        fight = Fight()
+        elements_update(DT, pl.pos)
+        check("fire_player_vertical_{y}", pl.hp == 12, "hp={pl.hp}")
+    floor = add_box(vec3(0, 1, 0), vec3(2, 0.1, 2), 0.0, false, .stone)
+    check("fire_floor_heat", heat_at(vec3(0, 2, 0)) == 0.0 and not fire_near(vec3(0, 2, 0), 4.0))
+    check("fire_floor_ignition", not ignite_at(vec3(1, 1.5, 0)))
+    pl = Player(pos = vec3(0, 1.3, 0))
+    elements_update(DT, pl.pos)
+    check("fire_floor_player", pl.hp == 12, "hp={pl.hp}")
+    colliders[floor].active = false
+    pl = Player(pos = vec3(0, 0, 0))
+    elements_update(DT, pl.pos)
+    check("fire_ground_player", pl.hp == 11, "hp={pl.hp}")
+    # A leafy tree over the same x/z must not collect heat thirty meters below the fire.
+    vmodels = [VModel("test_tree", [VPart(1, Texture(), Mesh(), vec3(0, 0, 0), vec3(1, 5, 1))], 5.0, 1.0)]
+    places = [VPlace(0, mat4(), vec4(1, 1, 1, 1), vec3(0, -30, 0), 1.0, 5.0, false)]
+    pl = Player(pos = vec3(0, -30, 0))
+    loop k in [0..12): elements_update(DT, pl.pos)
+    check("fire_tree_vertical_exposure", not tree_fire.has(0), "exposed_trees={tree_fire.len()}")
+    tree_fire[0] = Elem(burning = 5.0)
+    check("fire_tree_bounded_heat", heat_at(vec3(0, -180, 0)) == 0.0 and heat_at(vec3(0, -28, 0)) > 0.0)
+    # Equal x/z is insufficient for tree-to-tree spread too.
+    places.push(VPlace(0, mat4(), vec4(1, 1, 1, 1), vec3(0, -60, 0), 1.0, 5.0, false))
+    pl = Player(pos = vec3(0, -60, 0))
+    loop k in [0..6): elements_update(DT, pl.pos)
+    check("fire_tree_vertical_spread", not tree_fire.has(1), "exposed_trees={tree_fire.len()}")
+    tree_fire.clear()
+    places.clear()
+    loop mut f in flames: f.life = 0.0
+    elements_update(DT, pl.pos)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    bonfires = [Bonfire(vec3(15, 30, 15))]
+    check("bonfire_vertical_queries", heat_at(vec3(15, 0, 15)) == 0.0 and not fire_near(vec3(15, 0, 15), 4.0))
+    pl = Player(pos = vec3(15, 0, 15))
+    elements_update(DT, pl.pos)
+    check("bonfire_vertical_player", pl.hp == 12, "hp={pl.hp}")
+    bonfires.clear()
+
+guardian_tests = ():
+    wall = add_box(vec3(0, 0, -5), vec3(3, 2, 0.2), 0.0, false, .stone)
+    loop z in [-8.0, -5.7, -5.21]:
+        pl = Player(pos = v3(0.0, 0.0, z))
+        fight = Fight()
+        enemies.clear()
+        e = spawn_enemy(.guardian, vec3(0, 0, 0))
+        enemies[e].state = .laser
+        enemies[e].laser_t = 3.0
+        enemies[e].laser_target = pl.pos + vec3(0, 1, 0)
+        enemies_update(DT, false)
+        check("guardian_late_cover_{z}", pl.hp == 12 and enemies[e].laser_target.z > -5.0, "hp={pl.hp} impact={enemies[e].laser_target}")
+    colliders[wall].active = false
+    pl = Player(pos = vec3(0, 0, -5.7))
+    fight = Fight()
+    enemies.clear()
+    e = spawn_enemy(.guardian, vec3(0, 0, 0))
+    enemies[e].state = .laser
+    enemies[e].laser_t = 3.0
+    enemies[e].laser_target = pl.pos + vec3(0, 1, 0)
+    enemies_update(DT, false)
+    check("guardian_open_damage", pl.hp == 0, "hp={pl.hp}")
+    inv = Inventory()
+    inv_add("pot_lid")
+    pl = Player(pos = vec3(0, 0, -5.7))
+    fight = Fight(act = .guard, guard_t = 0.1, parry_t = 0.1)
+    enemies.clear()
+    e = spawn_enemy(.guardian, vec3(0, 0, 0))
+    enemies[e].state = .laser
+    enemies[e].laser_t = 3.0
+    enemies[e].laser_target = pl.pos + vec3(0, 1, 0)
+    enemies_update(DT, false)
+    check("guardian_equipped_shield_parry", pl.hp == 12 and enemies[e].hp == 375.0, "hp={pl.hp} guardian_hp={enemies[e].hp}")
+    enemies.clear()
+
+lightning_tests = ():
+    inv = Inventory()
+    inv_add("travelers_sword")
+    env.weather = .storm
+    env.rain = 1.0
+    # Rendered roof faces alone are enough; no walking collider is required.
+    begin_named("integration_roof")
+    box(vec3(10, 4, 10), vec3(6, 0.4, 6), 0.0, vec4(1, 1, 1, 1), vec4(0, 0, 0, 0), false)
+    end_named()
+    loop moving in [false, true]:
+        pl = Player(pos = vec3(10.3, 0, 10))
+        fight = Fight()
+        strike_t = 0.0
+        # Warning acquired just outside; the player steps under cover before impact.
+        pl.pos = if moving: vec3(13.1, 0, 10) else: vec3(20, 0, 10)
+        assert(lightning_begin())
+        pl.pos = vec3(10.3, 0, 10)
+        lightning_warn = 0.001
+        check("lightning_roof_fixture", not rain_exposed(pl.pos + vec3(0, 1, 0)))
+        elements_update(DT, pl.pos)
+        check("lightning_{(if moving: "shelter_during_warning" else: "roof_interception")}", pl.hp == 12 and (moving or strike_pos.y > 4.4), "hp={pl.hp} impact={strike_pos}")
+        check("lightning_roof_shock", shock_at(pl.pos + vec3(0, 1.6, 0)) == 0.0)
+    rain_sync({}, {"integration_roof": 2.0})
+    pl = Player(pos = vec3(10, 0, 10))
+    lightning_gear = GearTrace(id = "travelers_sword", kind = .weapon, index = inv.weapon)
+    lightning_warn = 0.001
+    elements_update(DT, pl.pos)
+    check("lightning_moving_roof", pl.hp == 12 and strike_pos.y > 6.4, "hp={pl.hp} impact_y={strike_pos.y}")
+    rain_sync({"integration_roof": true}, {})
+    pl = Player(pos = vec3(10, 0, 10))
+    fight = Fight()
+    assert(lightning_begin())
+    lightning_warn = 0.001
+    elements_update(DT, pl.pos)
+    check("lightning_open_damage", pl.hp == 0, "hp={pl.hp} impact_y={strike_pos.y}")
+    lightning_warn = 0.0
+    strike_t = 0.0
+    env = Env()
+
+gear_tests = ():
+    inv = Inventory()
+    inv_add("travelers_bow")
+    inv_add("arrow", 10)
+    pl = Player()
+    fight = Fight(act = .aim, t = 0.7, draw = 1.0)
+    arrows.clear()
+    drop_selected(2)
+    act = Actions(bow_released = true)
+    combat_update(DT, enemy_pos, 0)
+    check("paused_aimed_bow_drop", inv.arrows == 10 and arrows.len() == 0 and fight.act == .idle, "arrows={inv.arrows} projectiles={arrows.len()} action={fight.act}")
+    check("drop_last_bow_binding", inv.slots[0] == "", "slot='{inv.slots[0]}'")
+    # An identical spare must not inherit the old object's drawn shot.
+    inv = Inventory()
+    inv_add("travelers_bow")
+    inv_add("travelers_bow")
+    inv_add("arrow", 10)
+    fight = Fight()
+    act = Actions(bow_pressed = true, bow = true)
+    combat_update(DT, enemy_pos, 0)
+    fight.t = 0.7
+    drop_selected(2)
+    act = Actions(bow_released = true)
+    combat_update(DT, enemy_pos, 0)
+    check("aim_removed_identical_spare", inv.arrows == 10 and arrows.len() == 0 and inv.bows.len() == 1 and inv.slots[0] == "" and inv.slot_instances[0] == 0, "arrows={inv.arrows} bows={inv.bows.len()}")
+    inv = Inventory()
+    inv_add("boko_bow")
+    inv_add("travelers_bow")
+    inv.bow = 1
+    inv_add("arrow", 10)
+    fight = Fight(act = .aim, t = 0.7)
+    act = Actions(bow = true)
+    combat_update(DT, enemy_pos, 0)
+    drop_selected(2, 0)
+    check("drop_other_bow_preserves_aim", fight.act == .aim and equipped_bow() == "travelers_bow" and inv.bow == 0)
+    act = Actions(bow_released = true)
+    combat_update(DT, enemy_pos, 0)
+    check("equipped_bow_fires", inv.arrows == 9 and arrows.len() == 1 and arrows[0].damage == 5.0, "arrows={inv.arrows} projectiles={arrows.len()}")
+    arrows.clear()
+    inv = Inventory()
+    inv_add("travelers_sword")
+    pl = Player()
+    fight = Fight(act = .throw_, t = 0.26)
+    act = Actions()
+    combat_update(DT, enemy_pos, 0)
+    check("throw_last_weapon_binding", inv.weapons.len() == 0 and inv.slots[0] == "", "owned={inv.weapons.len()} slot='{inv.slots[0]}'")
+    loop action in [Act.swing, Act.charge, Act.spin, Act.jump_attack, Act.flurry, Act.throw_]:
+        inv = Inventory()
+        inv_add("travelers_sword")
+        pl = Player()
+        fight = Fight(act = action, t = 0.13, charge = 1.0, slowmo = 1.0)
+        drop_selected(0)
+        act = Actions()
+        combat_update(DT, enemy_pos, 0)
+        check("removed_weapon_cancels_{action}", fight.act == .idle and player_hits.len() == 0 and fight.slowmo == 0.0)
+    inv = Inventory()
+    inv_add("branch")
+    pl = Player()
+    fight = Fight(act = .swing, t = 0.13)
+    held_id = "branch"
+    lit = false
+    player_torch_update(DT, lit)
+    held_el = Elem(burning = 0.001)
+    lit = true
+    player_torch_update(DT, lit)
+    check("burn_last_weapon_binding", inv.weapons.len() == 0 and inv.slots[0] == "" and fight.act == .idle and not lit, "owned={inv.weapons.len()} slot='{inv.slots[0]}'")
+    inv = Inventory()
+    inv_add("branch")
+    inv_add("branch")
+    pl = Player()
+    fight = Fight(act = .swing, t = 0.13)
+    player_torch_update(DT, lit)
+    held_el = Elem(burning = 0.001, heat = 2.0)
+    player_torch_update(DT, lit)
+    check("burn_identical_spare_resets_state", inv.weapons.len() == 1 and inv.slots[0] == "" and inv.slot_instances[0] == 0 and fight.act == .idle and held_el.heat == 0.0 and not lit, "owned={inv.weapons.len()} heat={held_el.heat} action={fight.act}")
+    inv = Inventory()
+    inv_add("travelers_sword")
+    pl = Player(pos = vec3(20, 0, 20))
+    fight = Fight(act = .swing, t = 0.13)
+    held_id = "travelers_sword"
+    player_torch_update(DT, lit)
+    held_el = Elem()
+    strike_at(pl.pos + vec3(0, 1.6, 0))
+    player_torch_update(DT, lit)
+    check("shock_last_weapon_binding", inv.weapons.len() == 0 and inv.slots[0] == "" and fight.act == .idle, "owned={inv.weapons.len()} slot='{inv.slots[0]}'")
+    strike_t = 0.0
+    inv = Inventory()
+    inv_add("pot_lid")
+    fight = Fight(act = .guard)
+    drop_selected(1)
+    check("removed_shield_cancels_guard", fight.act == .idle)
+    inv = Inventory()
+    inv_add("travelers_sword")
+    inv_add("travelers_sword")
+    inv_remove_weapon()
+    check("removed_bound_copy_clears_binding_with_spare", inv.weapons.len() == 1 and inv.slots[0] == "" and inv.slot_instances[0] == 0)
+    inv_remove_weapon()
+    check("remove_final_copy_clears_binding", inv.slots[0] == "")
+    inv = Inventory()
+    inv_add("apple")
+    inv_take("apple")
+    check("consume_last_stack_binding", inv.slots[0] == "")
+    witems.clear()
+
+ranged_tests = ():
+    arrows.clear()
+    from = vec3(0, 20, 0)
+    fire_arrow(from, vec3(0, 0, -1), 5.0, false)
+    launch = f64(length(arrows[0].vel))
+    loop k in [0..20): arrows_update(DT)
+    travel = f64(length(vec3(arrows[0].pos.x - from.x, 0, arrows[0].pos.z - from.z)))
+    drop = f64(from.y - arrows[0].pos.y)
+    check("bow_reference_flight", abs(launch - 135.0) < 0.01 and abs(travel - 45.0) < 0.02 and abs(drop - 9.8 * DT * DT * 210.0) < 0.005, "launch={launch} travel_20_frames={travel} drop={drop}")
+    arrows.clear()
+    enemies.clear()
+    e = spawn_enemy(.blue_bokoblin, vec3(0, 0, -1.125))
+    enemies[e].state = .chase
+    enemies[e].alert = 1.0
+    fire_arrow(vec3(0, 0.9, 0), vec3(0, 0, -1), 5.0, false)
+    arrows_update(DT)
+    enemies_take_hits()
+    check("fast_arrow_swept_enemy_hit", enemies[e].hp == 67.0, "enemy_hp={enemies[e].hp}")
+    enemies.clear()
+    arrows.clear()
+    pl = Player(pos = vec3(0, 0, -1.125))
+    fight = Fight()
+    fire_arrow(vec3(0, 1, 0), vec3(0, 0, -1), 4.0, true)
+    arrows[0].vel *= 2.25
+    arrows_update(DT)
+    check("fast_arrow_swept_player_hit", pl.hp == 8, "hp={pl.hp}")
+    arrows.clear()
+    wall = add_box(vec3(0, 0, -0.5), vec3(2, 2, 0.1), 0.0, false, .stone)
+    pl = Player(pos = vec3(0, 0, -0.8))
+    fight = Fight()
+    fire_arrow(vec3(0, 1, 0), vec3(0, 0, -1), 4.0, true)
+    arrows[0].vel *= 2.25
+    arrows_update(DT)
+    check("fast_arrow_wall_cover", pl.hp == 12 and arrows[0].stuck > 0.0, "hp={pl.hp}")
+    colliders[wall].active = false
+    arrows.clear()
+
+# Isolated fixtures also prevent a previous dead arrow/fire from influencing a control.
+reset_probe = ():
+    enemies.clear()
+    animals.clear()
+    arrows.clear()
+    player_hits.clear()
+    loop mut c in colliders: c.active = false
+    witems.clear()
+    bonfires.clear()
+    barrels.clear()
+    tree_fire.clear()
+    places.clear()
+    pl = Player(pos = vec3(20, 0, 20))
+    fight = Fight()
+    act = Actions()
+    env = Env()
+    strike_t = 0.0
+    player_shock_t = 0.0
+    lightning_warn = 0.0
+    lightning_gear = GearTrace()
+    use_terrain = true
+    # Retire grass cells through the production path so the private index agrees.
+    loop mut f in flames: f.life = 0.0
+    elements_update(DT, pl.pos)
+    brands.clear()
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    enemy_events.clear()
+
+aware_enemy = (p: vec3, kind: EKind = .blue_bokoblin) -> int:
+    i = spawn_enemy(kind, p)
+    enemies[i].state = .chase
+    enemies[i].alert = 1.0
+    i
+
+death_events = () -> int:
+    n = 0
+    loop e in enemy_events:
+        if e.kind == "enemy_die": n += 1
+    n
+
+shock_rate_tests = ():
+    loop hz in [30, 60, 120]:
+        dt = 1.0 / f64(hz)
+        reset_probe()
+        e = aware_enemy(vec3(0, 0, 0), .bokoblin)
+        strike_at(vec3(0, 0.6, 0))
+        loop k in [0..int(0.3 * f64(hz))):
+            enemies_update(dt, false)
+            elements_update(dt, pl.pos)
+        check("shock_once_per_strike_{hz}hz", enemies[e].hp == 9.0, "hp={enemies[e].hp}")
+        # A distinct strike can hit during the prior stun, without a cooldown swallowing it.
+        strike_at(enemies[e].pos + vec3(0, 0.6, 0))
+        elements_update(dt, pl.pos)
+        check("shock_second_strike_{hz}hz", enemies[e].hp == 5.0, "hp={enemies[e].hp}")
+        reset_probe()
+        e = aware_enemy(vec3(0, 0, 0), .bokoblin)
+        enemies[e].hp = 4.0
+        strike_at(vec3(0, 0.6, 0))
+        elements_update(dt, pl.pos)
+        check("shock_lethal_transition_{hz}hz", enemies[e].hp == 0.0 and enemies[e].state == .dead and death_events() == 1, "hp={enemies[e].hp} state={enemies[e].state} deaths={death_events()}")
+        loop k in [0..int(3.3 * f64(hz))):
+            enemies_update(dt, false)
+            elements_update(dt, pl.pos)
+        check("shock_dead_never_chases_{hz}hz", enemies[e].hp == 0.0 and enemies[e].state == .gone, "hp={enemies[e].hp} state={enemies[e].state}")
+    reset_probe()
+    e = aware_enemy(vec3(0, 0, 0), .bokoblin)
+    strike_at(vec3(0, 0.6, 0))
+    elements_update(DT, pl.pos)
+    enemies[e].pos.x = 10.0
+    elements_update(DT, pl.pos)
+    enemies[e].pos.x = 0.0
+    elements_update(DT, pl.pos)
+    check("shock_reentry_same_strike", enemies[e].hp == 9.0, "hp={enemies[e].hp}")
+
+projectile_order_tests = ():
+    loop wall in [false, true]:
+        reset_probe()
+        e = aware_enemy(vec3(0, 0, -1))
+        if wall: add_box(vec3(0, 0, -2), vec3(2, 2, 0.1), 0.0, false, .stone)
+        fire_arrow(vec3(0, 0.9, 0), vec3(0, 0, -1), 5.0, false)
+        arrows_update(DT)
+        enemies_take_hits()
+        check("arrow_enemy_before_wall_{wall}", enemies[e].hp == 67.0 and not arrows[0].alive, "hp={enemies[e].hp} impact_z={arrows[0].pos.z}")
+    reset_probe()
+    e = aware_enemy(vec3(0, 0, -0.8))
+    add_box(vec3(0, 0, -0.5), vec3(2, 2, 0.1), 0.0, false, .stone)
+    fire_arrow(vec3(0, 0.9, 0), vec3(0, 0, -1), 5.0, false)
+    arrows_update(DT)
+    enemies_take_hits()
+    check("arrow_wall_before_enemy", enemies[e].hp == 72.0 and arrows[0].stuck > 0.0, "hp={enemies[e].hp}")
+    loop reverse in [false, true]:
+        reset_probe()
+        e0 = aware_enemy(v3(0.0, 0.0, (if reverse: -1.75 else: -0.5)))
+        e1 = aware_enemy(v3(0.0, 0.0, (if reverse: -0.5 else: -1.75)))
+        fire_arrow(vec3(0, 0.9, 0), vec3(0, 0, -1), 5.0, false)
+        arrows_update(DT)
+        enemies_take_hits()
+        near = if reverse: e1 else: e0
+        far = if reverse: e0 else: e1
+        check("arrow_nearest_enemy_order_{reverse}", enemies[near].hp == 67.0 and enemies[far].hp == 72.0, "near_hp={enemies[near].hp} far_hp={enemies[far].hp}")
+    loop z in [-1.125, -2.25]:
+        reset_probe()
+        p = v3(0.0, 0.0, z)
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        fire_arrow(vec3(0, 0.6, 0), vec3(0, 0, -1), 5.0, false)
+        loop k in [0..3):
+            wildlife_update(DT)
+            arrows_update(DT)
+        check("arrow_swept_boar_{z}", animals[0].hp == 3.0 and arrows.len() == 0, "hp={animals[0].hp} remaining={arrows.len()}")
+    loop near_animal in [false, true]:
+        reset_probe()
+        p = v3(0.0, 0.0, (if near_animal: -0.5 else: -1.75))
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        e = aware_enemy(v3(0.0, 0.0, (if near_animal: -1.75 else: -0.5)))
+        fire_arrow(vec3(0, 0.75, 0), vec3(0, 0, -1), 5.0, false)
+        arrows_update(DT)
+        enemies_take_hits()
+        wildlife_update(DT)
+        check("arrow_nearest_enemy_or_boar_{near_animal}", animals[0].hp == (if near_animal: 3.0 else: 8.0) and enemies[e].hp == (if near_animal: 72.0 else: 67.0), "boar_hp={animals[0].hp} enemy_hp={enemies[e].hp}")
+    loop reverse in [false, true]:
+        reset_probe()
+        near = vec3(0, 0, -0.5)
+        far = vec3(0, 0, -1.75)
+        animals = if reverse: [Animal(.fox, far, far, hp = 8.0), Animal(.boar, near, near, hp = 8.0)] else: [Animal(.boar, near, near, hp = 8.0), Animal(.fox, far, far, hp = 8.0)]
+        fire_arrow(vec3(0, 0.6, 0), vec3(0, 0, -1), 5.0, false)
+        arrows_update(DT)
+        ni = if reverse: 1 else: 0
+        fi = 1 - ni
+        check("arrow_nearest_animal_order_{reverse}", animals[ni].hp == 3.0 and animals[fi].hp == 8.0, "near_hp={animals[ni].hp} far_hp={animals[fi].hp}")
+    reset_probe()
+    p = vec3(0, 0, -0.8)
+    animals = [Animal(.boar, p, p, hp = 8.0)]
+    add_box(vec3(0, 0, -0.5), vec3(2, 2, 0.1), 0.0, false, .stone)
+    fire_arrow(vec3(0, 0.6, 0), vec3(0, 0, -1), 5.0, false)
+    arrows_update(DT)
+    wildlife_update(DT)
+    check("arrow_wall_before_boar", animals[0].hp == 8.0 and arrows[0].stuck > 0.0, "hp={animals[0].hp}")
+    loop wall in [false, true]:
+        reset_probe()
+        bonfires = [Bonfire(vec3(0, 0, -2.25))]
+        if wall: add_box(vec3(0, 0, -0.2), vec3(2, 2, 0.1), 0.0, false, .stone)
+        fire_arrow(vec3(0, 0.5, 0), vec3(0, 0, -1), 5.0, false)
+        arrows_update(1.0 / 30.0)
+        check("arrow_swept_fire_exposure_cover_{wall}", arrows[0].fire == (not wall), "fire={arrows[0].fire}")
+    reset_probe()
+
+cover_tests = ():
+    loop wall in [false, true]:
+        reset_probe()
+        bonfires = [Bonfire(vec3(-0.7, 0, 0))]
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 2, 3), 0.0, false, .stone)
+        p = vec3(0.7, 0.5, 0)
+        heat = heat_at(p)
+        check("campfire_same_height_cover_{wall}", heat == (if wall: 0.0 else: 1.5) and fire_near(p, 2.0) == (not wall), "heat={heat}")
+        col = add_cyl(p - vec3(0, 0.5, 0), 0.35, 0.9, false, .wood)
+        check("campfire_target_barrel_surface_{wall}", heat_at(p, col) == (if wall: 0.0 else: 1.5), "heat={heat_at(p, col)}")
+        # Flat rock keeps incidental grass damage out of the explosion control.
+        hf.mat = fill(u8(255), 4096 * 4)
+        reset_probe()
+        seed_random(52)
+        pl = Player(pos = vec3(1, 0, 0))
+        e = aware_enemy(vec3(1, 0, 1))
+        w = spawn_item("branch", vec3(1, 0.8, -1), resting = true)
+        col = add_cyl(vec3(1, 0, 2), 0.35, 0.9, false, .wood)
+        barrels = [Barrel(pos = vec3(-1, 0, 0), explosive = true, fuse = 0.001), Barrel(pos = vec3(1, 0, 2), explosive = true, col = col)]
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 2, 4), 0.0, false, .stone)
+        elements_update(DT, pl.pos)
+        check("explosion_player_cover_{wall}", pl.hp == (if wall: 12 else: 1), "hp={pl.hp} speed={length(pl.vel)}")
+        check("explosion_enemy_cover_{wall}", (if wall: enemies[e].hp == 72.0 and enemies[e].state == .chase and length(enemies[e].vel) == 0.0 and enemies[e].burning == 0.0 else: enemies[e].hp < 72.0 and enemies[e].state == .knocked and enemies[e].burning > 0.0), "hp={enemies[e].hp} speed={length(enemies[e].vel)} burning={enemies[e].burning}")
+        check("explosion_item_cover_{wall}", (if wall: witems[w].resting and length(witems[w].vel) == 0.0 and witems[w].burning == 0.0 else: not witems[w].resting and length(witems[w].vel) > 0.0 and witems[w].burning > 0.0), "speed={length(witems[w].vel)} burning={witems[w].burning}")
+        check("explosion_item_persistent_ignition_{wall}", witems[w].el.burning == (if wall: 0.0 else: 5.0), "burn_seconds={witems[w].el.burning}")
+        check("explosion_chain_cover_{wall}", (barrels[1].fuse > 0.0) == (not wall), "fuse={barrels[1].fuse}")
+        hf.mat = fill(u8(0), 4096 * 4)
+        reset_probe()
+        seed_random(52)
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 2, 8), 0.0, false, .stone)
+        barrels = [Barrel(pos = vec3(-1, 0, 0), explosive = true, fuse = 0.001)]
+        elements_update(DT, pl.pos)
+        far = 0
+        loop f in flames:
+            if cell_pos(f.cell).x > 0.2: far += 1
+        check("explosion_grass_cover_{wall}", (far > 0) == (not wall), "fires_behind_wall={far} total={flames.len()}")
+    reset_probe()
+
+lethal_source_tests = ():
+    loop source in ["arrow", "thrown", "burn", "blast", "melt", "guardian", "fall", "drown"]:
+        reset_probe()
+        e = aware_enemy(vec3(0, 0, -1), (if source == "guardian": EKind.guardian else: (if source == "melt": EKind.ice_chuchu else: EKind.bokoblin)))
+        enemies[e].hp = 1.0
+        if source == "arrow":
+            fire_arrow(vec3(0, 0.9, 0), vec3(0, 0, -1), 5.0, false)
+            arrows_update(DT)
+        if source == "thrown":
+            w = spawn_item("travelers_sword", vec3(0, 0.9, -1))
+            witems[w].thrown_by_player = true
+            witems[w].damage = 5
+            enemies_take_hits()
+        if source == "burn":
+            enemies[e].burning = 1.0
+            enemies[e].hp = 0.01
+            enemies_update(DT, false)
+        if source == "blast":
+            barrels = [Barrel(pos = vec3(0, 0, -2), explosive = true, fuse = 0.001)]
+            elements_update(DT, pl.pos)
+        if source == "melt":
+            bonfires = [Bonfire(vec3(0, 0, -1))]
+            enemies[e].el.heat = 0.29
+            elements_update(DT, pl.pos)
+        if source == "guardian":
+            inv = Inventory()
+            inv_add("pot_lid")
+            pl = Player(pos = vec3(0, 0, -6.7))
+            fight = Fight(act = .guard, guard_t = 0.1, parry_t = 0.1)
+            enemies[e].state = .laser
+            enemies[e].laser_t = 3.0
+            enemies[e].laser_target = pl.pos + vec3(0, 1, 0)
+            enemies_update(DT, false)
+        if source == "fall":
+            enemies[e].pos.y = 0.1
+            enemies[e].vel.y = -20.0
+            enemies[e].state = .knocked
+            enemies_update(DT, false)
+        if source == "drown":
+            water_grid_set(fill(f32(2), 4096), 64, -32.0, -32.0, 1.0)
+            enemies_update(DT, false)
+            water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+        check("enemy_common_death_{source}", enemies[e].hp == 0.0 and enemies[e].state == .dead and death_events() == 1, "hp={enemies[e].hp} state={enemies[e].state} deaths={death_events()}")
+        loop k in [0..80):
+            enemies_update(DT, false)
+            elements_update(DT, pl.pos)
+        check("enemy_common_death_gone_{source}", enemies[e].state == .gone and enemies[e].hp == 0.0, "hp={enemies[e].hp} state={enemies[e].state}")
+    # Partial last burn tick must not add a full tick's damage at slower rates.
+    loop hz in [30, 60, 120]:
+        reset_probe()
+        e = aware_enemy(vec3(0, 0, 0), .bokoblin)
+        enemies[e].burning = 0.3
+        loop k in [0..hz): enemies_update(1.0 / f64(hz), false)
+        check("burn_time_scaled_{hz}hz", abs(enemies[e].hp - 12.4) < 0.000001, "hp={enemies[e].hp}")
+    loop hz in [30, 60, 120]:
+        reset_probe()
+        e = aware_enemy(vec3(0, 8, 0))
+        enemies[e].state = .knocked
+        loop k in [0..hz): enemies_update(1.0 / f64(hz), false)
+        expected = 72.0 - (sqrt(36.0 * 8.0) - 12.0) * 2.0
+        check("fall_damage_time_scaled_{hz}hz", abs(enemies[e].hp - expected) < 0.001, "hp={enemies[e].hp} expected={expected}")
+    reset_probe()
+    e = aware_enemy(vec3(0, 12, 0), .bokoblin)
+    enemies_update(DT, false)
+    check("enemy_walk_off_ledge_falls", enemies[e].state == .knocked and enemies[e].pos.y > 11.0, "state={enemies[e].state} height={enemies[e].pos.y}")
+    loop k in [0..80): enemies_update(DT, false)
+    check("enemy_walk_off_ledge_dies", enemies[e].state == .dead and enemies[e].hp == 0.0, "state={enemies[e].state} hp={enemies[e].hp}")
+    reset_probe()
+
+thrown_sweep_tests = ():
+    loop wall in [false, true]:
+        reset_probe()
+        near = aware_enemy(vec3(0, 0, -1.5))
+        far = aware_enemy(vec3(0, 0, -3))
+        w = spawn_item("travelers_sword", vec3(0, 0.9, 0), vec3(0, 0, -240))
+        witems[w].thrown_by_player = true
+        witems[w].damage = 5
+        enemies_take_hits()
+        if wall: add_box(vec3(0, 0, -0.3), vec3(2, 2, 0.1), 0.0, false, .stone)
+        items_physics(DT)
+        enemies_take_hits()
+        check("thrown_swept_nearest_cover_{wall}", enemies[near].hp == (if wall: 72.0 else: 67.0) and enemies[far].hp == 72.0 and not witems[w].thrown_by_player, "near_hp={enemies[near].hp} far_hp={enemies[far].hp}")
+    reset_probe()
+
+scout_tests = ():
+    worldgen_load()
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    find_shrines()
+    loop s in shrines: shrine_exterior(s)
+    shrines_build()
+    shrines_setup()
+    shrine_title_tests()
+    shrines_update(DT)
+    use_terrain = false
+    shr_cur = OMAN
+    target = scout_target_pos()
+    pl = Player(pos = target + vec3(0, -0.9, 8))
+    fight = Fight()
+    act = Actions()
+    wall = add_box(pl.pos + vec3(0, 0, -4), vec3(3, 2, 0.2), 0.0, false, .stone)
+    hit = raycast(target, pl.pos + vec3(0, 1, 0) - target, 8.0)
+    check("scout_solid_cover_fixture", hit.hit and hit.collider == wall)
+    loop k in [0..130): scout_update(DT)
+    check("scout_beam_cover", pl.hp == 12, "hp={pl.hp}")
+    # Also shelter close to the impact, within its 1.2 m damage tolerance.
+    pl = Player(pos = target + vec3(0, -0.9, 4.7))
+    loop k in [0..210): scout_update(DT)
+    check("scout_beam_close_cover", pl.hp == 12, "hp={pl.hp}")
+    colliders[wall].active = false
+    pl = Player(pos = target + vec3(0, -0.9, 8))
+    loop k in [0..210): scout_update(DT)
+    check("scout_beam_open_damage", pl.hp < 12, "hp={pl.hp}")
+    # A fast arrow crossing a shrine target must register even with both endpoints outside it.
+    arrows.clear()
+    from = target + vec3(0, 0, 1.125)
+    fire_arrow(from, vec3(0, 0, -1), 20.0, false)
+    arrows_update(DT)
+    scout_update(DT)
+    check("fast_arrow_swept_scout_hit", scout_target_pos().y < -9000.0)
+
+# Round 53: actual sword animation + production movement against a wall.
+melee_cover_tests = ():
+    weapon_tracks_init(load_model("assets/models/hero_bare.mdl"), load_humanoid_anims())
+    loop wall in [false, true]:
+        reset_probe()
+        pl = Player(pos = vec3(0, 0, 0), face = 0.0)
+        inv = Inventory()
+        inv_add("travelers_sword")
+        e = aware_enemy(vec3(0, 0, -1.5))
+        if wall: add_box(vec3(0, 0, -0.8), vec3(2, 2, 0.1), 0.0, false, .stone)
+        loop k in [0..40):
+            act = Actions(attack = k == 0)
+            player_update(DT)
+            combat_update(DT, enemy_pos, enemies.len())
+            enemies_take_hits()
+        check("production_sword_wall_{wall}", enemies[e].hp == (if wall: 72.0 else: 67.0), "hp={enemies[e].hp} player_z={pl.pos.z}")
+        if wall: check("production_sword_wall_stops_player", pl.pos.z > -0.36)
+    loop wall in [false, true]:
+        reset_probe()
+        p = vec3(0, 0, -1.1)
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        h = PHit(vec3(0, 0.6, -0.75), vec3(0, 1, 0), vec3(0, 0, -1), 5.0, 3.0, true, 1, vec3(0, 0.6, -0.2), vec3(0, 0.6, -1.3))
+        if wall: add_box(vec3(0, 0, -0.6), vec3(2, 2, 0.1), 0.0, false, .stone)
+        player_hits = [h]
+        wildlife_update(DT)
+        check("melee_boar_cover_{wall}", animals[0].hp == (if wall: 8.0 else: 3.0), "hp={animals[0].hp}")
+        col = add_cyl(p, 0.35, 0.9, false, .wood)
+        barrels = [Barrel(pos = p, explosive = true, col = col)]
+        elements_update(0.04, pl.pos)
+        check("melee_fire_barrel_cover_{wall}", (barrels[0].fuse > 0.0) == (not wall), "fuse={barrels[0].fuse} heat={barrels[0].el.heat}")
+        # The same center-based query protects shrine objects, including their own surface.
+        check("melee_object_cover_{wall}", blade_touches(h, p + vec3(0, 0.5, 0), 0.5) == (not wall))
+        colliders[col].active = false
+        if wall:
+            h.grip.z = -0.7
+            check("melee_hilt_through_wall_rejected", not blade_touches(h, p + vec3(0, 0.5, 0), 0.5))
+        inv = Inventory()
+        inv_add("travelers_sword")
+        lit = false
+        player_torch_update(DT, lit)
+        bx = int((0.0 - hf.x0) / (hf.cell * f64(hf.n)) * f64(BURN_N) + 0.5)
+        bz = int((-1.3 - hf.z0) / (hf.cell * f64(hf.n)) * f64(BURN_N) + 0.5)
+        mark = bz * BURN_N + bx
+        check("melee_grass_cover_{wall}", (burn_px[mark * 4 + 1] > 0) == (not wall), "cut={burn_px[mark * 4 + 1]}")
+    reset_probe()
+
+# Production monster updates, fixed attack facing, no render-state dependency.
+enemy_melee_contact_tests = ():
+    loop hz in [30, 60, 120]:
+        loop d in idefs:
+            if d.kind != .weapon: continue
+            weapon = d.id
+            loop move in [0..3):
+                loop spot in ["front", "beside", "behind", "above", "cover"]:
+                    reset_probe()
+                    p = vec3(0, 0, -1.4)
+                    if spot == "beside": p = vec3(1.4, 0, -0.85)
+                    if spot == "behind": p = vec3(0, 0, 1.4)
+                    if spot == "above": p = vec3(0, 4, -1.4)
+                    pl = Player(pos = p, face = PI)
+                    e = spawn_enemy(.bokoblin, vec3(0, 0, 0), weapon)
+                    enemies[e].move = move
+                    enemies[e].state = .attack
+                    enemies[e].face = 0.0
+                    if spot == "cover": add_box(vec3(0, 0, -0.75), vec3(3, 3, 0.1), 0.0, false, .stone)
+                    n = 0
+                    landed_at = -1.0
+                    loop k in [0..int(f64(hz) * 0.65)):
+                        enemies_update(1.0 / f64(hz), false)
+                        loop ev in enemy_events:
+                            if ev.kind == "player_hit":
+                                n += 1
+                                landed_at = f64(k + 1) / f64(hz)
+                    check("enemy_weapon_arc_{weapon}_move{move}_{spot}_{hz}hz", (pl.hp < 12) == (spot == "front") and n == (if spot == "front": 1 else: 0), "hp={pl.hp} contacts={n} at={landed_at:.3}s")
+                    if n > 0: check("enemy_weapon_timing_{weapon}_move{move}_{hz}hz", landed_at >= (if move == 1: 0.5 else: (if move == 2: 0.12 else: 0.1)) and landed_at <= (if move == 1: 0.54 else: (if move == 2: 0.24 else: 0.25)) + 1.0 / f64(hz))
+        loop move in [0..3):
+            loop defense in ["guard", "parry", "hop", "backflip"]:
+                reset_probe()
+                inv = Inventory()
+                inv_add("pot_lid")
+                pl = Player(pos = vec3(0, 0, -1.4), face = PI)
+                fight = Fight(act = (if defense == "hop": Act.hop else: (if defense == "backflip": Act.backflip else: Act.guard)), t = 0.08, guard_t = 1.0, parry_t = (if defense == "parry": 0.1 else: 1.0))
+                e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+                enemies[e].move = move
+                enemies[e].state = .attack
+                enemies[e].face = 0.0
+                loop k in [0..int(f64(hz) * 0.65)): enemies_update(1.0 / f64(hz), false)
+                check("enemy_weapon_defense_move{move}_{defense}_{hz}hz", (if move == 2: pl.hp == 11 and fight.act == .hit else: pl.hp == 12 and (fight.act == .flurry) == (defense == "hop")), "hp={pl.hp} act={fight.act}")
+    reset_probe()
+
+wildlife_projectile_tests = ():
+    loop kind in [WKind.sparrow, WKind.pigeon, WKind.crow, WKind.hawk]:
+        loop wall in [false, true]:
+            reset_probe()
+            p = vec3(0, 0, -1.125)
+            animals = [Animal(kind, p, p, hp = 8.0)]
+            if wall: add_box(vec3(0, 0, -0.5), vec3(2, 2, 0.1), 0.0, false, .stone)
+            fire_arrow(vec3(0, 0.6, 0), vec3(0, 0, -1), 5.0, false)
+            arrows_update(DT)
+            check("arrow_shootable_bird_{kind}_cover_{wall}", animals[0].hp == (if wall: 8.0 else: 3.0) and arrows[0].alive == wall, "hp={animals[0].hp} arrow_alive={arrows[0].alive}")
+        reset_probe()
+        p = vec3(0, 3, -1.125)
+        animals = [Animal(kind, p, p, hp = 3.0, state = .fly)]
+        fire_arrow(p + vec3(0, 0.25, 1.125), vec3(0, 0, -1), 5.0, false)
+        arrows_update(DT)
+        check("bird_flying_common_death_{kind}", animals[0].hp == 0.0 and animals[0].state == .dead and not arrows[0].alive)
+        loop k in [0..110): wildlife_update(DT)
+        check("bird_supported_species_drop_once_{kind}", animals[0].state == .gone and witems.len() == 1 and witems[0].id == "raw_bird_drumstick", "drops={witems.len()}")
+    loop hz in [30, 60, 120]:
+        loop near_animal in [false, true]:
+            loop wall in [false, true]:
+                reset_probe()
+                p = v3(0.0, 0.0, (if near_animal: -1.125 else: -3.0))
+                animals = [Animal(.boar, p, p, hp = 8.0)]
+                e = aware_enemy(v3(0.0, 0.0, (if near_animal: -3.0 else: -1.125)))
+                w = spawn_item("travelers_sword", vec3(0, 0.6, 0), vec3(0, 0, -135))
+                witems[w].thrown_by_player = true
+                witems[w].damage = 5
+                enemies_take_hits()
+                if wall: add_box(vec3(0, 0, -0.3), vec3(2, 2, 0.1), 0.0, false, .stone)
+                loop k in [0..int(f64(hz) * 0.05)):
+                    items_physics(1.0 / f64(hz))
+                    enemies_take_hits()
+                    wildlife_update(1.0 / f64(hz))
+                check("thrown_shared_nearest_{hz}hz_animal_{near_animal}_cover_{wall}", animals[0].hp == (if near_animal and not wall: 3.0 else: 8.0) and enemies[e].hp == (if not near_animal and not wall: 67.0 else: 72.0) and not witems[w].thrown_by_player, "boar_hp={animals[0].hp} enemy_hp={enemies[e].hp}")
+    reset_probe()
+
+wildlife_element_tests = ():
+    loop source in ["shock", "blast"]:
+        reset_probe()
+        hf.mat = fill(u8(255), 4096 * 4)
+        p = vec3(0, 0, 0)
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        e = aware_enemy(p)
+        if source == "shock": strike_at(vec3(0, 0.6, 0))
+        else: barrels = [Barrel(pos = vec3(0, 0, -1), explosive = true, fuse = 0.001)]
+        elements_update(DT, pl.pos)
+        wildlife_update(DT)
+        check("wildlife_colocated_{source}", animals[0].hp == (if source == "shock": 4.0 else: 0.0) and enemies[e].hp == (if source == "shock": 68.0 else: 37.0), "boar_hp={animals[0].hp} enemy_hp={enemies[e].hp}")
+        if source == "blast":
+            loop k in [0..110): wildlife_update(DT)
+            check("wildlife_blast_common_drop", animals[0].state == .gone and witems.len() >= 1 and witems.len() <= 2)
+    loop kind in [WKind.boar, WKind.fox, WKind.sparrow, WKind.fish]:
+        loop wall in [false, true]:
+            reset_probe()
+            hf.mat = fill(u8(255), 4096 * 4)
+            p = vec3(1, 0, 0)
+            animals = [Animal(kind, p, p, hp = 80.0)]
+            barrels = [Barrel(pos = vec3(-1, 0, 0), explosive = true, fuse = 0.001)]
+            if wall: add_box(vec3(0, 0, 0), vec3(0.2, 2, 4), 0.0, false, .stone)
+            elements_update(DT, pl.pos)
+            check("wildlife_blast_cover_{kind}_{wall}", animals[0].hp == (if wall: 80.0 else: 50.0) and (length(animals[0].impulse) > 0.0) == (not wall) and burning(animals[0].el) == (not wall), "hp={animals[0].hp} impulse={length(animals[0].impulse)}")
+    loop wall in [false, true]:
+        reset_probe()
+        p = vec3(0.7, 0, 0)
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 2, 4), 0.0, false, .stone)
+        strike_at(vec3(-0.7, 0.6, 0))
+        elements_update(DT, pl.pos)
+        before = animals[0].pos
+        wildlife_update(DT)
+        check("wildlife_shock_cover_{wall}", animals[0].hp == (if wall: 8.0 else: 4.0) and (animals[0].el.shock > 0.0) == (not wall), "hp={animals[0].hp}")
+        if not wall: check("wildlife_shock_holds_motion", length(animals[0].pos - before) == 0.0)
+    loop hz in [30, 60, 120]:
+        reset_probe()
+        p = vec3(0, 0, 0)
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        strike_at(vec3(0, 0.6, 0))
+        loop k in [0..int(f64(hz) * 0.4)):
+            elements_update(1.0 / f64(hz), pl.pos)
+            wildlife_update(1.0 / f64(hz))
+        check("wildlife_shock_once_{hz}hz", animals[0].hp == 4.0 and animals[0].el.shock > 0.0, "hp={animals[0].hp}")
+        reset_probe()
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        animals[0].el.burning = 0.3
+        loop k in [0..hz): elements_update(1.0 / f64(hz), pl.pos)
+        check("wildlife_partial_burn_{hz}hz", abs(animals[0].hp - 7.4) < 0.000001, "hp={animals[0].hp}")
+        reset_probe()
+        animals = [Animal(.fox, p, p, hp = 0.5)]
+        animals[0].el.burning = 1.0
+        loop k in [0..hz):
+            elements_update(1.0 / f64(hz), pl.pos)
+            wildlife_update(1.0 / f64(hz))
+        check("wildlife_fire_common_death_{hz}hz", animals[0].hp == 0.0 and animals[0].state == .dead)
+        loop k in [0..hz * 2): wildlife_update(1.0 / f64(hz))
+        check("wildlife_fire_common_drop_{hz}hz", animals[0].state == .gone and witems.len() == 1)
+    loop wall in [false, true]:
+        reset_probe()
+        p = vec3(0.7, 0, 0)
+        animals = [Animal(.boar, p, p, hp = 8.0)]
+        bonfires = [Bonfire(vec3(-0.7, 0, 0))]
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 2, 4), 0.0, false, .stone)
+        loop k in [0..40): elements_update(DT, pl.pos)
+        check("wildlife_fire_exposure_cover_{wall}", burning(animals[0].el) == (not wall) and (animals[0].hp < 8.0) == (not wall), "hp={animals[0].hp}")
+    reset_probe()
+    p = vec3(0, 0, 0)
+    animals = [Animal(.boar, p, p, hp = 8.0)]
+    animals[0].el.burning = 2.0
+    water_grid_set(fill(f32(1), 4096), 64, -32.0, -32.0, 1.0)
+    elements_update(DT, pl.pos)
+    check("wildlife_water_douses", animals[0].hp == 8.0 and not burning(animals[0].el) and animals[0].el.wet == 1.0)
+    water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+    reset_probe()
+    animals = [Animal(.boar, p, p, hp = 8.0), Animal(.sparrow, p, p, hp = 3.0)]
+    areas = fill(u8(47), 4096)
+    loop k in [0..160): elements_update(DT, pl.pos)
+    check("wildlife_species_cold_exposure", animals[0].el.frozen == 0.0 and animals[0].el.chill > 0.5 and animals[1].el.frozen > 0.0, "boar_chill={animals[0].el.chill} bird_frozen={animals[1].el.frozen}")
+    before = animals[1].pos
+    wildlife_update(DT)
+    check("wildlife_cold_holds_motion", length(animals[1].pos - before) == 0.0)
+    areas = fill(u8(46), 4096)
+    edge_sd = fill(f32(-100), 4096)
+    bonfires = [Bonfire(p)]
+    loop k in [0..16): elements_update(DT, pl.pos)
+    check("wildlife_fire_thaws", animals[1].el.frozen == 0.0)
+    reset_probe()
+
+shrine_blast_cover_tests = ():
+    loop wall in [false, true]:
+        reset_probe()
+        __barrels.clear()
+        __cracks.clear()
+        __pillar_pivot = vec3(100, 0, 0)
+        pl = Player(pos = vec3(1, 0, 0))
+        col = add_cyl(vec3(1, 0, 2), 0.35, 0.9, false, .wood)
+        __barrels = [SBarrel(vec3(1, 0, 2), col = col)]
+        w = spawn_item("branch", vec3(1, 0.8, -1), resting = true)
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 3, 5), 0.0, false, .stone)
+        __boom(vec3(-1, 0, 0))
+        check("shrine_blast_player_cover_{wall}", pl.hp == (if wall: 12 else: 9) and (length(pl.vel) > 0.0) == (not wall), "hp={pl.hp} speed={length(pl.vel)}")
+        check("shrine_blast_chain_cover_{wall}", (__barrels[0].fuse >= 0.0) == (not wall), "fuse={__barrels[0].fuse}")
+        check("shrine_blast_item_cover_{wall}", witems[w].resting == wall and burning(witems[w].el) == (not wall) and (length(witems[w].vel) > 0.0) == (not wall))
+        reset_probe()
+        __barrels.clear()
+        col = add_box(vec3(1, 0, 0), vec3(0.2, 2, 1), 0.0, false, .stone)
+        __cracks = [Crack("integration_crack", vec3(1, 0, 0), col)]
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 3, 5), 0.0, false, .stone)
+        __boom(vec3(-1, 0, 0))
+        check("shrine_blast_crack_cover_{wall}", __cracks[0].broken == (not wall) and colliders[col].active == wall)
+        reset_probe()
+        __cracks.clear()
+        __pillar_pivot = vec3(1, -1.2, 0.6)
+        __pillar_t = -1.0
+        __pillar_stand = add_box(vec3(1, 0, 0), vec3(0.4, 2, 0.4), 0.0, false, .stone)
+        if wall: add_box(vec3(0, 0, 0), vec3(0.2, 3, 5), 0.0, false, .stone)
+        __boom(vec3(-1, 0, 0))
+        check("shrine_blast_pillar_cover_{wall}", (__pillar_t >= 0.0) == (not wall))
+    reset_probe()
+    col = add_box(vec3(0, 0, 0), vec3(0.2, 3, 5), 0.0, false, .stone)
+    __cracks = [Crack("integration_break_cover", vec3(0, 0, 0), col)]
+    __barrels = [SBarrel(vec3(1, 0, 0))]
+    __boom(vec3(-1, 0, 0))
+    check("shrine_blast_cover_snapshot", __cracks[0].broken and __barrels[0].fuse < 0.0)
+    __barrels.clear()
+    __cracks.clear()
+    reset_probe()
+
+
+# Full gear chests remain closed, including across the production save round-trip.
+chest_capacity_tests = ():
+    old_callback = chest_opened
+    chest_opened = (i: int): ui_pickup(item(chests[i].content).name)
+    loop shrine in [false, true]:
+        loop tab in [0..3):
+            reset_probe()
+            usables.clear()
+            chests.clear()
+            inv = Inventory()
+            ui = UIState()
+            filler = ["branch", "pot_lid", "boko_bow"][tab]
+            reward = ["travelers_claymore", "travelers_shield", "travelers_bow"][tab]
+            limit = [inv.max_weapons, inv.max_shields, inv.max_bows][tab]
+            loop k in [0..limit): inv_add(filler)
+            ci = if shrine: shr_chest(vec3(0, 0, 0), 0.0, reward) else: add_chest(vec3(0, 0, 0), 0.0, reward)
+            u = chests[ci].usable
+            pl.pos = vec3(0, 0, 1.2)
+            use_it(u)
+            chests_update(1.0)
+            check("chest_full_{shrine}_{tab}", not chests[ci].opened and not usables[u].used and chests[ci].lid == 0.0 and ui.pickup_t == 0.0 and usable_near(pl.pos, vec3(0, 0, -1)) == u)
+            # Closing/restarting the game after a refused collection must not consume it.
+            saved = save_capture()
+            saved.pos = pl.pos
+            saved.awake = true
+            path = "build/chest-capacity-{time_ns()}"
+            mkdir("build")
+            check("chest_full_save_write_{shrine}_{tab}", save_write(path, saved))
+            restored = save_decode(read_file(path) ?? "")
+            check("chest_full_save_decode_{shrine}_{tab}", restored != none and saved.opened.len() == 0 and saved.used.len() == 0)
+            inv = Inventory()
+            if let disk = restored: save_apply(disk)
+            delete_file(path)
+            check("chest_full_resume_{shrine}_{tab}", not chests[ci].opened and not usables[u].used and [inv.weapons.len(), inv.shields.len(), inv.bows.len()][tab] == limit and usable_near(pl.pos, vec3(0, 0, -1)) == u)
+            drop_selected(tab)
+            # Leave and return; use the prompt query again rather than the stale selection.
+            pl.pos = vec3(10, 0, 10)
+            check("chest_out_of_reach_{shrine}_{tab}", usable_near(pl.pos, vec3(0, 0, -1)) == -1)
+            pl.pos = vec3(0, 0, 1.2)
+            use_it(usable_near(pl.pos, vec3(0, 0, -1)))
+            gear = [inv.weapons, inv.shields, inv.bows][tab]
+            check("chest_return_collect_{shrine}_{tab}", chests[ci].opened and usables[u].used and gear.len() == limit and gear.contains(reward) and ui.pickup_name == item(reward).name, "gear={gear.len()} reward={gear.contains(reward)}")
+            use_it(u)
+            check("chest_awarded_once_{shrine}_{tab}", [inv.weapons.len(), inv.shields.len(), inv.bows.len()][tab] == limit and usable_near(pl.pos, vec3(0, 0, -1)) == -1)
+    # A material stack is not subject to gear capacity, and the shrine gives its count once.
+    reset_probe()
+    usables.clear()
+    chests.clear()
+    inv = Inventory()
+    ci = shr_chest(vec3(0, 0, 0), 0.0, "amber", 3)
+    use_it(chests[ci].usable)
+    use_it(chests[ci].usable)
+    check("chest_stack_exactly_once", count_of("amber") == 3)
+    chest_opened = old_callback
+    usables.clear()
+    chests.clear()
+    reset_probe()
+
+selection_cover_tests = ():
+    loop wall in [false, true]:
+        reset_probe()
+        usables.clear()
+        if wall: add_box(vec3(0, 0, 0), vec3(0.1, 2, 2), 0.0, false, .stone)
+        w = spawn_item("apple", vec3(0.6, 0.3, 0), resting = true)
+        u = add_usable(vec3(0.6, 0, 0), 2.0, "Examine", (): pass)
+        p = vec3(-0.6, 0, 0)
+        check("pickup_solid_cover_{wall}", nearest_item(p + vec3(0, 0.3, 0), 1.6) == (if wall: -1 else: w))
+        check("usable_solid_cover_{wall}", usable_near(p, vec3(1, 0, 0)) == (if wall: -1 else: u))
+        # A blocked nearer target must not mask an accessible alternative.
+        w2 = spawn_item("apple", vec3(-1.5, 0.3, 0), resting = true)
+        u2 = add_usable(vec3(-1.5, 0, 0), 2.0, "Examine", (): pass)
+        if wall:
+            check("pickup_visible_alternative", nearest_item(p + vec3(0, 0.3, 0), 1.6) == w2)
+            check("usable_visible_alternative", usable_near(p, vec3(1, 0, 0)) == u2)
+    loop wall in [false, true]:
+        reset_probe()
+        usables.clear()
+        add_cyl(vec3(0.6, 0, 0), 0.35, 1.2, false, .wood)
+        u = add_usable(vec3(0.6, 0, 0), 2.0, "Pick up", (): pass)
+        if wall: add_box(vec3(0, 0, 0), vec3(0.1, 2, 2), 0.0, false, .stone)
+        check("usable_own_surface_cover_{wall}", usable_near(vec3(-0.6, 0, 0), vec3(1, 0, 0)) == (if wall: -1 else: u))
+    loop wall in [false, true]:
+        reset_probe()
+        usables.clear()
+        chests.clear()
+        # A chest's reach anchor is in front of the box, across this thin wall.
+        # Visibility must still reach the chest itself rather than just its anchor.
+        ci = add_chest(vec3(0, 0, -0.6), 0.0, "apple")
+        if wall: add_box(vec3(0, 0, 0), vec3(2, 2, 0.1), 0.0, false, .stone)
+        check("chest_front_anchor_cover_{wall}", usable_near(vec3(0, 0, 1), vec3(0, 0, -1)) == (if wall: -1 else: chests[ci].usable))
+    chests.clear()
+    reset_probe()
+    usables.clear()
+    hf.h = fill(f32(3), 4096)
+    add_cyl(vec3(0.6, 3, 0), 0.35, 1.2, false, .stone)
+    u = add_usable(vec3(0.6, 0, 0), 2.2, "Examine", (): pass)
+    check("usable_buried_anchor_surface", usable_near(vec3(-0.6, 3, 0), vec3(1, 0, 0)) == u)
+    hf.h = fill(f32(0), 4096)
+    usables.clear()
+    reset_probe()
+
+wildlife_contact_tests = ():
+    # The original boar reproduction starts within the radius on the far side of a wall.
+    loop fast in [false, true]:
+        loop wall in [false, true]:
+            reset_probe()
+            pl.pos = vec3(0.5, 0, 0)
+            p = v3((if fast: -3.0 else: -0.6), 0.0, 0.0)
+            animals = [Animal(.boar, p, p, face = PI / 2.0, hp = 8.0, state = .charge, speed = 7.5)]
+            if wall: add_box(vec3(0, 0, 0), vec3(0.1, 2, 3), 0.0, false, .stone)
+            wildlife_update(if fast: 0.8 else: DT)
+            check("boar_charge_cover_sweep_{fast}_{wall}", pl.hp == (if wall: 12 else: 10), "hp={pl.hp} boar_x={animals[0].pos.x}")
+            if wall: check("boar_charge_cannot_tunnel_{fast}", animals[0].pos.x < -0.1)
+    loop kind in [WKind.boar, WKind.fox, WKind.sparrow, WKind.pigeon, WKind.crow, WKind.hawk, WKind.fish]:
+        loop wall in [false, true]:
+            reset_probe()
+            p = vec3(0, 0, -0.9)
+            animals = [Animal(kind, p, p, hp = 8.0)]
+            center = wildlife_hit_center(animals[0])
+            if wall: add_box(vec3(0, 0, -0.5), vec3(2, 2, 0.05), 0.0, false, .stone)
+            grip = vec3(0, center.y, -0.2)
+            tip = vec3(0, center.y, -1.3)
+            player_hits = [PHit(center, vec3(0, 1, 0), vec3(0, 0, -1), 5.0, 3.0, false, 54, grip, tip)]
+            wildlife_update(DT)
+            check("wildlife_species_melee_cover_{kind}_{wall}", animals[0].hp == (if wall: 8.0 else: 3.0), "hp={animals[0].hp}")
+            # Keep the contact in place: one swing must not deal damage each update.
+            animals[0].pos = p
+            wildlife_update(DT)
+            check("wildlife_species_melee_once_{kind}_{wall}", animals[0].hp == (if wall: 8.0 else: 3.0))
+            reset_probe()
+            animals = [Animal(kind, p, p, hp = 8.0)]
+            grip.y += 2.0
+            tip.y += 2.0
+            player_hits = [PHit(center, vec3(0, 3, 0), vec3(0, 0, -1), 5.0, 3.0, false, 55, grip, tip)]
+            wildlife_update(DT)
+            check("wildlife_species_melee_vertical_miss_{kind}_{wall}", animals[0].hp == 8.0)
+    loop water in [false, true]:
+        loop kind in [WKind.sparrow, WKind.hawk, WKind.fish, WKind.fox]:
+            reset_probe()
+            if water: water_grid_set(fill(f32(2), 4096), 64, -32.0, -32.0, 1.0)
+            p = vec3(0, 80, 0)
+            animals = [Animal(kind, p, p, hp = 1.0, state = .fly, vy = 4.0)]
+            wildlife_damage(animals[0], 5.0, vec3(0, 1, 0))
+            loop k in [0..60): wildlife_update(DT)
+            check("airborne_death_falls_{kind}_{water}", animals[0].pos.y < 76.0 and animals[0].state == .dead and witems.len() == 0, "y={animals[0].pos.y}")
+            loop k in [0..420): wildlife_update(DT)
+            loot = if kind == .fish: "hyrule_bass" else: (if kind == .fox: "raw_meat" else: "raw_bird_drumstick")
+            floor = if water: 2.0 else: 0.0
+            check("airborne_death_settles_species_drop_{kind}_{water}", animals[0].state == .gone and abs(f64(animals[0].pos.y) - floor) < 0.01 and witems.len() == 1 and witems[0].id == loot and has_item_def(loot), "floor={animals[0].pos.y} drop={witems[0].id}")
+            wildlife_update(DT)
+            check("wildlife_species_drop_once_{kind}_{water}", witems.len() == 1)
+            water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+    reset_probe()
+    p = vec3(0, 8, 0)
+    animals = [Animal(.sparrow, p, p, hp = 1.0, state = .fly)]
+    wildlife_damage(animals[0], 2.0, pl.pos)
+    loop k in [0..60): wildlife_update(DT)
+    check("bird_8m_death_gravity_reproduction", animals[0].state == .dead and abs(f64(animals[0].pos.y) - 3.018333) < 0.001 and witems.len() == 0, "y_after_1s={animals[0].pos.y}")
+    loop k in [0..60): wildlife_update(DT)
+    check("bird_8m_death_ground_control", animals[0].state == .gone and animals[0].pos.y == 0.0 and witems.len() == 1 and witems[0].id == "raw_bird_drumstick")
+    reset_probe()
+    # Roofs/platforms count as the landing surface too.
+    add_box(vec3(0, 2, 0), vec3(2, 0.2, 2), 0.0, false, .stone)
+    p = vec3(0, 8, 0)
+    animals = [Animal(.sparrow, p, p, hp = 1.0)]
+    wildlife_damage(animals[0], 2.0, pl.pos)
+    loop k in [0..180): wildlife_update(DT)
+    check("airborne_death_platform", animals[0].state == .gone and abs(f64(animals[0].pos.y) - 2.4) < 0.01)
+    reset_probe()
+
+conduction_cover_tests = ():
+    loop hop in [0..2):
+        loop wall in [false, true]:
+            reset_probe()
+            source = vec3(0, 0.6, 0)
+            target = vec3(5, 0.6, 0)
+            spawn_item("travelers_sword", vec3(3, 0.6, 0), resting = true)
+            if wall: add_box(v3((if hop == 0: 1.5 else: 4.0), 0.0, 0.0), vec3(0.1, 2, 2), 0.0, false, .stone)
+            animals = [Animal(.boar, target - vec3(0, 0.6, 0), target - vec3(0, 0.6, 0), hp = 8.0)]
+            strike_at(source)
+            check("metal_conduction_hop_cover_{hop}_{wall}", shock_at(target) == (if wall: 0.0 else: 1.0))
+            elements_update(DT, pl.pos)
+            check("metal_conduction_hop_damage_{hop}_{wall}", animals[0].hp == (if wall: 8.0 else: 4.0), "hp={animals[0].hp}")
+    reset_probe()
+    strike_at(vec3(0, 0.6, 0))
+    check("no_metal_no_relay", shock_at(vec3(5, 0.6, 0)) == 0.0)
+    # Two pools only eight meters apart: direct shock is out of range. Include a
+    # curved connected route whose midpoint stays dry so a line sampling shortcut fails.
+    loop connection in [0..4):
+        reset_probe()
+        levels = fill(f32(-10000), 4096)
+        loop x in [-2..10]:
+            loop z in [-2..2]:
+                wet = x <= 1 or x >= 7 or connection == 1 or (connection == 2 and z == 2)
+                if wet: levels[(z + 32) * 64 + x + 32] = 2.0
+        if connection == 3:
+            # Stored water exists across the gap, but it lies below dry terrain.
+            loop x in [2..7):
+                loop z in [-2..2]: levels[(z + 32) * 64 + x + 32] = -1.0
+        water_grid_set(levels, 64, -32.0, -32.0, 1.0)
+        pl = Player(pos = vec3(8, 0, 0))
+        fight = Fight()
+        strike_at(vec3(0, 0.6, 0))
+        connected = connection == 1 or connection == 2
+        check("water_connected_region_shock_{connection}", shock_at(vec3(8, 0.6, 0)) == (if connected: 1.0 else: 0.0))
+        check("water_connected_region_player_{connection}", pl.hp == (if connected: 8 else: 12), "hp={pl.hp}")
+        animals = [Animal(.fish, vec3(8, 1, 0), vec3(8, 1, 0), hp = 8.0)]
+        elements_update(DT, pl.pos)
+        check("water_connected_region_fish_{connection}", animals[0].hp == (if connected: 4.0 else: 8.0))
+        if connection == 2: check("water_curved_path_dry_midpoint", water_depth(4.0, 0.0) == 0.0)
+    water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+    reset_probe()
+
+# Round-55: full pool barrier, multi-hop relay, and accepted arc geometry.
+conduction_geometry_tests = ():
+    loop barrier in ["none", "full", "surface", "submerged", "gap", "inactive"]:
+        reset_probe()
+        flat_course()
+        levels = fill(f32(-10000), 4096)
+        loop x in [-2..10]:
+            loop z in [-2..2]: levels[(z + 32) * 64 + x + 32] = 2.0
+        water_grid_set(levels, 64, -32.0, -32.0, 1.0)
+        if barrier != "none":
+            wall = add_box(vec3(4, 0, 0), v3(0.08, (if barrier == "surface": 1.0 else: (if barrier == "submerged": 0.75 else: 3.0)), (if barrier == "gap": 0.65 else: 3.0)), 0.0, false, .stone)
+            if barrier == "inactive": colliders[wall].active = false
+        pl = Player(pos = vec3(8, 0, 0))
+        particles.clear()
+        strike_at(vec3(0, 0.6, 0))
+        connected = barrier != "full" and barrier != "surface"
+        check("pool_solid_barrier_player_{barrier}", pl.hp == (if connected: 8 else: 12), "distance=8m hp={pl.hp} cells={strike_water.len()} paths={strike_paths.len()}")
+        check("pool_solid_barrier_exposure_{barrier}", shock_at(vec3(8, 0.6, 0)) == (if connected: 1.0 else: 0.0))
+        valid = true
+        loop path in strike_paths:
+            if not water_link_clear(path.from, path.to): valid = false
+        check("pool_arcs_use_collision_accepted_links_{barrier}", valid and particles.len() > 0, "arc_particles={particles.len()}")
+        # Continuous strokes share endpoints and remain close to collision-safe
+        # conductive routes; the quarter-metre visual jag never crosses dry banks.
+        on_paths = true
+        strokes = 0
+        loop particle in particles:
+            if particle.kind == .arc: strokes += 1
+            loop endpoint in [particle.pos - particle.vel * (if particle.kind == .arc: 0.5 else: 0.0), particle.pos + particle.vel * (if particle.kind == .arc: 0.5 else: 0.0)]:
+                found = false
+                loop path in strike_paths:
+                    delta = vec2(path.to.x - path.from.x, path.to.z - path.from.z)
+                    along = clamp(dot(vec2(endpoint.x - path.from.x, endpoint.z - path.from.z), delta) / max(dot(delta, delta), 0.00001), 0.0, 1.0)
+                    root = lerp(path.from, path.to, along)
+                    # A jagged filament can bend within a quarter-metre tube of an
+                    # accepted damage route, but must remain in conductive water.
+                    if length(vec2(endpoint.x - root.x, endpoint.z - root.z)) <= 0.251 and abs(endpoint.y - root.y) <= 0.221 and water_region_has(strike_water, endpoint): found = true
+                if not found: on_paths = false
+        check("pool_connected_arc_strokes_{barrier}", strokes > 0 and strokes < SHOCK_ARC_POINTS)
+        check("pool_arc_particles_follow_damage_graph_{barrier}", on_paths)
+    # Connected water reaches the supplied pond-view wader at fifteen metres;
+    # airborne/dry actors and an invulnerable actor cannot acquire a shock flicker.
+    loop y in [-0.5, 2.0]:
+        reset_probe()
+        flat_course()
+        hf.h = fill(f32(-2), 4096)
+        water_grid_set(fill(f32(0), 4096), 64, -32.0, -32.0, 1.0)
+        pl = Player(pos = v3(15.0, y, 0.0))
+        strike_at(vec3(0, 0.1, 0))
+        wet = y < 0.6
+        check("water_wader_shock_flinch_{y}", pl.hp == (if wet: 8 else: 12) and (player_shock_t > 0.0) == wet and (pl.state == .hurt) == wet)
+        fx_update(0.10)
+        check("water_wader_shock_visible_plus5_{y}", (player_shock_t > 0.0) == wet)
+        fx_update(0.30)
+        check("water_wader_shock_expires_{y}", player_shock_t == 0.0)
+    reset_probe()
+    pl.invuln = 1.0
+    shock_player(4, pl.pos - vec3(1, 0, 0), 3.0)
+    check("invulnerable_player_has_no_shock_flicker", player_shock_t == 0.0 and pl.hp == 12)
+    # All links in a four-relay chain, including its receiver, independently respect cover.
+    loop barrier in [-1..5):
+        reset_probe()
+        flat_course()
+        loop x in [3.0, 5.0, 7.0, 9.0]: spawn_item("travelers_sword", v3(x, 0.6, 0.0), resting = true)
+        if barrier >= 0: add_box(v3((if barrier == 0: 1.5 else: 2.0 + 2.0 * f64(barrier)), 0.0, 0.0), vec3(0.06, 2, 3), 0.0, false, .stone)
+        animals = [Animal(.boar, vec3(11, 0, 0), vec3(11, 0, 0), hp = 8.0)]
+        strike_at(vec3(0, 0.6, 0))
+        reached = shock_at(vec3(11, 0.6, 0))
+        check("metal_four_relays_cover_{barrier}", reached == (if barrier < 0: 1.0 else: 0.0), "shock={reached} relays={strike_relays.len()} paths={strike_paths.len()}")
+        valid = true
+        loop path in strike_paths:
+            if not shock_link_clear(path.from, path.to): valid = false
+        check("metal_arcs_obey_every_cover_link_{barrier}", valid)
+        elements_update(DT, pl.pos)
+        check("metal_four_relays_actor_damage_{barrier}", animals[0].hp == (if barrier < 0: 4.0 else: 8.0), "hp={animals[0].hp}")
+    reset_probe()
+    add_box(vec3(3, 0, 0), vec3(0.4, 0.6, 0.4), 0.0, false, .metal)
+    spawn_item("travelers_sword", vec3(5, 0.6, 0), resting = true)
+    strike_at(vec3(0, 0.6, 0))
+    check("solid_metal_prop_relays_to_loose_metal", shock_at(vec3(7, 0.6, 0)) == 1.0, "relays={strike_relays.len()}")
+    reset_probe()
+    loop x in [3..30]: spawn_item("travelers_sword", v3(f64(x), 0.6, 0.0), resting = true)
+    strike_at(vec3(0, 0.6, 0))
+    check("metal_propagation_reach_bound", shock_at(vec3(15, 0.6, 0)) == 0.0 and strike_relays.len() <= SHOCK_RELAYS)
+    loop relay in strike_relays: check("metal_propagation_hop_bound", relay.hops <= SHOCK_HOPS)
+    reset_probe()
+    loop i in [0..100): spawn_item("travelers_sword", v3(3.0, 0.6, f64(i) * 0.001), resting = true)
+    particles.clear()
+    strike_at(vec3(0, 0.6, 0))
+    check("conduction_arcs_leave_bolt_particle_budget", particles.len() <= SHOCK_ARC_POINTS, "particles={particles.len()}")
+    check("metal_propagation_node_bound", strike_relays.len() == SHOCK_RELAYS, "relays={strike_relays.len()}")
+    reset_probe()
+    flat_course()
+
+shrine_title_tests = ():
+    # Enter through the production transition, retaining each recognizable name.
+    loop i in [0..4):
+        __enter_now(i)
+        check("shrine_entry_name_{i}", ui.location == srec[i].name + " Shrine", "banner='{ui.location}'")
+    # The prior subtitle lived outside UIState in the 2D draw function, so inspect
+    # that source too: a name-only banner must not have a second rune-trial layer.
+    source = read_file("game/shrines.jo") ?? ""
+    check("shrine_absent_rune_titles_removed", source != "" and not source.contains("Magnet Trial") and not source.contains("Bomb Trial") and not source.contains("Pause Trial") and not source.contains("Ice Block Trial"))
+    __keh_set_active(false)
+    shr_cur = -1
+    cam.override = false
+    use_terrain = true
+
+# Catch eligibility and the normal Usable callback agree; covered/fleeing/hidden
+# targets never advertise an action, and callbacks revalidate stale targets.
+catch_prompt_tests = ():
+    loop kind in [CKind.frog, CKind.lizard]:
+        loop blocked in [false, true]:
+            reset_probe()
+            usables.clear()
+            critters.clear()
+            bugs.clear()
+            pl = Player(state = .ground, sneaking = true)
+            critters.push(Critter(kind, vec3(1.1, 0, 0), vec3(1.1, 0, 0), seed = 2.0))
+            if blocked: add_box(vec3(0.55, 0, 0), vec3(0.05, 2, 2), 0.0, false, .stone)
+            wild_catch_prompt()
+            i = usable_near(pl.pos, forward_of(pl.face))
+            check("catch_contextual_prompt_{kind}_{blocked}", (i >= 0) == (not blocked) and (if i >= 0: usables[i].prompt == "Catch" else: true))
+            if i >= 0:
+                id = if kind == .frog: "hot_footed_frog" else: "hightail_lizard"
+                before = count_of(id)
+                critters[0].fleeing = 1.0
+                use_it(i)
+                check("catch_stale_fleeing_rejected_{kind}", count_of(id) == before and critters[0].hide == 0.0)
+                critters[0].fleeing = 0.0
+                wild_catch_prompt()
+                use_it(i)
+                check("catch_usable_action_{kind}", count_of(id) == before + 1 and critters[0].hide == 600.0)
+                wild_catch_prompt()
+                check("catch_hidden_prompt_removed_{kind}", usable_near(pl.pos, forward_of(pl.face)) < 0)
+    critters.clear()
+    bugs.clear()
+    usables.clear()
+    reset_probe()
+
+# Round-56 improvisation and catch regressions use the production state/contact paths.
+improvisation_tests = ():
+    loop hz in [30, 60, 120]:
+        loop range_ in [1.2, 1.5, 4.0]:
+            reset_probe()
+            pl = Player(pos = v3(0.0, 0.0, -range_), face = PI)
+            e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+            enemies[e].face = 0.0
+            enemies[e].state = .attack
+            enemies[e].move = 3
+            n = 0
+            loop f in [0..int(f64(hz) * 0.5)):
+                enemies_update(1.0 / f64(hz), false)
+                loop ev in enemy_events:
+                    if ev.kind == "player_hit": n += 1
+            check("kick_close_only_{range_}_{hz}", pl.hp == (if range_ < 2.0: 11 else: 12) and n == (if range_ < 2.0: 1 else: 0), "hp={pl.hp} contacts={n}")
+        loop wall in [false, true]:
+            reset_probe()
+            pl = Player(pos = vec3(0, 0, -8), face = PI)
+            e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+            enemies[e].face = 0.0
+            enemies[e].state = .attack
+            enemies[e].move = 4
+            enemies[e].held = "rock"
+            origin = enemy_contact_segment(enemies[e].pos, 0.0, 4, "rock", 0.22, enemies[e].contact_scale).grip
+            if wall: add_box(vec3(0, 0, -3.5), vec3(3, 3, 0.15), 0.0, false, .stone)
+            released = false
+            origin_error = 100.0
+            loop f in [0..int(f64(hz) * 1.5)):
+                enemies_update(1.0 / f64(hz), false)
+                if not released and witems.len() > 0:
+                    released = true
+                    origin_error = f64(length(witems[0].pos - origin))
+                items_physics(1.0 / f64(hz))
+            check("rock_drawn_release_cover_{wall}_{hz}", released and origin_error < 0.003 and pl.hp == (if wall: 12 else: 10), "origin_error={origin_error:.6}m hp={pl.hp}")
+    loop range_ in [1.5, 2.1]:
+        reset_probe()
+        inv = Inventory()
+        inv_add("pot_lid")
+        pl = Player(pos = v3(0.0, 0.0, -range_), face = PI)
+        fight = Fight(act = .guard, guard_t = 1.0)
+        e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+        enemies[e].state = .chase
+        enemies[e].alert = 1.0
+        enemies[e].face = 0.0
+        chosen = -1
+        loop f in [0..180):
+            enemies_update(DT, false)
+            if enemies[e].state == .windup:
+                chosen = enemies[e].move
+                break
+        check("kick_guard_selection_{range_}", chosen == (if range_ < 1.65: 3 else: 0), "move={chosen}")
+    reset_probe()
+    pl = Player(pos = vec3(0, 0, -8))
+    e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+    enemies[e].state = .chase
+    enemies[e].alert = 1.0
+    enemies[e].anim_t = 2.0
+    spawn_item("rock", vec3(0.4, 0.12, 0), resting = true)
+    gathered = false
+    threw = false
+    loop f in [0..240):
+        enemies_update(DT, false)
+        items_physics(DT)
+        if enemies[e].state == .gather: gathered = true
+        loop w in witems:
+            if w.thrown_by_enemy: threw = true
+    check("camp_fetch_and_throw", gathered and threw and not witems[0].alive, "gathered={gathered} threw={threw}")
+    reset_probe()
+    pl = Player(pos = vec3(0, 0, -1.2), face = PI)
+    e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+    enemies[e].state = .attack
+    enemies[e].move = 3
+    enemies[e].face = 0.0
+    loop f in [0..20): enemies_update(DT, false)
+    check("hit_cheer", enemies[e].state == .celebrate and pl.hp == 11)
+    reset_probe()
+    pl = Player(pos = vec3(0, 0, -1.5))
+    e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+    enemies[e].state = .chase
+    enemies[e].held = "rock"
+    enemies_update(DT, false)
+    check("close_melee_drops_throwing_rock", enemies[e].held == "" and witems.len() == 1 and witems[0].id == "rock")
+    reset_probe()
+    pl = Player(pos = vec3(0, 0, -2))
+    e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+    enemies[e].state = .chase
+    enemies[e].hp = 2.0
+    enemies_update(DT, false)
+    check("low_hp_regroup", enemies[e].state == .retreat and enemies[e].retreat_t > 0.0)
+    reset_probe()
+    pl = Player(pos = vec3(25, 0, 25))
+    e = spawn_enemy(.bokoblin, vec3(0, 0, 0), "boko_club")
+    enemies[e].patrol = true
+    enemies[e].patrol_to = vec3(6, 0, 0)
+    enemies[e].face = PI * 0.5
+    minimum = 100.0
+    maximum = -100.0
+    unsafe = 0
+    loop f in [0..900):
+        enemies_update(DT, false)
+        minimum = min(minimum, f64(enemies[e].pos.x))
+        maximum = max(maximum, f64(enemies[e].pos.x))
+        if not enemy_walkable(enemies[e].pos, enemies[e].pos) or abs(f64(enemies[e].pos.y)) > 0.01: unsafe += 1
+    check("patrol_round_trip", unsafe == 0 and maximum > 4.5 and minimum < 1.0 and enemies[e].alert == 0.0, "x={minimum:.3}..{maximum:.3}")
+    loop hazard in ["wall", "water", "cliff"]:
+        reset_probe()
+        if hazard == "wall": add_box(vec3(2, 0, 0), vec3(0.15, 2, 3), 0.0, false, .stone)
+        if hazard == "water": water_grid_set(fill(f32(2), 4096), 64, -32.0, -32.0, 1.0)
+        if hazard == "cliff":
+            loop x in [34..64):
+                loop z in [0..64): hf.h[z * 64 + x] = -5.0
+        check("patrol_rejects_{hazard}", not enemy_walkable(vec3(0, 0, 0), vec3(2.3, 0, 0)))
+        flat_course()
+    reset_probe()
+
+catch_interact = ():
+    wild_catch_prompt()
+    i = usable_near(pl.pos, forward_of(pl.face))
+    ui.prompt = if i >= 0: usables[i].prompt else: ""
+    if act.interact and i >= 0: use_it(i)
+
+catch_tests = ():
+    loop kind in [CKind.frog, CKind.lizard]:
+        loop sneaking in [false, true]:
+            reset_probe()
+            critters.clear()
+            bugs.clear()
+            pl = Player(pos = vec3(0, 0, 0), state = .ground, sneaking = sneaking, speed = (if sneaking: 1.0 else: 6.0), vel = (if sneaking: vec3(1, 0, 0) else: vec3(6, 0, 0)))
+            critters.push(Critter(kind, vec3(1.1, 0, 0), vec3(1.1, 0, 0), seed = 2.0))
+            id = if kind == .frog: "hot_footed_frog" else: "hightail_lizard"
+            before = count_of(id)
+            act.interact = true
+            ui.prompt = ""
+            catch_interact()
+            critters_update(DT)
+            check("critter_catch_or_flee_{kind}_{sneaking}", count_of(id) == before + (if sneaking: 1 else: 0) and (if sneaking: critters[0].hide > 500.0 else: critters[0].fleeing > 0.0), "count={count_of(id)-before} flee={critters[0].fleeing:.3}")
+            if sneaking:
+                act.interact = true
+                catch_interact()
+                critters_update(DT)
+                check("critter_no_duplicate_{kind}", count_of(id) == before + 1)
+            else:
+                loop f in [0..30): critters_update(DT)
+                check("critter_runs_away_{kind}", length(critters[0].pos - pl.pos) > 2.0)
+    loop night in [false, true]:
+        loop sneaking in [false, true]:
+            reset_probe()
+            critters.clear()
+            bugs.clear()
+            env.night = if night: 1.0 else: 0.0
+            pl = Player(state = .ground, sneaking = sneaking, speed = (if sneaking: 1.0 else: 6.0))
+            b = Bug(vec3(1.1, 0.8, 0), vec3(1.1, 0, -3), 0.0, true)
+            bugs.push(b)
+            before = count_of("sunset_firefly")
+            act.interact = true
+            ui.prompt = ""
+            wildlife_update(DT)
+            catch_interact()
+            critters_update(DT)
+            caught = night and sneaking
+            check("firefly_night_catch_{night}_{sneaking}", count_of("sunset_firefly") == before + (if caught: 1 else: 0) and (if caught: bugs[0].hide > 500.0 else: bugs[0].hide == 0.0))
+            if night and not sneaking: check("firefly_flees_running", bugs[0].fleeing > 0.0)
+    reset_probe()
+    critters.clear()
+    bugs.clear()
+    pl = Player(state = .ground, sneaking = true)
+    critters.push(Critter(.frog, vec3(1.1, 0, 0), vec3(1.1, 0, 0)))
+    add_box(vec3(0.55, 0, 0), vec3(0.05, 2, 2), 0.0, false, .stone)
+    before = count_of("hot_footed_frog")
+    act.interact = true
+    catch_interact()
+    critters_update(DT)
+    check("catch_respects_cover", count_of("hot_footed_frog") == before and critters[0].hide == 0.0)
+    critters.clear()
+    bugs.clear()
+    reset_probe()
+
+combat_weight_tests = ():
+    reset_probe()
+    sword = swing_for(item("travelers_sword"), 0)
+    heavy = swing_for(item("travelers_claymore"), 0)
+    spear = swing_for(item("boko_spear"), 0)
+    check("weapon_classes_have_distinct_weight", spear.dur < sword.dur and heavy.dur > sword.dur * 1.5 and heavy.hit0 > sword.hit0 * 2.0)
+    fight = Fight(act = .swing)
+    loop id in ["travelers_sword", "travelers_claymore", "boko_spear"]:
+        sw = swing_for(item(id), 0)
+        check("weapon_windup_matches_contact_{id}", abs(attack_phase(item(id), sw.hit0) - 0.27) < 0.00001 and attack_phase(item(id), sw.hit0 - DT) < 0.27)
+    loop direction in [vec3(0, 0, 1), vec3(0, 0, -1), vec3(1, 0, 0), vec3(-1, 0, 0)]:
+        reset_probe()
+        e = spawn_enemy(.blue_bokoblin, vec3(0, 0, 0))
+        enemies[e].state = .chase
+        enemies[e].alert = 1.0
+        __take_hit(enemies[e], 5.0, direction * -2.0, 4.0, false)
+        check("stagger_away_from_blow_{direction}", enemies[e].state == .stagger and dot(enemies[e].recoil, direction) > 0.999 and enemies[e].impact_t == 0.16)
+        __take_hit(enemies[e], 5.0, direction * -2.0, 4.0, false, heavy = true)
+        check("heavy_hit_knocks_down_{direction}", enemies[e].state == .knocked and dot(enemies[e].vel, direction) > 5.9 and enemies[e].vel.y > 0.0)
+    loop side in [-1.0, 1.0]:
+        reset_probe()
+        e = spawn_enemy(.blue_bokoblin, vec3(0, 0, 0))
+        enemies[e].state = .chase
+        enemies[e].alert = 1.0
+        player_hits = [PHit(vec3(0, 1, 0), vec3(0, 1, -2), v3(side, 0.0, 0.0), 5.0, 4.0, false, 321, vec3(-0.5, 1, 0), vec3(0.5, 1, 0))]
+        enemies_take_hits()
+        check("blade_direction_drives_flinch_{side}", enemies[e].blow_dir.x * f32(side) > 0.999 and enemies[e].recoil.z > 0.999)
+    loop hz in [30, 60, 120]:
+        reset_probe()
+        inv.weapons = ["travelers_sword"]
+        inv.weapon = 0
+        pl.face = 0.0
+        fight = Fight(act = .throw_, t = 0.25)
+        combat_update(1.0 / f64(hz), enemy_pos, 0)
+        check("throw_releases_spinning_weapon_{hz}", witems.len() == 1 and inv.weapons.len() == 0 and witems[0].tossed and witems[0].thrown_by_player and witems[0].damage == 10)
+        before = normalize(transform_dir(world_item_transform(witems[0]), vec3(0, 1, 0)))
+        items_physics(1.0 / f64(hz))
+        after = normalize(transform_dir(world_item_transform(witems[0]), vec3(0, 1, 0)))
+        check("throw_tumbles_out_of_ground_plane_{hz}", abs(after.y - before.y) > 0.001)
+        e = spawn_enemy(.blue_bokoblin, pl.pos + vec3(0, 0, -2.8))
+        enemies[e].state = .chase
+        enemies[e].alert = 1.0
+        loop tick in [0..hz * 4):
+            enemies_take_hits()
+            items_physics(1.0 / f64(hz))
+        check("thrown_weapon_damages_once_then_clatters_{hz}", enemies[e].hp == 62.0 and not witems[0].thrown_by_player and witems[0].resting and witems[0].alive, "hp={enemies[e].hp} resting={witems[0].resting}")
+
+# Round 56 natural warnings and transfer paths, with stationary/nonmetal/shelter controls.
+lightning_tracking_tests = ():
+    loop hz in [30, 60, 120]:
+        dt = 1.0 / f64(hz)
+        loop moving in [false, true]:
+            reset_probe()
+            flat_course()
+            inv = Inventory()
+            inv_add("travelers_sword")
+            pl = Player()
+            fight = Fight()
+            env.weather = .storm
+            env.rain = 1.0
+            seed_random(45)
+            waited = 0
+            loop lightning_warn <= 0.0 and waited < hz * 600:
+                elements_update(dt, pl.pos)
+                waited += 1
+            check("lightning_natural_warning_{hz}_{moving}", lightning_warn > 0.0 and lightning_gear.id == "travelers_sword", "waited={waited} frames")
+            start = pl.pos
+            error = 0.0
+            frames = 0
+            loop lightning_warn > 0.0 and frames < hz * 4:
+                act = Actions(move = if moving: vec2(1, 0) else: vec2(0, 0))
+                player_update(dt)
+                elements_update(dt, pl.pos)
+                error = max(error, f64(length(lightning_pos - pl.pos - vec3(0, 1.3, 0))))
+                frames += 1
+            check("lightning_follows_carried_metal_{hz}_{moving}", pl.hp == 0 and error < 0.001 and (not moving or length(pl.pos - start) > 10.0), "hp={pl.hp} travel={length(pl.pos - start):.3}m target_error={error:.6}m impact={strike_pos}")
+    loop mode in ["stow", "wood", "drop", "drop_inside", "throw", "drop_duplicate", "pickup", "lost", "shelter"]:
+        reset_probe()
+        flat_course()
+        inv = Inventory()
+        inv_add("travelers_sword")
+        if mode == "drop_duplicate": inv_add("travelers_sword")
+        pl = Player()
+        env.weather = .storm
+        env.rain = 1.0
+        assert(lightning_begin())
+        start = lightning_pos
+        match mode:
+            "stow":
+                invui = InvUI(open = true, tab = 0, t = 1.0)
+                act = Actions(interact = true)
+                inventory_update(DT)
+                check("lightning_inventory_stow_preserves_owned_metal", inv.weapon == -1 and inv_owns("travelers_sword") and witems.len() == 0)
+            "wood":
+                inv_add("branch")
+                inv.weapon = 1
+            "drop", "drop_inside", "drop_duplicate", "pickup", "lost": drop_selected(0)
+            "throw":
+                fight = Fight(act = .throw_, t = 0.26)
+                act = Actions()
+                combat_update(DT, enemy_pos, 0)
+            "shelter":
+                begin_named("tracking_roof")
+                box(vec3(12, 4, 0), vec3(6, 0.4, 6), 0.0, vec4(1, 1, 1, 1), vec4(0, 0, 0, 0), false)
+                end_named()
+            _: pass
+        if mode == "pickup":
+            inv_add(witems[0].id)
+            witems[0].alive = false
+        if mode == "lost": witems[0].alive = false
+        pl.pos = vec3(12, 0, 0)
+        if mode == "drop_inside": use_terrain = false
+        if mode == "throw":
+            items_physics(0.3)
+            expected = lightning_metal_pos()!
+            elements_update(DT, pl.pos)
+            check("lightning_throw_sparks_follow_flying_mesh", length(lightning_pos - expected) < 0.001 and length(lightning_pos - start) > 3.0)
+        lightning_warn = 0.001
+        elements_update(DT, pl.pos)
+        if mode == "drop" or mode == "drop_inside" or mode == "throw" or mode == "drop_duplicate":
+            expected = transform_point(world_item_transform(witems[0]), v3(0.0, weapon_length(item(witems[0].id)) * 0.55, 0.0))
+            check("lightning_{mode}_strikes_transferred_item", pl.hp == 12 and strike_t > 0.0 and length(strike_pos - expected) < 0.001, "hp={pl.hp} impact={strike_pos} item={expected}")
+        else if mode == "shelter":
+            check("lightning_current_shelter_intercepts", pl.hp == 12 and strike_pos.x == 12.0 and strike_pos.y > 4.4, "hp={pl.hp} impact={strike_pos}")
+            rain_sync({"tracking_roof": true}, {})
+        else: check("lightning_{mode}_cancels_warning", pl.hp == 12 and lightning_warn == 0.0 and strike_t == 0.0, "hp={pl.hp} strike_t={strike_t}")
+    reset_probe()
+    inv = Inventory()
+    inv_add("branch")
+    env.weather = .storm
+    env.rain = 1.0
+    check("lightning_wood_cannot_acquire", not lightning_begin() and lightning_warn == 0.0)
+    inv_add("travelers_sword")
+    inv.weapon = 1
+    use_terrain = false
+    check("lightning_interior_cannot_acquire", not lightning_begin())
+    use_terrain = true
+    env.weather = .rain
+    check("lightning_ordinary_rain_cannot_acquire", not lightning_begin())
+    # Removing a different entry shifts the tracked index, not the attracting object.
+    env.weather = .storm
+    assert(lightning_begin())
+    drop_selected(0, 0)
+    check("lightning_other_drop_keeps_target_identity", lightning_gear.index == 0 and lightning_gear.world < 0 and lightning_metal_pos() != none)
+    reset_probe()
+
+inventory_benefit_tests = ():
+    reset_probe()
+    inv = Inventory()
+    pl = Player(hp = 4)
+    warm_t = 0.0
+    ui = UIState()
+    check("food_absent_has_no_benefits", not eat_food("pepper") and pl.hp == 4 and warm_t == 0.0 and ui.hearts_flash == 0.0)
+    inv_add("pepper")
+    check("food_owned_grants_benefits_once", eat_food("pepper") and pl.hp == 5 and warm_t == 150.0 and ui.hearts_flash > 0.0 and count_of("pepper") == 0)
+    warm_t = 20.0
+    check("food_repeated_use_has_no_benefits", not eat_food("pepper") and pl.hp == 5 and warm_t == 20.0)
+    check("gear_and_unknown_cannot_be_eaten", not eat_food("travelers_sword") and not eat_food("missing_item") and pl.hp == 5)
+    warm_t = 0.0
+    reset_probe()
+
+map_water_tests = ():
+    flat_course()
+    water_grid_set(fill(f32(2), hf.n * hf.n), hf.n, hf.x0, hf.z0, hf.cell)
+    check("map_exposed_water_positive", map_water_at(0.0, 0.0) and water_depth(0.0, 0.0) == 2.0)
+    loop z in [0..hf.n):
+        loop x in [0..hf.n):
+            if x < 20: hf.h[z * hf.n + x] = 8.0
+            else if x < 32: hf.h[z * hf.n + x] = 2.0
+    check("map_elevated_terrain_over_stored_water_is_land", water_level(-20.0, 0.0) != none and not map_water_at(-20.0, 0.0))
+    check("map_dry_bank_over_stored_water_is_land", water_level(-8.0, 0.0) != none and not map_water_at(-8.0, 0.0))
+    check("map_waterline_epsilon_is_land", not map_water_at(-0.999, 0.0) and map_water_at(-0.99, 0.0))
+    flat_course()
+    check("map_absent_water_negative", not map_water_at(0.0, 0.0))
+
+# Wordless field barriers dispatch through the production element/explosion loop.
+element_puzzle_tests = ():
+    old_chests = chests
+    old_usables = usables
+    loop hz in [30,60,120]:
+        dt = 1.0/f64(hz)
+        loop thorn in [false,true]:
+            loop source in ["torch","arrow","blade","torch cover","arrow cover","blade cover","plain blade","plain arrow","shock","cold","water","blast","blast cover"]:
+                element_puzzles.clear()
+                reset_probe()
+                flat_course()
+                inv = Inventory()
+                # Isolate barrier responses from incidental blast-lit grass.
+                loop k in [0..hf.n*hf.n): hf.mat[k*4+1]=255
+                chests.clear()
+                usables.clear()
+                i = element_puzzle_add(vec3(0,0,0),thorn)
+                p = element_puzzles[i]
+                pl.pos = vec3(10,0,10)
+                if ends_with(source,"cover") and source!="blast cover": add_box(vec3(0,0,0.25),vec3(3,2,0.06),climbable=false)
+                if starts_with(source,"torch"): torch_tip=vec3(0,0.85,0.60)
+                if starts_with(source,"arrow") or source=="plain arrow":
+                    arrows=[Arrow(pos=vec3(0,0.85,0.50),prev=vec3(0,0.85,0.50),fire=source!="plain arrow",stuck=20.0)]
+                if starts_with(source,"blade") or source=="plain blade":
+                    player_hits=[PHit(vec3(0,0.85,1),vec3(0,0.85,-0.2),vec3(0,0,-1),30.0,1.0,source!="plain blade",1,vec3(0,0.85,1),vec3(0,0.85,-0.2))]
+                if source=="shock":
+                    strike_pos=vec3(0,0.85,0.35)
+                    strike_t=10.0
+                    strike_id+=1
+                if source=="cold": element_puzzles[i].el.frozen=10.0
+                if source=="water": water_grid_set(fill(f32(3),hf.n*hf.n),hf.n,hf.x0,hf.z0,hf.cell)
+                if source=="blast" or source=="blast cover":
+                    if source=="blast cover": add_box(vec3(0,0,1),vec3(3,2,0.08),climbable=false)
+                    # Same fuse and explosion path as the field's red barrel.
+                    barrels=[Barrel(vec3(0,0,2),true,fuse=dt*0.5)]
+                loop k in [0..hz*6): elements_update(dt,pl.pos)
+                expected = (if thorn:source=="torch" or source=="arrow" or source=="blade" else:source=="blast")
+                p=element_puzzles[i]
+                active=0
+                loop col in p.cols:
+                    if colliders[col].active: active+=1
+                check("field_puzzle_{thorn}_{source}_{hz}",p.opened==expected and usables[p.marker].used==expected and usables[chests[p.chest].usable].enabled==expected and active==(if expected:0 else:p.cols.len()),"open={p.opened} solids={active}")
+                torch_tip=vec3(0,-10000,0)
+            # Opening and collection are independently persistent, idempotent records.
+            loop opened in [false,true]:
+                loop collected in [false,true]:
+                    if collected and not opened: continue
+                    element_puzzles.clear()
+                    reset_probe()
+                    flat_course()
+                    inv=Inventory()
+                    chests.clear()
+                    usables.clear()
+                    i=element_puzzle_add(vec3(0,0,0),thorn)
+                    p=element_puzzles[i]
+                    if opened: element_puzzle_open(i)
+                    if collected: use_it(chests[p.chest].usable)
+                    saved=save_capture()
+                    saved.awake=true
+                    path="build/field-puzzle-{hz}-{thorn}-{opened}-{collected}"
+                    check("field_puzzle_save_write_{hz}_{thorn}_{opened}_{collected}",save_write(path,saved))
+                    decoded=save_decode(read_file(path) ?? "")
+                    check("field_puzzle_save_decode_{hz}_{thorn}_{opened}_{collected}",decoded!=none)
+                    usables[p.marker].used=false
+                    chests[p.chest].opened=false
+                    usables[chests[p.chest].usable].used=false
+                    element_puzzles_sync()
+                    if let s=decoded:
+                        save_apply(s)
+                        save_apply(s)
+                    p=element_puzzles[i]
+                    solid=false
+                    loop col in p.cols: solid=solid or colliders[col].active
+                    reward=(if thorn:inv.arrows else:count_of("amber"))
+                    check("field_puzzle_save_restore_{hz}_{thorn}_{opened}_{collected}",p.opened==opened and solid==(not opened) and chests[p.chest].opened==collected and reward==(if collected:(if thorn:5 else:2) else:0),"reward={reward} open={p.opened} chest={chests[p.chest].opened}")
+                    if opened:
+                        use_it(chests[p.chest].usable)
+                        use_it(chests[p.chest].usable)
+                        check("field_puzzle_reward_once_{hz}_{thorn}_{collected}",(if thorn:inv.arrows else:count_of("amber"))==(if thorn:5 else:2))
+                    delete_file(path)
+    element_puzzles.clear()
+    reset_probe()
+    chests=old_chests
+    usables=old_usables
+
+main = ():
+    __audio_state = 2
+    __input_init()
+    flat_course()
+    items_init()
+    fire_tests()
+    guardian_tests()
+    lightning_tests()
+    gear_tests()
+    ranged_tests()
+    shock_rate_tests()
+    projectile_order_tests()
+    cover_tests()
+    lethal_source_tests()
+    thrown_sweep_tests()
+    combat_weight_tests()
+    melee_cover_tests()
+    enemy_melee_contact_tests()
+    wildlife_projectile_tests()
+    wildlife_element_tests()
+    scout_tests()
+    shrine_blast_cover_tests()
+    flat_course()
+    chest_capacity_tests()
+    selection_cover_tests()
+    wildlife_contact_tests()
+    conduction_cover_tests()
+    conduction_geometry_tests()
+    improvisation_tests()
+    catch_tests()
+    catch_prompt_tests()
+    lightning_tracking_tests()
+    inventory_benefit_tests()
+    map_water_tests()
+    element_puzzle_tests()
+    enemy_spacing_test_suite()
+    stalkoblin_test_suite()
+    wildlife_voice_test_suite()
+    talus_test_suite()
+    trees_test_suite()
+    print("integration: {checks - failures}/{checks} passed")
+    if failures > 0: exit(1)

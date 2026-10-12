@@ -1,0 +1,21 @@
+use 'audio_assets.jo'
+# The library's sfx_chime synthesizes its 1.2 s sample on every call. Keep the
+# exact sound, but do the work during load rather than each shrine lift/activation.
+__chime: Sound
+__chime_ready = false
+
+audio_cache_init = ():
+    if __chime_ready: return
+    if let asset = audio_asset_read("assets/prepared/chime.bin", audio_asset_key(["game/audio_cache.jo"])):
+        if asset.groups.len() == 1 and asset.groups[0].len() == 1 and asset.flags.len() == 0:
+            __chime = asset.groups[0][0]
+            __chime_ready = true
+            return
+    __chime = sfx_chime()
+    __chime_ready = true
+
+cached_chime = () -> Sound:
+    audio_cache_init()
+    __chime
+
+chime_asset = () -> AudioAsset: AudioAsset([[cached_chime()]], [])

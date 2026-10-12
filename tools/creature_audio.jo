@@ -1,0 +1,64 @@
+use '../game/gfx.jo'
+# Repeated close encounters through production dispatch, with gameplay RNG frozen
+# between calls: audio variation must not depend on unrelated world activity.
+use '../game/sfx.jo'
+use '../game/wildlife.jo'
+use '../game/scene.jo'
+use '../game/combat.jo'
+use '../game/player.jo'
+from '../game/sfx.jo' import __sfx_variations_update, __sfx_rng
+
+creature_capture = (name: str, directory: str, enforce: bool = true) -> f32[]:
+    stop_all()
+    fight = Fight()
+    pl = Player(pos = v3(10000, 0, 10000))
+    sc.cam = pl.pos + v3(0, 1.6, 0)
+    sc.fwd = v3(0, 0, -1)
+    sfx_room = 0.0
+    __sfx_rng = rng(61261)
+    loop mut bank in sfx_takes: bank.last = -1
+    animal = Animal((if name == "fox": WKind.fox else: WKind.boar), pl.pos + v3(0, 0, -4), v3(0, 0, 0), seed = 0.37, voice_t = 0.0)
+    samples: f32[]
+    handles: Sound[]
+    pitches: f64[]
+    lengths: f64[]
+    previous = -1
+    repeated = 0
+    call = 0
+    next = 0.5
+    log = "time,take,pitch,source_seconds,rendered_seconds,next_interval\n"
+    loop frame in [0..45 * 60):
+        t = f64(frame) / 60.0
+        if t >= next and call < 12:
+            seed_random(70070)
+            animal.voice_t = 0.0
+            if name == "boar" or name == "fox": wild_voice(animal, (if name == "boar": "boar_graze" else: "fox_yip"))
+            else: sfx_at((if name == "crow": sfx.caw else: sfx.grunt[0]), animal.pos + v3(0, 0.6, 0), sc.cam, v3(1, 0, 0), 0.6)
+            __sfx_variations_update(0.0)
+            loop v in __voices:
+                if v.id != __voice_id: continue
+                pick = -1
+                loop i in [0..handles.len()):
+                    if data(handles[i].samples) == data(v.sound.samples): pick = i
+                if pick < 0:
+                    pick = handles.len()
+                    handles.push(v.sound)
+                if pick == previous: repeated += 1
+                previous = pick
+                pitches.push(v.pitch)
+                lengths.push(duration(v.sound))
+                # Encounter arrivals are fixture inputs, not claimed as an AI timer.
+                interval = 3.1 + f64(call % 4) * 0.17
+                log = "{log}{t:.6},{pick},{v.pitch:.6},{duration(v.sound):.6},{duration(v.sound) / v.pitch:.6},{interval:.6}\n"
+                next = t + interval
+            call += 1
+        __mix(MIX_RATE / 60)
+        loop v in __mix_buf: samples.push(v)
+    assert(call == 12 and pitches.len() == 12, "all repeated encounters dispatch a voice")
+    print("creature {name}: {handles.len()} samples; {repeated} consecutive repeats; pitch span {max(pitches)-min(pitches):.6}; duration span {max(lengths)-min(lengths):.6}")
+    if enforce:
+        assert(handles.len() >= 3 and repeated == 0, "creature encounters vary samples without adjacent repeats")
+        assert(max(pitches) - min(pitches) > 0.015, "creature pitch varies independently of frozen gameplay RNG")
+        assert(max(lengths) - min(lengths) > 0.015, "creature takes vary internal timing, not just playback rate")
+    if directory != "": assert(write_file("{directory}/creature_{name}-calls.csv", log))
+    samples

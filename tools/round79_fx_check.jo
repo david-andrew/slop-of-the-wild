@@ -1,0 +1,55 @@
+# Production body-shock and flame-card geometry; headless, no GPU window.
+use '../game/fx.jo'
+use '../game/env.jo'
+use '../game/gfx.jo'
+use '../game/water_render.jo'
+from '../game/fx.jo' import __pinst_electric
+
+check_body = ():
+    origin = vec3(-1190, 190, 1665)
+    seed_random(701)
+    expected = random()
+    seed_random(701)
+    loop yaw in [0.0, 0.7, 1.57, 3.14, 4.8]:
+        eye = origin + v3(sin(yaw) * 6.0, 3.0, cos(yaw) * 6.0)
+        toward = normalize(vec3(eye.x - origin.x, 0, eye.z - origin.z))
+        side = vec3(toward.z, 0, -toward.x)
+        u = PartU(mat4(), side, vec3(0, 1, 0), eye, vec3(0, 0, 0), 0.0)
+        loop tick in [1..33):
+            player_shock_t = f64(tick) / 100.0
+            __pinst_electric.clear()
+            electric_player(origin, eye)
+            assert(__pinst_electric.len() == 48, "body shock retains the existing fixed stroke/halo budget")
+            loop stroke in __pinst_electric:
+                assert(stroke.data.y == 13, "body shock uses electrical filaments, never white sprite fans")
+                loop x in [-1.0, 1.0]:
+                    loop y in [-1.0, 1.0]:
+                        vertex = part_vs(QuadV(vec2(f32(x), f32(y))), stroke, u).pos.xyz - origin
+                        assert(abs(dot(vertex, side)) < 0.33, "including halo, crackles stay close to the body instead of hip wings")
+                        assert(vertex.y > 0.12 and vertex.y < 1.52, "short crackles remain within feet/head height")
+    assert(random() == expected, "body-shock flicker cannot change gameplay RNG")
+    print("PASS body shock: 160 time/view combinations; 48 strokes; body-bounded halos; unchanged RNG")
+
+check_front = ():
+    loop size in [0.08, 0.15, 0.3, 0.6]:
+        loop k in [0..20):
+            seed = f32(k) * 0.317
+            left = flame_front_corner(vec2(-1, -1), f32(size), seed, 0)
+            right = flame_front_corner(vec2(1, -1), f32(size), seed, 0)
+            top = flame_front_corner(vec2(0, 1), f32(size), seed, 0)
+            assert(right.x - left.x >= 0.75, "small outer tongues overlap the existing burn clumps")
+            assert(left.y == 0.0 and right.y == 0.0, "ember roots follow the sampled terrain without age drift")
+            assert(top.y >= 0.24 and top.y < 1.3, "broad cards retain bounded low flame height")
+            old = flame_front_corner(vec2(1, -1), f32(size), seed, 0.95)
+            assert(old.x < right.x, "cooling roots recede instead of leaving a wide floating ribbon")
+    print("PASS fire front: 80 size/shape cases; overlapping outer cards; terrain roots; bounded tongues and cooling width")
+
+check_body()
+check_front()
+
+loop flash in [0.0, 1.0, 4.0, 12.0]:
+    foam = water_wade_color(vec3(f32(flash), f32(flash), f32(flash)), vec3(1, 1, 1))
+    assert(foam.x <= 0.667 and foam.y <= 0.784 and foam.z <= 0.748, "HDR strike light cannot whiten the leg wake")
+quiet = water_wade_color(vec3(0.3, 0.3, 0.3), vec3(0.2, 0.2, 0.2))
+assert(quiet.x > 0.29 and quiet.y > 0.36, "small foam contact remains visible in quiet weather")
+print("PASS wading flash: bounded foam colour under HDR lightning, quiet leg contact retained")

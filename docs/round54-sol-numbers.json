@@ -1,0 +1,511 @@
+{
+  "baseline_commit": "046aeb3",
+  "flags": "BOTW_GPU=1 BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 BOTW_SCALE=0.8",
+  "gpu_frames": 720,
+  "frame_sample_range": [
+    241,
+    720
+  ],
+  "cache_bytes_before": 134217728,
+  "cache_bytes_after": 67108864,
+  "noise_samples": 131072,
+  "noise_cached_samples": 26545,
+  "noise_max_error": 0.0002442,
+  "noise_fallback_error": 0.0,
+  "integration_baseline": {
+    "pass": 256,
+    "total": 280
+  },
+  "integration_final": {
+    "pass": 280,
+    "total": 280
+  },
+  "performance": {
+    "before": {
+      "camp-gpu": {
+        "resolution": [
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ]
+        ],
+        "samples": 480,
+        "p50": 10.984,
+        "p95": 17.242,
+        "p99": 19.054,
+        "worst": 38.703,
+        "cpu_mean": 3.3760583333333334,
+        "gpu_median": {
+          "shadow0": 0.11,
+          "sh-veg0": 0.0,
+          "sh-chars0": 0.05,
+          "shadow1": 0.05,
+          "sh-veg1": 0.01,
+          "sh-chars1": 0.02,
+          "farland": 1.35,
+          "far-trees": 0.515,
+          "terrain-depth": 0.04,
+          "buildings": 0.125,
+          "trees": 0.34,
+          "terrain": 1.32,
+          "chars": 0.28,
+          "grass": 2.86,
+          "sky": 0.185,
+          "water": 0.225,
+          "fx": 0.09,
+          "post": 1.45,
+          "shadow2": 0.16,
+          "sh-veg2": 0.0,
+          "sh-chars2": 0.03,
+          "total": 9.23
+        }
+      },
+      "climb-gpu": {
+        "resolution": [
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ]
+        ],
+        "samples": 480,
+        "p50": 7.919,
+        "p95": 14.621,
+        "p99": 16.454,
+        "worst": 38.32,
+        "cpu_mean": 3.5861604166666665,
+        "gpu_median": {
+          "shadow0": 0.1,
+          "sh-veg0": 0.0,
+          "sh-chars0": 0.06,
+          "shadow1": 0.06,
+          "sh-veg1": 0.02,
+          "sh-chars1": 0.02,
+          "farland": 0.915,
+          "far-trees": 0.425,
+          "terrain-depth": 0.04,
+          "buildings": 1.005,
+          "trees": 0.915,
+          "terrain": 0.23500000000000001,
+          "chars": 0.235,
+          "grass": 0.5449999999999999,
+          "sky": 0.03,
+          "water": 0.195,
+          "fx": 0.08,
+          "post": 1.44,
+          "shadow2": 0.1,
+          "sh-veg2": 0.0,
+          "sh-chars2": 0.02,
+          "total": 6.47
+        }
+      },
+      "pond-gpu": {
+        "resolution": [
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ]
+        ],
+        "samples": 480,
+        "p50": 10.3,
+        "p95": 17.909,
+        "p99": 28.23,
+        "worst": 44.153,
+        "cpu_mean": 4.546647916666666,
+        "gpu_median": {
+          "shadow0": 0.05,
+          "sh-veg0": 0.10500000000000001,
+          "sh-chars0": 0.09,
+          "shadow1": 0.05,
+          "sh-veg1": 0.255,
+          "sh-chars1": 0.02,
+          "farland": 0.76,
+          "far-trees": 0.45,
+          "terrain-depth": 0.05,
+          "buildings": 0.11,
+          "trees": 1.63,
+          "terrain": 1.43,
+          "chars": 0.28500000000000003,
+          "grass": 0.81,
+          "sky": 0.015,
+          "water": 1.24,
+          "fx": 0.17,
+          "post": 1.4249999999999998,
+          "shadow2": 0.22,
+          "sh-veg2": 0.0,
+          "sh-chars2": 0.03,
+          "total": 9.2
+        }
+      }
+    },
+    "after": {
+      "camp-gpu": {
+        "resolution": [
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ]
+        ],
+        "samples": 480,
+        "p50": 10.836,
+        "p95": 17.835,
+        "p99": 19.884,
+        "worst": 40.172,
+        "cpu_mean": 3.3833083333333334,
+        "gpu_median": {
+          "shadow0": 0.10500000000000001,
+          "sh-veg0": 0.0,
+          "sh-chars0": 0.05,
+          "shadow1": 0.05,
+          "sh-veg1": 0.01,
+          "sh-chars1": 0.02,
+          "farland": 1.35,
+          "far-trees": 0.52,
+          "terrain-depth": 0.04,
+          "buildings": 0.13,
+          "trees": 0.34,
+          "terrain": 1.31,
+          "chars": 0.27,
+          "grass": 2.84,
+          "sky": 0.2,
+          "water": 0.225,
+          "fx": 0.09,
+          "post": 1.5,
+          "shadow2": 0.16,
+          "sh-veg2": 0.0,
+          "sh-chars2": 0.03,
+          "total": 9.24
+        }
+      },
+      "climb-gpu": {
+        "resolution": [
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ]
+        ],
+        "samples": 480,
+        "p50": 8.17,
+        "p95": 14.393,
+        "p99": 16.281,
+        "worst": 16.932,
+        "cpu_mean": 3.80335625,
+        "gpu_median": {
+          "shadow0": 0.1,
+          "sh-veg0": 0.0,
+          "sh-chars0": 0.06,
+          "shadow1": 0.07,
+          "sh-veg1": 0.02,
+          "sh-chars1": 0.02,
+          "farland": 0.725,
+          "far-trees": 0.45499999999999996,
+          "terrain-depth": 0.04,
+          "buildings": 0.92,
+          "trees": 0.9,
+          "terrain": 0.405,
+          "chars": 0.25,
+          "grass": 0.7,
+          "sky": 0.045,
+          "water": 0.24,
+          "fx": 0.08499999999999999,
+          "post": 1.43,
+          "shadow2": 0.11,
+          "sh-veg2": 0.0,
+          "sh-chars2": 0.02,
+          "total": 6.59
+        }
+      },
+      "pond-gpu": {
+        "resolution": [
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ],
+          [
+            "2246x1227",
+            "0.80"
+          ]
+        ],
+        "samples": 480,
+        "p50": 10.476,
+        "p95": 17.436,
+        "p99": 19.075,
+        "worst": 39.825,
+        "cpu_mean": 4.5660625,
+        "gpu_median": {
+          "shadow0": 0.05,
+          "sh-veg0": 0.10500000000000001,
+          "sh-chars0": 0.09,
+          "shadow1": 0.05,
+          "sh-veg1": 0.255,
+          "sh-chars1": 0.02,
+          "farland": 0.76,
+          "far-trees": 0.48,
+          "terrain-depth": 0.05,
+          "buildings": 0.11,
+          "trees": 1.5350000000000001,
+          "terrain": 1.4249999999999998,
+          "chars": 0.255,
+          "grass": 0.82,
+          "sky": 0.015,
+          "water": 1.225,
+          "fx": 0.165,
+          "post": 1.4849999999999999,
+          "shadow2": 0.22,
+          "sh-veg2": 0.0,
+          "sh-chars2": 0.03,
+          "total": 9.165
+        }
+      }
+    }
+  },
+  "presentation_probe": {
+    "mapped": {
+      "samples": 480,
+      "resolution": [
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ]
+      ],
+      "gpu_median": {
+        "shadow0": 0.1,
+        "sh-veg0": 0.0,
+        "sh-chars0": 0.06,
+        "shadow1": 0.06,
+        "sh-veg1": 0.02,
+        "sh-chars1": 0.01,
+        "farland": 0.37,
+        "far-trees": 0.2,
+        "terrain-depth": 0.02,
+        "buildings": 0.47,
+        "trees": 0.59,
+        "terrain": 0.115,
+        "chars": 0.14500000000000002,
+        "grass": 0.43000000000000005,
+        "sky": 0.01,
+        "water": 0.08499999999999999,
+        "fx": 0.04,
+        "post": 0.49,
+        "shadow2": 0.1,
+        "sh-veg2": 0.0,
+        "sh-chars2": 0.02,
+        "total": 3.33
+      },
+      "p50": 7.983,
+      "p95": 14.009,
+      "p99": 15.203,
+      "worst": 16.495,
+      "cpu_mean": 3.3091583333333334,
+      "mid_tail": {
+        "count": 207,
+        "median_game": 2.906,
+        "median_present": 10.147
+      },
+      "present_p95": 11.594
+    },
+    "unmapped": {
+      "samples": 480,
+      "resolution": [
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ],
+        [
+          "1280x720",
+          "0.80"
+        ]
+      ],
+      "gpu_median": {
+        "shadow0": 0.1,
+        "sh-veg0": 0.0,
+        "sh-chars0": 0.06,
+        "shadow1": 0.06,
+        "sh-veg1": 0.02,
+        "sh-chars1": 0.01,
+        "farland": 0.37,
+        "far-trees": 0.2,
+        "terrain-depth": 0.02,
+        "buildings": 0.45999999999999996,
+        "trees": 0.59,
+        "terrain": 0.115,
+        "chars": 0.14500000000000002,
+        "grass": 0.43000000000000005,
+        "sky": 0.01,
+        "water": 0.08499999999999999,
+        "fx": 0.04,
+        "post": 0.49,
+        "shadow2": 0.1,
+        "sh-veg2": 0.0,
+        "sh-chars2": 0.02,
+        "total": 3.325
+      },
+      "p50": 8.305,
+      "p95": 13.91,
+      "p99": 15.182,
+      "worst": 16.523,
+      "cpu_mean": 3.2761770833333332,
+      "mid_tail": {
+        "count": 200,
+        "median_game": 2.8955,
+        "median_present": 10.372499999999999
+      },
+      "present_p95": 11.755
+    }
+  },
+  "limitations": [
+    "Presentation bimodal tail remains unresolved",
+    "Climb GPU total is 0.12 ms / 1.9 percent above paired baseline"
+  ]
+}

@@ -1,0 +1,104 @@
+use 'skel.jo'
+use 'gfx.jo'
+use 'physics.jo'
+use 'player.jo'
+use 'clips.jo'
+use 'items.jo'
+use 'combat.jo'
+use 'enemy_weapon_pose.jo'
+
+# CPU-only limb tracks shared by collision and drawing: swing, slam, shove, kick
+# and throw. Bare melee keeps its fist clips. No per-sample skinning.
+enemy_contact_paths: mat4[][]
+enemy_kick_toe = vec3(0, 0, 0)
+const ENEMY_MOVES = 5
+enemy_attack_clip = (move: int) -> str: ["slash1", "air_attack", "punch", "fight_idle", "throw"][move]
+const ENEMY_CONTACT_STEP = 1.0 / 240.0
+# Dense sockets preserve fast wrist turns; contact sweeps stay at 240 Hz.
+const ENEMY_SOCKET_STEP = 1.0 / 1920.0
+
+enemy_contacts_init = ():
+    if enemy_contact_paths.len() > 0: return
+    r = BinR(read_bytes("assets/models/bokoblin.mdl") ?? [])
+    assert(r_u32(r) == MDL_MAGIC and r_u32(r) == MDL_VERSION)
+    m = Model(name = r_str(r), skeleton = r_str(r))
+    nb = r_u32(r)
+    loop i in [0..nb):
+        m.bones.push(r_str(r))
+        m.parent.push(r_i32(r))
+        m.canon.push(r_i32(r))
+        m.use_t.push(r_u8(r) != 0)
+        m.rest_t.push(r_v3(r))
+        m.rest_r.push(r_v4(r))
+        m.rest_s.push(r_v3(r))
+        m.ibm.push(r_m4(r))
+    m.tscale = f64(r_f32(r))
+    m.bmin = r_v3(r)
+    m.bmax = r_v3(r)
+    assert(not r.bad)
+    lib = load_humanoid_anims()
+    loop armed in [true, false]:
+        loop move in [0..ENEMY_MOVES):
+            name = enemy_attack_clip(move)
+            path: mat4[]
+            hand = bone_index(m, (if move == 3: "foot_r" else: "hand_r"))
+            if move == 3: enemy_kick_toe = transform_point(inverse(bone_world(m, Pose(), hand)), bone_world(m, Pose(), bone_index(m, "ball_r"))[3].xyz)
+            assert(hand >= 0)
+            loop frame in [0..2305):
+                time_ = f64(frame) * ENEMY_SOCKET_STEP
+                pose = sample_clip(lib, clip_index(lib, name), time_ * 1.3, false)
+                if armed or move >= 3: enemy_weapon_pose(m, lib, pose, move, time_, false)
+                path.push(bone_world(m, pose, hand) * (if move == 3: mat4() else: SOCKET_HAND_R.offset))
+            enemy_contact_paths.push(path)
+
+enemy_contact_socket = (move: int, time_: f64, armed: bool = true) -> mat4:
+    enemy_contacts_init()
+    path = enemy_contact_paths[move + (if armed: 0 else: ENEMY_MOVES)]
+    t = clamp(time_ / ENEMY_SOCKET_STEP, 0.0, 2303.0)
+    i = int(t)
+    w = f32(t - f64(i))
+    out = mat4()
+    loop c in [0..4): out[c] = mix(path[i][c], path[i + 1][c], w)
+    out
+
+enemy_attack_lift = (move: int, time_: f64) -> f64:
+    if move == 1 and time_ < 0.5: sin(time_ / 0.5 * PI) * 1.6 else: 0.0
+
+enemy_contact_world = (pos: vec3, face: f64, move: int, time_: f64, build_: vec3) -> mat4:
+    translation(pos + v3(0.0, enemy_attack_lift(move, time_), 0.0)) * rotation_y(PI - face) * scaling(build_)
+
+# This is the actual prop draw transform, including the larger replacement club.
+enemy_weapon_draw_transform = (socket: mat4, weapon: str) -> mat4:
+    club = weapon == "boko_club" or weapon == "spiked_club"
+    socket * scaling((if club: v3(1.65, 1.45, 1.65) else: v3(1.15, 1.15, 1.15)))
+
+struct EnemyContactPose:
+    grip: vec3
+    tip: vec3
+
+enemy_contact_segment = (pos: vec3, face: f64, move: int, weapon: str, time_: f64, build_: vec3) -> EnemyContactPose:
+    socket = enemy_contact_world(pos, face, move, time_, build_) * enemy_contact_socket(move, time_, len(weapon) > 0)
+    draw = enemy_weapon_draw_transform(socket, weapon)
+    grip = transform_point(draw, vec3(0, 0, 0))
+    # A bare hand is a point contact. Armed shoves follow the carried weapon too;
+    # their existing damage, shield bypass and one-blow timing remain in enemies.jo.
+    tip = if move == 3: transform_point(socket, enemy_kick_toe) else: (if len(weapon) > 0: transform_point(draw, v3(0.0, weapon_length(item(weapon)), 0.0)) else: grip)
+    EnemyContactPose(grip, tip)
+
+# Sweep the weapon segment through the crossed active interval, sampling at 240 Hz.
+# Movement is included; cover uses the same hilt/contact rays as player melee.
+enemy_weapon_contact = (pos: vec3, face: f64, move: int, weapon: str, time_: f64, dt: f64, build_: vec3, previous: vec3) -> bool:
+    enemy_contacts_init()
+    start = max(time_ - dt, (if move == 1: 0.45 else: (if move == 3: 0.16 else: 0.10)))
+    finish = min(time_, (if move == 1: 0.54 else: (if move == 3: 0.30 else: (if move == 2: 0.24 else: 0.25))))
+    if finish < start: return false
+    n = max(1, int(ceil((finish - start) / ENEMY_CONTACT_STEP)))
+    loop sample_ in [0..n + 1):
+        t = lerp(start, finish, f64(sample_) / f64(n))
+        root = mix(previous, pos, f32(clamp((t - (time_ - dt)) / max(dt, 0.00001), 0.0, 1.0)))
+        segment = enemy_contact_segment(root, face, move, weapon, t, build_)
+        grip = segment.grip
+        tip = segment.tip
+        hit = PHit((grip + tip) * 0.5, root + vec3(0, 1, 0), forward_of(face), 0.0, 0.0, false, 0, grip, tip)
+        if blade_contact(hit, pl.pos, HEIGHT, RADIUS).y > -9000.0: return true
+    false

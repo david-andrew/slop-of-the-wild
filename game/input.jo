@@ -1,0 +1,371 @@
+# Controls: keyboard + mouse, keyboard alone, and gamepads, merged into game actions.
+#
+#   action           keyboard + mouse        keyboard only     gamepad (Switch positions)
+#   move             WASD                    WASD              left stick
+#   camera           mouse                   arrow keys        right stick
+#   jump             Space                   Space             top face button (Y / X)
+#   sprint           Shift                   Shift             bottom face button (A / B)
+#   attack           left mouse              J                 left face button (X / Y)
+#   interact/pick up E                       E                 right face button (B / A)
+#   lock on, shield  right mouse (hold)      K (hold)          left trigger (hold)
+#   bow              R (hold, release)       L                 right trigger
+#   crouch           Ctrl / C                C                 left stick press
+#   throw weapon     G                       G                 right bumper
+#   item slots       1 2 3                   1 2 3             d-pad left / down / right
+#   inventory        Tab / I                 Tab               start
+#   map/pause        M / Esc                 M                 back
+
+# Keyboard bindings use enum names in the options file. Mouse controls stay available.
+input_action_ids = ["jump", "sprint", "attack", "interact", "lock", "bow", "crouch", "throw", "slot1", "slot2", "slot3", "inventory", "map", "move_left", "move_right", "move_forward", "move_back", "look_left", "look_right", "look_up", "look_down", "walk", "drop", "zoom_in", "zoom_out"]
+input_action_names = ["Jump / glider", "Sprint / dash", "Attack", "Action / interact", "Shield / lock", "Bow", "Crouch", "Throw", "Item button 1", "Item button 2", "Item button 3", "Inventory", "Map", "Move left", "Move right", "Move forward", "Move back", "Camera left", "Camera right", "Camera up", "Camera down", "Walk slowly", "Drop item", "Map zoom in", "Map zoom out"]
+input_defaults = [Key.space, Key.shift, Key.j, Key.e, Key.k, Key.r, Key.ctrl, Key.g, Key.n1, Key.n2, Key.n3, Key.tab, Key.m, Key.a, Key.d, Key.w, Key.s, Key.left, Key.right, Key.up, Key.down, Key.alt, Key.x, Key.equals, Key.minus]
+input_bindings = [loop k in input_defaults: k]
+input_scripted = env("SLOPPY_INPUT") != none
+input_swap_jump_sprint = false
+input_capture = false
+input_keys = [loop i in [1..int(Key.grave) + 1): i as Key]
+
+input_key = (i: int) -> Key: if input_scripted: input_defaults[i] else: input_bindings[i]
+input_key_label = (k: Key) -> str:
+    match k:
+        .space: "Space"
+        .shift: "Shift"
+        .ctrl: "Ctrl"
+        .tab: "Tab"
+        .page_up: "PgUp"
+        .page_down: "PgDn"
+        .backspace: "Bksp"
+        .insert: "Ins"
+        .home: "Home"
+        .end: "End"
+        .minus: "-"
+        .equals: "="
+        .comma: ","
+        .period: "."
+        .slash: "/"
+        .semicolon: ";"
+        .quote: "'"
+        .lbracket: "["
+        .rbracket: "]"
+        .backslash: "\\"
+        .grave: "`"
+        _:
+            name = "{k}"
+            if starts_with(name, "n") and len(name) == 2: return name[1..]
+            upper(name)
+input_key_name = (i: int) -> str: input_key_label(input_key(i))
+input_key_allowed = (k: Key) -> bool:
+    # Menu tabs, confirm, cancel and recovery drop remain reachable. Arrows
+    # can be rebound in gameplay; they always navigate while a menu is open.
+    not (k == .unknown or k == .q or k == .c or k == .delete or k == .enter or k == .escape or k == .f10 or k == .super)
+input_rebind = (i: int, k: Key) -> bool:
+    if i < 0 or i >= input_bindings.len() or not input_key_allowed(k): return false
+    old = input_bindings[i]
+    loop j in [0..input_bindings.len()):
+        if j != i and input_bindings[j] == k: input_bindings[j] = old
+    input_bindings[i] = k
+    true
+input_controls_defaults = ():
+    input_bindings = [loop k in input_defaults: k]
+    input_swap_jump_sprint = false
+input_pad_jump = () -> PadButton: if input_swap_jump_sprint and not input_scripted: .a else: .y
+input_pad_sprint = () -> PadButton: if input_swap_jump_sprint and not input_scripted: .y else: .a
+input_pad_label = (b: PadButton) -> str: upper("{b}")
+input_action_label = (i: int) -> str:
+    if not act.using_pad: return input_key_name(i)
+    match i:
+        0: input_pad_label(input_pad_jump())
+        1: input_pad_label(input_pad_sprint())
+        2: "X"
+        3: "B"
+        4: "LT"
+        5: "RT"
+        6: "Lstick"
+        7: "RB"
+        8: "Left"
+        9: "Down"
+        10: "Right"
+        11: "Start"
+        12: "Back"
+        13, 14, 15, 16, 21: "Lstick"
+        17, 18, 19, 20: "Rstick"
+        22: input_pad_label(input_pad_jump())
+        23: "RB"
+        _: "LB"
+input_bindings_encode = () -> str:
+    out = ""
+    loop i in [0..input_bindings.len()): out += "key_{input_action_ids[i]}={input_bindings[i]}\n"
+    out
+input_bindings_decode = (s: str):
+    input_bindings = [loop k in input_defaults: k]
+    loop line in split(s, "\n"):
+        kv = split(line, "=")
+        if kv.len() != 2: continue
+        loop i in [0..input_action_ids.len()):
+            if kv[0] != "key_{input_action_ids[i]}": continue
+            input_bindings[i] = input_defaults[i]
+            loop k in input_keys:
+                if kv[1] == "{k}" and input_key_allowed(k): input_bindings[i] = k
+    # Reject malformed duplicate bindings together, including any default they displaced.
+    loop pass_ in [0..input_bindings.len()):
+        bad = fill(false, input_bindings.len())
+        loop i in [0..input_bindings.len()):
+            loop j in [0..i):
+                if input_bindings[i] == input_bindings[j]:
+                    bad[i] = true
+                    bad[j] = true
+        loop i in [0..input_bindings.len()):
+            if bad[i]: input_bindings[i] = input_defaults[i]
+
+# Legacy alternate keys apply only to their default action, and never steal a rebound key.
+__input_alias = (i: int, k: Key) -> bool:
+    if input_key(i) != input_defaults[i]: return false
+    loop j in [0..input_bindings.len()):
+        if j != i and input_key(j) == k: return false
+    true
+__input_menu_arrow = (k: Key) -> bool: k == .left or k == .right or k == .up or k == .down
+__input_pressed = (i: int) -> bool:
+    k = input_key(i)
+    key_pressed(k) and not (invui_open_hint and __input_menu_arrow(k))
+# WASD remains a menu alias only while it is not a menu action's rebound key.
+__input_menu_typed = (k: Key) -> bool:
+    loop i in [0..input_bindings.len()):
+        if (i < 13 or i >= 22) and input_key(i) == k: return false
+    key_typed(k)
+__input_down = (i: int) -> bool: __kd(input_key(i))
+__input_released = (i: int) -> bool: key_released(input_key(i))
+
+# a scripted run's held keys (SLOPPY_INPUT with a screenshot): the window system lets go of every
+# key when the window loses focus, which stopped a scripted walk dead when another window took
+# it; here a key the script holds stays held
+__scr: (int, str, bool)[]
+__scr_read = false
+__script_held = (name: str) -> bool:
+    if not __scr_read:
+        __scr_read = true
+        if env("SLOPPY_SCREENSHOT") != none:
+            if let s = env("SLOPPY_INPUT"):
+                loop item in split(s, ","):
+                    c = find(item, ":")
+                    if c < 0 or len(item) < c + 3: continue
+                    __scr.push((to_int(item[..c)) ?? 0, item[c + 1..len(item) - 1), item[len(item) - 1] == '+'))
+    if __scr.len() == 0: return false
+    f = frame_number()
+    held = false
+    at = -1
+    loop e in __scr:
+        if e.1 == name and e.0 <= f and e.0 >= at:
+            at = e.0
+            held = e.2
+    held
+__kd = (k: Key) -> bool: key_down(k) or __script_held("{k}")
+
+struct Actions:
+    move = vec2(0, 0)             # x right, y forward (-1..1, analog)
+    look = vec2(0, 0)             # radians this frame (x yaw, y pitch)
+    jump = false
+    jump_held = false
+    sprint = false
+    sprint_pressed = false
+    attack = false
+    attack_held = false
+    interact = false
+    lock = false
+    lock_pressed = false
+    bow = false
+    bow_pressed = false
+    bow_released = false
+    crouch_pressed = false
+    throw_ = false
+    drop = false                 # inventory only; merged before applying action priority
+    slot = -1
+    inventory = false
+    pause = false
+    confirm = false
+    back = false
+    nav = vec2(0, 0)              # menu navigation (pressed this frame)
+    tab = 0                       # menu tabs: the bumpers
+    using_pad = false
+    pad_lost = false             # disconnect cancels a held action rather than releasing it
+    mouse_look = false
+
+act = Actions()
+mouse_sens = 0.0026
+pad_sens = 3.2
+invert_x = false
+invui_open_hint = false     # the pause screen is open (C changes tabs there, not crouch)
+invert_y = false
+__pad_prev_lt = false
+__pad_prev_rt = false
+__input_pad_on = false
+input_pad_lost = false      # retain the edge while menus pause combat
+__mouse_locked = false
+__lock_frames = 0
+__nav_t = 0.0
+__nav_dir = vec2(0, 0)
+
+__dz = (v: vec2, dz: f64) -> vec2:
+    l = f64(length(v))
+    if l <= dz: return vec2(0, 0)
+    k = (l - dz) / (1.0 - dz) / l
+    v * f32(min(k, 1.0 / l))
+
+# Read raw axes here: the library stick helpers already impose a 22% dead zone.
+# Applying another dead zone there hid roughly a third of the physical travel.
+input_pad_stick = (right: bool) -> vec2:
+    if not gamepad_connected(): return vec2(0, 0)
+    i = if right: 2 else: 0
+    __dz(vec2(f32(gamepad_axis(i)), f32(gamepad_axis(i + 1))), if right: 0.14 else: 0.16)
+__input_pad_down = (b: PadButton) -> bool: gamepad_connected() and gamepad_down(b)
+__input_pad_pressed = (b: PadButton) -> bool: gamepad_connected() and gamepad_pressed(b)
+
+# want_mouse: whether gameplay owns the mouse (menus give it back)
+input_update = (dt: f64, want_mouse: bool):
+    a = Actions()
+    # movement: analog stick wins over keys when pushed
+    kx = 0.0
+    ky = 0.0
+    if __input_down(13): kx -= 1.0
+    if __input_down(14): kx += 1.0
+    if __input_down(15): ky += 1.0
+    if __input_down(16): ky -= 1.0
+    km = vec2(f32(kx), f32(ky))
+    if length(km) > 1.0: km = normalize(km)
+    pad = gamepad_connected()
+    if __input_pad_on and not pad: input_pad_lost = true
+    a.pad_lost = input_pad_lost
+    connected = pad and not __input_pad_on
+    __input_pad_on = pad
+    ls = vec2(0, 0)
+    rs = vec2(0, 0)
+    if pad:
+        ls = input_pad_stick(false)
+        rs = input_pad_stick(true)
+    if length(ls) > 0.0:
+        a.move = vec2(ls.x, -ls.y)
+        a.using_pad = true
+    else: a.move = km
+    # walk modifier on keyboard (Alt): a slow walk like a light stick push
+    if __input_down(21) and length(km) > 0.0: a.move = km * 0.35
+    # camera
+    if want_mouse and not __mouse_locked:
+        __mouse_locked = mouse_lock(true)
+        __lock_frames = 0
+    __lock_frames += 1
+    if not want_mouse and __mouse_locked:
+        mouse_lock(false)
+        __mouse_locked = false
+    md = mouse_delta()
+    # (the first motion after locking is a jump from wherever the pointer was)
+    if __lock_frames < 4 or length(md) > 400.0: md = vec2(0, 0)
+    if want_mouse and (__mouse_locked or mouse_down(.middle)):
+        a.look = vec2(f32(f64(md.x) * mouse_sens), f32(f64(md.y) * mouse_sens))
+        if length(md) > 0.0: a.mouse_look = true
+    ax = 0.0
+    ay = 0.0
+    if __input_down(17): ax -= 1.0
+    if __input_down(18): ax += 1.0
+    if __input_down(19): ay -= 1.0
+    if __input_down(20): ay += 1.0
+    a.look += vec2(f32(ax * 2.4 * dt), f32(ay * 1.6 * dt))
+    if length(rs) > 0.0:
+        # a response curve: fine aim near the center, fast turns at the edge
+        c = rs * f32(f64(length(rs)))
+        a.look += vec2(f32(f64(c.x) * pad_sens * dt), f32(f64(c.y) * pad_sens * 0.6 * dt))
+        a.using_pad = true
+    if invert_x: a.look.x = -a.look.x
+    if invert_y: a.look.y = -a.look.y
+    # buttons (Xbox names; Switch positions: x=left, y=top, a=bottom, b=right)
+    a.jump = __input_pressed(0) or __input_pad_pressed(input_pad_jump())
+    a.jump_held = __input_down(0) or __input_pad_down(input_pad_jump())
+    a.sprint = __input_down(1) or __input_pad_down(input_pad_sprint())
+    a.sprint_pressed = __input_pressed(1) or __input_pad_pressed(input_pad_sprint())
+    a.attack = mouse_pressed(.left) or __input_pressed(2) or __input_pad_pressed(.x)
+    a.attack_held = mouse_down(.left) or __input_down(2) or __input_pad_down(.x)
+    a.interact = __input_pressed(3) or __input_pad_pressed(.b)
+    lt = pad and gamepad_axis(4) > 0.4
+    rt = pad and gamepad_axis(5) > 0.4
+    a.lock = mouse_down(.right) or __input_down(4) or lt
+    a.lock_pressed = mouse_pressed(.right) or __input_pressed(4) or (lt and not __pad_prev_lt)
+    a.bow = __input_down(5) or (__input_alias(5, .l) and __kd(.l)) or rt
+    a.bow_pressed = __input_pressed(5) or (__input_alias(5, .l) and key_pressed(.l)) or (rt and not __pad_prev_rt)
+    a.bow_released = __input_released(5) or (__input_alias(5, .l) and key_released(.l)) or (pad and not rt and __pad_prev_rt)
+    __pad_prev_lt = lt
+    __pad_prev_rt = rt
+    a.crouch_pressed = __input_pressed(6) or (__input_alias(6, .c) and key_pressed(.c)) or __input_pad_pressed(.lstick)
+    a.throw_ = __input_pressed(7) or __input_pad_pressed(.rb)
+    a.drop = __input_pressed(22) or key_pressed(.delete) or __input_pad_pressed(input_pad_jump())
+    if __input_pressed(8) or __input_pad_pressed(.left): a.slot = 0
+    if __input_pressed(9) or __input_pad_pressed(.down): a.slot = 1
+    if __input_pressed(10) or __input_pad_pressed(.right): a.slot = 2
+    a.inventory = __input_pressed(11) or (__input_alias(11, .i) and key_pressed(.i)) or __input_pad_pressed(.start)
+    a.pause = key_pressed(.escape) or __input_pressed(12) or __input_pad_pressed(.back)
+    a.confirm = key_pressed(.enter) or __input_pressed(3) or __input_pressed(0) or __input_pad_pressed(.b) or mouse_pressed(.left)
+    a.back = key_pressed(.escape) or __input_pressed(11) or __input_pad_pressed(input_pad_sprint()) or __input_pad_pressed(.start)
+    # menu navigation with repeat
+    nv = vec2(0, 0)
+    if key_typed(.left) or __input_menu_typed(.a): nv.x -= 1
+    if key_typed(.right) or __input_menu_typed(.d): nv.x += 1
+    if key_typed(.up) or __input_menu_typed(.w): nv.y -= 1
+    if key_typed(.down) or __input_menu_typed(.s): nv.y += 1
+    # Inventory d-pad presses bind the selected item; only the stick navigates.
+    dp = vec2(0, 0)
+    if pad:
+        st = input_pad_stick(false)
+        if (not invui_open_hint and __input_pad_down(.left)) or st.x < -0.6: dp.x -= 1
+        if (not invui_open_hint and __input_pad_down(.right)) or st.x > 0.6: dp.x += 1
+        if (not invui_open_hint and __input_pad_down(.up)) or st.y < -0.6: dp.y -= 1
+        if (not invui_open_hint and __input_pad_down(.down)) or st.y > 0.6: dp.y += 1
+    if length(dp) == 0.0:
+        __nav_dir = vec2(0, 0)
+        __nav_t = 0.0
+    else if dp.x != __nav_dir.x or dp.y != __nav_dir.y:
+        nv = dp
+        __nav_dir = dp
+        __nav_t = 0.3
+    else:
+        __nav_t -= dt
+        if __nav_t <= 0.000001:
+            nv = dp
+            # Retain fractional time to keep 120 ms repeats stable across frame rates.
+            loop __nav_t <= 0.000001: __nav_t += 0.12
+    a.nav = nv
+    if __input_pad_pressed(.lb) or key_pressed(.q): a.tab = -1
+    if key_pressed(.c) and invui_open_hint: a.tab = 1
+    if __input_pad_pressed(.rb): a.tab = 1
+    if connected: a.using_pad = true
+    # (a button press counts as much as a stick: prompts show the pad's glyphs from the first press)
+    if pad:
+        loop b in [PadButton.a, PadButton.b, PadButton.x, PadButton.y, PadButton.lb, PadButton.rb, PadButton.back, PadButton.start, PadButton.up, PadButton.down, PadButton.left, PadButton.right, PadButton.lstick, PadButton.rstick]:
+            if __input_pad_pressed(b): a.using_pad = true
+        if gamepad_axis(4) > 0.3 or gamepad_axis(5) > 0.3: a.using_pad = true
+    # (and back to keyboard/mouse glyphs as soon as keys, pointer or wheel are used)
+    keyed = mouse_pressed(.left) or mouse_pressed(.right) or length(md) > 0.0 or mouse_wheel() != 0.0
+    loop k in input_keys:
+        if key_pressed(k): keyed = true
+    a.using_pad = a.using_pad or (pad and act.using_pad and not a.mouse_look and length(km) == 0.0 and not keyed)
+    if keyed or a.mouse_look or length(km) > 0.0 or ax != 0.0 or ay != 0.0: a.using_pad = false
+    if input_capture: a = Actions()
+    act = a
+
+# Clear one-frame actions between production catch-up ticks. Rates and held
+# controls stay held; mouse/controller look is apportioned by the outer loop.
+input_consume_edges = ():
+    act.jump = false
+    act.sprint_pressed = false
+    act.attack = false
+    act.interact = false
+    act.lock_pressed = false
+    act.bow_pressed = false
+    act.bow_released = false
+    act.crouch_pressed = false
+    act.throw_ = false
+    act.drop = false
+    act.slot = -1
+    act.inventory = false
+    act.pause = false
+    act.confirm = false
+    act.back = false
+    act.nav = vec2(0, 0)
+    act.tab = 0
+    act.pad_lost = false

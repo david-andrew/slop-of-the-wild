@@ -1,0 +1,48 @@
+# Render-only pin/map fixture. Run under flock /tmp/botw-render.lock.
+# SLOPPY_SCREENSHOT=build/journey-check/map-pins.png SLOPPY_FRAMES=3
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/slate_map.jo'
+use '../game/inventory.jo'
+use '../game/input.jo'
+use '../game/items.jo'
+from '../game/slate_map.jo' import __map_box
+
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+find_shrines()
+items_init()
+window("Slate map pins", 1280, 720)
+setup = ():
+    map_known = true
+    map_player = SOR_MOUTH
+    map_face = 0.8
+    map_zoom = clamp(to_float(env("MAP_VIEW_ZOOM") ?? "1") ?? 1.0, 1.0, 4.0)
+    map_center = vec2(0.48, 0.51)
+    half = vec2(0.5, 0.5) / f32(map_zoom)
+    map_center = clamp(map_center, half, vec2(1, 1) - half)
+    map_sighted = fill(true, 4)
+    map_ping = fill(1.1, 4)
+    invui = InvUI(open = true, tab = MAP_TAB, t = 1.0, tab_t = 1.0)
+setup()
+placed = false
+update = (dt: f64):
+    act.using_pad = (env("MAP_VIEW_PAD") ?? "0") == "1"
+    if placed or __map_box.z <= 1.0: return
+    loop p in [vec2(0.43, 0.53), vec2(0.69, 0.64), vec2(0.21, 0.29)]:
+        map_cursor = p
+        map_cursor_on = true
+        act = Actions(confirm = true, using_pad = (env("MAP_VIEW_PAD") ?? "0") == "1")
+        inventory_update(dt)
+    map_cursor_on = false
+    if map_zoom > 1.0: map_center = vec2(0.48, 0.51)
+    placed = true
+draw = ():
+    glClearColor(0.10, 0.14, 0.17, 1)
+    glClear(GL_COLOR_BUFFER_BIT)
+    inventory_draw()

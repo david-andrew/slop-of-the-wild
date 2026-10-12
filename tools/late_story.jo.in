@@ -1,0 +1,244 @@
+# Headless late-Plateau story regression, built by late_story_check.sh.
+# Overland placements and solved-room presets avoid duplicating shrine_route_check.
+# Every story transition, interaction, orb award and camera handoff is production code.
+use '../../game/gfx.jo'
+use '../../game/worldgen.jo'
+use '../../game/terrain.jo'
+use '../../game/structures.jo'
+use '../../game/build.jo'
+use '../../game/interiors.jo'
+use '../../game/physics.jo'
+use '../../game/player.jo'
+use '../../game/input.jo'
+use '../../game/interact.jo'
+use '../../game/items.jo'
+use '../../game/cooking.jo'
+use '../../game/combat.jo'
+use '../../game/camera.jo'
+use '../../game/story.jo'
+use '../../game/shrines.jo'
+from '../../game/shrines.jo' import __trans, __preset
+use '../../game/chars.jo'
+use '../../game/elements.jo'
+use '../../game/fx.jo'
+use '../../game/env.jo'
+use '../../game/music.jo'
+use '../../game/sfx.jo'
+use '../../game/ui.jo'
+use '../../game/render.jo'
+
+const DT = 1.0 / 60.0
+frames = 0
+checks = 0
+fail = (message: str):
+    eprint("FAIL late story: {message}; frame {frames}, beat {story.beat}, orbs {story.orbs}, state {pl.state}, position {pl.pos}, camera override {cam.override} blend {cam.blend:.3}")
+    exit(1)
+check = (ok: bool, message: str):
+    checks += 1
+    if not ok: fail(message)
+mark = (name: str): print("late-story: {name} frame {frames} beat {story.beat} orbs {story.orbs}")
+
+__audio_state = 2
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+items_init()
+chars_init()
+find_shrines()
+# CPU collision fixtures for the tower deck, Temple roof and shrine exterior lifts.
+tower_add_colliders()
+temple()
+loop s in shrines: shrine_exterior(s)
+shrines_build()
+story_setup()
+shrines_setup()
+# The actual main.jo cooking / Give registration and per-frame availability rules
+# are inserted by the shell runner, so this check cannot silently test a copied reward.
+# @FIELD_ACTIONS@
+
+seed_random(52)
+skip_to_outside()
+check(not story.tower_risen and story.orbs == 0 and not pl.has_glider, "fresh late-story state")
+tick = (a: Actions = Actions()):
+    act = a
+    use_terrain = zone_at(pl.pos + vec3(0, 1, 0)) == ""
+    env.indoor = if use_terrain: 0.0 else: 1.0
+    story_update(DT)
+    shrines_update(DT)
+    if pl.state == .ground and act.interact:
+        u = usable_near(pl.pos, forward_of(pl.face))
+        if u >= 0: use_it(u)
+    player_update(DT)
+    elements_update(DT, pl.pos)
+    hero_animate(DT, 0.0)
+    camera_update(DT)
+    old_man_update(DT)
+    fx_update(DT)
+    # @FIELD_UPDATE@
+    frames += 1
+    check(pl.state != .dead, "player died")
+    p = view_pos()
+    check(p.x == p.x and p.y == p.y and p.z == p.z and length(p) < 100000.0, "invalid camera")
+wait = (count: int):
+    loop k in [0..count): tick()
+place = (p: vec3, face: f64 = 0.0):
+    pl.pos = p
+    pl.face = face
+    pl.state = .ground
+    pl.vel = vec3(0, 0, 0)
+    pl.speed = 0.0
+    pl.last_safe = p
+    pl.air_peak = f64(p.y)
+    cam.yaw = face
+    camera_snap()
+press = (id: int, prompt: str):
+    check(usables[id].enabled and not usables[id].used, "disabled or used {prompt}")
+    check(usable_near(pl.pos, forward_of(pl.face)) == id, "wrong nearest interaction for {prompt}")
+    tick(Actions(interact = true))
+    check(usables[id].used, "interaction did not fire: {prompt}")
+restored = (name: str):
+    wait(60)
+    check(not cam.override and not cam.was_override and cam.blend == 0.0, "camera not restored after {name}")
+    check(length(view_pos() - cam.pos) < 0.001 and length(view_target() - cam.target) < 0.001, "displayed camera not restored after {name}")
+    check(abs(view_fov() - aim_fov) < 0.001, "FOV not restored after {name}")
+    check(pl.state == .ground and not ui.hide and story.letterbox <= 0.08, "control / HUD not restored after {name}")
+    mark(name)
+
+# First appearance and the meal exchange at his original campfire.
+place(old_man.pos + vec3(0, 0, 2))
+wait(1)
+check(story.met_old_man and old_man.clip == "Greeting", "campfire greeting missing")
+mark("campfire-greeting")
+wait(260)
+check(old_man.clip == "sit" and not usables[give_u].enabled, "greeting / Give gating")
+# Find a real snow cell near Keh Namut, avoiding any artificial cold flags.
+snow = vec3(0, 0, 0)
+found = false
+loop z in [2000..2300):
+    loop x in [-1450..-1250):
+        if not found and is_snow_area(f64(x), f64(z)) and edge_at(f64(x), f64(z)) < -10.0:
+            snow = v3(f64(x), height_at(f64(x), f64(z)), f64(z))
+            found = true
+check(found, "no snowy fixture")
+place(snow)
+hp = pl.hp
+wait(310)
+check(pl.hp == hp - 1 and temp_feel < 0.2, "cold did not remove one heart quarter")
+mark("cold-unprotected")
+# Ingredient fixtures; the real pot callback consumes them and cooks the meal.
+inv_add("raw_meat")
+inv_add("pepper")
+check(inv_hold("raw_meat") and inv_hold("pepper"), "select cabin recipe ingredients")
+# A pot placement is enough for the headless interaction registration in main.jo.
+place(usables[__pot_us[0]].pos + vec3(0, 0, 1.5))
+wait(1)
+press(__pot_us[0], "Cook")
+check(pl.state == .cutscene and count_of("spicy_steak") == 1 and count_of("raw_meat") == 0 and count_of("pepper") == 0, "spicy steak recipe / cutscene")
+wait(150)
+restored("meal-cooked-camera-restored")
+place(old_man.pos + vec3(0, 0, 1.8))
+wait(1)
+press(give_u, "Give")
+check(has_key("warm_doublet") and count_of("spicy_steak") == 0, "doublet exchange failed")
+wait(1)
+check(not usables[give_u].enabled, "doublet exchange remained available")
+mark("doublet-given")
+place(snow)
+hp = pl.hp
+wait(620)
+check(pl.hp == hp and temp_feel > 0.3 and cold_dmg_t == 0.0, "doublet did not protect from cold")
+mark("cold-protected")
+
+# Activate the actual tower pedestal; watch the rise and shrine reveal in order.
+tower_u = -1
+loop i in 0.. and u in usables:
+    if length(u.pos - TOWER_PEDESTAL) < 0.01: tower_u = i
+check(tower_u >= 0, "tower pedestal missing")
+place(TOWER_PEDESTAL + vec3(0, 0, 1))
+wait(1)
+loop r in srec: check(not usables[r.term_u].enabled, "shrine terminal woke before tower")
+press(tower_u, "Examine")
+check(story.beat == .tower_rise and pl.state == .cutscene, "tower activation did not start cinematic")
+mark("tower-activated")
+wait(180)
+check(cam.override and cam.blend == 1.0 and hooks.tower_lift > -82.0 and hooks.tower_lift < 0.0, "tower did not rise on camera")
+mark("tower-rising")
+wait(260)
+check(story.tower_risen and hooks.tower_lift == 0.0, "tower did not emerge")
+loop s in shrines:
+    check(not hooks.named_hidden[s.name] and not hooks.named_hidden[s.name + "_terminal"], "shrine not revealed")
+mark("shrines-revealed")
+wait(470)
+check(story.beat == .explore and old_man.glide and old_man.visible, "tower ending / old man arrival")
+restored("tower-camera-restored")
+wait(700)
+check(not old_man.glide and old_man.visible and old_man.clip == "idle", "old man did not land at tower")
+landing = TOWER + vec3(-10, 0, 10)
+check(length(vec2(old_man.pos.x - landing.x, old_man.pos.z - landing.z)) < 1.0, "old man landed in wrong place")
+mark("old-man-tower-arrival")
+
+spots = [vec3(0, 3.4, -45), vec3(0, 0, -49.5), vec3(10, 9, -78), vec3(0, 4, -41.5)]
+loop n in [0..4):
+    r = srec[n]
+    check(story.orbs == n and not story.glider_given and not pl.has_glider, "premature orb / glider")
+    # Real exterior activation and lift entry, then a solved interior fixture.
+    place(usables[r.term_u].pos + vec3(0, 0, 1))
+    wait(1)
+    press(r.term_u, "Activate")
+    check(shrines[r.entry].activated, "terminal did not activate")
+    place(usables[r.enter_u].pos + vec3(0, 0, 1))
+    wait(1)
+    press(r.enter_u, "Enter")
+    # Oman Au's longer hall reveal outlasts the old five-second fixture wait.
+    # Follow the production transition, retaining a ten-second failure bound.
+    loop frame in [0..600):
+        if not __trans.active: break
+        tick()
+    check(shr_cur == n and not __trans.active, "lift did not reach shrine {n + 1}")
+    restored("shrine-{n + 1}-entry-camera-restored")
+    __preset(n, 2)
+    place(r.o + spots[n])
+    wait(1)
+    press(r.talk_u, "Talk")
+    check(cam.override and pl.state == .cutscene, "monk cinematic did not begin")
+    wait(250)
+    check(story.orbs == n + 1 and count_of("spirit_orb") == n + 1 and not inv.stacks.has("spirit_orb") and has_key("spirit_orb") and shrines[r.entry].done, "orb {n + 1} not earned")
+    check(not story.glider_given and not pl.has_glider, "glider granted before Temple meeting")
+    mark("orb-{n + 1}-earned")
+    wait(500)
+    check(shr_cur == -1 and not __trans.active and srec[n].gone and length(pl.pos - shrines[r.entry].pos) < 3.0, "orb exit did not return to exterior")
+    restored("shrine-{n + 1}-exit-camera-restored")
+    check(story.orbs == n + 1, "duplicate orb award")
+
+# The fourth orb moves the old man to the roof, without gifting the glider remotely.
+check(story.beat == .roof and old_man.visible and not old_man.glide and length(old_man.pos - roof_spot()) < 0.01, "Temple roof meeting not offered")
+mark("temple-roof-offered")
+place(roof_spot() + vec3(0, 0, 6))
+tick(Actions(interact = true))
+check(not story.glider_given and not has_key("paraglider"), "remote paraglider handoff")
+place(roof_spot() + vec3(0, 0, 2))
+tick(Actions(interact = true))
+check(story.beat == .ending and story.glider_given and pl.has_glider and has_key("paraglider"), "Temple meeting did not gift paraglider")
+mark("paraglider-given")
+wait(260)
+check(story.beat == .explore and not old_man.visible and not old_man.glide, "old man farewell did not finish")
+restored("farewell-camera-restored")
+# An actual glider input after stepping off the plateau; no state/glider preset.
+pl.pos = v3(-1700.0, 300.0, 1800.0)
+pl.state = .air
+pl.vel = vec3(0, -3, 0)
+pl.st_t = 0.5
+check(edge_at(f64(pl.pos.x), f64(pl.pos.z)) > 60.0, "leaving fixture is still on plateau")
+tick(Actions(jump = true))
+check(pl.state == .glide and story.ending_card, "paraglider / leaving card did not start")
+mark("plateau-left-gliding")
+wait(180)
+check(story.ending_card and story.title_alpha > 0.99 and not cam.override, "leaving title / camera")
+mark("leaving-title-shown")
+# Stay beyond the boundary while observing the card finish, without falling to death.
+loop k in [0..600):
+    pl.pos.y = 300.0
+    tick()
+check(not story.ending_card and story.title_alpha == 0.0, "leaving card did not finish")
+mark("leaving-title-finished")
+print("PASS late story: {checks} assertions, {frames} frames, {f64(frames) / 60.0:.2} simulated seconds; four earned orbs, Temple meeting, paraglider, leaving")

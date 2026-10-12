@@ -1,0 +1,24 @@
+Piano recording credit and permission
+
+University of Iowa Musical Instrument Samples (MIS), created by Lawrence Fritts,
+Director of the Electronic Music Studios, University of Iowa.
+Steinway & Sons model B; performer Evan Mazunik; technician Michael Cash.
+Recorded November 5 and 27, 2001, 2017 Voxman Music Building.
+Neumann KM 84 microphones, 16-bit / 44.1 kHz stereo, non-anechoic room.
+
+The library states that its recordings may be downloaded and used for any
+projects, without restrictions. This is permission from the library, not a
+claim that the recordings have a Creative Commons license.
+https://theremin.music.uiowa.edu/MIS.html
+https://theremin.music.uiowa.edu/MISpiano.html
+Accessed 2026-10-09. Source credit/permission HTML is cached outside git in
+assets/src/piano/; page hashes are recorded in piano-import.json.
+
+Adaptations: pp, mf and ff notes at C, Eb, Gb and A from octave 2 through 6, plus C7;
+attack alignment, gentle 25 Hz high-pass / 11 kHz low-pass filtering, short
+attack/end fades, RMS normalization with peak limits, 5-8 second dry tails,
+mono downmix and 48 kHz PCM16 conversion. The game applies its stereo reverb.
+Original compositions and contextual timing live in game/music.jo.
+
+See piano-import.json for each recording's URL and SHA-256, the output SHA-256,
+processing settings and measurements. Rebuild with tools/import_piano.py.

@@ -1,0 +1,133 @@
+# Headless sightlines include decorative triangles, not just collision shells.
+use '../game/shrines.jo'
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/physics.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+use '../game/items.jo'
+use '../game/slate_map.jo'
+use '../game/story.jo'
+use '../game/player.jo'
+use '../game/camera.jo'
+use '../game/input.jo'
+from '../game/build.jo' import __named_b
+from '../game/shrines.jo' import __enter_now
+
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+find_shrines()
+shrines_build()
+shrines_setup()
+checks = 0
+
+# Two-sided segment/triangle intersection, excluding the receiving socket itself.
+blocks = (eye: vec3, target: vec3, a: vec3, b: vec3, c: vec3) -> bool:
+    d = target - eye
+    e1 = b - a
+    e2 = c - a
+    p = cross(d, e2)
+    det = f64(dot(e1, p))
+    if abs(det) < 0.000001: return false
+    t = eye - a
+    u = f64(dot(t, p)) / det
+    if u < 0.0 or u > 1.0: return false
+    q = cross(t, e1)
+    v = f64(dot(d, q)) / det
+    if v < 0.0 or u + v > 1.0: return false
+    along = f64(dot(e2, q)) / det
+    along > 0.015 and along < 1.0 - 0.9 / f64(length(d))
+
+sight = (id: int, name: str, eye: vec3, target: vec3):
+    __enter_now(id)
+    o = srec[id].o
+    a = o + eye
+    b = o + target
+    delta = b - a
+    hit = raycast(a, normalize(delta), f64(length(delta)) - 0.9, true, false)
+    if hit.hit:
+        eprint("FAIL {name}: collision {hit.collider} at {hit.pos - o}, distance {hit.dist}")
+        exit(1)
+    arch = __named_b.get(srec[id].key + "_architecture") ?? Builder()
+    blocked = 0
+    loop i in [0..arch.idx.len() / 3):
+        k = i * 3
+        if blocks(a, b, arch.verts[int(arch.idx[k])].pos, arch.verts[int(arch.idx[k + 1])].pos, arch.verts[int(arch.idx[k + 2])].pos): blocked += 1
+    if blocked > 0:
+        eprint("FAIL {name}: {blocked} decorative triangles obscure the mechanism")
+        exit(1)
+    checks += 1
+    print("PASS sightline {name}: {length(delta):.1} m, collision and architecture clear")
+
+sight(OMAN, "plate to receiving bridge socket", v3(-5.0, 1.6, -3.6), v3(0.0, 0.4, -16.3))
+sight(OMAN, "plate to bridge crosshead", v3(-5.0, 1.6, -3.6), v3(0.0, 4.7, -12.0))
+sight(JABAIJ, "brazier to blast wall", v3(-6.0, 1.6, -6.6), v3(0.0, 2.0, -19.1))
+sight(JABAIJ, "barrel rack to blast wall", v3(6.0, 1.6, -2.6), v3(0.0, 2.0, -19.1))
+sight(JABAIJ, "chain start to pit barrel", v3(6.0, 1.6, -24.0), v3(3.0, 0.7, -30.5))
+sight(JABAIJ, "chain start to pillar", v3(6.0, 1.6, -24.0), v3(0.0, 2.0, -35.5))
+sight(OWA, "entry to first hub", v3(0.0, 1.6, -4.0), v3(0.0, 0.4, -13.5))
+sight(OWA, "first hub to second hub", v3(0.6, 1.7, -13.5), v3(0.6, 0.4, -28.5))
+sight(KEH, "near valve to inflow", v3(6.0, 1.6, 0.3), v3(11.3, 2.7, -21.0))
+sight(KEH, "near valve to gate", v3(6.0, 1.6, 0.3), v3(0.0, 2.0, -29.4))
+sight(KEH, "far valve to plate socket", v3(-6.0, 1.6, -25.6), v3(9.0, -1.0, -21.0))
+sight(KEH, "far valve to inflow", v3(-6.0, 1.6, -25.6), v3(11.3, 2.7, -21.0))
+
+# Actual default arrival lens, including the foreground entry props. These rays
+# complement the puzzle-stage scans with an uninterrupted first room view.
+entry_sight = (id: int, name: str, target: vec3):
+    cam = Cam()
+    __enter_now(id)
+    act = Actions()
+    camera_update(1.0 / 60.0)
+    sight(id, name, view_pos() - srec[id].o, target)
+
+entry_sight(OMAN, "arrival to pressure plate", v3(-5.0, 0.12, -5.0))
+entry_sight(OMAN, "arrival to bridge crosshead", v3(0.0, 4.7, -12.0))
+entry_sight(JABAIJ, "arrival to brazier", v3(-6.0, 1.3, -8.0))
+entry_sight(JABAIJ, "arrival to blast wall", v3(0.0, 2.0, -19.1))
+entry_sight(OWA, "arrival to first hub", v3(0.6, 0.4, OWA_PIV1))
+entry_sight(KEH, "arrival to near valve", v3(6.0, 1.45, -1.0))
+entry_sight(KEH, "arrival to inflow", v3(11.3, 2.7, -21.0))
+
+survey_suite = ():
+    # Survey only marks a roof sighted from the crown, without activating its terminal.
+    map_sighted = fill(false, 4)
+    map_ping = fill(0.0, 4)
+    map_sight_ping = fill(0.0, 4)
+    story.tower_risen = true
+    pl.pos = TOWER + vec3(0, 74.2, 0)
+    # The production terrain and real shrine positions admit actual crown sightings.
+    loop mut sh in shrines: sh.activated = false
+    loop sh in shrines:
+        map_survey(pl.pos + vec3(0, 2, 0), sh.pos - pl.pos)
+    seen = 0
+    loop i in [0..4):
+        if map_sighted[i]: seen += 1
+        print("survey roof {shrines[i].name}: {(if map_sighted[i]: "sighted" else: "terrain obscured")}")
+    assert(seen > 0, "production tower view must sight at least one shrine roof")
+    map_sighted = fill(false, 4)
+    map_ping = fill(0.0, 4)
+    map_sight_ping = fill(0.0, 4)
+    # Use a synthetic nearby roof to isolate the bearing/occlusion rules from real land.
+    shrines = [Shrine("survey fixture", TOWER + vec3(0, 70, -45), 0.0, TOWER)]
+    eye = pl.pos + vec3(0, 2, 0)
+    map_survey(eye, vec3(0, 0, 1))
+    assert(not map_sighted[0], "roof behind the slate must not be sighted")
+    map_survey(eye, vec3(0, 0, -1))
+    assert(map_sighted[0] and map_ping[0] == 2.2 and map_sight_ping[0] == 1.6, "visible roof from tower must ping")
+    assert(not shrines[0].activated and not shrines[0].done, "survey does not activate/complete the shrine")
+    map_survey_update(0.2)
+    assert(map_sight_ping[0] < 1.6, "world ping fades rather than repeating")
+    map_sighted[0] = false
+    shrines[0].pos.y = f32(height_at(f64(shrines[0].pos.x), f64(shrines[0].pos.z)) - 20.0)
+    map_survey(eye, vec3(0, 0, -1))
+    assert(not map_sighted[0], "terrain-hidden roof cannot ping")
+    shrines[0].pos.y = TOWER.y + 70.0
+    pl.pos.x += 40.0
+    map_survey(eye, vec3(0, 0, -1))
+    assert(not map_sighted[0], "ordinary field sighting must not trigger tower ping")
+    print("PASS survey: bearing, terrain occlusion, crown proximity, ping lifetime and unvisited state")
+    print("PASS shrine sightlines: {checks} control/mechanism rays include rendered architecture")
+survey_suite()

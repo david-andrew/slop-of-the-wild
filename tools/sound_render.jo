@@ -1,0 +1,385 @@
+use '../game/sfx.jo'
+use '../game/combat.jo'
+use '../game/music.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+use '../game/gfx.jo'
+use '../game/audio_assets.jo'
+use '../game/wildlife.jo'
+use '../game/scene.jo'
+use '../game/physics.jo'
+from '../game/sfx.jo' import __echoes, __amb_k, __amb_cover, __amb_gust, __amb_snow, __amb_forest, __amb_ruins
+from '../game/sfx.jo' import __sfx_variations_update, __sfx_rng, __sfx_drawing, __sfx_rustle_t, __sfx_draw_voice
+
+# Offline, actual gameplay mixer/gains; never normalize individual exports.
+# sloppy/bin/sloppy tools/sound_render.jo [out_dir]      (default build/sfx)
+out_dir = if args().len() > 1: args()[1] else: "build/sfx"
+mkdir(out_dir)
+__audio_state = 2
+master_volume(0.8)
+seed_random(51)
+started = time()
+sfx_init()
+print("sfx init {time() - started:.6}s")
+take_bytes = 0
+loop bank in sfx_takes:
+    loop take in bank.takes: take_bytes += take.samples.len() * 4
+loop take in sfx.step_wood: take_bytes += take.samples.len() * 4
+print("prebuilt SFX take payload {take_bytes} bytes")
+gust_bytes = 0
+loop bank in [sfx.wind_gust_takes, sfx.rain_gust_takes]:
+    loop take in bank: gust_bytes += take.samples.len() * 4
+print("spatial filters: {sfx_spatial.len()} takes, {sfx_spatial_bytes} bytes, {sfx_spatial_seconds:.6}s load; gust banks {sfx.wind_gust_takes.len() + sfx.rain_gust_takes.len()} takes, {gust_bytes} bytes")
+piano_init()
+
+wav = (name: str, samples: f32[]):
+    peak = 0.0
+    energy = 0.0
+    clipped = 0
+    loop v in samples:
+        peak = max(peak, abs(f64(v)))
+        energy += f64(v) * f64(v)
+        if abs(v) >= 0.999: clipped += 1
+    rms = sqrt(energy / f64(samples.len()))
+    print("{name}: peak {peak:.6} ({20.0 * log10(max(peak, 0.000000001)):.2} dBFS), RMS {rms:.6} ({20.0 * log10(max(rms, 0.000000001)):.2} dBFS), clipped {clipped}; master 0.8, export gain 1.0")
+    b: u8[]
+    w16 = (v: int):
+        loop k in [0..2): b.push(u8((v >> (k * 8)) & 255))
+    w32 = (v: int):
+        loop k in [0..4): b.push(u8((v >> (k * 8)) & 255))
+    loop c in "RIFF": b.push(c)
+    w32(36 + samples.len() * 2)
+    loop c in "WAVEfmt ": b.push(c)
+    w32(16)
+    w16(1)
+    w16(2)
+    w32(MIX_RATE)
+    w32(MIX_RATE * 4)
+    w16(4)
+    w16(16)
+    loop c in "data": b.push(c)
+    w32(samples.len() * 2)
+    loop v in samples: w16(int(clamp(f64(v), -1.0, 1.0) * 32767.0) & 65535)
+    assert(write_bytes("{out_dir}/{name}.wav", b), "WAV export failed; create the output parent directory first")
+
+reset = ():
+    stop_all()
+    amb = Ambient()
+    seq = Seq()
+    seq.mood = .field_day
+    seq.want = .field_day
+    seq.volume = 1.0
+    seq.rest = 2.0
+    phrase_n = 0
+    music_note_count = 0
+    music_motif_count = 0
+    music_still = 0.0
+    music_hold = 0.0
+    music_activity = 0.0
+    music_duck = 1.0
+    music_duck_floor = 1.0
+    music_duck_hold = 0.0
+    sfx_priority_gain = 1.0
+    sfx_priority_hold = 0.0
+    score_voices.clear()
+    laters.clear()
+    pl = Player()
+    pl.pos = v3(-700.0, 235.0, 1800.0)
+    fight = Fight()
+    sfx_room = 0.0
+    __echoes.clear()
+    __amb_k = 0.0
+    __amb_cover = 0.0
+    __amb_gust = 0.0
+    __amb_snow = 0.0
+    __amb_forest = 0.0
+    __amb_ruins = 0.0
+    amb_lift = 0.0
+    amb_biome = 0
+    shrine_hum = 0.0
+    env.rain = 0.0
+    env.night = 0.0
+    env.gust = 1.0
+    env.clouds = 0.0
+    loop mut p in music_landmarks:
+        p.last = 0.0
+        p.inside = false
+    seed_random(51)
+    __sfx_rng = rng(51051)
+    __sfx_drawing = false
+    __sfx_rustle_t = 0.0
+    loop mut bank in sfx_takes: bank.last = -1
+
+check_takes = ():
+    reset()
+    # Exercise the same direct handles used by gameplay, not just the exported takes.
+    loop bank in sfx_takes:
+        source = bank.sources[0]
+        previous: *f32 = null
+        loop k in [0..24):
+            id = play(source, 0.6)
+            saved_rng = __global_rng
+            __sfx_variations_update(1.0 / 60.0)
+            assert(__global_rng.s0 == saved_rng.s0 and __global_rng.s1 == saved_rng.s1 and __global_rng.s2 == saved_rng.s2 and __global_rng.s3 == saved_rng.s3, "audio variation preserves gameplay RNG")
+            found = false
+            loop voice in __voices:
+                if voice.id != id: continue
+                found = true
+                resolved = false
+                loop take in bank.takes:
+                    if data(voice.sound.samples) == data(take.samples): resolved = true
+                assert(resolved, "handle resolves before mixing")
+                assert(data(voice.sound.samples) != previous, "consecutive takes differ")
+                assert(voice.pitch >= 0.965 and voice.pitch <= 1.035, "bounded pitch variation")
+                previous = data(voice.sound.samples)
+            assert(found)
+            stop_all()
+    pl.ground.surf = .wood
+    id = play(sfx.step_stone[0], 0.4)
+    __sfx_variations_update(1.0 / 60.0)
+    wood = false
+    loop voice in __voices:
+        if voice.id == id:
+            loop take in sfx.step_wood:
+                if data(voice.sound.samples) == data(take.samples): wood = true
+    assert(wood, "legacy stone/wood handle resolves by current surface")
+    stop_all()
+    fight.act = .aim
+    __sfx_variations_update(1.0 / 60.0)
+    id = __sfx_draw_voice
+    assert(is_playing(id), "bow draw starts")
+    __sfx_variations_update(1.0 / 60.0)
+    assert(__sfx_draw_voice == id, "draw does not retrigger while aiming")
+    fight.act = .idle
+    __sfx_variations_update(1.0 / 60.0)
+    assert(not is_playing(id), "draw stops on release/cancel")
+    seq = Seq()
+    phrase_n = 0
+    seq.age = 0.0
+    seq.motif_pending = true
+    p_phrase(.field_day)
+    assert(phrase_used_motif)
+    # a landmark brings it on after a minute
+    seq.age = 89.99
+    seq.motif_pending = true
+    p_phrase(.field_day)
+    assert(not phrase_used_motif and seq.motif_pending)
+    seq.age = 90.0
+    p_phrase(.field_day)
+    assert(phrase_used_motif, "90-second landmark motif boundary")
+    # on its own, after two minutes
+    seq.motif_pending = false
+    loop k in [0..8):
+        phrase_n = k
+        seq.age = 90.0 + 179.0
+        p_phrase(.field_day)
+        assert(not phrase_used_motif, "no automatic motif within 180 s")
+    phrase_n = 1        # (p_phrase counts this phrase as the second of four)
+    seq.age = 90.0 + 180.0
+    p_phrase(.field_day)
+    assert(phrase_used_motif, "180-second automatic motif boundary")
+    print("PASS: all {sfx_takes.len()} banks resolve, 24 takes each without consecutive repeats; wood routing, bow start/cancel, 90 s landmark and 180 s automatic motif boundaries")
+
+check_takes()
+check_spatial = ():
+    reset()
+    cam = v3(10000.0, 2.0, 10000.0)
+    right = vec3(1, 0, 0)
+    wall = add_box(cam + vec3(0, -2, 10), vec3(4, 3, 0.5))
+    loop context in [0..3):
+        stop_all()
+        colliders[wall].active = context == 2
+        pos = cam + (if context == 0: vec3(0, 0, 4) else: vec3(0, 0, 20))
+        sfx_room = if context == 2: 0.7 else: 0.0
+        sfx_at(sfx.hit, pos, cam, right)
+        id = __voice_id
+        __sfx_variations_update(1.0 / 60.0)
+        found = false
+        loop voice in __voices:
+            if voice.id != id: continue
+            loop colour in sfx_spatial:
+                expected = if context == 2: colour.wall else: (if context == 1: colour.far else: colour.source)
+                if data(voice.sound.samples) != data(expected.samples): continue
+                found = true
+                ratio = if context == 2: 0.25 else: (if context == 1: 0.5 else: 1.0)
+                assert(abs(voice.pitch / ratio - 1.0) <= 0.051, "resampled take preserves pitch")
+        assert(found, "raycast selects near/distant/wall take, retained through variation")
+        if context == 2:
+            assert(__echoes.len() > 0, "wall sound receives room echoes")
+            loop e in __echoes:
+                assert(e.pitch < 0.27, "echo keeps filtered sample rate")
+    colliders[wall].active = false
+    sfx_room = 0.0
+    __echoes.clear()
+    loop take in sfx_spatial:
+        assert(abs(duration(take.far) / 0.5 - duration(take.source)) < 0.0001)
+        assert(abs(duration(take.wall) / 0.25 - duration(take.source)) < 0.0001)
+    reset()
+    ambient_update(4.0, 0.0, 235.0, 0.0)
+    low = 0.0
+    loop v in __voices:
+        if v.id == amb.wind_gust: low = f64(v.volume)
+    env.gust = 3.2
+    env.rain = 1.0
+    ambient_update(4.0, 0.0, 235.0, 0.0)
+    high = 0.0
+    rain = 0.0
+    loop v in __voices:
+        if v.id == amb.wind_gust: high = f64(v.volume)
+        if v.id == amb.rain_gust: rain = f64(v.volume)
+    assert(high > low * 2.0 and rain > 0.0, "gust drives wind and rain layers")
+    print("PASS: spatial near/distance/wall selection survives variation; filtered echoes/durations; weather gust gains")
+
+check_spatial()
+# Gameplay wildlife dispatch uses sfx_at without perturbing perception/AI randomness.
+sc.cam = vec3(0, 2, 4)
+sc.fwd = vec3(0, 0, -1)
+animal = Animal(.boar, vec3(0, 0, 0), vec3(0, 0, 0), voice_t = 0.0)
+saved_voice_rng = __global_rng
+wild_voice(animal, "boar_alarm")
+assert(__global_rng.s0 == saved_voice_rng.s0 and __global_rng.s1 == saved_voice_rng.s1 and __global_rng.s2 == saved_voice_rng.s2 and __global_rng.s3 == saved_voice_rng.s3, "wildlife vocal dispatch preserves gameplay RNG")
+stop_all()
+# Every new wildlife voice has prebuilt distance/wall colour and survives preparation.
+loop voice in [sfx.boar_grunt, sfx.boar_alarm, sfx.boar_snort, sfx.fox_yip, sfx.bird_scatter]:
+    assert(duration(voice) >= 0.19 and duration(voice) <= 0.66, "wildlife voice duration")
+    found = false
+    loop bank in sfx_takes:
+        alias = false
+        loop source in bank.sources:
+            if data(source.samples) == data(voice.samples): alias = true
+        if not alias: continue
+        loop take in bank.takes:
+            filtered = false
+            loop colour in sfx_spatial:
+                if data(colour.source.samples) == data(take.samples): filtered = true
+            assert(filtered, "wildlife articulation has distance and wall filters")
+        found = true
+    assert(found, "wildlife voice has non-repeating articulation bank")
+asset = sfx_asset()
+loop index in [46..51): assert(asset.groups[index][0].samples.len() > 0, "prepared SFX retains wildlife voice")
+assert(audio_asset_write("{out_dir}/wildlife-sfx-cache.bin", 57, asset), "SFX prepared round trip writes")
+loaded_asset = audio_asset_read("{out_dir}/wildlife-sfx-cache.bin", 57)
+assert(loaded_asset != none, "SFX prepared round trip reads")
+loop index in [46..51):
+    expected = asset.groups[index][0].samples
+    actual = loaded_asset!.groups[index][0].samples
+    assert(actual.len() == expected.len(), "cached wildlife sample length")
+    loop i in [0..expected.len()): assert(actual[i] == expected[i], "cached wildlife sample is lossless")
+print("PASS: 5 wildlife voice handles, durations, spatial filter banks and lossless prepared asset round trip")
+# Actual authored gain, no normalizing the export. The wake layer must stay quiet
+# and fade from silence; this bounds the cue independently of the piano mixer.
+peak_air = 0.0
+loop v in sfx.wake_air.samples: peak_air = max(peak_air, abs(f64(v)) * 0.45 * 0.8)
+assert(peak_air > 0.001 and peak_air < 0.02, "wordless wake layer remains quiet")
+assert(abs(sfx.wake_air.samples[0]) < 0.000001, "wake layer starts at silence")
+print("PASS: synthesized wake layer peak {peak_air:.6} at gameplay/master gain")
+
+event = (name: str, k: int):
+    match name:
+        "wake_air": play(sfx.wake_air, 0.45)
+        "footsteps_grass": play(sfx.step_grass[k % sfx.step_grass.len()], 0.4, (if k % 2 == 0: -0.15 else: 0.15), random(0.9, 1.1))
+        "footsteps_stone", "footsteps_wood": play(sfx.step_stone[k % sfx.step_stone.len()], 0.4, (if k % 2 == 0: -0.15 else: 0.15), random(0.9, 1.1))
+        "footsteps_snow": play(sfx.step_snow[k % sfx.step_snow.len()], 0.4, (if k % 2 == 0: -0.15 else: 0.15), random(0.9, 1.1))
+        "sword_combo":
+            play(sfx.swing, 0.45, 0.0, random(0.9, 1.15))
+        "shield_block": play(sfx.block, 0.6)
+        "bow": play(sfx.twang, 0.6)
+        "bow_draw": play(sfx.bow_draw, 0.45)
+        "bow_release": play(sfx.twang, 0.6)
+        "splash": play(sfx.splash, 0.6)
+        "grass_rustle": play(sfx.rustle, 0.22)
+        "spatial_near", "spatial_far", "spatial_wall":
+            cam = v3(10000.0, 2.0, 10000.0)
+            sfx_at(sfx.hit, cam + (if name == "spatial_near": vec3(0, 0, 4) else: vec3(0, 0, 20)), cam, vec3(1, 0, 0))
+            0
+        "boar_grunt", "boar_alarm", "boar_snort", "fox_yip", "bird_scatter":
+            voice = match name:
+                "boar_grunt": sfx.boar_grunt
+                "boar_alarm": sfx.boar_alarm
+                "boar_snort": sfx.boar_snort
+                "fox_yip": sfx.fox_yip
+                _: sfx.bird_scatter
+            sfx_at(voice, pl.pos + vec3(0, 0.6, -4), pl.pos + vec3(0, 1.6, 0), vec3(1, 0, 0), (if name == "boar_grunt": 0.38 else: 0.6), 1.0, (if name == "boar_grunt": 24.0 else: 40.0))
+            0
+        "creature_calls":
+            if k % 3 == 0: play(sfx.notice, 0.8)
+            else: play(sfx.grunt[k % 3], 0.6, 0.0, (if k % 3 == 2: 0.7 else: 1.0))
+        _: 0
+
+render = (name: str, seconds: f64, combat: bool = false):
+    reset()
+    if name == "spatial_wall":
+        wall = add_box(v3(10000.0, 0.0, 10010.0), vec3(4, 3, 0.5))
+    if name == "footsteps_wood": pl.ground.surf = .wood
+    if name == "footsteps_stone": pl.ground.surf = .stone
+    if name == "footsteps_snow": pl.ground.surf = .snow
+    if name == "wake_cue":
+        wake_cue()
+        play(sfx.wake_air, 0.45)
+    if name == "wake_air": play(sfx.wake_air, 0.45)
+    sfx_rng = rng(510)
+    samples: f32[]
+    update_cost: f64[]
+    motif_at = -100.0
+    motif_gap = 1000.0
+    loop frame in [0..int(seconds * 60.0)):
+        t = f64(frame) / 60.0
+        if combat and frame == 60: music_mood(.combat)
+        if combat or name == "field_piano" or name == "wake_cue":
+            old = music_motif_count
+            music_update(1.0 / 60.0)
+            jingles_update(1.0 / 60.0)
+            if old != music_motif_count:
+                if motif_at >= 0.0: motif_gap = min(motif_gap, t - motif_at)
+                motif_at = t
+        score_rng = __global_rng
+        __global_rng = sfx_rng
+        if name == "footsteps_grass": pl.vel = (if frame >= 60 and frame < 420: v3(0.0, 0.0, 3.0) else: vec3(0, 0, 0))
+        if not combat and name != "field_piano" and name != "wake_cue" and name != "wake_air":
+            if frame >= 60 and frame < 420 and (frame - 60) % 36 == 0:
+                if name == "bow": fight.act = .idle
+                else: event(name, (frame - 60) / 36)
+            if name == "bow" and frame >= 60 and frame < 420:
+                phase = (frame - 60) % 72
+                if phase == 0:
+                    fight.act = .aim
+                    fight.draw = 0.0
+                if phase < 30: fight.draw = f64(phase) / 30.0
+                if phase == 30:
+                    fight.act = .idle
+                    event("bow", frame / 72)
+            if name == "sword_combo" and frame >= 74 and frame < 434 and (frame - 74) % 36 == 0:
+                k = (frame - 74) / 36
+                play((if k % 4 == 3: sfx.hit_big else: sfx.hit), (if k % 4 == 3: 1.0 else: 0.8))
+        if combat and name != "combat_music" and frame >= 120:
+            phase = (frame - 120) % 240
+            if phase == 0 or phase == 36 or phase == 72: event("sword_combo", 0)
+            if phase == 14 or phase == 50: play(sfx.hit, 0.8)
+            if phase == 86: play(sfx.hit_big, 1.0)
+            if phase == 110: event("shield_block", 0)
+            if phase == 140: event("creature_calls", frame / 240)
+            if phase == 166:
+                fight.act = .aim
+                fight.draw = 0.0
+            if phase == 196:
+                fight.act = .idle
+                event("bow", 0)
+            if phase == 220: play(sfx.arrow_hit, 0.6)
+        started = time()
+        ambient_update(1.0 / 60.0, 1.0, 235.0, 0.0)
+        update_cost.push((time() - started) * 1000.0)
+        sfx_rng = __global_rng
+        __global_rng = score_rng
+        __mix(MIX_RATE / 60)
+        loop v in __mix_buf: samples.push(v)
+    wav(name, samples)
+    sort(update_cost)
+    print("{name}: ambient update ms median {update_cost[update_cost.len()/2]:.6} p99 {update_cost[int(f64(update_cost.len()) * 0.99)]:.6}; motif x{music_motif_count} min gap {motif_gap:.3}s")
+
+loop name in ["footsteps_grass", "footsteps_stone", "footsteps_snow", "footsteps_wood", "sword_combo", "shield_block", "bow", "bow_draw", "bow_release", "splash", "grass_rustle", "creature_calls", "spatial_near", "spatial_far", "spatial_wall", "boar_grunt", "boar_alarm", "boar_snort", "fox_yip", "bird_scatter"]: render(name, 9.0)
+render("combat_music", 30.0, true)
+render("combat_mix", 30.0, true)
+render("field_piano", 180.0)
+render("wake_air", 7.0)
+render("wake_cue", 12.0)
+print("wrote {out_dir}/*.wav")

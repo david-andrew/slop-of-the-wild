@@ -1,0 +1,66 @@
+use 'gfx.jo'
+use 'cputime.jo'
+
+# Keep one world draw in flight. The next CPU update overlaps it; only the
+# following draw waits. This bounds driver queue bursts without serializing
+# update + GPU work as a finish-after-every-frame would. Small uncapped views
+# need the same bound: otherwise the driver can spin in later draw submissions.
+# Leave the initial small-view readback/startup handoff unchanged.
+when TARGET == "linux":
+    @lib("libGLESv2.so.2")
+    extern glFenceSync = (condition: u32, flags: u32) -> *u8
+    @lib("libGLESv2.so.2")
+    extern glClientWaitSync = (sync: *u8, flags: u32, timeout: u64) -> u32
+    @lib("libGLESv2.so.2")
+    extern glDeleteSync = (sync: *u8)
+    @lib("libc.so.6")
+    extern nanosleep = (requested: *i64, remaining: *i64) -> i32
+
+__gpu_queue_fence: *u8 = null
+__gpu_queue_ok = true
+__gpu_queue_trace = env("BOTW_GPU_FRAME_LOG") != none
+__gpu_queue_waits = 0
+__gpu_queue_sum = 0.0
+__gpu_queue_worst = 0.0
+__gpu_queue_timeouts = 0
+__gpu_queue_pause = fill(i64(0), 2)
+__gpu_queue_pause[1] = 100000    # 0.1 ms requested; no allocation inside the poll loop
+
+gpu_queue_wait = ():
+    when TARGET == "linux":
+        if __soft or not __gpu_queue_ok or __gpu_queue_fence == null: return
+        cpu_mark("gpu_queue_wait")
+        started = time()
+        # The NVIDIA timed wait spins on this driver. Poll without blocking and
+        # yield between polls, retaining the same fence and one-second timeout.
+        result = glClientWaitSync(__gpu_queue_fence, 1, u64(0))
+        loop result == 0x911B and time() - started < 1.0:
+            nanosleep(data(__gpu_queue_pause), null)
+            result = glClientWaitSync(__gpu_queue_fence, 0, u64(0))
+        waited = (time() - started) * 1000.0
+        if cpu_timing: cpu_detail("queue_wait_ms={waited:.3}")
+        __gpu_queue_waits += 1
+        __gpu_queue_sum += waited
+        __gpu_queue_worst = max(__gpu_queue_worst, waited)
+        if result == 0x911B:
+            __gpu_queue_timeouts += 1
+            return     # timeout: keep the pending fence
+        glDeleteSync(__gpu_queue_fence)
+        __gpu_queue_fence = null
+        if result == 0x911D: __gpu_queue_ok = false
+
+gpu_queue_submit = ():
+    when TARGET == "linux":
+        if __soft or not __gpu_queue_ok or __gpu_queue_fence != null or (__screen_px_w() <= 1700 and frame_number() == 0): return
+        flush()
+        __gpu_queue_fence = glFenceSync(0x9117, 0)
+        if __gpu_queue_fence == null:
+            __gpu_queue_ok = false
+            return
+        glFlush()
+        if __gpu_queue_trace and frame_number() % 120 == 119:
+            eprint("gpu queue: frame {frame_number()} waits {__gpu_queue_waits} mean {__gpu_queue_sum / f64(max(__gpu_queue_waits, 1)):.3} worst {__gpu_queue_worst:.3} timeouts {__gpu_queue_timeouts}")
+            __gpu_queue_waits = 0
+            __gpu_queue_sum = 0.0
+            __gpu_queue_worst = 0.0
+            __gpu_queue_timeouts = 0

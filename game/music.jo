@@ -1,0 +1,929 @@
+use 'gfx.jo'
+use 'audio_assets.jo'
+use 'player.jo'
+use 'env.jo'
+use 'enemies.jo'
+use 'combat.jo'
+
+# Iowa Steinway pp/mf/ff, sparse field figures and piano set pieces.
+# Missing recordings fall back to additive synthesis.
+
+const PIANO_STEP = 3                  # semitones between sampled notes (the rest are pitched)
+const PIANO_LO = 36                   # midi C2
+const PIANO_HI = 96                   # midi C7
+
+struct PianoBank:
+    notes: Sound[]
+    soft: Sound[]                     # quieter, darker strikes
+    forte: Sound[]
+    short_soft: Sound[]
+    short_notes: Sound[]
+    short_forte: Sound[]
+    restrained_soft: Sound[]          # low-health bass: 45 ms body, 95 ms damper release
+    ready = false
+
+piano = PianoBank()
+
+midi_freq = (m: f64) -> f64: 440.0 * pow(2.0, (m - 69.0) / 12.0)
+
+# a struck note, mono
+__piano_mono = (midi: int, vel: f64, seconds: f64) -> f32[]:
+    sr = f64(MIX_RATE)
+    n = int(seconds * sr)
+    out = fill(f32(0), n)
+    f0 = midi_freq(f64(midi))
+    b = 0.00008 * pow(2.0, f64(midi - 48) / 18.0)        # inharmonicity grows up the keyboard
+    tau = clamp(9.0 * pow(0.5, f64(midi - 36) / 16.0), 0.9, 9.0)
+    bright = 0.55 + 0.45 * vel
+    seed_random(midi * 7 + int(vel * 10.0))
+    loop k in [1..24]:
+        fk = f64(k) * f0 * sqrt(1.0 + b * f64(k * k))
+        if fk > 14000.0: break
+        amp = pow(f64(k), -1.15 - (1.0 - bright) * 0.9)
+        # the hammer hits ~1/8 of the way along the string: those partials are weak
+        amp *= 0.35 + 0.65 * abs(sin(PI * f64(k) / 8.0))
+        tk = tau / (1.0 + 0.45 * f64(k - 1))
+        det = 0.0006 + 0.0003 * random()
+        ph1 = random() * TAU
+        ph2 = random() * TAU
+        w1 = TAU * fk * (1.0 + det) / sr
+        w2 = TAU * fk * (1.0 - det) / sr
+        # two oscillators by rotation (cheap), summed with a two-stage envelope
+        c1 = cos(w1)
+        s1 = sin(w1)
+        c2 = cos(w2)
+        s2 = sin(w2)
+        x1 = cos(ph1)
+        y1 = sin(ph1)
+        x2 = cos(ph2)
+        y2 = sin(ph2)
+        fast = exp(-1.0 / (tk * 0.22 * sr))
+        slow = exp(-1.0 / (tk * sr))
+        ef = 0.72
+        es = 0.28
+        loop i in [0..n):
+            v = (y1 + y2) * (ef + es)
+            out[i] += f32(v * amp)
+            nx1 = x1 * c1 - y1 * s1
+            y1 = x1 * s1 + y1 * c1
+            x1 = nx1
+            nx2 = x2 * c2 - y2 * s2
+            y2 = x2 * s2 + y2 * c2
+            x2 = nx2
+            ef *= fast
+            es *= slow
+            if ef + es < 0.0003: break
+    # attack ramp and hammer thump (filtered noise)
+    lp = 0.0
+    loop i in [0..min(n, int(0.04 * sr))):
+        t = f64(i) / sr
+        lp += (random(-1.0, 1.0) - lp) * 0.08
+        out[i] += f32(lp * exp(-t * 90.0) * 0.6 * vel)
+    # the soundboard answers the blow: a few low body modes, ringing briefly
+    loop bm in [(98.0, 0.12, 0.5), (176.0, 0.09, 0.4), (262.0, 0.07, 0.3), (395.0, 0.05, 0.22)]:
+        w = TAU * bm.0 / sr
+        a0 = bm.2 * 0.05 * vel
+        cw = cos(w)
+        sw = sin(w)
+        x = 1.0
+        y = 0.0
+        e = a0
+        de = exp(-1.0 / (bm.1 * sr))
+        loop i in [0..min(n, int(bm.1 * 5.0 * sr))):
+            out[i] += f32(y * e)
+            nx = x * cw - y * sw
+            y = x * sw + y * cw
+            x = nx
+            e *= de
+    # undamped strings an octave and a twelfth up ring along faintly, long after
+    loop hm in [(2.0, 0.025), (3.0, 0.015)]:
+        w = TAU * f0 * hm.0 * (1.0 + 0.0012) / sr
+        if f0 * hm.0 > 12000.0: continue
+        # (an oscillator by rotation and an envelope by multiplication: no sin or exp per sample)
+        cw = cos(w)
+        sw = sin(w)
+        x = 1.0
+        y = 0.0
+        e = hm.1
+        de = exp(-1.0 / (tau * 1.4 * sr))
+        rise = int(0.15 * sr)
+        loop i in [0..n):
+            out[i] += f32(y * e * (if i < rise: f64(i) / f64(rise) else: 1.0))
+            nx = x * cw - y * sw
+            y = x * sw + y * cw
+            x = nx
+            e *= de
+            if e < 0.0005: break
+    loop i in [0..min(n, int(0.003 * sr))): out[i] *= f32(f64(i) / (0.003 * sr))
+    # loudness
+    g = 0.11 * (0.35 + 0.65 * vel) * pow(f0 / 261.0, -0.15)
+    loop mut s in out: s *= f32(g)
+    out
+
+# a Schroeder/Freeverb style reverb: mono in, stereo out (wet + dry)
+reverb_stereo = (x: f32[], wet: f64, room: f64, damp: f64) -> f32[]:
+    n = x.len()
+    out = fill(f32(0), n * 2)
+    combs = [1557, 1617, 1491, 1422, 1277, 1356, 1188, 1116]
+    aps = [556, 441, 341, 225]
+    loop side in [0..2):
+        acc = fill(0.0, n)
+        spread = side * 23
+        loop d0 in combs:
+            d = d0 + spread
+            buf = fill(0.0, d)
+            idx = 0
+            store = 0.0
+            loop i in [0..n):
+                y = buf[idx]
+                store = y * (1.0 - damp) + store * damp
+                buf[idx] = f64(x[i]) + store * room
+                idx += 1
+                if idx >= d: idx = 0
+                acc[i] += y
+        loop d0 in aps:
+            d = d0 + spread
+            buf = fill(0.0, d)
+            idx = 0
+            loop i in [0..n):
+                bo = buf[idx]
+                inp = acc[i]
+                acc[i] = -inp + bo
+                buf[idx] = inp + bo * 0.5
+                idx += 1
+                if idx >= d: idx = 0
+        loop i in [0..n): out[i * 2 + side] = f32(f64(x[i]) * (1.0 - wet * 0.5) + acc[i] * wet * 0.12)
+    # (the two sides' tails drawn a little together: a room, not a phasey width)
+    loop i in [0..n):
+        l = out[i * 2]
+        r = out[i * 2 + 1]
+        m = (l + r) * 0.5
+        sd = (l - r) * 0.5 * 0.62
+        out[i * 2] = m + sd
+        out[i * 2 + 1] = m - sd
+    out
+
+# Imported mono PCM16 at MIX_RATE; load_wav expands it to interleaved stereo.
+# Two seconds after the dry tail for the room to decay.
+__piano_seconds = (midi: int) -> f64: 10.0 - f64(midi - PIANO_LO) / 20.0
+__piano_sample = (midi: int, dynamic: str, vel: f64) -> f32[]:
+    path = "assets/audio/piano-{dynamic}-{midi}.wav"
+    if let bytes = read_bytes(path):
+        s = load_wav(bytes)
+        mono = fill(f32(0), int(__piano_seconds(midi) * f64(MIX_RATE)))
+        loop i in [0..min(mono.len(), s.samples.len() / 2)):
+            mono[i] = (s.samples[i * 2] + s.samples[i * 2 + 1]) * 0.5
+        return mono
+    eprint("{path} missing; using synthesized piano note")
+    __piano_mono(midi, vel, __piano_seconds(midi))
+
+# Damper closes after 100 ms, with a smooth 160 ms release; prebuilt, never sliced on a frame.
+__piano_short = (s: Sound, close: f64 = 0.10, end: f64 = 0.26) -> Sound:
+    n = int(end * f64(MIX_RATE))
+    out = fill(f32(0), n * 2)
+    loop i in [0..n):
+        g = f32(1.0 - smoothstep(close, end, f64(i) / f64(MIX_RATE)))
+        out[i * 2] = s.samples[i * 2] * g
+        out[i * 2 + 1] = s.samples[i * 2 + 1] * g
+    Sound(out)
+
+# A single prebuilt glass strike; the sequencer pitches it, never loops it.
+shrine_glass = Sound()
+__shrine_glass = () -> Sound:
+    out = fill(f32(0), MIX_RATE * 4 * 2)
+    loop i in [0..MIX_RATE * 4):
+        t = f64(i) / f64(MIX_RATE)
+        v = sin(TAU * 523.251 * t) * exp(-t / 1.1)
+        v += sin(TAU * 523.251 * 2.756 * t) * 0.28 * exp(-t / 0.65)
+        v += sin(TAU * 523.251 * 5.404 * t) * 0.10 * exp(-t / 0.32)
+        v *= smoothstep(0.0, 0.009, t) * (1.0 - smoothstep(3.2, 4.0, t)) * 0.075
+        out[i*2] = f32(v)
+        out[i*2+1] = f32(v * 0.94)
+    Sound(out)
+
+piano_init = ():
+    if piano.ready: return
+    saved = __global_rng
+    defer __global_rng = saved
+    seed_random(12345)
+    if let asset = audio_asset_read("assets/prepared/piano.bin", audio_asset_key(["game/music.jo"])):
+        if asset.groups.len() == 10 and asset.flags.len() == 0:
+            piano.notes = asset.groups[0]
+            piano.soft = asset.groups[1]
+            piano.forte = asset.groups[2]
+            piano.short_notes = asset.groups[3]
+            piano.short_soft = asset.groups[4]
+            piano.short_forte = asset.groups[5]
+            if piano.notes.len() == 21 and piano.soft.len() == 21 and piano.forte.len() == 21 and piano.short_notes.len() == 21 and piano.short_soft.len() == 21 and piano.short_forte.len() == 21 and asset.groups[6].len() == 1 and asset.groups[7].len() == 1 and asset.groups[8].len() == 1 and asset.groups[9].len() == 1:
+                drum_lo = asset.groups[6][0]
+                drum_hi = asset.groups[7][0]
+                combat_entry = asset.groups[8][0]
+                shrine_glass = asset.groups[9][0]
+                piano.restrained_soft = parallel_map(piano.soft, (s: Sound): __piano_short(s, 0.045, 0.14))
+                piano.ready = true
+                return
+    piano.ready = true
+    keys: int[]
+    m = PIANO_LO
+    loop m <= PIANO_HI:
+        keys.push(m)
+        m += PIANO_STEP
+    loud = parallel_map(keys, (k: int):
+        Sound(reverb_stereo(__piano_sample(k, "mf", 0.75), 0.55, 0.86, 0.35))
+    )
+    quiet = parallel_map(keys, (k: int):
+        Sound(reverb_stereo(__piano_sample(k, "pp", 0.35), 0.65, 0.88, 0.45))
+    )
+    forte = parallel_map(keys, (k: int):
+        Sound(reverb_stereo(__piano_sample(k, "ff", 1.0), 0.55, 0.86, 0.35))
+    )
+    piano.notes = loud
+    piano.soft = quiet
+    piano.forte = forte
+    piano.short_notes = parallel_map(loud, (s: Sound): __piano_short(s))
+    piano.short_soft = parallel_map(quiet, (s: Sound): __piano_short(s))
+    piano.short_forte = parallel_map(forte, (s: Sound): __piano_short(s))
+    piano.restrained_soft = parallel_map(quiet, (s: Sound): __piano_short(s, 0.045, 0.14))
+    combat_drums()
+    shrine_glass = __shrine_glass()
+
+music_vol = 1.0
+
+struct PianoBlend:
+    pp: f64
+    mf: f64
+    ff: f64
+
+piano_blend = (vel: f64) -> PianoBlend:
+    if vel <= 0.65:
+        x = smoothstep(0.35, 0.65, vel)
+        return PianoBlend(cos(x * PI / 2.0), sin(x * PI / 2.0), 0.0)
+    x = smoothstep(0.70, 0.95, vel)
+    PianoBlend(0.0, cos(x * PI / 2.0), sin(x * PI / 2.0))
+
+piano_gain = (vel: f64, volume: f64) -> f64: volume * (0.5 + vel * 0.6) * music_vol
+piano_pan = (midi: int) -> f64: sin(f64(midi) * 1.7) * 0.16
+
+const FIELD_GAIN = 3.076734159       # +8.7 dB over round 61; rests/strike density unchanged
+const COMBAT_GAIN = 3.349654392       # +4.5 dB over round 65; shared live/offline gain
+const LOW_HP_GAIN = 1.216186001       # +1.7 dB restores level with fewer bass strikes
+const COMBAT_ENTRY_LEVEL = 0.353386   # entry accent -1.5 dB relative to the sustained fight
+const TITLE_GAIN = 1.188502227        # +1.5 dB: title/cave exit remain musical peaks
+const CUE_DUCK_ENGAGED = 0.113175801   # same cue margin after the combat gain change
+const CUE_DUCK_LOW_HP = 0.078364611
+
+# Context gain trims, separate from phrase velocities/timing. Day's brighter
+# register needs less gain; quieter night/rain figures can speak above their beds.
+field_gain = (m: Mood) -> f64:
+    FIELD_GAIN * (if m == .field_day: 0.794328235 else: (if m == .field_night: 1.059253725 else: (if m == .field_rain: 1.778279410 else: (if m == .forest: 1.096478196 else: 1.0))))
+combat_gain = (tier: CombatTier) -> f64: COMBAT_GAIN * (if tier == .low_hp: LOW_HP_GAIN else: 1.0)
+# (the plateau motif heard rarely, as in BotW's field score: on its own at most every three minutes,
+# arriving at a landmark (once a visit) at most every minute and a half)
+const FIELD_MOTIF_GAP = 180.0
+const LANDMARK_MOTIF_GAP = 90.0
+const COMBAT_BPM = 152.0
+
+# Context voices fade with the score; story cues keep their own tails. Both share
+# cue ducking, so a notice sting cannot mask the first enemy wind-up.
+struct ScoreVoice:
+    id: int
+    gain: f64
+    left: f64
+    context = true
+    retiring = false
+score_voices: ScoreVoice[]
+music_hold = 0.0
+music_activity = 0.0
+music_note_count = 0
+music_motif_count = 0
+phrase_used_motif = false
+# Cue preparation runs after the sequencer but before mixing. Apply the attack to
+# existing voices and new strikes alike; recover over 240 ms after the cue body.
+music_duck = 1.0
+music_duck_hold = 0.0
+music_duck_floor = 1.0
+music_cue_duck = ():
+    low = pl.hp <= max(4, pl.hp_max / 4) + (if seq.combat_tier == .low_hp: 1 else: 0)
+    music_duck_floor = min(music_duck_floor, (if low: CUE_DUCK_LOW_HP else: CUE_DUCK_ENGAGED))
+    music_duck_hold = max(music_duck_hold, 0.18)
+    music_duck = min(music_duck, music_duck_floor)
+    loop v in score_voices: set_volume_ramped(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))
+
+__score_play = (s: Sound, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
+    id = play(s, gain * (if score: seq.volume else: 1.0) * music_duck, pan, pitch)
+    score_voices.push(ScoreVoice(id, gain, duration(s) / pitch, context = score))
+    id
+
+piano_play = (midi: int, vel: f64 = 0.7, pan: f64 = 0.0, volume: f64 = 1.0, short: bool = false, score: bool = false, restrained: bool = false) -> int:
+    if not piano.ready: return 0
+    k = clamp((midi - PIANO_LO + PIANO_STEP / 2) / PIANO_STEP, 0, piano.notes.len() - 1)
+    base = PIANO_LO + k * PIANO_STEP
+    pitch = pow(2.0, f64(midi - base) / 12.0)
+    g = piano_gain(vel, volume)
+    b = piano_blend(vel)
+    music_note_count += 1
+    music_hold = max(music_hold, (if short: 0.35 else: 4.0))
+    soft = if restrained: piano.restrained_soft else: (if short: piano.short_soft else: piano.soft)
+    notes = if short: piano.short_notes else: piano.notes
+    forte = if short: piano.short_forte else: piano.forte
+    id = 0
+    if b.pp > 0.000001: id = __score_play(soft[k], g * b.pp, pan, pitch, score)
+    if b.mf > 0.000001: id = __score_play(notes[k], g * b.mf, pan, pitch, score)
+    if b.ff > 0.000001: id = __score_play(forte[k], g * b.ff, pan, pitch, score)
+    id
+
+# ---------------- the sequencer ----------------
+enum Mood: silent, field_day, field_night, ruins, shrine, combat, snow, title, forest, field_golden, field_rain
+
+struct Ev:
+    t: f64
+    midi: int
+    vel: f64
+    accompaniment = false
+    gain = 1.0
+    glass = false
+
+enum CombatTier: alert, engaged, low_hp
+
+struct PhraseMemory:
+    pitches: int[]
+    at: f64
+
+struct Seq:
+    mood = Mood.silent
+    want = Mood.silent
+    events: Ev[]
+    clock = 0.0
+    rest = 3.0                 # seconds until the next phrase
+    volume = 0.0               # fades between moods
+    combat_step = 0
+    combat_t = 0.0
+    combat_tier = CombatTier.alert
+    combat_engaged = 0.0
+    combat_drop_bar = -1
+    combat_clean_bar = -100
+    age = 0.0
+    motif_at = -100.0
+    handoff_at = -100.0
+    strike_at = -100.0
+    landmark_t = 0.0
+    motif_pending = false
+    figure_times: {int: f64} = {}
+    phrase_memory: PhraseMemory[]
+    harmony_rng = rng(61061)
+    harmony_last: {int: int} = {}
+    figure_key = -1
+    harmony_colour = -1
+
+seq = Seq()
+
+__root_for = (m: Mood) -> int:
+    match m:
+        field_day: 62
+        field_golden: 55
+        field_night: 57
+        field_rain: 59
+        forest: 50
+        snow: 76
+        ruins: 52
+        shrine: 48
+        _: 62
+
+# Open intervals, without a walking bass or a second continuous hand.
+__figures_for = (m: Mood) -> int[][]:
+    match m:
+        field_golden: [[0, 9, 16, 7, 12], [7, -5, 4, 16], [12, 5, 14, 7], [9, 2, 14, 7, 0], [4, 16, 9, 2], [-5, 7, 16, 4], [16, 7, 2, 9], [2, 14, 4, 12]]
+        field_night: [[0, 7, 19, 12], [8, 1, 13, 6], [-12, 2, 9, 0], [12, 5, -2, 7], [3, 15, 10, 5], [-5, 7, 0, 14], [19, 12, 5, 10], [2, 9, -3, 7]]
+        field_rain: [[0, 14, 7, 16], [7, -5, 2, 14], [12, 5, 14, 7], [2, 9, 0, 7], [9, 2, 16, 7], [-5, 7, 14, 2], [16, 9, 2, 12], [5, 17, 10, 3]]
+        forest: [[0, 7, 17, 10, 3], [12, 5, 14, 7], [3, 10, 0, 7], [7, -5, 2, 9, 0], [10, 3, 15, 7], [-5, 7, 14, 2], [17, 10, 5, 12], [2, 9, -3, 7]]
+        snow: [[0, 14, 7, 19], [7, 16, 9, 2], [12, 5, 14, 7], [-12, 2, 9, 0], [9, 21, 14, 7], [2, 14, 7, 16], [-5, 7, 2, 12], [16, 9, 2, 14]]
+        ruins: [[0, 7, 19, 12], [-12, 0, 7, 15], [8, 1, 13, 6], [7, -5, 2, 0], [3, 15, 10, 5], [-5, 7, 0, 14], [19, 12, 5, 10], [2, 9, -3, 7]]
+        shrine: [[0, 12, 19, 26], [7, 19, 26, 12], [12, 24, 31, 26], [0, 14, 21, 12], [5, 17, 24, 12], [-5, 7, 14, 19], [19, 12, 26, 7], [2, 14, 21, 7]]
+        _: [[0, 14, 7, 19, 12], [7, -5, 9, 2], [12, 5, 14, 7], [9, 2, 14, 7, 0], [4, 16, 9, 2], [-5, 7, 14, 4], [19, 12, 5, 14], [2, 9, -3, 7]]
+
+# Five-note fragment of the original plateau motif; colour follows the local harmony.
+__motif_for = (m: Mood) -> int[]:
+    match m:
+        field_night, forest, ruins: [3, 7, 9, 2, 0]
+        shrine: [7, 11, 12, 2, 0]
+        _: [4, 7, 9, 2, 0]
+
+__stretch_for = (m: Mood) -> f64:
+    match m:
+        field_golden: 1.2
+        field_night: 1.45
+        field_rain: 1.3
+        forest: 1.15
+        snow: 1.35
+        ruins: 1.4
+        shrine: 1.6
+        _: 1.0
+
+phrase_n = 0
+music_still = 0.0
+p_phrase = (m: Mood) -> Ev[]:
+    phrase_n += 1
+    figures = __figures_for(m)
+    phrase_used_motif = (seq.motif_pending and seq.age - seq.motif_at >= LANDMARK_MOTIF_GAP) or (phrase_n % 4 == 2 and seq.age - seq.motif_at >= FIELD_MOTIF_GAP)
+    notes: int[]
+    seq.figure_key = -1
+    seq.harmony_colour = -1
+    if phrase_used_motif: notes = __motif_for(m)
+    else:
+        # Rotate eight authored gestures, with a timed identity cooldown rather
+        # than a short shuffle bag. If all are recent, let this turn pass in silence.
+        available: int[]
+        loop i in [0..figures.len()):
+            key = int(m) * 8 + i
+            if seq.age - seq.figure_times.get(key, -1000.0) >= FIELD_MOTIF_GAP: available.push(i)
+        if available.len() == 0: return []
+        figure = available[random_int(0, available.len())]
+        notes = figures[figure]
+        seq.figure_key = int(m) * 8 + figure
+        seq.figure_times[seq.figure_key] = seq.age
+    if phrase_used_motif:
+        seq.motif_pending = false
+        seq.motif_at = seq.age
+        music_motif_count += 1
+    root = __root_for(m)
+    if m == .field_day or m == .field_golden or m == .forest:
+        if random() < 0.25: root += 12
+    dyn = random(0.30, 0.46)
+    if m == .field_night or m == .field_rain or m == .shrine: dyn *= 0.86
+    if m == .shrine: dyn *= 1.0 - clamp(env.night, 0.0, 1.0) * 0.25
+    stretch = __stretch_for(m) * random(0.9, 1.15)
+    gaps = [0.65, 1.7, 0.95, 2.8, 1.2, 1.6]
+    # Alternate complete, high-register, inverted and three-note statements; no extra strikes.
+    variant = (music_motif_count - 1) % 4
+    if phrase_used_motif and variant == 1 and root <= 74: root = __root_for(m) + 12
+    if phrase_used_motif and variant == 2:
+        pivot = notes[0]
+        loop mut n in notes: n = pivot * 2 - n
+    if not phrase_used_motif and phrase_n % 3 == 0:
+        # A delayed inner note and a quieter answer vary the gesture without filling its rest.
+        gaps[1] *= 1.3
+    evs: Ev[]
+    t = 0.0
+    count = if music_still > 10.0: 2 else: (if phrase_used_motif and variant == 3: 3 else: notes.len())
+    if not phrase_used_motif and music_still <= 10.0:
+        # Figures from a single note to six, and now and then none: the turn passes in silence.
+        shape = random()
+        if shape < 0.12: return []
+        if shape < 0.24: count = 1
+        else if shape < 0.4: count = min(count, random_int(2, 4))
+        else if shape > 0.82:
+            notes.push(notes[1] + 12)
+            count = notes.len()
+    loop i in [0..count):
+        ni = if music_still > 10.0 and i == 1: notes.len() - 1 else: i
+        evs.push(Ev(t, root + notes[ni], dyn * random(0.85, 1.08) * (if i == count - 1: 0.88 else: 1.0)))
+        t += gaps[i] * stretch * random(0.85, 1.18)
+    pitches: int[]
+    loop e in evs: pitches.push(e.midi)
+    # One softly rolled dyad at most; shrine basses ring as octaves/fifths.
+    if music_still <= 10.0 and count > 1 and (m == .shrine or random() < 0.3):
+        e = evs[0]
+        interval = if m == .shrine: 7 else: (if m == .snow: 12 else: 14)
+        evs.push(Ev(e.t + 0.065, min(e.midi + interval, PIANO_HI), e.vel * 0.65, accompaniment = true))
+    # Ignore timing/velocity jitter when detecting repetition. This also covers
+    # partial/single-note statements and collisions between different figures.
+    i = 0
+    loop i < seq.phrase_memory.len():
+        if seq.age - seq.phrase_memory[i].at >= FIELD_MOTIF_GAP: seq.phrase_memory.remove(i)
+        else:
+            if seq.phrase_memory[i].pitches == pitches: return []
+            i += 1
+    seq.phrase_memory.push(PhraseMemory(pitches, seq.age))
+    # Independent colour RNG keeps these choices off the melody RNG. Returning figures
+    # choose a different bass colour; most turns still have no left hand at all.
+    if music_still <= 10.0 and count > 1 and m != .shrine:
+        if seq.harmony_rng.next_float() < 0.42:
+            last = seq.harmony_last.get(seq.figure_key, -1)
+            colour = int(seq.harmony_rng.next_float() * (if last < 0: 4.0 else: 3.0))
+            if last >= 0 and colour >= last: colour += 1
+            seq.harmony_last[seq.figure_key] = colour
+            seq.harmony_colour = colour
+            bass = max(PIANO_LO, __root_for(m) - 12 + [0, -5, -3, 2][colour])
+            at = 0.12 + seq.harmony_rng.next_float() * 0.26
+            evs.push(Ev(at, bass, 0.24, accompaniment = true, gain = 0.30))
+            if seq.harmony_rng.next_float() < 0.4:
+                evs.push(Ev(at + 0.10, bass + 7, 0.20, accompaniment = true, gain = 0.23))
+    # Small breaths between notes; vary gaps while preserving melody order.
+    rubato = 0.0
+    previous_onset = 0.0
+    loop mut e in evs:
+        if not e.accompaniment:
+            original = e.t
+            if original > 0.0: rubato += (original - previous_onset) * (0.94 + seq.harmony_rng.next_float() * 0.16)
+            e.t = rubato
+            previous_onset = original
+    if m == .shrine and count > 1:
+        # Sparse, inharmonic glass answers belong to the phrase, not a looping bed.
+        evs.push(Ev(0.32, pitches[0] + 12, 0.25, accompaniment = true, gain = 0.38, glass = true))
+    evs
+
+phrase_rest = (m: Mood) -> f64:
+    rest = match m:
+        field_day: random(22.0, 34.0)
+        field_golden, forest: random(24.0, 36.0)
+        field_night, snow: random(28.0, 40.0)
+        field_rain, ruins: random(26.0, 38.0)
+        shrine: random(28.0, 40.0)
+        _: random(22.0, 36.0)
+    if music_still > 10.0: rest += random(8.0, 16.0)
+    rest
+
+music_mood = (m: Mood): seq.want = m
+
+# Location checks use squared distances once a second, in the original map coordinates.
+# A visit asks for the next figure, with at least 18 s of breathing room after a strike.
+struct MusicLandmark:
+    x: f64
+    z: f64
+    radius: f64
+    last = -180.0
+    inside = false      # (stated once per visit: re-armed only after leaving)
+music_landmarks = [MusicLandmark(-818.0, 1950.0, 85.0), MusicLandmark(-560.0, 1722.0, 75.0),
+    MusicLandmark(-946.0, 1883.0, 45.0), MusicLandmark(-1068.0, 1845.0, 45.0),
+    MusicLandmark(-495.0, 1990.0, 85.0)]
+
+music_landmark_update = (dt: f64):
+    seq.landmark_t -= dt
+    if seq.landmark_t > 0.0: return
+    seq.landmark_t = 1.0
+    if seq.want == .silent or seq.want == .title or seq.want == .combat or seq.want == .shrine: return
+    loop mut p in music_landmarks:
+        dx = f64(pl.pos.x) - p.x
+        dz = f64(pl.pos.z) - p.z
+        d2 = dx * dx + dz * dz
+        if d2 > p.radius * p.radius * 1.69: p.inside = false
+        else if d2 < p.radius * p.radius and not p.inside:
+            p.inside = true
+            if seq.age - p.last >= 180.0:
+                p.last = seq.age
+                seq.motif_pending = true
+    if seq.motif_pending and seq.events.len() == 0 and seq.age - seq.strike_at >= 18.0:
+        seq.rest = min(seq.rest, 8.0)
+
+music_update = (dt: f64):
+    if not piano.ready: return
+    seq.age += dt
+    music_hold = max(0.0, music_hold - dt)
+    music_activity = approach(music_activity, (if music_hold > 0.0: 1.0 else: 0.0), (if music_hold > 0.0: 5.0 else: 0.7), dt)
+    music_landmark_update(dt)
+    music_duck_hold = max(0.0, music_duck_hold - dt)
+    if music_duck_hold <= 0.0:
+        music_duck_floor = 1.0
+        music_duck = min(1.0, music_duck + dt / 0.24)
+    fading = seq.want != seq.mood
+    if fading:
+        fade_seconds = if seq.want == .combat or seq.want == .silent: 0.3 else: 0.9
+        seq.volume = max(0.0, seq.volume - dt / fade_seconds)
+    else: seq.volume = min(1.0, seq.volume + dt / (if seq.mood == .combat: 0.25 else: 1.2))
+    i = 0
+    loop i < score_voices.len():
+        score_voices[i].left -= dt
+        v = score_voices[i]
+        if v.left <= 0.0:
+            if v.retiring: stop(v.id)
+            score_voices.remove(i)
+        else:
+            set_volume_ramped(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))
+            i += 1
+    if fading:
+        if seq.volume > 0.0: return   # no outgoing strikes during the hand-off
+        old = seq.mood
+        # Finish the 20 ms sample ramp before removing outgoing handles.
+        # They must never inherit the incoming combat gain of 0.55.
+        loop mut v in score_voices:
+            if v.context:
+                v.retiring = true
+                v.left = min(v.left, 0.05)
+        seq.mood = seq.want
+        seq.events.clear()
+        seq.clock = 0.0
+        seq.combat_t = 0.0
+        seq.combat_step = 0
+        seq.combat_tier = .alert
+        seq.combat_engaged = 0.0
+        seq.combat_drop_bar = -1
+        seq.combat_clean_bar = -100
+        if seq.mood == .combat:
+            seq.volume = 0.55
+            seq.combat_t = 60.0 / COMBAT_BPM / 2.0
+            __score_play(combat_entry, COMBAT_ENTRY_LEVEL * COMBAT_GAIN * music_vol, 0.0, 1.0, true)
+        else if old == .combat:
+            # Escape gets seven seconds. A victory's low piano tail can last
+            # longer: leave a real 1.5 s breath after the final cue sample.
+            tail = 0.0
+            loop v in score_voices:
+                if not v.context: tail = max(tail,v.left)
+            seq.rest = max(7.0,tail+1.5)
+        else if seq.mood != .silent and seq.mood != .title and seq.age - seq.handoff_at >= 18.0 and seq.age - seq.motif_at > 8.0:
+            # Two notes introduce the new register/colour even in the middle of a long rest.
+            root = __root_for(seq.mood)
+            seq.events = [Ev(0.45, root + 7, 0.34), Ev(1.7 * __stretch_for(seq.mood), root + 14, 0.27)]
+            seq.rest = max(seq.rest, phrase_rest(seq.mood))
+            seq.handoff_at = seq.age
+        else: seq.rest = max(seq.rest, 8.0)
+    if seq.mood == .silent or seq.mood == .title: return
+    if seq.mood == .combat:
+        __combat_music(dt)
+        return
+    seq.clock += dt
+    i = 0
+    loop i < seq.events.len():
+        e = seq.events[i]
+        if e.t <= seq.clock:
+            if e.glass:
+                __score_play(shrine_glass, e.gain * music_vol, 0.22, pow(2.0, f64(e.midi - 72) / 12.0), true)
+            else: piano_play(e.midi, e.vel, piano_pan(e.midi), field_gain(seq.mood) * e.gain, false, true)
+            seq.strike_at = seq.age
+            seq.events.remove(i)
+        else: i += 1
+    if seq.events.len() == 0:
+        seq.rest -= dt
+        if seq.rest <= 0.0:
+            seq.clock = 0.0
+            seq.events = p_phrase(seq.mood)
+            seq.rest = phrase_rest(seq.mood)
+
+# Original combat cell: A A / C ... G#, with a repeated-note pickup,
+# minor-third leap and leading-note snap back to A on the next statement.
+# Three full statements, an E-register answer, a climbing development and two
+# partial statements share the same rhythm instead of unrelated arpeggio stabs.
+__combat_melody = [[69,69,72,68],[76,76,79,75],[69,69,72,68],[72,75],
+    [69,69,72,68],[71,71,74,70],[69,69,75,80],[72,68]]
+__combat_basses = [45,40,45,41,45,43,44,45]
+# a frame drum under the fight: a deep skin (a pitch falling as the head settles) and a dry
+# slap of the hand, built once
+drum_lo = Sound()
+drum_hi = Sound()
+combat_entry = Sound()
+__drum = (f0: f64, f1: f64, dur: f64, slap: f64) -> Sound:
+    n = int(dur * f64(MIX_RATE))
+    out: f32[]
+    ph = 0.0
+    loop i in [0..n):
+        t = f64(i) / f64(MIX_RATE)
+        f = f1 + (f0 - f1) * exp(-t / 0.04)
+        ph += TAU * f / f64(MIX_RATE)
+        v = sin(ph) * exp(-t / (dur * 0.35)) + sin(ph * 1.59) * 0.3 * exp(-t / (dur * 0.15))
+        v += (random() * 2.0 - 1.0) * slap * exp(-t / 0.012)
+        # A short skin attack and terminal release avoid broadband clicks at
+        # the combat handoff and at the ends of the finite drum samples.
+        edge = smooth01(t / 0.004) * smooth01(f64(n - 1 - i) / f64(MIX_RATE) / 0.025)
+        smp = f32(v * 0.5 * edge)
+        out.push(smp)
+        out.push(smp)
+    Sound(out)
+
+# what sounds on one eighth of the fight (shared with tools/music_render.jo)
+# drum: 0 a piano note, 1 the low skin, 2 the slap
+struct CombatHit:
+    midi: int
+    vel: f64
+    drum: int
+    restrained = false
+
+# 152 bpm remains underneath: sparse off-beat stabs, with whole beats left empty.
+# The first engaged round has 44 strikes; later rounds thin the texture. Alert leaves more air;
+# low health leaves left-hand rests and a softly damped bass under muted upper stabs.
+__combat_dyn = [0.7, 0.8, 0.92, 0.55, 0.75, 0.88, 1.0, 0.6]
+__combat_stabs = [[0,1,4,10],[0,1,4,10],[0,1,4,10],[4,10],
+    [0,1,4,10],[2,3,6,12],[0,1,4,10],[4,10]]
+combat_step_hits = (step: int, tier: CombatTier = .engaged) -> CombatHit[]:
+    out: CombatHit[]
+    k = step % 16
+    bar = step / 16
+    bi = bar % __combat_melody.len()
+    round = (bar / 8) % 4
+    # The first round states the cell. Each later eight-bar round changes the
+    # answers' register and leaves different rests; the A pickup remains intact.
+    if round == 3 and bi == 3: return out
+    thin = round > 0 and (bi == 3 or bi == 7)
+    dyn = __combat_dyn[bi] * (if tier == .alert: 0.68 else: 1.0)
+    acc = (if k == __combat_stabs[bi][0]: 0.78 else: 0.62) * dyn
+    stabs = __combat_stabs[bi]
+    stab = if tier == .alert: k == stabs[0] or (stabs.len() > 2 and k == stabs[2]) else: stabs.contains(k)
+    if stab and not (thin and k == 10):
+        note = 0
+        loop j in [0..stabs.len()):
+            if stabs[j] == k: note = j
+        m = __combat_melody[bi][note]
+        # Last-heart answers transpose the whole cell, preserving its contour.
+        higher = tier == .low_hp and bi % 2 == 1
+        if bi == 1 or bi == 5 or bi == 6:
+            m += (if round == 1: (if tier == .low_hp: -12 else: 12) else: (if round == 2: -12 else: 0))
+        out.push(CombatHit(m + (if higher: 12 else: 0), acc * (if tier == .low_hp: 0.90 else: 1.0), 0))
+    bass_step = if round == 0: 0 else: [2,3,1][round - 1]
+    bass_answer = if round == 0: 9 else: [11,8,13][round - 1]
+    bass_note = min(51,__combat_basses[bi] + (if round == 1: 5 else: (if round == 2: 3 else: (if round == 3: 7 else: 0))))
+    if not thin and (k == bass_step or (tier == .engaged and k == bass_answer)): out.push(CombatHit(bass_note, (if tier == .low_hp: 0.28 else: 0.7) * (0.6 + 0.4 * dyn), 0, restrained = tier == .low_hp))
+    if not thin and (k == (if round == 0: 0 else: 2 + round) or (tier != .alert and k == (if round == 0: 7 else: 8 + round))): out.push(CombatHit(0, 0.16 * (0.7 + 0.3 * dyn), 1))
+    if tier != .alert and not thin and (k == 12 and bi % 2 == 0): out.push(CombatHit(0, 0.09 * (0.7 + 0.3 * dyn), 2))
+    out
+
+combat_drums = ():
+    if drum_lo.samples.len() == 0:
+        drum_lo = __drum(120.0, 62.0, 0.5, 0.25)
+        drum_hi = __drum(260.0, 180.0, 0.18, 0.6)
+        # A skin/low-body accent on the hand-off, rather than another piano chord.
+        combat_entry = mix([__drum(190.0, 58.0, 0.55, 0.48), tone(61.7, 0.45, .sine, 0.16, 0.002, 0.30)])
+
+# Distance/strikes sustain engagement for four seconds, so circling or a recovery
+# does not flutter the score. Low HP has one quarter-heart of release hysteresis.
+combat_close_threat = () -> bool:
+    loop e in enemies:
+        if e.hp <= 0.0: continue
+        hunting = e.state == .chase or e.state == .windup or e.state == .attack or e.state == .recover or e.state == .shoot or e.state == .laser
+        range = if e.state == .shoot or e.state == .laser: 35.0 else: 12.0
+        if hunting and f64(length(e.pos - pl.pos)) < range: return true
+    false
+
+combat_tier_want = (dt: f64) -> CombatTier:
+    engaged = fight.act == .swing or fight.act == .spin or fight.act == .jump_attack or fight.act == .flurry or pl.state == .hurt or combat_close_threat()
+    seq.combat_engaged = if engaged: 4.0 else: max(0.0, seq.combat_engaged - dt)
+    threshold = max(4, pl.hp_max / 4)
+    if pl.hp <= threshold or (seq.combat_tier == .low_hp and pl.hp <= threshold + 1): return .low_hp
+    if seq.combat_engaged > 0.0: return .engaged
+    .alert
+
+# A clean player blow buys one bar of space, at most once every eight bars.
+# Called by the production impact dispatcher, never by enemy wind-ups/player hurt.
+music_clean_hit = ():
+    if seq.mood != .combat or pl.events.contains("hurt"): return
+    bar = seq.combat_step / 16
+    if bar - seq.combat_clean_bar < 8: return
+    seq.combat_clean_bar = bar
+    seq.combat_drop_bar = bar + 1
+
+__combat_music = (dt: f64):
+    want = combat_tier_want(dt)
+    seq.combat_t += dt
+    step = 60.0 / COMBAT_BPM / 2.0
+    loop seq.combat_t >= step:
+        seq.combat_t -= step
+        # Change colour on the next beat; preserve the phrase and all sounding tails.
+        if seq.combat_step % 2 == 0: seq.combat_tier = want
+        hits = if seq.combat_step / 16 == seq.combat_drop_bar: [] else: combat_step_hits(seq.combat_step, seq.combat_tier)
+        loop h in hits:
+            match h.drum:
+                1: __score_play(drum_lo, h.vel * music_vol * combat_gain(seq.combat_tier), -0.1, 1.0, true)
+                2: __score_play(drum_hi, h.vel * music_vol * combat_gain(seq.combat_tier), 0.1, 1.0, true)
+                _: piano_play(h.midi, h.vel, (if h.midi < 52: -0.2 else: 0.15), (if h.midi < 52: 0.55 else: 0.5) * combat_gain(seq.combat_tier), true, true, h.restrained)
+        seq.combat_step += 1
+
+# the fight is over: a falling run that lands on a bright open chord
+victory_stinger = ():
+    # Another 4 dB below the previous 0.5 gain: a quiet release beside field piano.
+    loop i in 0.. and m in [81, 79, 76, 74, 72, 69]: __later(f64(i) * 0.08, m, 0.5, 0.315479)
+    __later(0.55, 45, 0.55, 0.315479)
+    __later(0.56, 64, 0.45, 0.315479)
+    __later(0.57, 69, 0.45, 0.315479)
+    __later(0.58, 73, 0.5, 0.315479)
+
+# ---------------- set pieces ----------------
+# The title keeps the full original motif over low piano fifths.
+title_cue = ():
+    first = laters.len()
+    __later(0.0, 38, 0.38)
+    __later(0.07, 45, 0.3)
+    __later(6.4, 38, 0.32)
+    loop i in 0.. and m in [78, 81, 83, 81, 78, 76, 74]: __later(3.2 + [0.0, 0.5, 1.0, 1.25, 1.5, 2.3, 2.8][i], m, 0.55)
+    __later(6.4, 74, 0.5)
+    __later(6.42, 62, 0.4)
+    __later(6.44, 38, 0.6)
+    # then, as the card holds and the land lies open, the motif again an octave down, answered,
+    # over a slow walking bass, coming to rest on the open fifth (about 20 s in all)
+    loop i in 0.. and m in [66, 69, 71, 69, 66, 64, 62]: __later(8.6 + [0.0, 0.6, 1.2, 1.55, 1.9, 2.9, 3.5][i], m, 0.45)
+    loop i in 0.. and m in [43, 45, 47, 50]: __later(8.6 + f64(i) * 1.2, m, 0.5)
+    loop i in 0.. and m in [74, 76, 78, 81, 78, 76, 74, 69]: __later(13.2 + [0.0, 0.45, 0.9, 1.6, 2.2, 2.6, 3.0, 4.0][i], m, 0.5 - f64(i) * 0.02)
+    __later(17.2, 50, 0.45)
+    __later(17.24, 57, 0.4)
+    __later(17.3, 62, 0.35)
+    __later(17.4, 69, 0.3)
+    notes = [50, 57, 62, 66, 69, 74, 78, 81]
+    loop i in 0.. and m in notes:
+        __later(f64(i) * 0.16, m, 0.55 + f64(i) * 0.03)
+    __later(1.45, 38, 0.8)
+    __later(1.46, 62, 0.6)
+    __later(1.47, 66, 0.6)
+    __later(1.48, 69, 0.6)
+    __later(1.49, 74, 0.65)
+
+    loop i in [first..laters.len()): laters[i].vol *= TITLE_GAIN
+
+# an enemy has seen you: a quick rising stab and a low hit (not again for a while)
+__alert_t = -100.0
+__was_combat = false
+# Enemy slots remain stable for the loaded world. Remember actual pursuers so
+# crossing the 35 m music radius does not masquerade as defeating the camp.
+__combat_participants: int[]
+combat_watch = (fighting: bool, foes_alive: bool):
+    if fighting:
+        if not __was_combat: __combat_participants.clear()
+        loop i in [0..enemies.len()):
+            e = enemies[i]
+            hunting = e.state == .chase or e.state == .windup or e.state == .attack or e.state == .shoot or e.state == .laser or e.state == .seek_skull or e.state == .reassemble or (e.kind == .talus and e.state != .sleep)
+            if hunting and enemy_alive(e) and length(e.pos-pl.pos) < 35.0 and not __combat_participants.contains(i): __combat_participants.push(i)
+    else if __was_combat:
+        escaped = false
+        loop i in __combat_participants:
+            if i < enemies.len() and enemy_alive(enemies[i]): escaped = true
+        if not foes_alive and not escaped: victory_stinger()
+        __combat_participants.clear()
+    __was_combat = fighting
+alert_stab = ():
+    if elapsed() - __alert_t < 8.0: return
+    __alert_t = elapsed()
+    loop i in 0.. and m in [69, 72, 75, 76]: __later(f64(i) * 0.07, m, 0.7)
+    __later(0.3, 45, 0.85)
+    __later(0.3, 57, 0.75)
+    __later(0.31, 64, 0.6)
+
+# Waking: the distant high motif, with its natural room tail.
+wake_cue = ():
+    loop i in 0.. and n in [(1.5, 78, 0.32), (3.2, 81, 0.3), (5.4, 83, 0.34), (6.0, 66, 0.22), (8.6, 81, 0.28), (10.9, 78, 0.3), (11.0, 62, 0.2), (14.0, 74, 0.26)]:
+        __later(n.0, n.1, n.2)
+    # then, as he stands and finds the slate, the motif again lower and fuller, settling on D
+    loop i in 0.. and n in [(17.0, 66, 0.3), (17.02, 50, 0.26), (18.4, 69, 0.3), (19.8, 71, 0.34), (20.0, 55, 0.24),
+            (22.4, 69, 0.28), (23.6, 66, 0.3), (23.62, 54, 0.22), (25.0, 64, 0.28), (26.8, 62, 0.32), (26.82, 50, 0.26), (26.84, 57, 0.22),
+            (30.0, 74, 0.2), (30.02, 78, 0.18), (30.04, 81, 0.18)]:
+        __later(n.0, n.1, n.2)
+
+# the tower rises: a low pulse that climbs, chords stacking, breaking open on the motif up high
+tower_cue = ():
+    night = clamp(env.night, 0.0, 1.0)
+    if night > 0.5:
+        # Fewer pulses, soft low fifths and a lower motif; no new piano samples.
+        loop i in [0..4): __later(f64(i) * 1.65, (if i % 2 == 0: 38 else: 45), 0.34)
+        loop i in 0.. and c in [[50, 57], [52, 59], [55, 62], [57, 64]]:
+            loop m in c: __later(1.0 + f64(i) * 1.6, m, 0.28)
+        loop i in 0.. and m in [66, 69, 71, 69, 66, 64, 62]: __later(7.4 + [0.0, 0.35, 0.7, 1.1, 1.4, 2.0, 2.4][i], m, 0.34)
+        __later(7.4, 50, 0.3)
+        return
+    __later(0.0, 38, 0.42)
+    __later(0.07, 50, 0.3)
+    __later(5.5, 38, 0.4)
+    __later(5.57, 45, 0.3)
+    loop k in [0..12): __later(f64(k) * 0.55, (if k % 2 == 0: 38 else: 45), 0.55 + f64(k) * 0.02)
+    loop i in 0.. and c in [[50, 57, 62], [52, 59, 64], [55, 62, 67], [57, 64, 69]]:
+        loop m in c: __later(1.0 + f64(i) * 1.6, m, 0.45 + f64(i) * 0.06)
+    loop i in 0.. and m in [78, 81, 83, 81, 78, 76, 74]: __later(7.4 + [0.0, 0.35, 0.7, 1.1, 1.4, 2.0, 2.4][i], m, 0.6)
+    __later(7.4, 38, 0.7)
+    __later(7.42, 62, 0.55)
+    __later(7.44, 66, 0.55)
+
+# Discovery: a short open-fifth chime (not the motif); field figures wait for its release.
+# (a short open-fifth chime, as BotW's place-found sting: it had been the plateau motif itself, so
+# walking past three new places stated the theme three more times)
+discovery_jingle = ():
+    loop i in 0.. and m in [74, 81, 86, 93]: __later([0.0, 0.32, 0.7, 1.3][i], m, [0.36, 0.33, 0.3, 0.22][i])
+    if seq.mood != .combat and seq.mood != .title:
+        seq.events.clear()
+        seq.strike_at = seq.age + 1.3
+        seq.rest = max(seq.rest, 23.3)  # 22 s after the last discovery strike
+    __later(0.0, 50, 0.4)
+    __later(0.01, 57, 0.35)
+
+# small jingles
+item_jingle = ():
+    loop i in 0.. and m in [72, 76, 79, 84]: __later(f64(i) * 0.09, m, 0.6)
+
+secret_jingle = ():
+    loop i in 0.. and m in [79, 78, 75, 69, 68, 76, 80, 84]: __later(f64(i) * 0.11, m, 0.6)
+
+# a Spirit Orb: the motif's rising figure sung out and carried up to a held chord
+orb_jingle = ():
+    if env.night > 0.5:
+        loop i in 0.. and n in [(0.0, 66), (0.18, 69), (0.36, 71), (0.7, 74), (0.9, 78)]: __later(n.0, n.1, 0.32)
+        loop m in [50, 57, 62]: __later(1.3, m, 0.28)
+        __later(1.34, 74, 0.26)
+        return
+    loop i in 0.. and n in [(0.0, 78), (0.18, 81), (0.36, 83), (0.7, 86), (0.9, 90)]: __later(n.0, n.1, 0.5, 0.55)
+    loop m in [50, 62, 66, 69, 74]: __later(1.3, m, 0.42, 0.55)
+    __later(1.32, 81, 0.4, 0.55)
+    __later(1.34, 86, 0.42, 0.55)
+
+struct Later:
+    t: f64
+    midi: int
+    vel: f64
+    vol = 0.8
+laters: Later[]
+__later = (t: f64, midi: int, vel: f64, vol: f64 = 0.8): laters.push(Later(t, midi, vel, vol))
+
+jingles_update = (dt: f64):
+    i = 0
+    loop i < laters.len():
+        laters[i].t -= dt
+        if laters[i].t <= 0.0:
+            piano_play(laters[i].midi, laters[i].vel, 0.0, laters[i].vol)
+            laters.remove(i)
+        else: i += 1
+
+# Build tool uses the same synthesis/reverb/damper implementation as the fallback.
+piano_asset = () -> AudioAsset:
+    AudioAsset([piano.notes, piano.soft, piano.forte, piano.short_notes, piano.short_soft,
+        piano.short_forte, [drum_lo], [drum_hi], [combat_entry], [shrine_glass]], [])

@@ -1,0 +1,36 @@
+# Scan the real map's texel centers; no window. Same coverage predicate as its renderer.
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/slate_map.jo'
+use '../game/water.jo'
+
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+stored = 0
+water = 0
+dry_stored = 0
+dry_blue = 0
+elevated = 0
+loop j in [0..MAP_H):
+    z = MAP_Z0 + (f64(j) + 0.5) / f64(MAP_H) * (MAP_Z1 - MAP_Z0)
+    loop i in [0..MAP_W):
+        x = MAP_X0 + (f64(i) + 0.5) / f64(MAP_W) * (MAP_X1 - MAP_X0)
+        if not in_bounds(x, z) or edge_at(x, z) >= 2.0: continue
+        blue = map_water_at(x, z)
+        if blue: water += 1
+        if let level = water_level(x, z):
+            stored += 1
+            if water_depth(x, z) <= 0.01:
+                dry_stored += 1
+                if blue: dry_blue += 1
+                if height_at(x, z) > level + 5.0: elevated += 1
+        assert(blue == (water_depth(x, z) > 0.01), "map colors only exposed water")
+assert(stored > 60000 and water > 50000 and dry_stored > 6000 and elevated > 0, "real wet/dry bank and elevated-terrain controls are present")
+assert(dry_blue == 0 and water + dry_stored == stored, "every dry stored water cell is rendered as land")
+assert(water_level(-1330.0, 1722.37) != none and not map_water_at(-1330.0, 1722.37), "Round-56 high dry bank is land")
+print("PASS map water: {MAP_W * MAP_H} texels checked; stored={stored} exposed={water} dry_stored={dry_stored} dry_blue={dry_blue} elevated={elevated}")

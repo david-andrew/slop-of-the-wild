@@ -1,0 +1,87 @@
+use '../game/trees.jo'
+use '../game/matter.jo'
+# Real production update/input, each menu tab across dawn/weather/warning boundaries.
+paused_signature = ""
+world_signature = () -> str:
+    out = "{env.hour:.9}|{env.day}|{env.weather}|{env.weather_t:.9}|{env.rain:.9}|{env.clouds:.9}|{env.wet:.9}|{env.indoor:.9}|{env.lightning:.9}|{env.light_dir}|{pl.pos}|{pl.anim_t:.9}|{pl.frozen:.9}|{pl.invuln:.9}|{warm_t:.9}|{cold_dmg_t:.9}|{lightning_warn:.9}|{hitstop:.9}|{__cook_t:.9}|{held_el.burning:.9}"
+    loop e in enemies: out += "|{e.t:.9}:{e.pos}:{e.state}"
+    loop f in flames: out += "|{f.cell}:{f.t:.9}"
+    loop b in bonfires: out += "|{b.lit}"
+    loop b in barrels: out += "|{b.fuse:.9}:{b.el.burning:.9}"
+    loop t in tree_states: out += "|{t.age:.9}:{t.pos}:{t.el.burning:.9}"
+    out
+update = (dt: f64):
+    f = frame_number()
+    if f == 10:
+        env.hour = 5.59999
+        env.weather = .storm
+        env.rain = 0.9
+        env.weather_t = 0.01
+        ui.prompt = "Pick up"
+        ui_pickup("HUD regression pickup")
+        warm_t = 600.0
+        pl.invuln = 0.75
+        pl.frozen = 1.0
+        hitstop = 0.07
+        assert(barrels.len() > 0)
+        barrels[0].fuse = 1.0
+        barrels[0].el = Elem(heat = 1.0, burning = 3.0)
+        ignite_at(pl.pos + forward_of(pl.face) * 8.0)
+        inv_add("travelers_sword")
+        inv.weapon = 0
+        assert(lightning_begin())
+        lightning_warn = 0.08
+        __key_event(int(Key.tab), true)
+        paused_signature = world_signature()
+    if f == 11: __key_event(int(Key.tab), false)
+    if f == 130: invui.tab = 3
+    if f == 250: invui.tab = MAP_TAB
+    if f == 370: invui.tab = OPTIONS_TAB
+    # Even a pre-existing cooking animation cannot tick behind an already-open menu.
+    if f == 490:
+        __cook_t = 0.1
+        __cook_dish = "spicy_steak"
+        paused_signature = world_signature()
+    if f == 610:
+        invui.tab = 0
+        __key_event(int(Key.tab), true)
+    if f == 650:
+        __key_event(int(Key.m), true)
+        paused_signature = world_signature()
+    if f == 651: __key_event(int(Key.m), false)
+    if f == 770: __key_event(int(Key.m), true)
+    if f == 771: __key_event(int(Key.m), false)
+    production_update(dt)
+    if f >= 10 and f < 610:
+        assert(invui.open and world_signature() == paused_signature, "all simulation timers freeze from menu-opening frame")
+    if [129,249,369,489,609].contains(f): print("pause tab={invui.tab} frames=120 world timers unchanged PASS")
+    if f == 610:
+        print("resume open={invui.open} hour={env.hour:.9} weather={env.weather_t:.9} warm={warm_t:.9} warn={lightning_warn:.9} cook={__cook_t:.9} act={act.inventory}")
+        assert(not invui.open and env.hour > 5.59999 and env.weather_t > 0.01 and warm_t < 600.0 and lightning_warn < 0.08 and __cook_t < 0.1 and barrels[0].fuse < 1.0, "close resumes dawn, weather boundary, status, warning and cooking")
+        __key_event(int(Key.tab), false)
+        print("unpause: dawn/weather/warning/cooking resume without elapsed menu time PASS")
+    if f == 625:
+        assert(lightning_warn <= 0.0 and __cook_t <= 0.0, "pending warning/cooking completes after unpause")
+        print("unpause: pending lightning and dish completion PASS")
+    if f >= 650 and f <= 770:
+        assert(world_signature() == paused_signature, "direct Map shortcut pauses from opening through closing frame")
+        if f < 770: assert(invui.open and invui.tab == MAP_TAB)
+        else: assert(not invui.open)
+    if f == 771:
+        assert(env.hour > 0.0 and world_signature() != paused_signature)
+        print("map shortcut: opening, 120 paused frames, closing and simulation resume PASS")
+
+# Exercise the real draw routing with active prompts and pickup banners retained
+# through the pause. All four world overlay entry points must be suppressed.
+menu_world_layers = 0
+draw = ():
+    menu_world_layers = 0
+    production_draw()
+    if invui.open:
+        assert(menu_world_layers == 0, "menu suppresses combat, prompts/pickups, shrine and story world HUD layers")
+        if frame_number() < 610:
+            assert(ui.prompt == "Pick up" and ui.pickup_t > 0.0, "paused HUD data remains available on resume")
+        if frame_number() == 609: print("menu HUD: all tabs suppress live world prompts/pickups and other overlays PASS")
+    else if frame_number() == 610:
+        assert(menu_world_layers == 4, "closing menu restores world HUD routing")
+        print("menu HUD: closing restores all world layers PASS")

@@ -1,0 +1,923 @@
+# Movement similarity harness: runs the game's own player code headless on a test course
+# with scripted inputs at 60 Hz, measures speeds, timings, heights and stamina, and scores
+# them against reference values from the original (docs/MOVEMENT_REFERENCE.md).
+# New annotation arithmetic/provenance: docs/ref/footage/traversal-reference.json.
+# Evidence pool is explicit: guesses and conditional scale inferences are never scored.
+# Missing response rows: docs/ref/movement-quantification.json (current), movement-response-audit.json (prior).
+#
+#   sloppy/bin/sloppy tools/feel_test.jo            -> measured-reference agreement and behavioral correctness
+#   sloppy/bin/sloppy tools/feel_test.jo --csv DIR  -> also input/state traces of movement scenarios
+
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/water.jo'
+use '../game/input.jo'
+use '../game/player.jo'
+from '../game/player.jo' import __wish
+use '../game/camera.jo'
+use '../game/clips.jo'
+use '../game/skel.jo'
+use '../game/items.jo'
+use '../game/combat.jo'
+use '../game/weapon_tracks.jo'
+
+const DT = 1.0 / 60.0
+
+# ---- the course: flat ground at 100 m, a 20 m climbable wall, a lake, a high platform ----
+course = ():
+    hf.n = 512
+    hf.cell = 2.0
+    hf.x0 = -512.0
+    hf.z0 = -512.0
+    hf.h = fill(f32(100), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    hf.hmin = fill(f32(100), 64)
+    hf.hmax = fill(f32(100), 64)
+    # lake bed 4 m deep around (200, 0), its surface at 100
+    wl = fill(f32(-10000), hf.n * hf.n)
+    loop z in [0..hf.n):
+        loop x in [0..hf.n):
+            wx = hf.x0 + f64(x) * hf.cell
+            wz = hf.z0 + f64(z) * hf.cell
+            if hypot(wx - 200.0, wz) < 60.0:
+                hf.h[z * hf.n + x] = 96.0
+                wl[z * hf.n + x] = 100.0
+            # a 52 degree slope rising to the north at x 280..340 (steep enough to climb)
+            if wx > 280.0 and wx < 340.0 and wz < -140.0 and wz > -230.0:
+                hf.h[z * hf.n + x] = f32(100.0 + (-140.0 - wz) * 1.28)
+    water_grid_set(wl, hf.n, hf.x0, hf.z0, hf.cell)
+    # wall: a box at z = -100 facing +z, 20 m tall
+    add_box(v3(-150.0, 100.0, -100.0), v3(20.0, 10.0, 1.0), 0.0, true, .rock)
+    # platform 60 m up for falls and gliding
+    add_box(v3(-300.0, 100.0, 300.0), v3(6.0, 30.0, 6.0), 0.0, false, .stone)
+    # a ledge 1.6 m high in front of the jump test lane (south of the tower)
+    add_box(v3(-300.0, 100.0, 276.0), v3(3.0, 0.8, 1.5), 0.0, false, .stone)
+
+reset = (p: vec3, face: f64):
+    pl = Player()
+    fight = Fight()
+    pl.pos = p
+    pl.face = face
+    pl.last_safe = p
+    pl.ground = ground_at(f64(p.x), f64(p.z), f64(p.y), 0.5, RADIUS)
+    cam_yaw_global = 0.0
+    cam = Cam()
+    camera_snap()
+
+struct Sample:
+    t: f64
+    pos: vec3
+    speed: f64
+    stamina: f64
+    state: str
+    face: f64
+    cam_yaw: f64
+    cam_target: vec3
+    cam_pos: vec3
+    vel: vec3
+    move: vec2
+    look: vec2
+    jump: bool
+    jump_held: bool
+    sprint: bool
+    wish: vec3       # world command BEFORE the update, using the input camera yaw
+    cam_pitch: f64
+
+sample = (t: f64, a: Actions, wish: vec3) -> Sample:
+    Sample(t, pl.pos, f64(length(vec3(pl.vel.x, 0, pl.vel.z))), pl.stamina, "{pl.state}", pl.face, cam.yaw, cam.target, cam.pos, pl.vel, a.move, a.look, a.jump, a.jump_held, a.sprint, wish, cam.pitch)
+
+trace: Sample[]
+csv_dir = ""
+trace_initial: Sample
+
+step = (a: Actions, n: int):
+    loop k in [0..n):
+        act = a
+        wish = __wish()
+        player_update(DT)
+        camera_update(DT)
+        trace.push(sample(f64(trace.len() + 1) * DT, a, wish))
+
+# Keep t=0 in the export, outside the metric samples, so existing timing arithmetic is unchanged.
+begin_trace = ():
+    trace.clear()
+    trace_initial = sample(0.0, Actions(), vec3(0, 0, 0))
+
+csv_sample = (q: Sample) -> str:
+    "{q.t:.6},{q.pos.x:.6},{q.pos.y:.6},{q.pos.z:.6},{q.speed:.6},{q.stamina:.2},{q.state},{q.face:.6},{q.cam_yaw:.6},{q.cam_target.x:.6},{q.cam_target.y:.6},{q.cam_target.z:.6},{q.cam_pos.x:.6},{q.cam_pos.y:.6},{q.cam_pos.z:.6},{q.vel.x:.6},{q.vel.y:.6},{q.vel.z:.6},{q.move.x:.6},{q.move.y:.6},{q.look.x:.6},{q.look.y:.6},{q.jump},{q.jump_held},{q.sprint},{q.wish.x:.6},{q.wish.y:.6},{q.wish.z:.6},{q.cam_pitch:.6}\n"
+end_trace = (name: str):
+    if len(csv_dir) == 0: return
+    s = "t,x,y,z,speed,stamina,state,face,cam_yaw,target_x,target_y,target_z,cam_x,cam_y,cam_z,vx,vy,vz,move_x,move_y,look_x,look_y,jump,jump_held,sprint,wish_x,wish_y,wish_z,cam_pitch\n"
+    s += csv_sample(trace_initial)
+    loop q in trace: s += csv_sample(q)
+    write_file("{csv_dir}/{name}.csv", s)
+
+fwd = (k: f64) -> Actions:
+    a = Actions()
+    a.move = vec2(0, f32(k))
+    a
+
+# Hold a known world direction as the chase camera moves; the actual stick is exported.
+world_move = (heading: f64, a: Actions = Actions()) -> Actions:
+    out_ = a
+    out_.move = vec2(f32(sin(heading - cam_yaw_global)), f32(cos(heading - cam_yaw_global)))
+    out_
+
+# ---- metrics ----
+struct Metric:
+    cat: str
+    name: str
+    value: f64
+    ref: f64
+    tol: f64
+    conf: str          # H M L G (how sure the reference is)
+    unit: str
+    pool: str         # data / footage / inferred / gap / guess / behavior: independent of confidence
+
+metrics: Metric[]
+m = (cat: str, name: str, value: f64, ref: f64, tol: f64, conf: str, unit: str, pool: str = "data"):
+    kind = if conf == "G": "guess" else: pool
+    metrics.push(Metric(cat, name, value, ref, tol, conf, unit, kind))
+
+# No numeric BotW reference exists for a gap. Zeroes are storage placeholders only;
+# they are never printed as a reference, compared, or included in the score.
+gap = (cat: str, name: str, value: f64, unit: str):
+    metrics.push(Metric(cat, name, value, 0.0, 0.0, "G", unit, "gap"))
+
+# Correctness checks are binary or bounded implementation contracts, not BotW measurements.
+b = (cat: str, name: str, value: f64, ref: f64, tol: f64, conf: str, unit: str):
+    m(cat, name, value, ref, tol, conf, unit, "behavior")
+
+ground_tests = ():
+    # run from rest, then release
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    begin_trace()
+    step(fwd(1.0), 180)
+    top = trace[trace.len() - 1].speed
+    t90 = 0.0
+    loop q in trace:
+        if q.speed >= top * 0.9:
+            t90 = q.t
+            break
+    p_rel = pl.pos
+    n0 = trace.len()
+    step(Actions(), 90)
+    stop_t = 0.0
+    loop i in [n0..trace.len()):
+        if trace[i].speed < 0.05:
+            stop_t = trace[i].t - f64(n0) * DT
+            break
+    stop_d = f64(length(pl.pos - p_rel))
+    end_trace("run_stop")
+    m("ground", "run speed", top, 5.556, 5.556 * 0.05, "H", "m/s")
+    gap("ground", "time to 90% run", t90, "s")
+    gap("ground", "run release stop time (<0.05 m/s)", stop_t, "s")
+    gap("ground", "run release stop distance", stop_d, "m")
+    # walk: a light stick push
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    begin_trace()
+    step(fwd(0.45), 120)
+    m("ground", "walk speed (light stick)", trace[trace.len() - 1].speed, 1.575, 1.575 * 0.05, "M", "m/s")
+    end_trace("walk")
+    # sneak
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    a = fwd(1.0)
+    a.crouch_pressed = true
+    step(a, 1)
+    step(fwd(1.0), 120)
+    m("ground", "sneak speed", f64(length(vec3(pl.vel.x, 0, pl.vel.z))), 2.1, 0.1, "M", "m/s")
+    # quick turn: run, then reverse
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    begin_trace()
+    step(fwd(1.0), 120)
+    face0 = pl.face
+    turn_t = -1.0
+    loop k in [0..120):
+        step(world_move(face0 + PI), 1)
+        if turn_t < 0.0 and abs(wrap_angle(pl.face - face0 - PI)) <= 5.0 * PI / 180.0: turn_t = f64(k + 1) * DT
+    end_trace("quick_turn")
+    gap("ground", "180 run heading response (<5 deg)", turn_t, "s")
+    # An 8-frame Brake animation is sourced; its duration is not a physical heading curve.
+    # Retain the proxy visibly, but exclude it from measured agreement.
+    m("ground", "180 heading vs Brake clip (proxy)", turn_t, 8.0 / 30.0, 2.0 / 30.0, "L", "s", "inferred")
+
+stamina_tests = ():
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    begin_trace()
+    a = fwd(1.0)
+    a.sprint = true
+    t_empty = 0.0
+    sp = 0.0
+    loop k in [0..600):
+        step(a, 1)
+        if k == 60: sp = f64(length(vec3(pl.vel.x, 0, pl.vel.z)))
+        if pl.exhausted:
+            t_empty = f64(k + 1) * DT
+            break
+    m("stamina", "sprint speed", sp, 8.1, 8.1 * 0.05, "M", "m/s")
+    m("stamina", "sprint time on one wheel", t_empty, 1000.0 / 300.0 - 20.0 / 300.0, 0.15, "M", "s")
+    step(fwd(1.0), 60)
+    m("stamina", "exhausted speed", f64(length(vec3(pl.vel.x, 0, pl.vel.z))), 3.76, 0.4, "M", "m/s")
+    # recovery: standing still from empty
+    t_full = 0.0
+    loop k in [0..900):
+        step(Actions(), 1)
+        if pl.stamina >= pl.stamina_max:
+            t_full = f64(k + 1) * DT
+            break
+    end_trace("sprint_exhaust")
+    # EnergyAutoRecover 300/s after EnergyAutoRecoverInvalidTime2 (30 frames), which the 1 s walk above already spent
+    m("stamina", "refill from empty (exhausted)", t_full, 1000.0 / 300.0, 0.3, "M", "s")
+
+air_tests = ():
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    begin_trace()
+    a = Actions()
+    a.jump = true
+    a.jump_held = true
+    step(a, 1)
+    a.jump = false
+    peak = 0.0
+    air = 0.0
+    loop k in [0..120):
+        step(a, 1)
+        peak = max(peak, f64(pl.pos.y) - 100.0)
+        if pl.state == .ground:
+            air = f64(k + 2) * DT
+            break
+    end_trace("jump_stand")
+    m("air", "standing jump height", peak, 0.58, 0.58 * 0.05, "M", "m")
+    m("air", "standing jump airtime", air, 2.0 * sqrt(2.0 * 0.58 / 29.0), 0.05, "M", "s", "inferred")
+    # running jump
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    step(fwd(1.0), 120)
+    begin_trace()
+    x0 = pl.pos
+    a = fwd(1.0)
+    a.jump = true
+    a.jump_held = true
+    step(a, 1)
+    a.jump = false
+    peak = 0.0
+    loop k in [0..120):
+        step(a, 1)
+        peak = max(peak, f64(pl.pos.y) - 100.0)
+        if pl.state == .ground: break
+    dist = f64(length(vec3(pl.pos.x - x0.x, 0, pl.pos.z - x0.z)))
+    end_trace("jump_run")
+    m("air", "running jump height", peak, 0.58 + 2.0 * 5.556 / 30.0, (0.58 + 2.0 * 5.556 / 30.0) * 0.05, "L", "m")
+    m("air", "running jump length", dist, 5.556 * 2.0 * sqrt(2.0 * (0.58 + 2.0 * 5.556 / 30.0) / 29.0), 0.3, "M", "m", "inferred")
+    # fall from the 60 m platform: damage
+    reset(v3(-300.0, 160.0, 300.0), 0.0)
+    begin_trace()
+    step(fwd(1.0), 100)
+    loop k in [0..400):
+        step(Actions(), 1)
+        if pl.state == .ground or pl.state == .dead: break
+    end_trace("fall_60m")
+    assert(pl.state == .dead, "lethal landing must retain the dead state")
+    b("air", "a 60 m fall is deadly (3 hearts)", f64(int(pl.hp <= 0)), 1.0, 0.5, "M", "")
+    # small drop: no damage
+    reset(v3(0.0, 108.0, 0.0), 0.0)
+    pl.state = .air
+    pl.air_peak = 108.0
+    step(Actions(), 120)
+    b("air", "an 8 m drop is safe", f64(pl.hp), 12.0, 0.5, "M", "quarters")
+    # 25 m: FallDamageMin 4 + 0.6 a meter past 20 = 7 quarter hearts
+    reset(v3(0.0, 125.0, 0.0), 0.0)
+    pl.state = .air
+    pl.air_peak = 125.0
+    step(Actions(), 200)
+    m("air", "a 25 m fall costs 7 quarter hearts", 12.0 - f64(pl.hp), 7.0, 0.5, "H", "quarters")
+
+surf_tests = ():
+    # jump, raise the shield, jump again: ride it down the 52 degree slope (MaxSpeed 0.4 m/frame)
+    reset(v3(310.0, 100.0 + 70.0 * 1.28, -210.0), PI)
+    pl.pos.y = f32(height_at(310.0, -210.0))
+    pl.can_surf = true
+    j = Actions()
+    j.jump = true
+    step(j, 1)
+    l = Actions()
+    l.lock = true
+    step(l, 8)
+    lj = Actions()
+    lj.lock = true
+    lj.jump = true
+    step(lj, 1)
+    top = 0.0
+    rode = false
+    loop k in [0..240):
+        step(l, 1)
+        if pl.state == .surf:
+            rode = true
+            top = max(top, pl.speed)
+    b("surf", "rides the shield down a slope", f64(int(rode)), 1.0, 0.5, "M", "")
+    m("surf", "shield surf top speed", top, 12.0, 12.0 * 0.05, "H", "m/s")
+
+# feet planted: each locomotion clip's ground speed (measured from its planted foot) against the
+# rate the game plays it at; a mismatch is the feet sliding
+stride_tests = ():
+    hm = load_model("assets/models/hero.mdl")
+    hl = load_humanoid_anims()
+    loop c in [("walk", WALK_SPEED), ("run", RUN_SPEED), ("sprint", SPRINT_SPEED), ("sneak", SNEAK_SPEED)]:
+        v = clip_ground_speed(hm, hl, c.0)
+        b("anim", "foot slip at {c.0}", abs(v * locomotion_rate(c.0, c.1) - c.1) / c.1, 0.0, 0.05, "H", "")
+    # the stride cycle at a run: one foot round again, against Nintendo's own exploration footage
+    # (0.541 s, +-0.034; frame-counted from run.mp4 on the BotW site; whether that is a run or a
+    # sprint is not known: docs/MOVEMENT_REFERENCE.md)
+    rc = clip_index(hl, "run")
+    if rc >= 0: m("anim", "stride cycle at a run (footage)", clip_stride_cycle(hl, "run", RUN_SPEED), 0.5405334, 0.034, "L", "s", "inferred")
+    # (a sprint is quicker steps than a run, not slower longer ones)
+    b("anim", "sprint steps quicker than the run", f64(int(clip_stride_cycle(hl, "sprint", SPRINT_SPEED) < clip_stride_cycle(hl, "run", RUN_SPEED))), 1.0, 0.5, "M", "")
+
+climb_tests = ():
+    # walk into a slope too steep to stand on: he grabs it rather than sliding back down
+    reset(v3(310.0, 100.0, -136.0), 0.0)
+    t_grab = -1.0
+    loop k in [0..180):
+        step(fwd(1.0), 1)
+        if pl.state == .climb and t_grab < 0.0: t_grab = f64(k + 1) * DT
+    b("climb", "grabs a 52 degree slope walked into", f64(int(t_grab >= 0.0 and t_grab < 1.5)), 1.0, 0.5, "M", "")
+    # walk into the wall and climb up 20 m
+    reset(v3(-150.0, 100.0, -96.0), 0.0)
+    begin_trace()
+    t_grab = -1.0
+    t_top = -1.0
+    st0 = 0.0
+    sample_t = -1.0
+    sample_y = 0.0
+    climb_v = -1.0
+    loop k in [0..3600):
+        step(fwd(1.0), 1)
+        if false: eprint("climb test {k}: {pl.state} pos {pl.pos} face {pl.face:.2} speed {pl.speed:.2}")
+        if t_grab < 0.0 and pl.state == .climb:
+            t_grab = f64(k) * DT
+            st0 = pl.stamina
+        if pl.state == .climb and t_grab >= 0.0:
+            if sample_t < 0.0 and f64(k) * DT - t_grab >= 1.0:
+                sample_t = f64(k) * DT
+                sample_y = f64(pl.pos.y)
+            if sample_t >= 0.0 and climb_v < 0.0 and f64(k) * DT - sample_t >= 10.0:
+                climb_v = (f64(pl.pos.y) - sample_y) / (f64(k) * DT - sample_t)
+        if t_grab >= 0.0 and (pl.state == .mantle or (pl.state == .ground and pl.pos.y > 110.0)):
+            t_top = f64(k) * DT
+            break
+        if pl.state == .air and t_grab >= 0.0: break
+    climbed = f64(pl.pos.y) - 100.0
+    end_trace("climb_20m")
+    secs = t_top - t_grab
+    # Metre scale is inferred from a capsule/torso proxy; not in measured agreement.
+    # Measure a steady 10 s interval, not assumed 18 m / approach-plus-mantle time.
+    # No frame annotation supports the proposed 1 body height / 1.1 s rate.
+    # Normalize this game's displacement by its actual standing mesh height;
+    # the reference remains an unscored hypothesis, not a metre-scale inference.
+    body_h = model_height(load_model("assets/models/hero.mdl"))
+    m("climb", "climb body heights (unverified reference)", max(climb_v, 0.0) / body_h, 1.0 / 1.1, 0.2, "G", "body/s", "guess")
+    m("climb", "climb speed (scale inferred)", max(climb_v, 0.0), 0.731486, 0.30, "L", "m/s", "inferred")
+    m("climb", "stamina per second climbing up", (if secs > 0.0: (st0 - pl.stamina) / secs else: 0.0), 36.5, 3.0, "M", "/s")
+    b("climb", "reaches the top of a 20 m wall on one wheel", f64(int(t_top > 0.0)), 1.0, 0.5, "M", "")
+    # Hands at rim to supported ground: Nintendo frames 1402..1426 (24 frames).
+    if pl.state == .mantle:
+        mantle_t = 0.0
+        loop pl.state == .mantle and mantle_t < 2.0:
+            step(fwd(1.0), 1)
+            mantle_t += DT
+        m("climb", "ledge pull-over duration (footage)", mantle_t, 0.8008, 0.134, "L", "s", "footage")
+    else:
+        m("climb", "ledge pull-over duration (footage)", 0.0, 0.8008, 0.134, "L", "s", "footage")
+    # climb jump
+    reset(v3(-150.0, 100.0, -96.0), 0.0)
+    step(fwd(1.0), 40)
+    y0 = f64(pl.pos.y)
+    s0 = pl.stamina
+    a = fwd(1.0)
+    a.jump = true
+    step(a, 1)
+    jump_n = 0
+    loop pl.climb_jump_t > 0.0 and jump_n < 50:
+        step(Actions(), 1)
+        jump_n += 1
+    step(Actions(), max(0, 50 - jump_n))
+    # First visible moving sample to last, matching the footage phase-center convention.
+    m("climb", "climb lunge duration (footage)", f64(max(0, jump_n - 1)) * DT, 0.467134, 0.134, "L", "s", "footage")
+    m("climb", "climb jump cost", s0 - pl.stamina, 310.0, 15.0, "M", "")
+    m("climb", "climb lunge rise (scale inferred)", f64(pl.pos.y) - y0, 1.793722, 0.60, "L", "m", "inferred")
+
+glide_swim_tests = ():
+    reset(v3(-300.0, 160.0, 300.0), 0.0)
+    pl.has_glider = true
+    step(fwd(1.0), 58)
+    a = fwd(1.0)
+    a.jump = true
+    step(a, 1)
+    step(Actions(), 10)
+    step(a, 1)
+    step(fwd(1.0), 30)   # steady glide, not deployment acceleration
+    begin_trace()
+    p0 = pl.pos
+    s0 = pl.stamina
+    step(fwd(1.0), 300)
+    end_trace("glide")
+    t = 300.0 * DT
+    gap("glide", "glide forward speed (0.5 s warmup)", f64(length(vec3(pl.pos.x - p0.x, 0, pl.pos.z - p0.z))) / t, "m/s")
+    gap("glide", "glide forward sink rate", f64(p0.y - pl.pos.y) / t, "m/s")
+    m("glide", "glide stamina per second", (s0 - pl.stamina) / t, 28.0, 2.0, "M", "/s")
+    # Literature estimate: VERTICAL-ONLY 70 m / ~22 s, Leicester 2019.
+    # Our neutral stick retains horizontal motion, so this is an incompatible protocol, unscored.
+    reset(v3(-300.0, 160.0, 300.0), 0.0)
+    pl.has_glider = true
+    # off the edge, then open the glider and let go of the stick
+    step(fwd(1.0), 90)
+    step(Actions(), 8)
+    j = Actions()
+    j.jump = true
+    step(j, 1)
+    step(Actions(), 30)
+    y0 = f64(pl.pos.y)
+    step(Actions(), 120)
+    m("glide", "neutral sink vs vertical-only (estimate)", (y0 - f64(pl.pos.y)) / (120.0 * DT), 3.2, 0.16, "L", "m/s", "inferred")
+    gap("glide", "neutral glide horizontal speed", f64(length(vec3(pl.vel.x, 0, pl.vel.z))), "m/s")
+    # well into a fall off the edge, the first press of jump opens the glider
+    reset(v3(-300.0, 160.0, 300.0), 0.0)
+    pl.has_glider = true
+    step(fwd(1.0), 90)
+    step(Actions(), 25)
+    j2 = Actions()
+    j2.jump = true
+    step(j2, 1)
+    step(Actions(), 2)
+    b("glide", "glider opens on the first press in a fall", f64(int(pl.state == .glide)), 1.0, 0.5, "M", "")
+    # swim
+    reset(v3(150.0, 100.0, 0.0), PI / 2.0)
+    cam_yaw_global = PI / 2.0
+    step(fwd(1.0), 200)
+    begin_trace()
+    p0 = pl.pos
+    s0 = pl.stamina
+    step(fwd(1.0), 120)
+    end_trace("swim")
+    m("swim", "swim speed", f64(length(vec3(pl.pos.x - p0.x, 0, pl.pos.z - p0.z))) / 2.0, 1.56, 1.56 * 0.05, "M", "m/s")
+    m("swim", "swim stamina per second", (s0 - pl.stamina) / 2.0, 30.0, 3.0, "M", "/s")
+
+# responsiveness and control: how quickly input shows, how the run curves and turns, air control
+control_tests = ():
+    # input to motion: frames until the player moves at all
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    lat = 0
+    loop k in [0..30):
+        step(fwd(1.0), 1)
+        if pl.speed > 0.05:
+            lat = k + 1
+            break
+    b("control", "input to motion (frames at 60)", f64(lat), 1.0, 1.0, "M", "frames")
+    # Export measured startup displacement without a fabricated exponential baseline.
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    begin_trace()
+    step(fwd(1.0), 60)
+    end_trace("run_curve")
+    loop frames in [6, 12, 30, 60]:
+        gap("ground", "run startup displacement at {frames}/60 s", f64(length(vec3(trace[frames - 1].pos.x - trace_initial.pos.x, 0, trace[frames - 1].pos.z - trace_initial.pos.z))), "m")
+    # a 90 degree turn at a run: time until facing the new way
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    step(fwd(1.0), 60)
+    f0 = pl.face
+    tt = -1.0
+    begin_trace()
+    # Retain the full response and its settling tail, not just the first threshold crossing.
+    loop k in [0..360):
+        step(world_move(f0 + PI / 2.0), 1)
+        if tt < 0.0 and abs(wrap_angle(pl.face - f0 - PI / 2.0)) <= 5.0 * PI / 180.0:
+            tt = f64(k + 1) / 60.0
+    end_trace("turn_90_world")
+    gap("control", "90 run heading response (<5 deg)", tt, "s")
+    # air control: running jump, push sideways the whole time
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    step(fwd(1.0), 60)
+    p_jump = pl.pos
+    j = Actions()
+    j.jump = true
+    j.jump_held = true
+    begin_trace()
+    step(world_move(0.0, j), 1)
+    j.jump = false
+    loop k in [0..60):
+        step(world_move(PI / 2.0, j), 1)
+        if pl.state == .ground: break
+    drift = abs(f64(pl.pos.x - p_jump.x))
+    forward_d = f64(p_jump.z - pl.pos.z)
+    jump_air = f64(trace.len()) * DT
+    loop k in [0..60): step(Actions(), 1)
+    end_trace("jump_side_world")
+    gap("control", "jump 90 steer lateral displacement", drift, "m")
+    gap("control", "jump 90 steer forward displacement", forward_d, "m")
+    gap("control", "jump 90 steer airtime", jump_air, "s")
+    # stamina recovery delay after a sprint
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    sp = fwd(1.0)
+    sp.sprint = true
+    step(sp, 30)
+    s0 = pl.stamina
+    t_rec = 0.0
+    loop k in [0..120):
+        step(Actions(), 1)
+        if pl.stamina > s0 + 1.0:
+            t_rec = f64(k + 1) / 60.0
+            break
+    m("stamina", "recovery delay after sprinting", t_rec, 10.0 / 30.0, 0.1, "M", "s")
+    # ledge grab: run off a jump toward a 2 m block: the player should mantle onto it
+    reset(v3(-300.0, 100.0, 286.0), 0.0)
+    step(fwd(1.0), 40)
+    jb = fwd(1.0)
+    jb.jump = true
+    jb.jump_held = true
+    step(jb, 1)
+    jb.jump = false
+    loop k in [0..120): step(jb, 1)
+    b("air", "mantles a ledge reached in a jump", f64(int(pl.pos.y > 101.5)), 1.0, 0.5, "M", "")
+
+camera_tests = ():
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    step(Actions(), 120)
+    d = f64(length(cam.pos - cam.target))
+    m("camera", "camera distance", d, 5.3, 5.3 * 0.05, "H", "m")
+    m("camera", "field of view", cam.fov, 50.0, 1.0, "H", "deg")
+    m("camera", "look point above feet", f64(cam.target.y - pl.pos.y), 1.5, 1.5 * 0.05, "M", "m")
+
+    # A constant WORLD heading keeps camera-relative inputs from moving the turn target.
+    # Source footage cannot isolate right-stick input: these are diagnostics, not reference rows.
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    step(fwd(1.0), 120)
+    lag = f64(dot(pl.pos + vec3(0, 1.5, 0) - cam.target, forward_of(0.0)))
+    begin_trace()
+    settled_t = -1.0
+    half_t = -1.0
+    loop k in [0..360):
+        step(world_move(PI / 2.0), 1)
+        if settled_t < 0.0 and abs(wrap_angle(pl.face - PI / 2.0)) < 0.09: settled_t = f64(k + 1) * DT
+        if half_t < 0.0 and cam.yaw >= PI / 4.0: half_t = f64(k + 1) * DT
+    end_trace("camera_world_turn")
+    gap("camera", "steady run look-point lag", lag, "m")
+    gap("camera", "90 world turn camera reaches 45 deg", half_t, "s")
+    print("camera diagnostics (unscored; no isolated BotW camera-input trace):")
+    print("  steady run target lag: {lag:.4} m; yaw reaches 45 deg {half_t:.3} s after a world 90 deg input")
+    print("  player reaches new heading at {settled_t:.3} s; yaw residual after 6 s: {abs(wrap_angle(PI / 2.0 - cam.yaw)) * 180.0 / PI:.3} deg")
+    # Settling = first sample after the LAST excursion outside 5 degrees (through 6 s).
+    # Neither this finite-window diagnostic nor its peak/overshoot is a BotW reference.
+    last_out = 0.0
+    peak_rate = 0.0
+    overshoot = 0.0
+    prev_yaw = trace_initial.cam_yaw
+    loop q in trace:
+        error = wrap_angle(q.cam_yaw - PI / 2.0) * 180.0 / PI
+        if abs(error) > 5.0: last_out = q.t
+        overshoot = max(overshoot, error)
+        peak_rate = max(peak_rate, abs(wrap_angle(q.cam_yaw - prev_yaw)) / DT * 180.0 / PI)
+        prev_yaw = q.cam_yaw
+    settle_5 = if abs(wrap_angle(cam.yaw - PI / 2.0)) <= 5.0 * PI / 180.0: last_out + DT else: -1.0
+    gap("camera", "90 world turn peak yaw rate", peak_rate, "deg/s")
+    gap("camera", "90 world turn settles within 5 deg", settle_5, "s")
+    print("  peak yaw rate: {peak_rate:.3} deg/s; overshoot: {overshoot:.3} deg; stays within 5 deg from {settle_5:.3} s through 6 s (-1 = not settled)")
+
+# Missing modes: rest-to-sprint, sprint release, velocity response in world turns,
+# and a complete forward glide followed by a 90-degree steering command.
+response_tests = ():
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    sp = fwd(1.0)
+    sp.sprint = true
+    begin_trace()
+    step(sp, 90)
+    t90 = -1.0
+    loop q in trace:
+        if t90 < 0.0 and q.speed >= SPRINT_SPEED * 0.9: t90 = q.t
+    gap("ground", "time to 90% sprint from rest", t90, "s")
+    loop frames in [6, 12, 30, 60]:
+        gap("ground", "sprint startup displacement at {frames}/60 s", f64(length(vec3(trace[frames - 1].pos.x - trace_initial.pos.x, 0, trace[frames - 1].pos.z - trace_initial.pos.z))), "m")
+    release = pl.pos
+    n0 = trace.len()
+    step(Actions(), 90)
+    stopped = -1.0
+    loop i in [n0..trace.len()):
+        if stopped < 0.0 and trace[i].speed < 0.05: stopped = trace[i].t - f64(n0) * DT
+    gap("ground", "sprint release stop time (<0.05 m/s)", stopped, "s")
+    gap("ground", "sprint release stop distance", f64(length(vec3(pl.pos.x - release.x, 0, pl.pos.z - release.z))), "m")
+    end_trace("sprint_start_stop")
+
+    loop angle in [PI / 2.0, PI]:
+        reset(v3(0.0, 100.0, 0.0), 0.0)
+        step(fwd(1.0), 120)
+        begin_trace()
+        velocity_t = -1.0
+        min_speed = RUN_SPEED
+        loop k in [0..120):
+            step(world_move(angle), 1)
+            min_speed = min(min_speed, trace[trace.len() - 1].speed)
+            # A stationary velocity has no heading: require >0.05 m/s.
+            if velocity_t < 0.0 and trace[trace.len() - 1].speed > 0.05 and abs(wrap_angle(yaw_of(pl.vel) - angle)) <= 5.0 * PI / 180.0:
+                velocity_t = f64(k + 1) * DT
+        deg = int(round(angle * 180.0 / PI))
+        gap("control", "{deg} run velocity heading response (<5 deg)", velocity_t, "s")
+        gap("control", "{deg} run minimum speed during turn", min_speed, "m/s")
+        end_trace("velocity_turn_{deg}_world")
+
+    reset(v3(-300.0, 160.0, 300.0), 0.0)
+    pl.has_glider = true
+    step(fwd(1.0), 90)
+    j = Actions()
+    j.jump = true
+    step(j, 1)
+    assert(pl.state == .glide, "response trial must open glider through jump input")
+    # Neutral camera input; world-forward command and two seconds to settle.
+    loop k in [0..120): step(world_move(0.0), 1)
+    begin_trace()
+    p0 = pl.pos
+    loop k in [0..120):
+        step(world_move(0.0), 1)
+        assert(pl.state == .glide, "forward response trial must remain airborne")
+    gap("glide", "steady forward displacement over 2 s", f64(length(vec3(pl.pos.x - p0.x, 0, pl.pos.z - p0.z))), "m")
+    gap("glide", "steady forward speed (2 s window)", f64(length(vec3(pl.pos.x - p0.x, 0, pl.pos.z - p0.z))) / 2.0, "m/s")
+    gap("glide", "steady forward sink (2 s window)", f64(p0.y - pl.pos.y) / 2.0, "m/s")
+    end_trace("glide_forward_world")
+    begin_trace()
+    body_t = -1.0
+    velocity_t = -1.0
+    peak_rate = 0.0
+    previous = pl.face
+    loop k in [0..240):
+        step(world_move(PI / 2.0), 1)
+        assert(pl.state == .glide, "glide turn trial must remain airborne")
+        peak_rate = max(peak_rate, abs(wrap_angle(pl.face - previous)) / DT * 180.0 / PI)
+        previous = pl.face
+        if body_t < 0.0 and abs(wrap_angle(pl.face - PI / 2.0)) <= 5.0 * PI / 180.0: body_t = f64(k + 1) * DT
+        if velocity_t < 0.0 and abs(wrap_angle(yaw_of(pl.vel) - PI / 2.0)) <= 5.0 * PI / 180.0: velocity_t = f64(k + 1) * DT
+    gap("glide", "90 glide heading response (<5 deg)", body_t, "s")
+    gap("glide", "90 glide velocity response (<5 deg)", velocity_t, "s")
+    gap("glide", "90 glide peak heading rate", peak_rate, "deg/s")
+    end_trace("glide_turn_90_world")
+
+# ---- combat: the lock-on moves (a dummy target ahead), run through the game's combat code ----
+__dummy = vec3(0, 0, 0)
+__dummy_pos = (i: int) -> vec3: __dummy
+cstep = (a: Actions, n: int):
+    loop k in [0..n):
+        act = a
+        player_update(DT)
+        combat_update(DT, __dummy_pos, 1)
+        camera_update(DT)
+
+combat_tests = ():
+    items_init()
+    weapon_tracks_init(load_model("assets/models/hero_bare.mdl"), load_humanoid_anims())
+    inv_add("travelers_sword")
+    inv_add("travelers_shield")
+    # The course floor is at 100 m; a dummy at y=0 is buried under terrain.
+    h = PHit(vec3(0, 101, 0), vec3(0, 101, -2), vec3(0, 0, 1), 5.0, 4.0, false, 1, vec3(-0.5, 101, 0), vec3(0.5, 101, 0))
+    b("combat", "blade through the dummy hits", f64(int(blade_contact(h, vec3(0, 100, 0)).y > -9000.0)), 1.0, 0.5, "H", "")
+    h.grip.z = 1.0
+    h.tip.z = 1.0
+    b("combat", "blade passing 1 m wide misses", f64(int(blade_contact(h, vec3(0, 100, 0)).y < -9000.0)), 1.0, 0.5, "H", "")
+    lk = Actions()
+    lk.lock = true
+    # locked on with the shield up, an attack starts a swing
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 2.5
+    cstep(lk, 20)
+    up = fight.act == .guard
+    at = lk
+    at.attack = true
+    cstep(at, 1)
+    cstep(lk, 6)
+    b("combat", "shield up while locked on", f64(int(up)), 1.0, 0.5, "H", "")
+    b("combat", "attacks from behind the shield", f64(int(fight.act == .swing)), 1.0, 0.5, "H", "")
+    # timings: the first swing of a one-hander alone (S1 ends at about clip frame 17.5 at 30 fps,
+    # played at 1.15: ~0.51 s), and a full combo with the button pressed at each swing's window
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 2.5
+    cstep(Actions(), 10)
+    one = Actions()
+    one.attack = true
+    cstep(one, 1)
+    n1 = 0
+    loop fight.act == .swing and n1 < 200:
+        cstep(Actions(), 1)
+        n1 += 1
+    m("combat", "first swing, from the press until free", f64(n1 + 1) * DT, 17.5 / 30.0 / 1.15, 0.08, "M", "s")
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 2.5
+    cstep(Actions(), 10)
+    swings = 0
+    last = -1
+    nf = 0
+    loop nf < 300:
+        a2 = Actions()
+        a2.attack = nf % 8 == 0
+        cstep(a2, 1)
+        nf += 1
+        if fight.act == .swing and fight.combo != last:
+            swings += 1
+            last = fight.combo
+        if fight.act == .idle and nf > 10: break
+    b("combat", "one-handed combo: swings in a row", f64(swings), 4.0, 0.5, "M", "")
+    cstep(Actions(), 60)
+    # side hop: locked on, stick sideways, jump
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 6.0
+    cstep(lk, 20)
+    p0 = pl.pos
+    hp = lk
+    hp.jump = true
+    hp.move = vec2(1, 0)
+    cstep(hp, 1)
+    hp.jump = false
+    peak = 0.0
+    loop k in [0..40):
+        cstep(hp, 1)
+        peak = max(peak, f64(pl.pos.y - p0.y))
+    side = f64(length(vec3(pl.pos.x - p0.x, 0, pl.pos.z - p0.z)))
+    m("combat", "side hop height", peak, 0.8, 0.15, "M", "m")
+    m("combat", "side hop distance", side, 5.4 * 0.35, 0.4, "M", "m", "inferred")
+    cstep(Actions(), 60)
+    # backflip: locked on, jump with no stick
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 6.0
+    cstep(lk, 20)
+    p0 = pl.pos
+    bf = lk
+    bf.jump = true
+    cstep(bf, 1)
+    bf.jump = false
+    peak = 0.0
+    loop k in [0..40):
+        cstep(bf, 1)
+        peak = max(peak, f64(pl.pos.y - p0.y))
+    m("combat", "backflip height", peak, 1.11, 0.15, "M", "m")
+    b("combat", "backflip goes back", f64(int(f64(dot(pl.pos - p0, forward_of(0.0))) < -1.0)), 1.0, 0.5, "M", "")
+    # locked on, a swing carries him a step in, not across the gap: from 4 m about a meter, from
+    # 8 m nothing (it had closed 4.2 m in seven frames)
+    loop c in [(4.0, 2.0, "4 m"), (8.0, 0.6, "8 m")]:
+        cstep(Actions(), 60)
+        reset(v3(0.0, 100.0, 0.0), 0.0)
+        __dummy = pl.pos + forward_of(0.0) * f32(c.0)
+        cstep(lk, 20)
+        p0 = pl.pos
+        sw2 = lk
+        sw2.attack = true
+        cstep(sw2, 1)
+        top = 0.0
+        loop k in [0..12):
+            b = pl.pos
+            cstep(lk, 1)
+            top = max(top, f64(length(pl.pos - b)) / DT)
+        b("combat", "locked-on swing from {c.2}: at most {c.1} m, no faster than a dash", f64(int(f64(length(pl.pos - p0)) <= c.1 and top < 12.0)), 1.0, 0.5, "M", "")
+    cstep(Actions(), 60)
+    # the target gone (defeated, out of reach), the camera lets go of it though the lock is held
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 4.0
+    cstep(lk, 20)
+    had = cam.locked
+    __dummy = v3(0.0, -10000.0, 0.0)
+    cstep(lk, 10)
+    b("combat", "the camera lets go of a target that is gone", f64(int(had and not cam.locked)), 1.0, 0.5, "M", "")
+    # BotW's shield and dodge rules: a block costs no health; raising the shield alone is no perfect
+    # guard (the action button just before the blow is); a side hop under a vertical blow opens a
+    # flurry rush, a backflip from it only dodges
+    cstep(Actions(), 60)
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 2.0
+    cstep(lk, 20)
+    hp0 = pl.hp
+    blocked = hit_player(4, __dummy, 4.0, .vertical)
+    b("combat", "a blow on the raised shield costs no health", f64(int(blocked and pl.hp == hp0)), 1.0, 0.5, "H", "")
+    fight.guard_t = 0.05
+    fight.parry_t = 9.0
+    pg_lift = perfect_guard()
+    pa = lk
+    pa.interact = true
+    cstep(pa, 1)
+    b("combat", "perfect guard needs the button, not just the shield", f64(int(not pg_lift and perfect_guard())), 1.0, 0.5, "M", "")
+    loop c in [(true, "side hop under a vertical blow: flurry rush"), (false, "backflip from a vertical blow: dodged, no flurry")]:
+        cstep(Actions(), 60)
+        reset(v3(0.0, 100.0, 0.0), 0.0)
+        __dummy = pl.pos + forward_of(0.0) * 3.0
+        cstep(lk, 20)
+        dj = lk
+        dj.jump = true
+        if c.0: dj.move = vec2(1, 0)
+        cstep(dj, 1)
+        hpb = pl.hp
+        hit = hit_player(4, __dummy, 4.0, .vertical)
+        ok = if c.0: fight.act == .flurry and not hit else: fight.act == .backflip and not hit and pl.hp == hpb
+        b("combat", c.1, f64(int(ok)), 1.0, 0.5, "M", "")
+    cstep(Actions(), 60)
+    # dodges on a raised floor (the 60 m platform) stay on it: they had arced over the terrain
+    # below, inside the platform, and the push out threw him ten meters
+    loop side in [true, false]:
+        cstep(Actions(), 60)
+        reset(v3(-300.0, 160.0, 300.0), 0.0)
+        __dummy = pl.pos + forward_of(0.0) * 4.0
+        cstep(lk, 20)
+        p0 = pl.pos
+        dg = lk
+        dg.jump = true
+        if side: dg.move = vec2(1, 0)
+        cstep(dg, 1)
+        dg.jump = false
+        worst = 0.0
+        loop k in [0..50):
+            cstep(dg, 1)
+            worst = max(worst, f64(length(vec3(pl.pos.x - p0.x, 0, pl.pos.z - p0.z))))
+        ok = abs(f64(pl.pos.y) - 160.0) < 0.2 and worst < 3.0
+        b("combat", "{(if side: "side hop" else: "backflip")} on a raised floor stays on it", f64(int(ok)), 1.0, 0.5, "M", "")
+    cstep(Actions(), 60)
+    # a dodge pressed a little before the swing's blow lands still comes out (buffered)
+    cstep(Actions(), 60)
+    reset(v3(0.0, 100.0, 0.0), 0.0)
+    __dummy = pl.pos + forward_of(0.0) * 2.0
+    cstep(lk, 20)
+    sa = lk
+    sa.attack = true
+    cstep(sa, 1)
+    cstep(lk, 4)
+    dj = lk
+    dj.jump = true
+    dj.move = vec2(1, 0)
+    cstep(dj, 1)
+    dm = lk
+    dm.move = vec2(1, 0)
+    hopped = false
+    loop k in [0..40):
+        cstep(dm, 1)
+        if fight.act == .hop: hopped = true
+    b("combat", "a dodge pressed during a swing comes out", f64(int(hopped)), 1.0, 0.5, "M", "")
+
+main = ():
+    a = args()
+    loop i in [1..a.len()):
+        if a[i] == "--csv" and i + 1 < a.len(): csv_dir = a[i + 1]
+    if len(csv_dir) > 0: mkdir(csv_dir)
+    course()
+    ground_tests()
+    stamina_tests()
+    air_tests()
+    climb_tests()
+    surf_tests()
+    stride_tests()
+    glide_swim_tests()
+    control_tests()
+    camera_tests()
+    response_tests()
+    combat_tests()
+    # Evidence class and confidence are distinct. Guesses, scale inferences and correctness
+    # contracts never improve reference agreement. Each behavioral contract contributes one vote.
+    weights: {str: f64} = {"H": 1.0, "M": 0.8, "L": 0.6, "G": 0.0}
+    total_w = 0.0
+    total_s = 0.0
+    measured_n = 0
+    measured_pass = 0
+    measured_fail = 0
+    response_report = "category\tmeasure\tours\tunit\tBotW reference\ttolerance\tverdict\tevidence\n"
+    behavior_n = 0
+    behavior_pass = 0
+    pools: {str: int} = {}
+    print("{"category":<9} {"metric":<44} {"value":>9} {"ref":>9} {"tol":>7}  conf {"evidence":<9} score")
+    loop q in metrics:
+        if q.pool == "gap":
+            pools["gap"] = (pools.get("gap") ?? 0) + 1
+            print("{q.cat:<9} {q.name:<44} {q.value:>9.3} {"missing":>9} {"--":>7}  G    gap         n/a GAP")
+            response_report += "{q.cat}\t{q.name}\t{q.value:.6}\t{q.unit}\t\t\tGAP\tgap\n"
+            continue
+        err = abs(q.value - q.ref)
+        passed = err <= q.tol
+        flag = if q.pool == "guess" or q.pool == "inferred": "n/a" else: (if passed: "ok" else: "--")
+        pools[q.pool] = (pools.get(q.pool) ?? 0) + 1
+        score = "  n/a"
+        if q.pool == "data" or q.pool == "footage":
+            s = exp(-0.5 * (err / q.tol) ^ 2.0)
+            w = weights[q.conf]
+            total_w += w
+            total_s += w * s
+            measured_n += 1
+            if passed: measured_pass += 1
+            else: measured_fail += 1
+            score = "{s * 100.0:5.1}"
+        if q.pool == "behavior":
+            behavior_n += 1
+            if passed: behavior_pass += 1
+            score = if passed: " PASS" else: " FAIL"
+        verdict = if q.pool == "guess" or q.pool == "inferred": "UNSCORED" else: (if passed: "PASS" else: "FAIL")
+        response_report += "{q.cat}\t{q.name}\t{q.value:.6}\t{q.unit}\t{q.ref:.6}\t{q.tol:.6}\t{verdict}\t{q.pool}\n"
+        print("{q.cat:<9} {q.name:<44} {q.value:>9.3} {q.ref:>9.3} {q.tol:>7.3}  {q.conf:<4} {q.pool:<9} {score} {flag}")
+    print("")
+    print("agreement with measured references only: {total_s / max(total_w, 0.001) * 100.0:.1} / 100 ({measured_n} parameter / frame-timed references)")
+    print("reference verdicts: {measured_pass} PASS, {measured_fail} FAIL; {pools.get("gap") ?? 0} response GAP rows (no BotW baseline)")
+    print("response policy: 5% displacement/speed; 2 BotW frames = 0.066667 s timing. Missing baselines have no computed allowance or verdict.")
+    print("behavioral correctness: {f64(behavior_pass) / f64(max(behavior_n, 1)) * 100.0:.1} / 100 ({behavior_pass}/{behavior_n} checks pass)")
+    print("evidence: {pools.get("data") ?? 0} data, {pools.get("footage") ?? 0} footage, {pools.get("inferred") ?? 0} conditional / secondary, {pools.get("guess") ?? 0} guesses; behavioral checks separate")
+    print("Confidence: H clear source; M inferred units; L limited source; G no measured reference. A confidence letter alone never selects a score pool.")
+    print("Missing response evidence: docs/ref/movement-quantification.json (2026-10-11); response coverage is incomplete, score does not establish identical feel.")
+    if len(csv_dir) > 0: write_file("{csv_dir}/measurements.tsv", response_report)
+    print("excluded from reference agreement:")
+    loop q in metrics:
+        if q.pool == "guess" or q.pool == "inferred": print("  {q.pool:<9} {q.cat:<9} {q.name}")
+    if behavior_pass < behavior_n or measured_fail > 0: exit(1)

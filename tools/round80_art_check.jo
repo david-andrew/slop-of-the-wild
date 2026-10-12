@@ -1,0 +1,92 @@
+# CPU-only geometric checks for visible suspension contact and thin wildlife.
+use '../game/chars.jo'
+use '../game/skel.jo'
+use '../game/gfx.jo'
+use '../game/items.jo'
+use '../game/build.jo'
+use '../game/physics.jo'
+use '../game/env.jo'
+use '../game/terrain.jo'
+use '../game/wildlife.jo'
+use '../game/interiors.jo'
+from '../game/build.jo' import __named_b
+from '../game/chars.jo' import __glider_point
+
+# Exact sockets from production animated bones, including turns, roll and lift.
+chars_init()
+checks = 0
+loop time in [0.0,0.17,0.43,0.79]:
+    pose = sample_clip(human,clip_index(human,"glide"),time,true)
+    sk = skin_cpu(ranger_m,pose)
+    loop yaw in [0.0,1.57,3.14]:
+        world = translation(vec3(-1000,250,1800))*rotation_y(yaw)
+        left = socket_world(ranger_m,world,sk,SOCKET_HAND_R)[3].xyz
+        right = socket_world(ranger_m,world,sk,SOCKET_HAND_L)[3].xyz
+        loop bank in [-0.5,0.0,0.5]:
+            canopy = translation((left+right)*0.5+vec3(0,0.75,0))*rotation_y(PI-yaw)*rotation_z(bank)*rotation_x(-0.3)
+            strands = glider_rig_instances(canopy,left,right)
+            assert(strands.len()==6,"four suspension lines and two grips in one batch")
+            loop side in [0..2):
+                grip = if side==0:left else:right
+                handle = strands[side*3+2].model
+                assert(length(transform_point(handle,vec3(0,0.5,0))-grip)<0.0003,"handle passes through palm socket")
+                loop j in [0..2):
+                    line = strands[side*3+j].model
+                    target = transform_point(handle,vec3(0,f32(j),0))
+                    assert(length(transform_point(line,vec3(0,0,0))-target)<0.0003,"line starts on handle end")
+                    joint=transform_point(canopy,__glider_point((if side==0:-1.0 else:1.0),(if j==0:0.04 else:0.94)))
+                    assert(length(transform_point(line,vec3(0,1,0))-joint)<0.0003,"line ends on moving canopy spar")
+                    assert(length(joint-target)>0.5,"taut suspension reaches canopy")
+                    checks += 1
+print("PASS glider: {checks} suspension/handle contacts across animated poses, turns and banks")
+# Axis-degenerate endpoints must remain exact too.
+loop d in [vec3(0,2,0),vec3(0,-2,0),vec3(2,0,0),vec3(0,0,2)]:
+    m=glider_cord_transform(vec3(0,0,0),d,0.01)
+    assert(length(transform_point(m,vec3(0,1,0))-d)<0.00001)
+
+b=butterfly_geometry(rgb(0.58,0.38,0.085))
+assert(b.idx.len()/3<150,"thin lobed wings replace the sphere triangle budget")
+loop v in b.vs:
+    assert(abs(v.pos.z)<0.005 and abs(v.pos.x)<0.10,"insect span and thin wing depth")
+    assert(abs(length(v.normal)-1.0)<0.0001,"unit wing normals")
+loop k in [0..b.idx.len()/3):
+    a=b.vs[int(b.idx[k*3])]
+    bb=b.vs[int(b.idx[k*3+1])]
+    c=b.vs[int(b.idx[k*3+2])]
+    n=cross(bb.pos-a.pos,c.pos-a.pos)
+    assert(length(n)>0.0000001 and dot(n,a.normal+bb.normal+c.normal)>0,"nondegenerate outward front/back wings")
+print("PASS butterfly: {b.vs.len()} vertices, {b.idx.len()/3} triangles, thin double-sided lobes")
+
+before=colliders.len()
+begin_named("round80_terminal")
+sor_warm_terminal(vec3(0,0,0),0.15)
+end_named()
+assert(colliders.len()==before,"ceramic terminal never changes wake collision")
+t=__named_b["round80_terminal"]
+loop v in t.verts:
+    assert(length(v.pos)<0.65 and abs(length(v.normal)-1.0)<0.0001)
+print("PASS terminal: finite bounded ceramic geometry and unchanged collision")
+
+# Habitat-dependent fill must ease across cells and disappear indoors/in clear weather.
+hf.n=2
+hf.cell=1.0
+hf.x0=0.0
+hf.z0=0.0
+hf.mat=fill(u8(0),16)
+hf.mat[4]=255
+hf.mat[12]=255
+env.storm_k=1.0
+env.rain=1.0
+env.indoor=0.0
+assert(hero_storm_fill(vec3(0,0,0))<1.0 and hero_storm_fill(vec3(1,0,0))>1.0)
+previous=hero_storm_fill(vec3(0,0,0))
+loop k in [1..1001):
+    current=hero_storm_fill(v3(f64(k)/1000.0,0.0,0.4))
+    assert(current>=previous-0.00001 and current-previous<0.004,"continuous monotonic meadow/canopy lighting")
+    previous=current
+env.indoor=1.0
+assert(hero_storm_fill(vec3(0,0,0))==1.0)
+env.indoor=0.0
+env.storm_k=0.0
+assert(hero_storm_fill(vec3(0,0,0))==1.0)
+print("PASS storm hero: continuous habitat transition, neutral clear weather and interiors")

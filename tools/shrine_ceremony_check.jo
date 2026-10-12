@@ -1,0 +1,142 @@
+# Headless production ceremony: first cannot skip, repeat inputs require a committed award,
+# both action/back skip, idle repeats stay full, and exit/save state never duplicates the orb.
+# sloppy/bin/sloppy tools/shrine_ceremony_check.jo
+use '../game/shrines.jo'
+use '../game/gfx.jo'
+from '../game/shrines.jo' import __enter_now, __trans
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/items.jo'
+use '../game/player.jo'
+use '../game/physics.jo'
+use '../game/input.jo'
+use '../game/inventory.jo'
+use '../game/interact.jo'
+use '../game/story.jo'
+use '../game/camera.jo'
+use '../game/save.jo'
+use '../game/fx.jo'
+use '../game/env.jo'
+use '../game/post.jo'
+
+const DT = 1.0 / 60.0
+checks = 0
+check = (ok: bool, message: str):
+    checks += 1
+    if not ok:
+        eprint("FAIL ceremony: {message}")
+        exit(1)
+tick = (a: Actions = Actions()):
+    act = a
+    # Main gives the menu first refusal; E and the controller cancel action pass through.
+    check(not inventory_update(DT), "ceremony action/cancel must reach shrine update")
+    shrines_update(DT)
+    camera_update(DT)
+    fx_update(DT)
+wait = (n: int):
+    loop k in [0..n): tick()
+
+worldgen_load()
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+items_init()
+story.tower_risen = true
+story.beat = .explore
+story.title_done = true
+find_shrines()
+loop s in shrines: shrine_exterior(s)
+shrines_build()
+shrines_setup()
+# The upper doorway sightline clears all three lintels and the raised niche ceiling.
+# Its floor/handholds and chest are still exercised by the full Keh Namut route.
+__enter_now(KEH)
+o = srec[KEH].o
+loop z in [-14.8, -14.0, -13.2]:
+    check(not raycast(o + v3(-11.0, 7.8, z), vec3(-1, 0, 0), 9.0, true, false).hit, "Keh doorway upper sightline clears lintels")
+check(not raycast(o + v3(-14.5, 7.0, -14.0), vec3(0, 1, 0), 1.0, true, false).hit, "niche ceiling clears camera headroom")
+print("PASS Keh camera: three threshold sightlines clear at 7.8 m; niche headroom clear")
+# The ordinary usable callback starts the cinematic from a focused monk fixture.
+begin = (i: int):
+    __enter_now(i)
+    pl.pos = srec[i].o + srec[i].monk + vec3(0, 0, 2)
+    pl.last_safe = pl.pos
+    pl.face = 0.0
+    camera_snap()
+    tick()
+    u = usable_near(pl.pos, forward_of(pl.face))
+    check(u == srec[i].talk_u, "monk fixture must offer Talk")
+    use_it(u)
+    check(cam.override and pl.state == .cutscene, "Talk starts cinematic")
+award = (i: int):
+    check(story.orbs == i + 1 and has_key("spirit_orb"), "orb committed exactly once")
+    check(shrines[srec[i].entry].done, "completion committed before skip")
+    snapshot = save_capture()
+    check(snapshot.progress.orbs == i + 1 and snapshot.completed[i] and snapshot.inventory.keys.contains("spirit_orb") and (snapshot.inventory.key_counts.get("spirit_orb") ?? 0) == i + 1, "save snapshot contains the committed reward and completion")
+returned = (i: int):
+    rising = false
+    shot = false
+    settled = false
+    peak = 0.0
+    loop k in [0..300):
+        previous = view_pos()
+        fade = post.fade
+        tick()
+        if __trans.active and __trans.kind == 2 and __trans.moved:
+            entry = shrines[srec[i].entry]
+            if pl.pos.y < entry.pos.y - 0.5: rising = true
+            if post.fade < 0.8 and cam.override: shot = true
+            if __trans.t > 2.15:
+                check(abs(f64(pl.pos.y - entry.pos.y)) < 0.3, "lift reaches the hood before camera release")
+                settled = true
+            if fade < 0.9 and post.fade < 0.9:
+                peak = max(peak, f64(length(view_pos() - previous)))
+                hood = transform_dir(rotation_y(entry.rot), vec3(0, 0, -1))
+                check(dot(view_pos() - entry.pos, hood) < 0.0, "exterior camera stays on open side of hood")
+    check(rising and shot and settled, "visible lift rise and exterior shot precede control")
+    check(peak < 0.35, "exterior shot returns smoothly to chase camera")
+    print("PASS exit {i + 1}: visible lift/blue hood shot/control, camera peak {peak:.3} m per frame")
+    check(shr_cur == -1 and not __trans.active and srec[i].gone, "normal exterior exit completed")
+    check(length(pl.pos - shrines[srec[i].entry].pos) < 3.0 and pl.state == .ground, "returned to exterior lift")
+    check(not cam.override and cam.blend == 0.0, "exit camera restored")
+    check(story.orbs == i + 1, "exit did not duplicate award")
+
+begin(0)
+# Spam both buttons throughout the full first ceremony, including after its award.
+loop k in [0..510):
+    tick(Actions(interact = k % 2 == 0, back = k % 2 == 1))
+    if k == 250: award(0)
+    check(not __trans.active and srec[0].orb_t >= 0.0, "first ceremony cannot skip")
+# Exit occurs only after the full 8.5 s.
+wait(2)
+check(__trans.active and __trans.kind == 2, "first full ceremony exits at 8.5 s")
+print("PASS first ceremony: full 8.5 s despite action/back spam")
+returned(0)
+
+loop i in [1..3):
+    begin(i)
+    loop k in [0..200): tick(Actions(interact = k == 60, back = k == 120))
+    check(story.orbs == i and not __trans.active, "early input cannot award or exit")
+    wait(39)
+    # An input on the exact award update cannot end the ceremony before its commit.
+    loop k in [0..4):
+        tick(Actions(interact = i == 1, back = i == 2))
+        check(not __trans.active, "award-frame input cannot begin exit")
+        if story.orbs == i + 1: break
+    wait(5)
+    award(i)
+    check(not __trans.active and srec[i].orb_t > 4.0, "early input does not queue a skip")
+    tick(Actions(interact = i == 1, back = i == 2))
+    check(__trans.active and __trans.kind == 2 and srec[i].gone and srec[i].orb_t == -2.0, "repeat input starts ordinary exit after award")
+    award(i)
+    print("PASS repeat {i + 1}: {(if i == 1: "action" else: "back")} skips at 4.1 s; reward/save snapshot committed")
+    returned(i)
+
+begin(3)
+wait(510)
+award(3)
+check(not __trans.active and srec[3].orb_t >= 8.5, "idle repeat keeps full ceremony")
+wait(2)
+check(__trans.active and __trans.kind == 2, "idle repeat exits normally")
+returned(3)
+print("PASS idle repeat: full 8.5 s; PASS ceremony: {checks} assertions")

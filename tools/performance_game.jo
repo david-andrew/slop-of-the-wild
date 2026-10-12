@@ -1,0 +1,5 @@
+build:
+    opt = release
+use '../game/main.jo'
+use 'performance_output.jo'
+main = (): performance_output_run(update, draw)

@@ -1,0 +1,333 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'env.jo'
+use 'terrain.jo'
+use 'water.jo'
+use 'story.jo'
+use 'fx.jo'
+
+# The sky: a painted gradient, sun and moon, stars, and sculpted cumulus clouds that drift.
+
+struct SkyU:
+    inv_vp: mat4
+    cam: vec3
+    zenith: vec3
+    horizon: vec3
+    sun_dir: vec3
+    sun_color: vec3
+    moon_dir: vec3
+    night: f32
+    clouds: f32
+    dark: f32
+    time: f32
+    wind: vec2
+    haze: vec3
+    lettering: vec4
+    title_clear: f32
+    calamity: vec3
+
+struct SkyO:
+    pos: vec4
+    ndc: vec2
+
+skyp_vs = (v: FsVert, u: SkyU) -> SkyO: SkyO(vec4(v.pos, 0.99999, 1), v.pos)
+
+# One bank has a flat condensation base and an unequal cauliflower crown.
+# The contour joins the lobes first; pigment belongs to the whole bank, rather
+# than lighting every overlapping oval as a separate bubble.
+cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f32) -> vec2:
+    az = atan2(dir.z, dir.x)
+    p = vec2(az * 2.54648, dir.y * 4.8) + wind * time * vec2(0.0008, 0.00012)
+    cell = floor(p)
+    alpha: f32 = 0.0
+    pigment: f32 = 0.0
+    east = vec3(-sin(az), 0, cos(az))
+    sun_side = dot(sun, east)
+    loop iy in [-1..1]:
+        loop ix in [-1..1]:
+            id = cell + vec2(f32(ix), f32(iy))
+            wrapped = vec2(id.x - floor(id.x / 16.0) * 16.0, id.y)
+            seed = hash12(wrapped + vec2(31, 17))
+            if seed < 0.42 - cover * 0.18 or id.y < 0.0: continue
+            shape = hash12(wrapped + vec2(9, 3))
+            shoulder = hash12(wrapped + vec2(2, 13))
+            center = id + vec2(0.35 + seed * 0.30, 0.20 + shape * 0.60)
+            # Angular advection moves opposite the sampling offset; all banks
+            # trail their torn edge downwind while keeping unequal seeded crowns.
+            mirror = if wind.x >= 0.0: -1.0 else: 1.0
+            size = 0.38 + seed * 0.30 + cover * 0.12
+            q = (p - center) * vec2(mirror, 1) / size
+            if abs(q.x) > 1.12 or q.y < -0.28 or q.y > 0.77: continue
+            # Broad unequal volumes overlap before the silhouette is extracted.
+            # Seeded spacing lets shoulders merge; only selected banks grow towers.
+            x = q.x + sin(q.y * 11.0 + seed * 31.0) * 0.018
+            crown: f32 = -0.3
+            volume: f32 = 0.0
+            hollow: f32 = 0.0
+            loop lobe in [0..5):
+                fk = f32(lobe)
+                h = hash12(wrapped + vec2(fk * 3.1, 5.0))
+                hh = hash12(wrapped + vec2(fk * 7.7, 21.0))
+                cx = -0.62 + fk * 0.29 + (h - 0.5) * 0.23
+                radius = 0.20 + hh * 0.22
+                tower = 0.23 + h * 0.17 + smoothstep(0.62, 0.92, hh) * (0.15 + shape * 0.17)
+                dx = (x - cx) / radius
+                if abs(dx) < 1.0:
+                    cap = -0.18 + sqrt(max(0.0, 1.0 - dx * dx)) * (tower + 0.18)
+                    crown = max(crown, cap)
+                # Lit bulges and shaded folds sit inside the connected bank.
+                belly = vec2((x - cx) / (radius * 1.15), (q.y - tower * 0.38) / (tower * 0.74))
+                # Compact fifth-power washes retain rounded volume while
+                # avoiding ten per-bank exponentials in the full-screen sky.
+                belly_wash = max(0.0, 1.0 - dot(belly, belly) * 0.34)
+                bulge = belly_wash * belly_wash
+                bulge = bulge * bulge * belly_wash
+                volume = max(volume, bulge * (0.65 + hh * 0.35))
+                fold = vec2((x - cx - radius * 0.55) / (radius * 0.60), (q.y - tower * 0.16) / (tower * 0.31))
+                fold_wash = max(0.0, 1.0 - dot(fold, fold) * 0.30)
+                shadow = fold_wash * fold_wash
+                shadow = shadow * shadow * fold_wash
+                hollow = max(hollow, shadow * (0.55 + h * 0.45))
+            crown = crown + sin(x * 23.0 + seed * 23.0) * 0.012 + sin(x * 53.0 + shoulder * 19.0) * 0.004
+            base = -0.145 + sin(x * 4.0 + shape * 9.0) * 0.018
+            edge = min(crown - q.y, q.y - base)
+            # Downwind shreds narrow to points, interrupted by bites of clear air.
+            tail = smoothstep(0.30, 0.92, q.x)
+            wisp_y = -0.105 + sin(q.x * 14.0 + seed * 11.0) * 0.022
+            wisp = (0.043 * (1.0 - smoothstep(0.35, 1.08, q.x)) - abs(q.y - wisp_y))
+            wisp = min(wisp, min(q.x - 0.28, 1.08 - q.x))
+            edge = max(edge, wisp)
+            bites = sin(q.x * 38.0 + shape * 21.0) * sin(q.y * 57.0 + seed * 13.0)
+            edge = edge - tail * smoothstep(-0.07, -0.20, q.y) * max(bites, 0.0) * 0.045
+            # Analytic edge antialiasing only; no image blur or softened crowns.
+            aa = 0.006 + softness * 0.025
+            bank = smoothstep(-aa, aa, edge)
+            height = clamp((q.y - base) / max(crown - base, 0.08), 0.0, 1.0)
+            lit_side = sun_side * mirror
+            flank = smoothstep(-0.62, 0.65, -q.x * lit_side + q.y * 0.75)
+            upper = smoothstep(0.25, 0.86, height)
+            # A connected cool core lies below the bright shoulder. Broad pigment
+            # washes make sculpted planes without exposing the construction lobes.
+            core = exp(-pow((q.x - lit_side * 0.12) * 2.2, 2.0) - pow((q.y - 0.015) * 7.0, 2.0))
+            wash = vnoise(q * vec2(5.0, 7.0) + wrapped * 7.0)
+            lit = clamp(0.18 + flank * 0.26 + upper * 0.28 + volume * 0.24 - hollow * 0.19 - core * 0.10 + (wash - 0.5) * 0.07, 0.12, 0.94)
+            pigment = mix(pigment, lit, bank / max(alpha + bank, 0.001))
+            alpha = max(alpha, bank)
+    vec2(alpha, pigment)
+
+# Screen-space reserve follows the real title atlas bounds, with a broad feather
+# outside the lettering. It settles before the first visible title frame.
+title_sky_clear = (screen: vec2, zone: vec4) -> f32:
+    outside = max(max(zone.x - screen.x, screen.x - zone.z), max(zone.y - screen.y, screen.y - zone.w))
+    1.0 - smoothstep(0.015, 0.12, outside)
+
+title_sky_strength = () -> f64:
+    if story.beat != .title: return 0.0
+    t = story.t - TITLE_CREST_SECONDS
+    # Settle before lettering, then restore the clouds during the half-second
+    # after its final fade, before the normal camera handoff.
+    smooth01((t - 5.0) / 2.0) * (1.0 - smooth01((t - 18.4) / 0.5))
+
+sky_color = (dir: vec3, u: SkyU) -> vec3:
+    y = dir.y
+    t = 1.0 - exp(-max(y, 0.0) * 5.0)
+    c = mix(u.horizon, u.zenith, t)
+    if y < 0.0: c = mix(u.horizon, u.haze * 0.85, clamp(-y * 3.0, 0.0, 1.0))
+    l = normalize(u.sun_dir)
+    sd = max(dot(dir, l), 0.0)
+    glow = pow(sd, 6.0) * 0.35 + pow(sd, 64.0) * 0.6
+    c = c + u.sun_color * glow * (1.0 - u.dark * 0.8) * 0.25
+    # sunrise/sunset: a warm band along the horizon on the sun's side
+    hd = dot(normalize(vec3(dir.x, 0.0001, dir.z)), normalize(vec3(l.x, 0.0001, l.z)))
+    hz = exp(-abs(y) * 9.0) * pow(hd * 0.5 + 0.5, 3.0)
+    lowsun = clamp(1.0 - abs(l.y) * 4.0, 0.0, 1.0)
+    band_color = if l.x > 0.0: vec3(1.08, 0.58, 0.25) else: vec3(1.15, 0.30, 0.12)
+    c + band_color * hz * lowsun * 0.5 * (1.0 - u.dark)
+
+skyp_fs = (i: SkyO, u: SkyU) -> vec4:
+    a = u.inv_vp * vec4(i.ndc, 1, 1)
+    b = u.inv_vp * vec4(i.ndc, -1, 1)
+    dir = normalize(a.xyz / a.w - b.xyz / b.w)
+    c = sky_color(dir, u)
+    reserve = title_sky_clear(i.ndc * vec2(0.5, -0.5) + vec2(0.5, 0.5), u.lettering) * u.title_clear
+    l = normalize(u.sun_dir)
+    # sun disc (soft painted edge)
+    sd = dot(dir, l)
+    disc = smoothstep(0.99955, 0.99975, sd)
+    c = c + u.sun_color * disc * 3.0 * (1.0 - u.dark)
+    # the moon
+    md = dot(dir, normalize(u.moon_dir))
+    # (big and pale, its seas faintly darker)
+    moon = smoothstep(0.99935, 0.99952, md)
+    mv = normalize(u.moon_dir)
+    mu = normalize(cross(mv, vec3(0, 1, 0)))
+    mw = cross(mu, mv)
+    mp = vec2(dot(dir - mv, mu), dot(dir - mv, mw)) * 28.0
+    maria = smoothstep(0.45, 0.75, fbm3(mp * 3.0 + vec2(3.0, 7.0))) * 0.3
+    halo = pow(max(md, 0.0), 900.0) * 0.35 + pow(max(md, 0.0), 60.0) * 0.08
+    c = c + (vec3(0.95, 0.96, 1.0) * moon * 1.5 * (1.0 - maria) + vec3(0.6, 0.7, 0.9) * halo) * u.night * u.night * (1.0 - u.dark)
+    c = c + vec3(0.3, 0.4, 0.6) * pow(max(md, 0.0), 200.0) * 0.4 * u.night
+    # a wide pale halo
+    c = c + vec3(0.2, 0.25, 0.35) * pow(max(md, 0.0), 24.0) * 0.25 * u.night * (1.0 - u.dark)
+    # stars
+    if u.night > 0.01 and dir.y > 0.0:
+        vis = u.night * (1.0 - u.dark) * clamp(dir.y * 4.0, 0.0, 1.0)
+        # the Milky Way: a faint lumpy band across the sky
+        bn = normalize(vec3(0.5, 0.35, -0.8))
+        band = exp(-dot(dir, bn) * dot(dir, bn) * 22.0) * (0.5 + 0.8 * fbm3(dir.xz / (dir.y + 0.35) * 6.0))
+        c = c + vec3(0.17, 0.18, 0.27) * band * vis
+        # stars: soft points of different brightness (a pixel each would be painted away)
+        q = dir.xz / (dir.y + 0.35) * 120.0
+        cell = floor(q)
+        s = hash12(cell + vec2(13.0, 7.0))
+        jit = vec2(hash12(cell + vec2(3.0, 1.0)), hash12(cell + vec2(5.0, 9.0))) - vec2(0.5, 0.5)
+        f = fract(q) - vec2(0.5, 0.5) - jit * 0.6
+        dens = 0.965 - band * 0.04
+        if s > dens:
+            sb = (s - dens) / (1.0 - dens)
+            tw = 0.7 + 0.3 * sin(u.time * 2.0 + s * 90.0)
+            st = smoothstep(0.11 + sb * 0.1, 0.0, length(f))
+            c = c + vec3(0.85, 0.9, 1.0) * st * (0.9 + sb * 3.5) * tw * vis
+    # A spherical cloud field keeps rounded painted masses toward the horizon.
+    if dir.y > 0.01:
+        p = dir * 18.0 + vec3(u.wind.x, 0, u.wind.y) * u.time * 0.003
+        # An angular clearing follows the actual Castle volume, rather than
+        # the title camera. Blue/grey air separates ivory clouds from the malice.
+        delta = u.calamity - u.cam
+        distance = length(delta)
+        toward = normalize(delta)
+        side = normalize(cross(toward, vec3(0, 1, 0)))
+        up = cross(side, toward)
+        castle_uv = vec2(dot(dir, side), dot(dir, up)) * distance / vec2(380, 255)
+        castle_clear = if dot(dir, toward) > 0.0: smoothstep(1.0, 1.24, length(castle_uv)) else: 1.0
+        softness = 0.06 + u.night * 0.24 + smoothstep(0.55, 0.8, u.clouds) * 0.16
+        cloud = cumulus(dir, l, u.time, u.wind, u.clouds, softness)
+        if cloud.x > 0.001:
+            day_shade = u.horizon * 0.35 + vec3(0.24, 0.23, 0.28)
+            night_shade = u.horizon * 0.65 + vec3(0.015, 0.024, 0.05)
+            shade = mix(day_shade, night_shade, u.night) * (1.0 - u.dark * 0.4)
+            day_bright = u.sun_color * 0.50 + u.horizon * 0.44 + vec3(0.13, 0.13, 0.10)
+            night_bright = u.horizon * 0.65 + vec3(0.12, 0.15, 0.23)
+            bright = mix(day_bright, night_bright, u.night)
+            cc = mix(shade, bright, cloud.y * (1.0 - u.dark * 0.55))
+            fade = clamp(dir.y * 5.0, 0.0, 1.0)
+            c = mix(c, cc, cloud.x * fade * 0.98 * (1.0 - reserve) * castle_clear)
+        # overcast: the clouds close into one grey deck, the breaks between only faintly paler
+        ov = smoothstep(0.6, 0.72, u.clouds) * clamp(dir.y * 6.0, 0.0, 1.0)
+        if ov > 0.0:
+            # Overcast retains broad overlapping rolls, rather than replacing
+            # all cloud form with a flat grey sheet. Pigment varies at bank scale.
+            roll = fbm3(p.xz * 0.35 + vec2(u.time * 0.001, 0))
+            deck_base = mix(u.horizon, u.zenith, 0.48) * (1.0 - u.dark * 0.18)
+            deck_shade = deck_base * vec3(0.72, 0.76, 0.90)
+            deck_light = deck_base * 1.35 + u.sun_color * 0.08 * (1.0 - u.night)
+            form = clamp(0.20 + roll * 0.55 + cloud.y * cloud.x * castle_clear * 0.40, 0.0, 1.0)
+            deck = mix(deck_shade, deck_light, form)
+            c = mix(c, deck, ov * 0.97 * (1.0 - reserve))
+    # haze toward the horizon
+    c = mix(c, u.haze, exp(-max(dir.y, 0.0) * 30.0) * 0.45)
+    # Golden dawn shifts lavender toward warm ivory and apricot. The smooth
+    # solar-height envelope covers cloud pigment and horizon haze together.
+    dawn = step(0.0, l.x) * smoothstep(-0.02, 0.04, l.y) * (1.0 - smoothstep(0.12, 0.30, l.y)) * (1.0 - u.dark)
+    c = mix(c, c * vec3(1.08, 1.12, 0.72), dawn * 0.85)
+    # Clear, slightly deeper blue under the warm white atlas also preserves
+    # readability in the pale overcast deck. No lettering-sized hard rectangle.
+    c = mix(c, mix(u.zenith, vec3(0.15, 0.25, 0.38), 0.35), reserve * 0.40)
+    # A dense storm deck absorbs open sky while leaving the approved habitat
+    # fill alone. The envelope stays continuous through rain/storm transitions.
+    storm_deck = smoothstep(0.66, 0.82, u.dark)
+    c = c * mix(vec3(1, 1, 1), vec3(0.44, 0.49, 0.60), storm_deck)
+    vec4(c, 1)
+
+sky_sh: Shader
+__sky_ready = false
+
+draw_sky = (inv_vp: mat4, cam: vec3):
+    if not __sky_ready:
+        __sky_ready = true
+        sky_sh = make_sh(shader(skyp_vs, skyp_fs))
+    r = visible_rect()
+    lettering = title_lettering_size(f64(r.z), f64(r.w))
+    zone = vec4(0.5 - lettering.x / r.z * 0.5, 0.115, 0.5 + lettering.x / r.z * 0.5, 0.115 + lettering.y / r.w)
+    clear = title_sky_strength()
+    u = SkyU(inv_vp, cam, env.zenith, env.horizon, env.sun_dir, env.sun_color, env.moon_dir, f32(env.night),
+        f32(env.clouds), f32(env.dark), f32(elapsed()), env.wind, env.haze, zone, f32(clear), malice_center + vec3(0, 270, 0))
+    glDepthMask(0)
+    glDisable(GL_CULL_FACE)
+    draw_fast(sky_sh, fullscreen_mesh(), u)
+    glDepthMask(1)
+    draw_valley_mist(inverse(inv_vp), cam)
+
+# Soft, shallow pools in the Forest of Spirits and sheltered hollows. Eighteen tiny
+# depth-tested cards share one mesh/draw; no screen-sized fog pass or new particles.
+struct MistV:
+    center: vec3
+    corner: vec2
+    size: vec2
+    fade = vec2(15, 65)
+
+struct MistU:
+    vp: mat4
+    cam: vec3
+    color: vec3
+    amount: f32
+    time: f32
+
+struct MistO:
+    pos: vec4
+    uv: vec2
+    world: vec3
+    fade: vec2
+
+mist_vs = (v: MistV, u: MistU) -> MistO:
+    toward = normalize(vec3(u.cam.x - v.center.x, 0.01, u.cam.z - v.center.z))
+    right = vec3(toward.z, 0.0, -toward.x)
+    w = v.center + right * (v.corner.x * v.size.x) + vec3(0, v.corner.y * v.size.y, 0)
+    MistO(u.vp * vec4(w, 1), v.corner, w, v.fade)
+
+mist_fs = (i: MistO, u: MistU) -> vec4:
+    edge = max(0.0, 1.0 - dot(i.uv, i.uv))
+    wisps = vnoise(i.world.xz * 0.035 + vec2(u.time * 0.009, u.time * 0.003))
+    a = edge * edge * (0.55 + wisps * 0.45) * u.amount * 0.34
+    a = a * smoothstep(i.fade.x, i.fade.y, length(i.world - u.cam))
+    vec4(u.color, a)
+
+__mist_ready = false
+__mist_mesh: Mesh
+__mist_sh: Shader
+
+draw_valley_mist = (vp: mat4, cam: vec3):
+    if env.valley_mist < 0.005: return
+    if not __mist_ready:
+        __mist_ready = true
+        __mist_sh = make_sh(shader(mist_vs, mist_fs))
+        vs: MistV[]
+        idx: u32[]
+        loop pool in [vec2(-1060, 1620), vec2(-1015, 1690), vec2(-960, 1730), vec2(-895, 1770), vec2(-1210, 1720), vec2(-730, 1800)]:
+            loop k in [0..3):
+                x = f64(pool.x) + f64(k - 1) * 26.0
+                z = f64(pool.y) + f64(k - 1) * 19.0
+                g = min(height_at(x, z), min(height_at(x - 18.0, z), height_at(x + 18.0, z)))
+                center = v3(x, g + 4.0 + f64(k) * 1.1, z)
+                size = vec2(f32(45.0 + f64(k) * 8.0), f32(6.0 + f64(k) * 1.5))
+                base = u32(vs.len())
+                loop q in [vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1)]: vs.push(MistV(center, q, size))
+                loop n in [0, 1, 2, 0, 2, 3]: idx.push(base + u32(n))
+        # Hopper Pond is smaller than the broad valley pools. Anchor thin wisps
+        # to its actual water surface, with a near fade suited to a shore-level view.
+        loop pocket in [vec2(-1198, 1652), vec2(-1182, 1642), vec2(-1190, 1667)]:
+            if let level = water_level(f64(pocket.x), f64(pocket.y)):
+                center = v3(f64(pocket.x), level + 0.9, f64(pocket.y))
+                base = u32(vs.len())
+                loop q in [vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1)]: vs.push(MistV(center, q, vec2(13, 0.75), vec2(2, 16)))
+                loop n in [0, 1, 2, 0, 2, 3]: idx.push(base + u32(n))
+        __mist_mesh = mesh(vs, idx)
+    glEnable(GL_DEPTH_TEST)
+    glDepthMask(0)
+    glDisable(GL_CULL_FACE)
+    glEnable(GL_BLEND)
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    color = env.haze * 0.7 + env.sky_amb * 0.4 + vec3(0.12, 0.14, 0.16)
+    draw_fast(__mist_sh, __mist_mesh, MistU(vp, cam, color, f32(env.valley_mist), f32(elapsed())))
+    glDepthMask(1)
+    glDisable(GL_BLEND)

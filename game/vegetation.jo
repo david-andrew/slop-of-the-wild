@@ -1,0 +1,1851 @@
+use 'cputime.jo'
+use 'gfx.jo'
+use 'gputime.jo'
+use 'shade.jo'
+use 'env.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'worldgen.jo'
+use 'scene.jo'
+use 'shadows.jo'
+use 'water.jo'
+use 'water_render.jo'
+use 'trees.jo'
+use 'structures.jo'
+use 'texture_assets.jo'
+use 'fir_boughs.jo'
+
+# Trees, bushes, ferns, flowers and rocks. Trees stand where the original's trees stand (by
+# species); undergrowth is scattered by biome. Models come from tools/bake_nature.jo. Leaves
+# are painted brush strokes, alpha tested, shaded with a soft round canopy normal, lit through
+# from behind, and sway in the wind; snowy trees in the cold area get snow on top.
+
+struct VPart:
+    kind: int            # 0 solid (bark, rock), 1 leaves
+    tex: Texture
+    mesh: Mesh
+    lo: vec3
+    hi: vec3
+    shadow_low = Mesh()   # distant casters retain the crown envelope and fewer interior cards
+
+struct VModel:
+    name: str
+    parts: VPart[]
+    height: f64
+    radius: f64
+    low = Mesh()          # far off: a tapered trunk and broadleaf forks (trees with leaves only)
+    has_low = false
+    bark_tex = Texture(0, 1, 1)
+    has_shadow_low = false
+    crown = Mesh()
+    crown_tex = Texture(0, 1, 1)
+    crown_normal = Texture(0, 1, 1)
+    crown_y = 0.0
+
+struct VInst:
+    model: mat4
+    tint: vec4           # rgb leaf tint, a = snow
+
+struct VegU:
+    vp: mat4
+    cam: vec3
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+    tex: Texture
+    time: f32
+    wind: vec2
+    leaves: f32          # 1 for leaf parts
+    center_y: f32        # canopy center height (model space)
+    height: f32
+    shadow_pass: f32
+    wet: f32
+    bark_tint: vec3
+    lp = vec4(0, 0, 0, 0)
+    lc = vec3(0, 0, 0)
+    clouds = 0.0
+    player = vec3(0, -1000, 0)
+    fade_width = 1.0
+    low = 0.0            # 1 for ferns, plants and flowers (not bushes or trees)
+    tree = 0.0
+    fir = 0.0            # solid rounded fir sprays, including their crown atlas
+    impostor = 0.0
+    lod_mode = 0.0
+    crown_normal = Texture(0, 1, 1)
+    wood = 0.0           # bark material, including bare/dead trees and bush stems
+
+struct VegO:
+    pos: vec4
+    world: vec3
+    normal: vec3
+    uv: vec2
+    color: vec4
+    tint: vec4
+    h: f32
+    openness: f32
+    lod_distance: f32
+
+veg_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
+    p = v.pos
+    hn = clamp(p.y / u.height, 0.0, 1.0)
+    base = inst.model[3].xyz
+    # a crown's lobes spread differently on every tree; the lower trunk stays rooted
+    if u.tree > 0.5:
+        shape = hash12(base.xz + vec2(19.0, 3.0))
+        crown = smoothstep(0.32, 0.75, hn)
+        spread = 1.0 + crown * (sin(p.y * 0.65 + shape * 19.0) * 0.16 + sin(p.x * 0.38 + p.z * 0.31 + shape * 31.0) * 0.14)
+        p = vec3(p.x * (spread + crown * (shape - 0.5) * 0.3) + crown * u.height * (shape - 0.5) * 0.13, p.y, p.z * (1.0 + (spread - 1.0) * 0.7 - crown * (shape - 0.5) * 0.2))
+    # sway: the whole crown bends with the wind, leaves flutter
+    ph = u.time * 1.1 + base.x * 0.13 + base.z * 0.11
+    gk = clamp(length(u.wind), 0.5, 3.5)
+    ph = ph * (0.7 + 0.3 * gk)
+    # (in a gale the crowns lean away downwind and toss harder)
+    sway = ((sin(ph) * 0.6 + sin(ph * 2.3) * 0.25) * gk + (gk - 1.0) * 0.6) * hn * hn * 0.35
+    wdir = normalize(u.wind + vec2(0.0001, 0))
+    flutter = sin(u.time * 6.0 * (0.6 + 0.4 * gk) + p.x * 3.0 + p.z * 2.0 + base.x) * 0.05 * u.leaves * gk
+    w = inst.model * vec4(p, 1)
+    # Distant foliage spreads horizontally; preserve shelf heights and branch openings.
+    if u.leaves > 0.5 and u.low < 0.5:
+        cc = (inst.model * vec4(0.0, u.center_y, 0.0, 1.0)).xyz
+        grow = 1.0 + smoothstep(70.0, 280.0, length(cc - u.cam)) * 0.30 * (0.6 + 0.8 * hash12(base.xz))
+        w = vec4(cc + (w.xyz - cc) * vec3(grow, 1.0, grow), 1.0)
+    w = w + vec4(wdir.x * sway + flutter, flutter * 0.5, wdir.y * sway, 0)
+    n = (inst.model * vec4(v.normal, 0)).xyz
+    if u.leaves > 0.5:
+        c = (inst.model * vec4(0.0, u.center_y, 0.0, 1.0)).xyz
+        # Keep the baked shelf normals dominant instead of shading each tree as a sphere.
+        n = normalize(mix(normalize(n), normalize(w.xyz - c), 0.35 - 0.17 * u.tree))
+        # ferns and low plants: lit from above like the grass around them
+        if u.low > 0.5: n = normalize(mix(n, vec3(0, 1, 0), 0.5))
+    # (each tree its own green: some darker and bluer, some lighter and warmer)
+    th = hash12(base.xz + vec2(3.1, 7.7))
+    tv = if u.leaves > 0.5: vec4(0.73 + 0.43 * th, 0.79 + 0.34 * th, 0.88 - 0.08 * th, 1.0) else: vec4(1, 1, 1, 1)
+    VegO(u.vp * w, w.xyz, n, v.uv, v.color, inst.tint * tv, hn, (th - 0.45) * 0.20 * u.tree, length(base - u.cam))
+
+# Crown atlas: eight views of the original painted cards, baked once while loading.
+# Store unlit colour and view-space normals separately; sunlight, wetness, snow,
+# wind, per-tree tint, shadows and haze still run in the production foliage shader.
+struct CrownBakeU:
+    vp: mat4
+    view: mat4
+    tex: Texture
+    center: vec3
+    normals: f32
+struct CrownBakeO:
+    pos: vec4
+    uv: vec2
+    color: vec4
+    normal: vec3
+crown_bake_vs = (v: Vertex3D, inst: VInst, u: CrownBakeU) -> CrownBakeO:
+    n = normalize(mix(normalize(v.normal), normalize(v.pos - u.center), 0.18))
+    CrownBakeO(u.vp * vec4(v.pos, 1), v.uv, v.color, (u.view * vec4(n, 0)).xyz)
+crown_bake_fs = (i: CrownBakeO, u: CrownBakeU) -> vec4:
+    t = sample(u.tex, i.uv)
+    glsl_discard(t.w < 0.42)
+    if u.normals > 0.5: return vec4(normalize(i.normal) * 0.5 + vec3(0.5, 0.5, 0.5), 1)
+    vec4(t.xyz * i.color.xyz, 1)
+crown_bake_sh: Shader
+crown_view_sh: Shader
+crown_depth_sh: Shader
+
+crown_view_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
+    base = inst.model[3].xyz
+    sy = length(inst.model[1].xyz)
+    sx = length(inst.model[0].xyz)
+    center = base + vec3(0, v.pos.z * sy, 0)
+    back = normalize(u.cam - center)
+    right = normalize(cross(vec3(0, 1, 0), back))
+    up = normalize(cross(back, right))
+    # Select the baked direction in the tree's local rotation.
+    local_x = dot(back, normalize(inst.model[0].xyz))
+    local_z = dot(back, normalize(inst.model[2].xyz))
+    angle = atan2(local_x, local_z)
+    tile = mod(floor(angle * (8.0 / 6.283185307) + 0.5) + 8.0, 8.0)
+    uv = vec2((tile + clamp(v.uv.x, 0.002, 0.998)) / 8.0, v.uv.y)
+    shape = hash12(base.xz + vec2(19.0, 3.0))
+    grow = 1.0 + smoothstep(70.0, 280.0, length(center - u.cam)) * 0.30 * (0.6 + 0.8 * hash12(base.xz))
+    w = center + right * v.pos.x * sx * grow * (0.95 + shape * 0.10) + up * v.pos.y * sy
+    hn = clamp((v.pos.z + v.pos.y) / u.height, 0.0, 1.0)
+    ph = u.time * 1.1 + base.x * 0.13 + base.z * 0.11
+    gk = clamp(length(u.wind), 0.5, 3.5)
+    ph = ph * (0.7 + 0.3 * gk)
+    sway = ((sin(ph) * 0.6 + sin(ph * 2.3) * 0.25) * gk + (gk - 1.0) * 0.6) * hn * hn * 0.35
+    wd = normalize(u.wind + vec2(0.0001, 0))
+    w += vec3(wd.x * sway, 0, wd.y * sway)
+    th = hash12(base.xz + vec2(3.1, 7.7))
+    tv = vec4(0.73 + 0.43 * th, 0.79 + 0.34 * th, 0.88 - 0.08 * th, 1.0)
+    VegO(u.vp * vec4(w, 1), w, back, uv, vec4(1, 1, 1, 1), inst.tint * tv, hn, 0.0, length(base - u.cam))
+
+crown_bake = (vm: mut VModel):
+    if not vm.has_low: return
+    lo = 1e9
+    hi = -1e9
+    loop pt in vm.parts:
+        if pt.kind == 1:
+            lo = min(lo, f64(pt.lo.y))
+            hi = max(hi, f64(pt.hi.y))
+    if hi <= lo: return
+    cy = (lo + hi) * 0.5
+    radius = vm.radius * 1.15
+    half_h = (hi - lo) * 0.55 + radius * 0.22
+    vm.crown_y = cy
+    center = v3(0.0, cy, 0.0)
+    b = inst_buffer([VInst(mat4(), vec4(1, 1, 1, 1))])
+    loop normals in [0, 1]:
+        rt = make_target(2048, 256, false, true)
+        bind_target(rt)
+        glEnable(GL_DEPTH_TEST)
+        glDepthFunc(GL_LEQUAL)
+        glDepthMask(1)
+        glDisable(GL_BLEND)
+        glDisable(GL_CULL_FACE)
+        glClearColor(0, 0, 0, 0)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        loop tile in [0..8):
+            a = f64(tile) * TAU / 8.0
+            eye = center + v3(sin(a) * cos(0.22), sin(0.22), cos(a) * cos(0.22)) * f32(vm.height * 3.0)
+            view = look_at(eye, center, vec3(0, 1, 0))
+            vp = orthographic(-radius, radius, -half_h, half_h, 0.1, vm.height * 6.0) * view
+            glViewport(i32(tile * 256), 0, 256, 256)
+            loop pt in vm.parts:
+                if pt.kind == 1: draw_static(crown_bake_sh, pt.mesh, b, CrownBakeU(vp, view, pt.tex, center, f32(normals)))
+        if normals == 0: vm.crown_tex = rt.color
+        else: vm.crown_normal = rt.color
+        # Keep the atlas texture, release only the temporary attachment and framebuffer.
+        gl_delete_texture(rt.depth.id)
+        gl_delete_framebuffer(rt.fbo)
+    vs: Vertex3D[]
+    loop q in [vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1)]:
+        vs.push(Vertex3D(v3(f64(q.x) * radius, f64(q.y) * half_h, cy), vec3(0, 0, 1), q * 0.5 + vec2(0.5, 0.5), vec4(1, 1, 1, 1)))
+    vm.crown = mesh(vs, [u32(0), 1, 2, 0, 2, 3])
+    gl_delete_buffer(b.vbo)
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    px = pixel_size()
+    glViewport(0, 0, i32(px.x), i32(px.y))
+    glEnable(GL_CULL_FACE)
+
+veg_shadow_fs = (i: VegO, u: VegU) -> vec4:
+    t = sample(u.tex, i.uv)
+    # (mipmaps thin the leaves' alpha far away: a lower cutoff keeps crowns full)
+    # the cutout from a sharp mip (the blurred small mips fill whole leaf cards into squares far
+    # off), a little lower threshold with distance to keep the crowns full
+    dcam = length(u.cam - i.world)
+    ta = if u.impostor < 0.5 and u.leaves > 0.5 and dcam > 30.0: glsl_lod(u.tex, i.uv, 1.0).w else: t.w
+    cut = 0.5 - 0.15 * smoothstep(25.0, 220.0, dcam) + i.openness
+    # (low plants far off thin out rather than fill in: a clump of flowers became a solid blob)
+    if u.low > 0.5: cut = 0.5 + 0.3 * smoothstep(15.0, 50.0, dcam)
+    if u.leaves > 0.5: glsl_discard(ta < cut)
+    vec4(1, 1, 1, 1)
+
+veg_occluder_fade = (i: VegO, u: VegU) -> f32:
+    # Smooth coverage around the sight line and lens.
+    cp = u.player + vec3(0, 1.0, 0) - u.cam
+    ll = max(dot(cp, cp), 0.01)
+    tt = clamp(dot(i.world - u.cam, cp) / ll, 0.0, 1.0)
+    dl = length(u.cam + cp * tt - i.world)
+    fade = (if u.leaves > 0.5: smoothstep(1.7, 0.7, dl) else: smoothstep(0.9 * u.fade_width, 0.4 * u.fade_width, dl) * smoothstep(0.08, 0.25, tt)) * smoothstep(0.97, 0.85, tt)
+    if u.player.y < -500.0: fade = 0.0
+    # and anything right at the lens
+    # (only what is almost at the lens: in the narrow cave every wall is a few meters off)
+    fade = max(fade, smoothstep((if u.leaves > 0.5: 5.5 else: 1.5 * u.fade_width), (if u.leaves > 0.5: 2.2 else: 1.25 * u.fade_width), length(i.world - u.cam)))
+    fade
+
+veg_depth_fs = (i: VegO, u: VegU) -> vec4:
+    # Complementary coverage in both depth passes avoids a hard switch at 60 m.
+    blend = smoothstep(55.0, 70.0, i.lod_distance)
+    dither = glsl_pixel_dither(0.0)
+    if u.lod_mode > 0.5 and u.lod_mode < 1.5: glsl_discard(blend > dither)
+    if u.lod_mode > 1.5: glsl_discard(blend <= dither)
+    t = sample(u.tex, i.uv)
+    # (mipmaps thin the leaves' alpha far away: a lower cutoff keeps crowns full)
+    # the cutout from a sharp mip (the blurred small mips fill whole leaf cards into squares far
+    # off), a little lower threshold with distance to keep the crowns full
+    dcam = length(u.cam - i.world)
+    ta = if u.impostor < 0.5 and u.leaves > 0.5 and dcam > 30.0: glsl_lod(u.tex, i.uv, 1.0).w else: t.w
+    cut = 0.5 - 0.15 * smoothstep(25.0, 220.0, dcam) + i.openness
+    # (low plants far off thin out rather than fill in: a clump of flowers became a solid blob)
+    if u.low > 0.5: cut = 0.5 + 0.3 * smoothstep(15.0, 50.0, dcam)
+    if u.leaves > 0.5:
+        # Derivative-sized coverage at the cutout rim. The same screen-space pattern in the
+        # depth and colour passes lets the watercolor resolve it without transparent sorting.
+        if u.low < 0.5 and (u.shadow_pass < 0.5 or u.shadow_pass > 1.5): glsl_leaf_edge(ta, cut)
+        else: glsl_discard(ta < cut)
+    if u.shadow_pass > 0.5 and u.shadow_pass < 1.5: return vec4(1, 1, 1, 1)
+    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_dither(0.0))
+    vec4(1, 1, 1, 1)
+
+veg_fs = (i: VegO, u: VegU) -> vec4:
+    # Coverage was resolved by the depth pass. GL_EQUAL + no depth writes admits only it.
+    t = sample(u.tex, i.uv)
+    dcam = length(u.cam - i.world)
+    n = normalize(i.normal)
+    if u.impostor > 0.5:
+        nn = normalize(sample(u.crown_normal, i.uv).xyz * 2.0 - vec3(1, 1, 1))
+        right = normalize(cross(vec3(0, 1, 0), n))
+        up = normalize(cross(n, right))
+        n = normalize(right * nn.x + up * nn.y + n * nn.z)
+    alb = t.xyz * i.color.xyz
+    # (and their blossoms melt into the meadow's green with distance)
+    if u.low > 0.5:
+        lg = dot(alb, vec3(0.3, 0.55, 0.15))
+        alb = mix(alb, vec3(lg * 0.8, lg * 1.15, lg * 0.6), smoothstep(12.0, 40.0, dcam) * 0.7)
+    if u.leaves > 0.5:
+        # Green low plants receive their floor pigment below. Skip crown washes
+        # that would immediately be overwritten on those fronds.
+        if u.low < 0.5 or t.y <= max(t.x, t.z):
+            # Muted olive/sage pigment: the same range as the meadow's painted washes.
+            alb = vec3(alb.x * 0.32 + 0.008, alb.y * 0.42, alb.z * 0.40 + 0.055) * i.tint.xyz
+            pigment = dot(alb, vec3(0.30, 0.55, 0.15))
+            alb = mix(alb, vec3(pigment * 0.88, pigment, pigment * 0.90), 0.40)
+            alb = alb * (0.64 + 0.39 * i.h)
+            # Reuse the existing three wash samples; no extra texture or noise lookup.
+            lv = vnoise(i.world.xz * 0.35 + vec2(i.world.y * 0.4, 0.0))
+            wash = vnoise(i.world.xz * 0.08)
+            alb = alb * (0.68 + 0.60 * smoothstep(0.22, 0.80, lv))
+            alb = mix(alb * vec3(0.80, 0.94, 1.12), alb * vec3(1.15, 1.04, 0.83), wash)
+            # Pigment settles on clump edges; darken the wash instead of bright Fresnel.
+            edge = 1.0 - abs(dot(n, normalize(u.cam - i.world)))
+            alb = alb * (1.0 - smoothstep(0.45, 0.95, edge) * mix(0.20, 0.05, smoothstep(35.0, 180.0, dcam)))
+            fk = smoothstep(60.0, 250.0, dcam)
+            if fk > 0.0:
+                stand = vnoise(i.world.xz * 0.025)
+                alb = mix(alb, alb * mix(vec3(0.72, 0.82, 0.97), vec3(1.18, 1.06, 0.80), stand), fk)
+    else:
+        # (a rock or trunk takes its place's tint where it is not the moss signal: cliff blocks in
+        # the cliff's warm stone)
+        mossy = clamp((i.tint.y - i.tint.x - 0.15) * 8.0, 0.0, 1.0)
+        alb = alb * u.bark_tint * mix(i.tint.xyz, vec3(1, 1, 1), mossy)
+        # the kit's bark is salmon: weathered grey-brown, warmer low on the trunk
+        bl = dot(alb, vec3(0.3, 0.55, 0.15))
+        alb = mix(alb, vec3(bl, bl, bl) * vec3(1.18, 1.0, 0.82), 0.6) * (0.85 + 0.25 * (1.0 - i.h))
+        # moss over the tops of forest boulders and logs (a green-leaning tint asks for it)
+        # Smooth rock normals carry moss over rounded shoulders; world-space
+        # cushions break the margin across triangles instead of painting faces.
+        if mossy > 0.0:
+            cushion = vnoise(i.world.xz * 1.15 + vec2(i.world.y * 0.67, i.world.y * 0.31))
+            fleck = vnoise(i.world.xz * 4.1 + vec2(i.world.y * 1.7, 0.0))
+            mk = mossy * smoothstep(0.18, 0.68, n.y + (cushion - 0.5) * 0.72 + (fleck - 0.5) * 0.18)
+            moss = mix(vec3(0.13, 0.19, 0.075), vec3(0.22, 0.28, 0.12), cushion)
+            alb = mix(alb, moss * (0.92 + 0.16 * fleck), mk * 0.88)
+    # snow on top
+    # (broad, with a noisy edge: by each low-poly face's tilt alone it comes out in triangles)
+    if i.tint.w > 0.0:
+        drift = vnoise(i.world.xz * 0.28 + vec2(i.world.y * 0.35, 0.0))
+        snow = i.tint.w * smoothstep(-0.15, 0.35, n.y + (drift - 0.5) * 0.4)
+        # Snow rests on bough shelves; dark needle texels and their undersides
+        # remain visible even in deep snow instead of becoming white cards.
+        if u.leaves > 0.5:
+            if u.fir > 0.5:
+                # The curved geometry carries the snow thickness. Keep the
+                # upper pillows continuous and the downward-facing needles dark.
+                snow = i.tint.w * smoothstep(0.10, 0.58, n.y) * (0.90 + drift * 0.10)
+            else: snow *= smoothstep(0.30, 0.62, drift) * (0.8 + 0.2 * smoothstep(0.15, 0.45, dot(t.xyz, vec3(0.3, 0.6, 0.1))))
+        alb = mix(alb, vec3(0.82, 0.86, 0.93), snow)
+    # Bark drinks rain; mineral faces darken less and retain a tighter film.
+    # Snow caps stay pale. The model material separates trunks from boulders.
+    material_wet = u.wet * (1.0 - i.tint.w * smoothstep(0.05, 0.6, n.y))
+    absorption = if u.leaves > 0.5: 0.2 else: (if u.wood > 0.5: 0.38 else: 0.27)
+    alb = alb * (1.0 - material_wet * absorption)
+    l = normalize(u.sun_dir)
+    v = normalize(u.cam - i.world)
+    sh = (if u.leaves > 0.5: cascade_shadow_fast(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) else: cascade_shadow(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2)) * cloud_shade(i.world.xz, u.time, u.clouds)
+    if u.leaves > 0.5 and u.low > 0.5:
+        # low plants: their fronds shade each other less than a crown does, and sit in the meadow's light
+        sh = sh * 0.5 + 0.5
+        lum = dot(t.xyz, vec3(0.3, 0.6, 0.1))
+        # Moss/sage fronds share the floor's quieter value range; petals retain their pigment.
+        if t.y > max(t.x, t.z): alb = vec3(0.12, 0.17, 0.105) * (0.85 + 0.35 * lum) * (0.86 + 0.14 * i.h) * i.tint.xyz * (1.0 - u.wet * 0.2)
+    c = paint_light(alb, n, l, v, u.sun_color, u.sky, u.ground, sh, 0.45 * u.leaves + 0.1)
+    # Cool overcast fill follows crown openings instead of filling every face
+    # equally. Wet bark ridges and upper leaves remain legible in canopy shade.
+    storm_fill = smoothstep(0.84, 0.95, u.clouds) * material_wet
+    gap = 0.35 + 0.65 * smoothstep(0.2, 0.85, vnoise(i.world.xz * 0.11))
+    c = c + alb * u.sky * vec3(0.75, 0.95, 1.18) * storm_fill * gap * (0.30 + 0.18 * max(n.y, 0.0))
+    c = c + point_light(alb, n, i.world, u.lp, u.lc)
+    if u.leaves < 0.5 and material_wet > 0.0:
+        stone = 1.0 - u.wood
+        # Porous bark keeps a faint broken sheen, stone a brighter rain film.
+        c = c + wet_surface(n, l, v, u.sun_color, u.sky, sh, material_wet, stone) * (0.48 + stone * 0.52)
+    if u.leaves > 0.5:
+        back = pow(max(dot(v * -1.0, l), 0.0), 3.0)
+        c = c + alb * u.sun_color * back * 0.34 * sh
+        # a leaf seen from behind (from inside its crown) is lit through: sky and sun come through
+        # the blade, it never goes black
+        inner = clamp(-dot(n, v), 0.0, 1.0)
+        c = c + alb * (u.sky * 0.9 + u.sun_color * 0.3) * inner
+        c = max(c, alb * u.sky * 0.6)
+        c = c + u.sky * material_wet * pow(1.0 - abs(dot(n, v)), 4.0) * (0.025 + 0.035 * gap)
+    c = atmos(c, i.world, u.cam, l, u.haze, u.sun_color, u.density, 0.004)
+    fade = veg_occluder_fade(i, u)
+    vec4(c, (if fade > 0.001: -8.0 else: (if u.leaves > 0.5: 0.65 else: (if u.wood > 0.5: 1.0 else: 0.85))))
+
+# ---------------- loading ----------------
+veg_sh: Shader
+veg_depth_sh: Shader
+veg_shadow_sh: Shader
+veg_fade_width = 1.0
+veg_player = vec3(0, -1000, 0)     # set by the game: things in front of the player fade
+vmodels: VModel[]
+__vtex: {str: Texture} = {}
+
+__rd32 = (b: u8[], o: int) -> int: int(b[o]) | (int(b[o + 1]) << 8) | (int(b[o + 2]) << 16) | (int(b[o + 3]) << 24)
+
+# Broadleaf cards carry overlapping rounded dabs, rather than a sheet of isolated
+# pointed leaves. Bake coverage and a narrow pigment wash once during upload;
+# the ordinary mip/depth/shadow paths then share the same clump silhouette.
+__broadleaf_image = () -> Image:
+    size = 256
+    pixels = fill(u8(0), size * size * 4)
+    # Unequal overlapping lobes form three sprays with genuine gaps between them.
+    lobes = [vec4(0.30, 0.28, 0.16, 0.13), vec4(0.42, 0.23, 0.15, 0.14),
+        vec4(0.48, 0.36, 0.16, 0.15), vec4(0.24, 0.40, 0.14, 0.12),
+        vec4(0.73, 0.43, 0.13, 0.16), vec4(0.77, 0.57, 0.13, 0.12),
+        vec4(0.38, 0.70, 0.17, 0.14), vec4(0.52, 0.74, 0.14, 0.14),
+        vec4(0.30, 0.62, 0.13, 0.13)]
+    loop y in [0..size):
+        loop x in [0..size):
+            uv = vec2(f32(x) + 0.5, f32(y) + 0.5) / f32(size)
+            distance = 1.0
+            loop lobe in lobes:
+                q = (uv - lobe.xy) / lobe.zw
+                distance = min(distance, f64(length(q) - 1.0) * f64(min(lobe.z, lobe.w)))
+            # Low-amplitude irregular scallops, never straight hatching or detached dots.
+            tooth = sin(f64(uv.x) * 87.0 + sin(f64(uv.y) * 41.0)) * sin(f64(uv.y) * 93.0 + f64(uv.x) * 23.0)
+            distance += tooth * 0.004
+            coverage = 1.0 - smoothstep(-0.010, 0.010, distance)
+            rim = smoothstep(-0.045, 0.0, distance)
+            wash = 0.96 + 0.05 * sin(f64(uv.x) * 15.0 + f64(uv.y) * 9.0) + rim * 0.10
+            k = (y * size + x) * 4
+            pixels[k] = u8(clamp(88.0 * wash, 0.0, 255.0))
+            pixels[k + 1] = u8(clamp(123.0 * wash, 0.0, 255.0))
+            pixels[k + 2] = u8(rim * 4.0)
+            pixels[k + 3] = u8(coverage * 255.0)
+    Image(size, size, pixels)
+
+# Bush cards carry larger overlapping leaves on an open spray. The
+# texture is baked once; colour, depth and shadow share the same cutout.
+__bush_leaf_image = () -> Image:
+    size = 256
+    pixels = fill(u8(0), size * size * 4)
+    leaves = [vec4(0.50, 0.18, 0.12, 0.155),
+        vec4(0.29, 0.32, 0.13, 0.205), vec4(0.71, 0.34, 0.135, 0.20),
+        vec4(0.27, 0.56, 0.145, 0.205), vec4(0.72, 0.57, 0.14, 0.21),
+        vec4(0.35, 0.76, 0.135, 0.18), vec4(0.65, 0.78, 0.13, 0.17)]
+    angles = [0.10, -0.70, 0.62, -0.82, 0.76, -0.60, 0.55]
+    loop y in [0..size):
+        loop x in [0..size):
+            uv = vec2(f32(x) + 0.5, f32(y) + 0.5) / f32(size)
+            coverage = 0.0
+            wash = 0.0
+            loop j in [0..leaves.len()):
+                leaf = leaves[j]
+                d = uv - leaf.xy
+                a = angles[j]
+                q = vec2(f32(f64(d.x) * cos(a) + f64(d.y) * sin(a)), f32(-f64(d.x) * sin(a) + f64(d.y) * cos(a))) / leaf.zw
+                # Pointed oval, a restrained midrib and one shaded folded half.
+                edge = length(q) + abs(q.y) * 0.12
+                alpha = 1.0 - smoothstep(0.92, 1.04, f64(edge))
+                if alpha > coverage:
+                    coverage = alpha
+                    wash = 0.82 + f64(j % 5) * 0.06 + f64(q.x) * 0.08 + (1.0 - smoothstep(0.0, 0.09, abs(f64(q.x)))) * 0.10
+            k = (y * size + x) * 4
+            pixels[k] = u8(clamp(88.0 * wash, 0.0, 255.0))
+            pixels[k + 1] = u8(clamp(123.0 * wash, 0.0, 255.0))
+            pixels[k + 2] = u8(clamp(8.0 * wash, 0.0, 255.0))
+            pixels[k + 3] = u8(coverage * 255.0)
+    Image(size, size, pixels)
+
+__bush_tex = () -> Texture:
+    if let t = __vtex.get("bush_sprays"): return t
+    img = __bush_leaf_image()
+    t = bytes_texture(img.width, img.height, img.pixels, true, true)
+    __vtex["bush_sprays"] = t
+    t
+
+__tex_secs = 0.0
+__vm_secs = 0.0
+__veg_tex = (name0: str) -> Texture:
+    # (the twisted trees' leaves are autumn red: bushes use the summer ones)
+    name = nature_texture_name(name0)
+    if let t = __vtex.get(name): return t
+    t = Texture(0, 1, 1)
+    tt0 = time()
+    if let img = startup_image("assets/src/nature/Textures/" + name):
+        painted = if name == "Leaves_NormalTree_C.png": __broadleaf_image() else: img
+        t = bytes_texture(painted.width, painted.height, painted.pixels, true, true)
+    __vtex[name] = t
+    __tex_secs += time() - tt0
+    t
+
+white_tex = Texture(0, 1, 1)
+
+__fir_tex = () -> Texture:
+    if let t = __vtex.get("fir_solid"): return t
+    # The legacy white_tex is a zero-id placeholder, not a sampled texture.
+    # Retain Leaf_Pine_C's authored RGB (51,88,0); geometry now supplies its
+    # silhouette, so colour, depth, shadow and atlas share opaque coverage.
+    t = bytes_texture(1, 1, [u8(51), 88, 0, 255], false, true)
+    __vtex["fir_solid"] = t
+    t
+
+# Weld the kit's face splits before relaxing its sharp corners. Original bounds
+# remain the placement/collision contract; only uploaded render vertices change.
+# No additional triangles, instances, draws or random-number consumption.
+round_rock_vertices = (vs: mut Vertex3D[], ids: u32[]):
+    points: vec3[]
+    weld: int[]
+    loop v in vs:
+        found = -1
+        loop j in [0..points.len()):
+            if length(points[j] - v.pos) < 0.0001:
+                found = j
+                break
+        if found < 0:
+            found = points.len()
+            points.push(v.pos)
+        weld.push(found)
+    lo = vec3(1e9, 1e9, 1e9)
+    hi = vec3(-1e9, -1e9, -1e9)
+    loop p in points:
+        lo = min(lo, p)
+        hi = max(hi, p)
+    loop iteration in [0..1):
+        sums = fill(vec3(0, 0, 0), points.len())
+        counts = fill(0, points.len())
+        loop k in [0..ids.len()/3):
+            loop e in [0..3):
+                a = weld[int(ids[k*3+e])]
+                b = weld[int(ids[k*3+(e+1)%3])]
+                sums[a] += points[b]
+                sums[b] += points[a]
+                counts[a] += 1
+                counts[b] += 1
+        loop j in [0..points.len()):
+            if counts[j] > 0: points[j] = mix(points[j], sums[j]/f32(counts[j]), 0.42)
+    # Restore the authored extent after relaxation, retaining the rooted shape.
+    rlo = vec3(1e9, 1e9, 1e9)
+    rhi = vec3(-1e9, -1e9, -1e9)
+    loop p in points:
+        rlo = min(rlo, p)
+        rhi = max(rhi, p)
+    loop j in [0..points.len()):
+        points[j] = lo + (points[j]-rlo)/max(rhi-rlo,vec3(0.001,0.001,0.001))*(hi-lo)
+    normals = fill(vec3(0, 0, 0), points.len())
+    loop k in [0..ids.len()/3):
+        a = weld[int(ids[k*3])]
+        b = weld[int(ids[k*3+1])]
+        c = weld[int(ids[k*3+2])]
+        n = cross(points[b]-points[a],points[c]-points[a])
+        normals[a] += n
+        normals[b] += n
+        normals[c] += n
+    loop j in [0..vs.len()):
+        vs[j].pos = points[weld[j]]
+        if length(normals[weld[j]]) > 0.000001: vs[j].normal = normalize(normals[weld[j]])
+
+load_vm = (name: str) -> VModel:
+    vm = VModel(name, [], 1.0, 1.0)
+    source_name = if starts_with(name, "Moss_Rock_"): name[5..] else: name
+    b = read_bytes("assets/nature/{source_name}.vm") ?? []
+    if b.len() < 8: return vm
+    nparts = __rd32(b, 4)
+    o = 8
+    hmax = 0.0
+    rmax = 0.0
+    bark: Vertex3D[]
+    has_leaves = false
+    loop pi in [0..nparts):
+        kind = __rd32(b, o)
+        tl = __rd32(b, o + 4)
+        tex = str_from_bytes(b[o + 8..o + 8 + tl))
+        o += 8 + tl
+        nv = __rd32(b, o)
+        ni = __rd32(b, o + 4)
+        o += 8
+        fl = fill(f32(0), nv * 12)
+        mem_copy(data(fl) as *u8, data(b) + o, nv * 48)
+        o += nv * 48
+        ids = fill(u32(0), ni)
+        mem_copy(data(ids) as *u8, data(b) + o, ni * 4)
+        o += ni * 4
+        # Unequal leaf sprays open small sky gaps between boughs. Shrink complete
+        # cards around their centers at load time, preserving UVs and card topology.
+        card_centers: vec3[]
+        if kind == 1 and (starts_with(name, "CommonTree") or starts_with(name, "Bush_Common")) and starts_with(tex, "Leaves_"):
+            card_centers = fill(vec3(0, 0, 0), nv)
+            loop q in [0..ni / 6):
+                center = vec3(0, 0, 0)
+                loop j in [0..6):
+                    k = int(ids[q * 6 + j]) * 12
+                    center += vec3(fl[k], fl[k + 1], fl[k + 2]) / 6.0
+                loop j in [0..6): card_centers[int(ids[q * 6 + j])] = center
+        vs: Vertex3D[]
+        lo = vec3(1e9, 1e9, 1e9)
+        hi = vec3(-1e9, -1e9, -1e9)
+        loop k in [0..nv):
+            p = vec3(fl[k * 12], fl[k * 12 + 1], fl[k * 12 + 2])
+            if starts_with(name, "CommonTree"):
+                if kind == 1 and card_centers[k].y > 0.0:
+                    center = card_centers[k]
+                    spray = f32(hash2(f64(center.x) * 1.7 + f64(center.y), f64(center.z) * 2.3))
+                    p = center + (p - center) * (0.72 + spray * 0.34)
+                crown = smoothstep(1.2, 4.5, f64(p.y))
+                lobe = sin(f64(p.x) * 0.85 + f64(p.z) * 0.53) * sin(f64(p.z) * 0.66 - 0.7)
+                # Sculpt the existing mesh into offset boughs with shallow notches between
+                # them. Done once at load; the same silhouette reaches every view/shadow LOD.
+                scallop = sin(f64(p.x) * 1.15 - f64(p.z) * 0.82 + 0.4)
+                p.x = p.x * f32(1.0 + crown * (0.14 + scallop * 0.10)) + f32(crown * (0.45 + lobe * 0.42))
+                p.z = p.z * f32(1.0 - crown * (0.12 + scallop * 0.08))
+                p.y = p.y + f32(crown * (lobe * 0.95 - 0.24))
+            if starts_with(name, "Bush_Common") and kind == 1 and starts_with(tex, "Leaves_"):
+                center = card_centers[k]
+                # Keep the rooted footprint; open card overlaps and give the crown
+                # unequal bough heights instead of a single spherical envelope.
+                p = center + (p - center) * 0.90
+                crown = smoothstep(0.12, 0.9, f64(center.y))
+                bough = sin(f64(center.x) * 5.2 + 0.8) * sin(f64(center.z) * 4.5 - 0.4)
+                p.y += f32(crown * bough * 0.15)
+                p.x += f32(crown * sin(f64(center.z) * 3.8) * 0.09)
+            lo = min(lo, p)
+            hi = max(hi, p)
+            if starts_with(name, "DeadTree_"):
+                bend = smoothstep(0.8, 2.5, f64(p.y))
+                elbow = smoothstep(2.3, 3.5, f64(p.y))
+                p.x += f32(bend * 0.16 - elbow * 0.30)
+                p.z += f32(bend * sin(f64(p.y) * 1.1 + 0.7) * 0.18)
+                # Unequal bough angles and tapered broken tips, with no extra
+                # triangles, instances or random draws.
+                p.x *= f32(1.0 - bend * 0.14)
+                p.y += f32(bend * sin(f64(p.x) * 2.1 + f64(p.z)) * 0.11)
+            vs.push(Vertex3D(p, vec3(fl[k * 12 + 3], fl[k * 12 + 4], fl[k * 12 + 5]), vec2(fl[k * 12 + 6], fl[k * 12 + 7]), vec4(fl[k * 12 + 8], fl[k * 12 + 9], fl[k * 12 + 10], fl[k * 12 + 11])))
+        if starts_with(name, "Bush_Common") and kind == 1 and starts_with(tex, "Leaves_"):
+            # Larger readable leaves need fewer overlapping sprays. Keep whole
+            # cards, with their original winding, UVs and normals in every pass.
+            open_ids: u32[]
+            loop card in [0..ids.len() / 6):
+                if card % 2 == 1: continue
+                loop j in [0..6): open_ids.push(ids[card * 6 + j])
+            ids = open_ids
+        hmax = max(hmax, f64(hi.y))
+        rmax = max(rmax, max(f64(max(abs(lo.x), abs(hi.x))), f64(max(abs(lo.z), abs(hi.z)))))
+        if starts_with(name, "Moss_Rock_"): round_rock_vertices(vs, ids)
+        fir = starts_with(name, "Pine_") and kind == 1
+        fir_shadow: u32[]
+        if fir:
+            crown = fir_crown(vs, ids)
+            vs = crown.vertices
+            ids = crown.indices
+            fir_shadow = crown.shadow
+        t = if fir: __fir_tex() else if starts_with(name, "Bush_Common") and starts_with(tex, "Leaves_"): __bush_tex() else if len(tex) > 0: __veg_tex(tex) else: white_tex
+        pt = VPart(kind, t, mesh(vs, ids), lo, hi)
+        # Each six-index leaf card remains whole. Keep the outline at every crown height,
+        # the crown tip, and one in four interior cards. Near casters and view meshes use
+        # every original card; only the middle cascade beyond 25 m uses this mesh.
+        if fir:
+            pt.shadow_low = mesh(vs, fir_shadow)
+            vm.has_shadow_low = true
+        if kind == 1 and starts_with(name, "CommonTree") and ids.len() % 6 == 0:
+            centers: vec3[]
+            envelope = fill(f32(0), 12)
+            loop q in [0..ids.len() / 6):
+                cc = vec3(0, 0, 0)
+                loop j in [0..6): cc += vs[int(ids[q * 6 + j])].pos / 6.0
+                centers.push(cc)
+                band = min(11, max(0, int((cc.y - lo.y) / max(hi.y - lo.y, 0.01) * 12.0)))
+                envelope[band] = max(envelope[band], length(cc.xz))
+            si: u32[]
+            loop q in [0..centers.len()):
+                cc = centers[q]
+                band = min(11, max(0, int((cc.y - lo.y) / max(hi.y - lo.y, 0.01) * 12.0)))
+                if length(cc.xz) >= envelope[band] * 0.80 or band >= 10 or q % 4 == 0:
+                    loop j in [0..6): si.push(ids[q * 6 + j])
+            pt.shadow_low = mesh(vs, si)
+            vm.has_shadow_low = true
+        vm.parts.push(pt)
+        if kind == 1: has_leaves = true
+        else:
+            bark.extend(vs)
+            vm.bark_tex = t
+    vm.height = hmax
+    vm.radius = rmax
+    if has_leaves and bark.len() > 0 and hmax > 3.0:
+        # the trunk: its girth near the ground, up into the crown
+        rsum = 0.0
+        n = 0
+        col = vec4(0, 0, 0, 0)
+        loop v in bark:
+            col = col + v.color
+            if f64(v.pos.y) < hmax * 0.12:
+                rsum += hypot(f64(v.pos.x), f64(v.pos.z))
+                n += 1
+        r0 = if n > 0: rsum / f64(n) else: hmax * 0.03
+        # (darker than the average bark: far off, haze lightens a trunk to cream otherwise)
+        col = col / f32(bark.len()) * 0.55
+        top = hmax * 0.6
+        sides = 7
+        tv: Vertex3D[]
+        ti: u32[]
+        loop k in [0..sides + 1):
+            a = TAU * f64(k) / f64(sides)
+            nn = v3(cos(a), 0.0, sin(a))
+            tv.push(Vertex3D(v3(cos(a) * r0, -0.3, sin(a) * r0), nn, vec2(f32(f64(k) / f64(sides)), 0), col))
+            tv.push(Vertex3D(v3(cos(a) * r0 * 0.45, top, sin(a) * r0 * 0.45), nn, vec2(f32(f64(k) / f64(sides)), 4), col))
+        loop k in [0..sides):
+            b0 = u32(k * 2)
+            loop q in [b0, b0 + 1, b0 + 2, b0 + 2, b0 + 1, b0 + 3]: ti.push(q)
+        # Three inexpensive forks keep branch crotches readable through the opened crown
+        # even after the detailed bark switches off. 24 triangles per broadleaf, no new draw.
+        if starts_with(name, "CommonTree"):
+            loop j in [0..3):
+                a = f64(j) * TAU / 3.0 + 0.4
+                start = v3(0.0, hmax * (0.30 + f64(j) * 0.055), 0.0)
+                end = v3(cos(a) * hmax * 0.21, hmax * (0.54 + f64(j) * 0.045), sin(a) * hmax * 0.21)
+                axis = normalize(end - start)
+                right = normalize(cross(axis, vec3(0, 1, 0)))
+                up = normalize(cross(right, axis))
+                off = u32(tv.len())
+                loop k in [0..5):
+                    th = f64(k) * TAU / 4.0
+                    nn = right * f32(cos(th)) + up * f32(sin(th))
+                    tv.push(Vertex3D(start + nn * f32(r0 * 0.48), nn, vec2(f32(k) / 4.0, 1), col))
+                    tv.push(Vertex3D(end + nn * f32(r0 * 0.09), nn, vec2(f32(k) / 4.0, 3), col))
+                loop k in [0..4):
+                    b0 = off + u32(k * 2)
+                    loop q in [b0, b0 + 1, b0 + 2, b0 + 2, b0 + 1, b0 + 3]: ti.push(q)
+        vm.low = mesh(tv, ti)
+        vm.has_low = true
+    crown_bake(vm)
+    vm
+
+# ---------------- placement ----------------
+struct VPlace:
+    model: int
+    m: mat4
+    tint: vec4
+    pos: vec3
+    radius: f64
+    height: f64
+    collide: bool
+    col = -1
+    owner = -1
+    felled = false
+    view_reach = 0.0       # authored mid-distance clutter only; shadows keep size limits
+
+places: VPlace[]
+__vidx: {str: int} = {}
+
+model_id = (name: str) -> int:
+    if let i = __vidx.get(name): return i
+    i = vmodels.len()
+    tv = time()
+    vmodels.push(load_vm(name))
+    __vm_secs += time() - tv
+    __vidx[name] = i
+    i
+
+# (the shrines' round bases kept clear of everything placed: a boulder sat on Owa Daim's lift)
+__shrine_bases: vec3[]
+
+# A wider vegetation-only snow margin: sample the surrounding ground so cap
+# coverage crosses the climate boundary gradually, with bare needles between drifts.
+vegetation_snow_cover = (x: f64, z: f64) -> f32:
+    cover = f64(material_at(x, z).z) * 0.35
+    loop dx in [-40.0, 0.0, 40.0]:
+        loop dz in [-40.0, 0.0, 40.0]:
+            cover += f64(material_at(x + dx, z + dz).z) * (0.65 / 9.0)
+    f32(smoothstep(0.02, 0.92, cover))
+
+place = (name: str, pos: vec3, rot: f64, height: f64, tint: vec4, collide: bool = true):
+    loop e in __shrine_bases:
+        if hypot(f64(e.x - pos.x), f64(e.z - pos.z)) < 8.0: return
+    # Low planted meshes share the mouth's grass/rock footprint mask. Arguments
+    # (including placement RNG) are already evaluated before this local rejection.
+    if hypot(f64(pos.x)+1068.0,f64(pos.z)-1845.0) < 20.0 and (starts_with(name,"Plant_") or starts_with(name,"Fern_")):
+        if burn_value(f64(pos.x),f64(pos.z),3) > 0.1: return
+    # Scatter still consumes its original RNG, but shrubs cannot root through
+    # the Temple's authored treads and landing. The terrain pad alone is turf.
+    if starts_with(name, "Bush_"):
+        q = transform_dir(rotation_y(-TEMPLE_ROT), pos - TEMPLE)
+        if q.z > 43.5 and q.z < 62.6:
+            width = (8.6 + (62.0 - f64(q.z)) * 0.15) * 0.5
+            if q.z < 50.6: width = max(width, 7.0)
+            if abs(f64(q.x)) < width + 0.5: return
+    treeline = 0.0
+    if starts_with(name, "Pine"):
+        treeline = smoothstep(355.0, 415.0, f64(pos.y)) * (1.0 - smoothstep(200.0, 270.0, hypot(f64(pos.x) + 1288.0, f64(pos.z) - 2221.0)))
+        if hash2(f64(pos.x) + 17.0, f64(pos.z)) < treeline * 0.94: return
+    treeheight = height * (1.0 - treeline * 0.5)
+    # Round the moss-grown field boulders, leaving authored cliff/snow rocks
+    # on their existing meshes. Both variants retain identical collision bounds.
+    rounded = starts_with(name, "Rock_Medium_") and tint.y - tint.x > 0.15 and tint.w < 0.1
+    mi = model_id(if rounded: "Moss_" + name else: name)
+    vm = vmodels[mi]
+    s = treeheight / max(vm.height, 0.1)
+    # trees: broader crowns than the models have
+    w = if height > 4.0: s * 1.18 else: s
+    # Conifers vary in width and cross-section without another runtime shader path.
+    # Stable position hash preserves the placement RNG and every tree's rooted collider.
+    pine_shape = if starts_with(name, "Pine_"): f64(hash12(pos.xz + vec2(7.3, 29.1))) else: 0.5
+    px = if starts_with(name, "Pine_"): 0.80 + pine_shape * 0.32 else: 1.0
+    pz = if starts_with(name, "Pine_"): 1.06 - pine_shape * 0.23 else: 1.0
+    broad = if starts_with(name, "CommonTree"): hash2(f64(pos.x), f64(pos.z)) else: 0.5
+    px = px * (0.84 + broad * 0.32)
+    pz = pz * (1.13 - broad * 0.26)
+    m = translation(pos) * rotation_y(rot) * scaling(v3(w * px, s, w * pz))
+    bound = vm.radius * (if starts_with(name, "CommonTree"): max(w * px, w * pz) else: s)
+    surface_tint = tint
+    if tint.w > 0.0 or starts_with(name, "Pine_") or starts_with(name, "CommonTree"):
+        surface_tint.w = 0.85 * vegetation_snow_cover(f64(pos.x), f64(pos.z))
+    places.push(VPlace(mi, m, surface_tint, pos, bound, treeheight, collide))
+
+LEAF = vec4(0.95, 1.0, 0.9, 0.0)
+
+# a placement by its own matrix (a fallen trunk lies on its side)
+place_m = (name: str, m: mat4, pos: vec3, height: f64, radius: f64, tint: vec4):
+    places.push(VPlace(model_id(name), m, tint, pos, radius, height, false))
+
+vegetation_place = ():
+    seed_random(42)
+    t0 = time()
+    __shrine_bases.clear()
+    loop a in actors:
+        if a.name == "DgnObj_DungeonEntrance_A_01": __shrine_bases.push(a.pos)
+    loop a in actors:
+        x = f64(a.pos.x)
+        z = f64(a.pos.z)
+        if not in_bounds(x, z): continue
+        # (the way out of the cave kept clear: no tree standing in its mouth)
+        if (x + 1068.0) * (x + 1068.0) + (z - 1845.0) * (z - 1845.0) < 64.0: continue
+        n = a.name
+        g = height_at(x, z)
+        p = v3(x, g - 0.3, z)
+        r = a.rot + random(-0.5, 0.5)
+        snowy = contains(n, "Snow") or is_snow_area(x, z)
+        sn: f32 = if snowy: 0.85 else: 0.0
+        v = f32(random(0.85, 1.12))
+        # each tree its own green: some yellower, some bluer, some darker
+        hue = f32(random(-1.0, 1.0))
+        tint = vec4(v * (0.97 + hue * 0.1), v, v * (0.92 - hue * 0.1), sn)
+        # up in the snow the broadleaves give way to firs
+        if snowy and starts_with(n, "Obj_TreeBroadleaf") and not contains(n, "Dead") and not contains(n, "Fallen"):
+            place("Pine_{random_int(1, 5)}", p, r, random(8.0, 14.0), tint)
+        else if starts_with(n, "Obj_TreeBroadleafDead") or starts_with(n, "Obj_TreeDead"):
+            place("DeadTree_{random_int(1, 6)}", p, r, random(7.0, 10.0), tint)
+        else if starts_with(n, "Obj_TreeBroadleafFallen"):
+            pass
+        else if starts_with(n, "Obj_TreeBroadleafLow"):
+            place("CommonTree_{random_int(4, 6)}", p, r, random(4.0, 5.5), tint)
+        else if starts_with(n, "Obj_TreeBroadleaf_A_LL"):
+            place("CommonTree_{random_int(1, 3)}", p, r, random(15.0, 18.0), tint)
+        else if starts_with(n, "Obj_TreeBroadleaf_A_SS"):
+            place("CommonTree_{random_int(3, 6)}", p, r, random(5.5, 7.0), tint)
+        else if starts_with(n, "Obj_TreeBroadleaf"):
+            place("CommonTree_{random_int(1, 6)}", p, r, random(10.0, 13.0), tint)
+        else if starts_with(n, "Obj_TreeWhiteBirch"):
+            place("CommonTree_3", p, r, random(11.0, 14.0), vec4(1.1, 1.08, 0.7, sn))
+        else if starts_with(n, "Obj_TreeApple"):
+            place("CommonTree_4", p, r, random(6.0, 7.5), vec4(0.95, 1.0, 0.85, 0.0))
+        else if starts_with(n, "Obj_TreeConiferousLow"):
+            place("Pine_{random_int(4, 6)}", p, r, random(4.5, 6.5), tint)
+        else if starts_with(n, "Obj_TreeConiferous"):
+            place("Pine_{random_int(1, 5)}", p, r, random(12.0, 17.0), tint)
+        else if starts_with(n, "Obj_Plant_CypressLow"):
+            place("Pine_5", p, r, random(2.8, 4.0), vec4(0.75, 0.85, 0.75, sn), false)
+        else if starts_with(n, "Obj_Plant_HopBush") or starts_with(n, "Obj_Plant_Juniperus"):
+            place("Bush_Common", p + v3(0.0, 0.2, 0.0), r, random(1.0, 1.6), tint, false)
+        else if starts_with(n, "Obj_RockWhite") or starts_with(n, "FldObj_Rock") or starts_with(n, "Obj_RockSnow") or starts_with(n, "RockSetWhite"):
+            rockname = "Rock_Medium_{random_int(1, 4)}"
+            rocksize = random(1.2, 3.5)
+            # Authored outcrops beside the temple road: distinguish large rock actors from rubble.
+            if x > -735.0 and x < -660.0 and z > 1760.0 and z < 1870.0:
+                rocksize = if contains(n, "_L_"): 5.8 else: 3.7
+            place(rockname, p, r, rocksize, vec4(1, 1, 1, sn))
+        else if starts_with(n, "Obj_LiftRock"):
+            place("Pebble_Round_{random_int(1, 2) * 2 - 1}", v3(x, g - 0.1, z), r, random(0.5, 0.8), vec4(1, 1, 1, sn), false)
+    # the forest is denser than the placed trees alone: each big broadleaf gets companions, and
+    # tree sets (several trees in one placement in the original) become small groves
+    loop a in actors:
+        if not starts_with(a.name, "Obj_TreeBroadleaf_A_L") and not starts_with(a.name, "Obj_TreeBroadleaf_A_LL"): continue
+        x0 = f64(a.pos.x)
+        z0 = f64(a.pos.z)
+        if not in_bounds(x0, z0) or is_snow_area(x0, z0): continue
+        n = if contains(a.name, "Set"): 6 else: random_int(2, 5)
+        loop k in [0..n):
+            ang = random(0.0, TAU)
+            d = random(3.5, 10.0)
+            x = x0 + cos(ang) * d
+            z = z0 + sin(ang) * d
+            if edge_at(x, z) > -5.0 or water_depth(x, z) > 0.0 or normal_at(x, z).y < 0.8: continue
+            v = f32(random(0.8, 1.12))
+            hue = f32(random(-1.0, 1.0))
+            # old gnarled trees among the straight ones, of every size, and bushes between
+            q = random()
+            if q < 0.3: place("TwistedTree_{random_int(1, 4)}", v3(x, height_at(x, z) - 0.3, z), random(0.0, TAU), random(7.0, 12.0), vec4(v * (0.95 + hue * 0.1), v, v * (0.9 - hue * 0.1), 0.0))
+            else: place("CommonTree_{random_int(1, 6)}", v3(x, height_at(x, z) - 0.3, z), random(0.0, TAU), random(6.0, 16.0), vec4(v * (0.97 + hue * 0.1), v, v * (0.92 - hue * 0.1), 0.0))
+            if random() < 0.5:
+                bx = x + random(-4.0, 4.0)
+                bz = z + random(-4.0, 4.0)
+                place("Bush_Common", v3(bx, height_at(bx, bz) + 0.1, bz), random(0.0, TAU), random(0.9, 1.5), LEAF, false)
+    # the snowfields: boulders and wind-bent firs in small stands
+    loop i in [0..1600):
+        x = random(-1560.0, -380.0)
+        z = random(1440.0, 2400.0)
+        if not is_snow_area(x, z) or edge_at(x, z) > -4.0 or water_depth(x, z) > 0.0: continue
+        g = height_at(x, z)
+        if normal_at(x, z).y < 0.75: continue
+        q = random()
+        if q < 0.35: place("Rock_Medium_{random_int(1, 4)}", v3(x, g - 0.4, z), random(0.0, TAU), random(1.0, 3.2), vec4(1, 1, 1, 0.85))
+        else if q < 0.5:
+            loop k in [0..random_int(2, 5)):
+                fx = x + random(-5.0, 5.0)
+                fz = z + random(-5.0, 5.0)
+                pine = "Pine_{random_int(1, 6)}"
+                turn = random(0.0, TAU)
+                tall = random(5.0, 13.0)
+                fy = height_at(fx, fz)
+                place(pine, v3(fx, fy - 0.3, fz), turn, tall, vec4(0.9, 0.95, 0.92, 0.85))
+    # broadleaf crowns in clumps: two or three leafy lobes round the upper crown of the bigger trees
+    lobes: VPlace[]
+    bush_i = model_id("Bush_Common")
+    bmv = vmodels[bush_i]
+    loop parent in 0.. and pp in places:
+        nm = vmodels[pp.model].name
+        if pp.height < 7.0 or not starts_with(nm, "CommonTree"): continue
+        # (lone and meadow trees: in the forest's crowd they would add cost and little else)
+        if material_at(f64(pp.pos.x), f64(pp.pos.z)).x > 0.2: continue
+        # Open-grown trees range from spare crowns to a few heavy, asymmetric shelves.
+        fullness = hash2(f64(pp.pos.x) + 13.0, f64(pp.pos.z))
+        loop j in [0..random_int(2, 4)):
+            a = random(0.0, TAU)
+            rr = pp.height * random(0.18, 0.3)
+            hh = pp.height * random(0.40, 0.67)
+            sz = pp.height * random(0.30, 0.41)
+            q = pp.pos + v3(cos(a) * rr, hh - sz * 0.4, sin(a) * rr)
+            s_ = sz / max(bmv.height, 0.1)
+            m = translation(q) * rotation_y(random(0.0, TAU)) * scaling(v3(s_ * 1.20, s_ * 0.78, s_ * 1.02))
+            # Consume the same placement samples even for sparse crowns; later props and
+            # their collision positions must not move when foliage density is adjusted.
+            if fullness < 0.42 and j > 0: continue
+            lobes.push(VPlace(bush_i, m, pp.tint, q, bmv.radius * s_, pp.height * 0.9, false, owner=parent))
+    # Small open-grown Temple trees were below the old 7 m crown-detail cutoff.
+    # One broad lower bough keeps the original trunk and placement RNG intact.
+    loop parent in 0.. and pp in places:
+        if not starts_with(vmodels[pp.model].name, "CommonTree") or pp.height < 3.5: continue
+        x = f64(pp.pos.x)
+        z = f64(pp.pos.z)
+        if x < -1000.0 or x > -700.0 or z < 1890.0 or z > 2310.0: continue
+        if pp.height >= 7.0 and material_at(x, z).x <= 0.2: continue
+        loop j in [0..1):
+            a = hash2(x + f64(j) * 7.0, z) * TAU
+            rr = pp.height * (0.12 + hash2(z, x + f64(j)) * 0.06)
+            sz = pp.height * (0.31 + hash2(x, z + f64(j)) * 0.08)
+            q = pp.pos + v3(cos(a) * rr, pp.height * (0.35 + f64(j) * 0.13), sin(a) * rr)
+            scale = sz / max(bmv.height, 0.1)
+            m = translation(q) * rotation_y(a) * scaling(v3(scale * 1.18, scale * 0.82, scale))
+            lobes.push(VPlace(bush_i, m, pp.tint, q, bmv.radius * scale, pp.height, false, owner=parent))
+    loop lb in lobes: places.push(lb)
+    # the forest floor: under the big broadleaves, fern beds, moss-grown boulders, fallen trunks
+    # gone grey and soft, mushrooms on them
+    MOSS = vec4(0.6, 1.0, 0.6, 0.0)
+    nfloor = 0
+    ntry = 0
+    trees_: vec3[]
+    loop pp in places:
+        nm = vmodels[pp.model].name
+        if pp.height > 6.0 and (starts_with(nm, "CommonTree") or starts_with(nm, "TwistedTree")): trees_.push(pp.pos)
+    loop tp in trees_:
+        x0 = f64(tp.x)
+        z0 = f64(tp.z)
+        ntry += 1
+        if not in_bounds(x0, z0) or is_snow_area(x0, z0) or edge_at(x0, z0) > -4.0: continue
+        nfloor += 1
+        q = random()
+        if q < 0.75:
+            loop k in [0..random_int(3, 8)):
+                fx = x0 + random(-4.5, 4.5)
+                fz = z0 + random(-4.5, 4.5)
+                if water_depth(fx, fz) > 0.0: continue
+                place((if random() < 0.8: "Fern_1" else: "Plant_1_Big"), v3(fx, height_at(fx, fz) - 0.05, fz), random(0.0, TAU), random(0.7, 1.3), LEAF, false)
+        if random() < 0.22:
+            rx = x0 + random(-6.0, 6.0)
+            rz = z0 + random(-6.0, 6.0)
+            place("Rock_Medium_{random_int(1, 4)}", v3(rx, height_at(rx, rz) - 0.5, rz), random(0.0, TAU), random(1.2, 2.6), MOSS)
+        if random() < 0.18:
+            lx = x0 + random(-7.0, 7.0)
+            lz = z0 + random(-7.0, 7.0)
+            ly = height_at(lx, lz)
+            yaw = random(0.0, TAU)
+            ln = random(5.0, 9.0)
+            vm = vmodels[model_id("DeadTree_{random_int(1, 6)}")]
+            sc_ = ln / max(vm.height, 0.1)
+            m = translation(v3(lx, ly + 0.25, lz)) * rotation_y(yaw) * rotation_z(PI / 2.0 - 0.06) * scaling(v3(sc_, sc_, sc_))
+            place_m(vm.name, m, v3(lx, ly, lz), 2.0, ln * 0.5, vec4(0.62, 1.0, 0.65, 0.0))
+            loop k in [0..3):
+                t = random(0.2, 0.8)
+                mx = lx + cos(yaw) * ln * t * -1.0
+                mz = lz - sin(yaw) * ln * t * -1.0
+                place("Mushroom_Laetiporus", v3(mx, ly + 0.35, mz), random(0.0, TAU), random(0.15, 0.3), vec4(1, 1, 1, 0), false)
+    # undergrowth: ferns and mushrooms in the forest, flowers and clover in the meadows
+    loop i in [0..9000):
+        x = random(-1560.0, -380.0)
+        z = random(1440.0, 2400.0)
+        if edge_at(x, z) > -4.0: continue
+        mt = material_at(x, z)
+        if mt.y > 0.4 or mt.z > 0.3 or mt.w > 0.3: continue
+        if water_depth(x, z) > 0.0: continue
+        g = height_at(x, z)
+        nrm = normal_at(x, z)
+        if nrm.y < 0.8: continue
+        p = v3(x, g - 0.05, z)
+        r = random(0.0, TAU)
+        if mt.x > 0.35:
+            q = random()
+            if q < 0.6: place("Fern_1", p, r, random(0.6, 1.1), LEAF, false)
+            else if q < 0.75: place("Plant_1_Big", p, r, random(0.5, 0.9), LEAF, false)
+            else if q < 0.82: place("Mushroom_Common", p, r, random(0.15, 0.3), vec4(1, 1, 1, 0), false)
+        else:
+            # Move the existing flower budget into irregular wet swathes rather
+            # than sprinkle one isolated group in every part of the meadow.
+            habitat = meadow_habitat(x, z)
+            old_q = random()
+            # Preserve the old size draw even when a bed accepts a different
+            # plant; all later outcrops, forest detail and colliders stay stable.
+            size_seed = if old_q < 0.2: random() else: hash2(z, x)
+            q = hash2(x + 19.0, z - 31.0)
+            bed = smoothstep(0.43, 0.72, habitat)
+            if q < bed * 0.26: place("Flower_3_Group", p, r, 0.35 + size_seed * 0.25, LEAF, false)
+            else if q < bed * 0.49: place("Flower_4_Group", p, r, 0.35 + size_seed * 0.30, LEAF, false)
+            else if q < bed * 0.56: place("Plant_7_Big", p, r, 0.45 + size_seed * 0.35, LEAF, false)
+    # the open hillsides: outcrops of a few boulders where the slope steepens, and clumps of
+    # scrub and flowers in the meadows (the land between the landmarks)
+    loop i in [0..1400):
+        x = random(-1500.0, -420.0)
+        z = random(1460.0, 2380.0)
+        if edge_at(x, z) > -6.0 or water_depth(x, z) > 0.0: continue
+        mt = material_at(x, z)
+        if mt.z > 0.3 or mt.w > 0.3 or mt.x > 0.4: continue
+        nrm = normal_at(x, z)
+        if i % 2 == 0:
+            if nrm.y > 0.95 or nrm.y < 0.7: continue
+            loop k in [0..random_int(2, 5)):
+                bx = x + random(-4.0, 4.0)
+                bz = z + random(-4.0, 4.0)
+                place("Rock_Medium_{random_int(1, 4)}", v3(bx, height_at(bx, bz) - 0.6, bz), random(0.0, TAU), random(0.8, 2.4), (if random() < 0.6: MOSS else: vec4(1, 1, 1, 0)))
+        else:
+            if nrm.y < 0.9: continue
+            loop k in [0..random_int(2, 5)):
+                bx = x + random(-3.0, 3.0)
+                bz = z + random(-3.0, 3.0)
+                q = random()
+                nm = if q < 0.45: "Bush_Common" else: (if q < 0.65: "Bush_Common_Flowers" else: (if q < 0.85: "Flower_4_Group" else: "Plant_7_Big"))
+                place(nm, v3(bx, height_at(bx, bz) - 0.05, bz), random(0.0, TAU), random(0.5, 1.2), LEAF, false)
+    # the cliffs: great blocks of rock standing out of the faces, and scree and fallen blocks
+    # heaped at their feet (they break up the faces, which the heightfield draws as smooth walls)
+    nc = 0
+    loop i in [0..9000):
+        if nc >= 520: break
+        x = random(-1620.0, -320.0)
+        z = random(1380.0, 2440.0)
+        if not in_bounds(x, z) or water_depth(x, z) > 0.0: continue
+        nrm = normal_at(x, z)
+        # (on steep slopes and ledges, not stuck to a sheer face: a boulder could not lie there)
+        if nrm.y > 0.55 or nrm.y < 0.32: continue
+        # Hylia's exposed spurs are bedrock, not loose boulders balanced on their crests.
+        if height_at(x, z) > 350.0 and hypot(x + 1288.0, z - 2221.0) < 210.0: continue
+        # (not on the overlook the title is seen from, nor in a waterfall)
+        if hypot(x + 1024.0, z - 1799.0) < 45.0: continue
+        # (nor round the cave's mouth: they stood in the walk out into the light)
+        if hypot(x + 1068.0, z - 1845.0) < 30.0: continue
+        in_fall = false
+        loop fc in fall_cells:
+            if abs(f64(fc.x) - x) < 10.0 and abs(f64(fc.y) - z) < 10.0: in_fall = true
+        if in_fall: continue
+        out = normalize(v3(f64(nrm.x), 0.0, f64(nrm.z)))
+        g = height_at(x, z)
+        sz = random(3.5, 8.0)
+        # (set into the face so about a third stands out)
+        q = v3(x, g - sz * 0.45, z) - out * f32(sz * 0.5)
+        place("Rock_Medium_{random_int(1, 4)}", q, random(0.0, TAU), sz, (if random() < 0.2: vec4(0.9, 1.0, 0.75, 0.0) else: vec4(1.4, 1.18, 1.02, 0.0)), false)
+        nc += 1
+        # and at the foot below, where it is flatter
+        if random() < 0.35:
+            loop k in [0..random_int(2, 5)):
+                fx = x + f64(out.x) * random(8.0, 22.0) + random(-4.0, 4.0)
+                fz = z + f64(out.z) * random(8.0, 22.0) + random(-4.0, 4.0)
+                if not in_bounds(fx, fz) or normal_at(fx, fz).y < 0.75 or water_depth(fx, fz) > 0.0: continue
+                place("Rock_Medium_{random_int(1, 4)}", v3(fx, height_at(fx, fz) - 0.5, fz), random(0.0, TAU), random(0.8, 2.6), vec4(0.92, 0.88, 0.82, 0.0), false)
+    loop rk in sor_rocks: place("Rock_Medium_{random_int(1, 4)}", v3(f64(rk.x), f64(rk.y) - f64(rk.w) * 0.2, f64(rk.z)), random(0.0, TAU), f64(rk.w) * 1.5, vec4(1.05, 1.0, 0.92, 0.0), false)
+    # the cave out of the Shrine of Resurrection: real rock bulging from its walls and roof toward
+    # the mouth, ferns and moss where the daylight reaches
+    ca = v3(-1128.0, 237.0, 1884.0)
+    cb = v3(-1067.0, 247.5, 1844.0)
+    cd_ = cb - ca
+    cside = normalize(v3(-f64(cd_.z), 0.0, f64(cd_.x)))
+    loop k in [0..44):
+        t = 0.45 + f64(k) / 44.0 * 0.55
+        c0 = ca + cd_ * f32(t)
+        loop sd in [-1.0, 1.0]:
+            if random() < 0.25: continue
+            # (the walls and roof are the cave's own rounded rock now: only a few small stones here)
+            q = c0 + cside * f32(sd * random(1.6, 1.9)) + vec3(0, f32(random(-0.3, 0.0)), 0)
+            if random() < 0.3:
+                rock_name = "Rock_Medium_{random_int(1, 4)}"
+                rock_yaw = random(0.0, TAU)
+                rock_size = random(0.4, 0.8)
+                # Consume the original scatter RNG before filtering. Decorative
+                # stones collect in unequal pockets; later world placements and
+                # colliders retain their exact random sequence.
+                pocket = noise(f64(k)*0.23,sd*7.0+43.0)
+                if pocket < 0.38: continue
+                drift = hash2(f64(k)*3.7,sd+71.0)-0.5
+                shifted = clamp(t+drift*0.055,0.46,0.99)
+                q += cd_*f32(shifted-t)+cside*f32((pocket-0.5)*0.25)
+                place(rock_name,q,rock_yaw,rock_size*(0.65+pocket*0.65),vec4(0.62,0.56,0.52,0.0),false)
+        if t > 0.85 and random() < 0.7:
+            # Ferns root against the damp walls, leaving the walking line and its sightline open.
+            q = c0 + cside * f32((if k % 2 == 0: -1.0 else: 1.0) * random(1.65, 1.9)) - vec3(0, 0.05, 0)
+            # (in the cave's shade: only the last few catch the day)
+            place((if random() < 0.7: "Fern_1" else: "Plant_1_Big"), q, random(0.0, TAU), random(0.4, 0.75), vec4(f32(0.35 + (t - 0.85) * 4.0), f32(0.4 + (t - 0.85) * 4.0), f32(0.35 + (t - 0.85) * 4.0), 0.0), false)
+    # Stable tower debris: broad stone groups around the foot retain a proven
+    # walkable layout when distant terrain changes the preceding scatter stream.
+    # Advance the old five draws per stone so following placement keeps its RNG.
+    following = __global_rng
+    loop k in [0..80): next_u64(following)
+    foot_stones = [
+        vec4(-552.6376558718953, 1695.556162862122, 4.057275673052377, 1.8439352491618666),
+        vec4(-552.7424492385301, 1697.186048689066, 2.4556720956080795, 2.168603235781007),
+        vec4(-553.7281310980762, 1700.7943397566341, 0.5124129549469877, 1.6599638715887792),
+        vec4(-556.6684422541762, 1700.6364770332661, 5.574366421501029, 1.2984532967808458),
+        vec4(-560.0017976349641, 1700.5906537295616, 2.3197110127026357, 2.368546052219152),
+        vec4(-561.3647435800847, 1700.3995655667882, 3.8551395834970257, 1.519310694109202),
+        vec4(-564.0077300577252, 1699.2837529320573, 2.149160385477751, 2.164003098696889),
+        vec4(-567.9113314489691, 1697.5462550274353, 3.4482277400994557, 1.7878879973159423),
+        vec4(-566.4295526336786, 1694.5018146272423, 6.171347255585004, 1.7068552332070177),
+        vec4(-568.1343452613241, 1691.9257437519425, 4.966816917467549, 2.037793329490605),
+        vec4(-565.6221281279859, 1690.3396192277246, 0.9604895412309198, 2.455604152731306),
+        vec4(-563.3128192933286, 1688.4114957706342, 2.7973462100445383, 1.643559668003092),
+        vec4(-560.3264175649899, 1688.0929657884546, 2.394465924650728, 1.3800948204056163),
+        vec4(-556.1262614602539, 1687.661343626458, 0.6425119366854833, 2.2334226257172265),
+        vec4(-554.4229209717342, 1688.4394539973189, 0.2611464694375498, 1.5870923603753608),
+        vec4(-553.3839685560749, 1691.0638674398126, 4.420295776681972, 1.5970326358167002)]
+    foot_models = [2, 2, 1, 3, 2, 1, 3, 2, 3, 1, 1, 1, 1, 2, 3, 1]
+    loop k in [0..foot_stones.len()):
+        q = foot_stones[k]
+        bx = f64(q.x)
+        bz = f64(q.y)
+        place("Rock_Medium_{foot_models[k]}", v3(bx,height_at(bx,bz)-0.7,bz), f64(q.z), f64(q.w), (if k%3==0:MOSS else:vec4(0.9,0.85,0.78,0)))
+    __global_rng = following
+    # Small flower beds sheltered by the original roadside outcrops. Fixed hashes leave the
+    # meadow/grass placement stream unchanged, and the worn route itself stays open.
+    loop bed in [vec2(-718.68, 1805.11), vec2(-706.18, 1779.44), vec2(-678.26, 1846.44)]:
+        loop j in [0..18):
+            a = hash2(f64(j), f64(bed.x)) * TAU
+            r = 2.5 + hash2(f64(j), f64(bed.y)) * 4.0
+            x = f64(bed.x) + cos(a) * r
+            z = f64(bed.y) + sin(a) * r
+            if material_at(x, z).w > 0.3 or normal_at(x, z).y < 0.8: continue
+            place((if j % 3 == 0: "Flower_3_Group" else: "Flower_4_Group"), v3(x, height_at(x, z), z), a, 0.4 + hash2(x, z) * 0.3, LEAF, false)
+    # Meadow islands beside the overlook trail: grounded fallen branches, stones and
+    # mushrooms grouped in their shelter. Hashes keep all existing placement RNG intact.
+    meadow_start = places.len()
+    loop bed in [vec2(-1022.0, 1818.0), vec2(-1009.0, 1808.0), vec2(-1002.0, 1831.0), vec2(-983.0, 1836.0), vec2(-991.0, 1863.0), vec2(-968.0, 1884.0)]:
+        x = f64(bed.x)
+        z = f64(bed.y)
+        yaw = hash2(x, z) * TAU
+        ln = 3.2 + hash2(z, x) * 2.0
+        # Sample both ends so trunks follow the hillside instead of floating at one end.
+        ex = x - cos(yaw) * ln
+        ez = z + sin(yaw) * ln
+        g = height_at(x, z)
+        eg = height_at(ex, ez)
+        vm = vmodels[model_id("DeadTree_3")]
+        sc_ = hypot(ln, eg - g) / max(vm.height, 0.1)
+        m = translation(v3(x, g + 0.12, z)) * rotation_y(yaw) * rotation_z(PI / 2.0 - atan2(eg - g, ln)) * scaling(v3(sc_, sc_, sc_))
+        place_m(vm.name, m, v3((x + ex) * 0.5, (g + eg) * 0.5, (z + ez) * 0.5), 1.7, ln, vec4(0.72, 0.86, 0.68, 0))
+        loop k in [0..12):
+            a = hash2(f64(k) + x, z) * TAU
+            d = 0.8 + hash2(f64(k) + z, x) * 3.8
+            bx = x + cos(a) * d
+            bz = z + sin(a) * d
+            if material_at(bx, bz).w > 0.28 or water_depth(bx, bz) > 0.0 or normal_at(bx, bz).y < 0.78: continue
+            q = v3(bx, height_at(bx, bz) - 0.06, bz)
+            if k < 5: place("Rock_Medium_2", q, a, 0.3 + hash2(bx, bz) * 0.5, vec4(0.82, 0.88, 0.72, 0), false)
+            else if k < 9: place("Mushroom_Common", q + vec3(0, 0.06, 0), a, 0.22 + hash2(bz, bx) * 0.14, vec4(1, 1, 1, 0), false)
+            else: place("Fern_1", q, a, 0.5 + hash2(bx, bz) * 0.3, LEAF, false)
+    # Low islands in the Temple's open meadow, beside rather than across worn routes.
+    # No solid colliders: low bushes and half-buried stone groups leave the route open.
+    loop bed_index in 0.. and bed in [vec2(-962, 1930), vec2(-924, 1918), vec2(-898, 1950), vec2(-879, 1992), vec2(-899, 2023), vec2(-880, 2070), vec2(-845, 2091), vec2(-778, 1900), vec2(-752, 1964), vec2(-731, 2022), vec2(-815, 2033), vec2(-802, 2082), vec2(-760, 2110), vec2(-712, 2071), vec2(-920, 2088), vec2(-961, 2020), vec2(-864, 2140)]:
+        loop k in [0..26):
+            a = hash2(f64(bed.x) + f64(k), f64(bed.y)) * TAU
+            d = sqrt(hash2(f64(bed.y) + f64(k), f64(bed.x))) * 10.0
+            # Elongated broken groups follow the meadow hollows rather than
+            # identical round beds. The existing prop budget and RNG stay fixed.
+            x = f64(bed.x) + cos(a) * d * 0.8 + sin(a) * d * 0.35
+            z = f64(bed.y) + sin(a) * d * 1.8
+            mt = material_at(x, z)
+            if mt.w > 0.16 or mt.z > 0.3 or normal_at(x, z).y < 0.84 or water_depth(x, z) > 0.0: continue
+            q = v3(x, height_at(x, z) - 0.07, z)
+            h = hash2(x, z)
+            first_prop = places.len()
+            if k < 4:
+                sz = 1.5 + h * 1.7
+                place("Rock_Medium_2", q - vec3(0, f32(sz * 0.23), 0), a, sz, vec4(0.94, 0.96, 0.86, 0), false)
+            else if k < 10: place("Bush_Common", q, a, 1.0 + h * 0.75, vec4(0.76, 0.88, 0.72, 0), false)
+            else: place((if k % 3 == 0: "Flower_3_Group" else: "Flower_4_Group"), q, a, 0.35 + h * 0.30, LEAF, false)
+            if k < 10 and places.len() > first_prop:
+                # Small buried stones and bushes resolve as single dark flecks
+                # in the overview. Keep their grouped meadow detail nearby.
+                places[places.len() - 1].view_reach = 150.0
+    # The Temple's actual approach fans out below the steps. Wear is only a ground
+    # mask; low flowers root outside its walking line, with no new collision.
+    loop k in [0..14):
+        z = 1944.0 + f64(k) * 0.65
+        x = -824.0 + f64(k) * 1.2
+        burn_mark(x, z, 1.7 + hash2(x, z) * 1.4, 3, 3.0)
+        loop side in [-1.0, 1.0]:
+            bx = x + side * (4.8 + hash2(z, side) * 2.7)
+            bz = z + (hash2(side, z) - 0.5) * 1.5
+            if material_at(bx, bz).w > 0.4 or normal_at(bx, bz).y < 0.8: continue
+            place((if k % 3 == 0: "Fern_1" else: "Flower_4_Group"), v3(bx, height_at(bx, bz), bz), hash2(bx, bz) * TAU, 0.35 + hash2(bz, bx) * 0.25, LEAF, false)
+    meadow_count = places.len() - meadow_start
+    # Talus and low scrub straddle the snow margin, not a new hard line of snow-capped
+    # boulders. Embedded rock chips follow shelves; vegetation thins into the cold side.
+    edge_start = places.len()
+    loop i in [0..1800):
+        x = -1490.0 + hash2(f64(i), 57.0) * 620.0
+        z = 1970.0 + hash2(f64(i), 93.0) * 420.0
+        mt = material_at(x, z)
+        if mt.z < 0.04 or mt.z > 0.88 or mt.w > 0.25 or edge_at(x, z) > -8.0: continue
+        if water_depth(x, z) > 0.0 or normal_at(x, z).y < 0.64: continue
+        loop k in [0..3):
+            bx = x + (hash2(f64(i), f64(k) + 5.0) - 0.5) * 6.0
+            bz = z + (hash2(f64(k) + 12.0, f64(i)) - 0.5) * 6.0
+            bm = material_at(bx, bz)
+            if bm.w > 0.25 or water_depth(bx, bz) > 0.0: continue
+            a = hash2(bx, bz) * TAU
+            sz = 0.45 + hash2(bz, bx) * 1.1
+            q = v3(bx, height_at(bx, bz) - sz * 0.22, bz)
+            if k < 2: place("Rock_Medium_2", q, a, sz, vec4(0.94, 0.93, 0.88, bm.z * 0.55), false)
+            else if bm.z < 0.55: place("Bush_Common", q, a, 0.35 + sz * 0.4, vec4(0.78, 0.83, 0.7, bm.z * 0.4), false)
+    eprint("landscape detail: {meadow_count} meadow props, {places.len() - edge_start} snow-margin props")
+    # A few young meadow groves join the original isolated trees, concentrated
+    # in sheltered turf. Hashes preserve the authored trees and placement RNG.
+    # Young trunks have no collider, keeping every production traversal route.
+    grove_count = 0
+    loop bed in [vec2(-977, 1920), vec2(-948, 2044), vec2(-902, 2130), vec2(-857, 2187), vec2(-745, 1908), vec2(-696, 1980), vec2(-976, 1859)]:
+        loop k in [0..5):
+            a = hash2(f64(bed.x) + f64(k) * 13.0, f64(bed.y)) * TAU
+            d = 4.0 + hash2(f64(bed.y) + f64(k), f64(bed.x)) * 13.0
+            x = f64(bed.x) + cos(a) * d
+            z = f64(bed.y) + sin(a) * d
+            mt = material_at(x, z)
+            if mt.w > 0.12 or mt.y > 0.2 or mt.z > 0.1 or mt.x > 0.3: continue
+            if meadow_habitat(x, z) < 0.43 or normal_at(x, z).y < 0.88 or water_depth(x, z) > 0.0: continue
+            place("CommonTree_4", v3(x, height_at(x, z) - 0.25, z), a, 4.5 + hash2(z, x) * 3.0, vec4(0.82, 0.94, 0.82, 0), false)
+            grove_count += 1
+    eprint("meadow grove companions: {grove_count}")
+    # Round 58: composed roadside gaps, with fallen timber at the outer edge and
+    # uneven fern/litter clusters. Placement data only; no culling/draw changes.
+    route_props = places.len()
+    loop bed in [vec2(-1082, 1732), vec2(-983, 1774), vec2(-1056, 1788)]:
+        x = f64(bed.x)
+        z = f64(bed.y)
+        yaw = hash2(x, z) * TAU
+        tx = x + 9.5
+        tz = z + 6.0
+        ln = 4.0 + hash2(z, x) * 1.8
+        ex = tx - cos(yaw) * ln
+        ez = tz + sin(yaw) * ln
+        g = height_at(tx, tz)
+        eg = height_at(ex, ez)
+        if material_at(tx, tz).w < 0.18 and water_depth(tx, tz) <= 0.0:
+            vm = vmodels[model_id("DeadTree_3")]
+            sz = hypot(ln, eg - g) / max(vm.height, 0.1)
+            matrix = translation(v3(tx, g + 0.10, tz)) * rotation_y(yaw) * rotation_z(PI / 2.0 - atan2(eg - g, ln)) * scaling(v3(sz, sz, sz))
+            place_m(vm.name, matrix, v3((tx + ex) * 0.5, (g + eg) * 0.5, (tz + ez) * 0.5), 1.6, ln, vec4(0.64, 0.75, 0.58, 0))
+        loop k in [0..36):
+            angle = hash2(x + f64(k) * 7.0, z) * TAU
+            d = 8.0 + hash2(z + f64(k), x) * 10.0
+            bx = x + cos(angle) * d
+            bz = z + sin(angle) * d * 0.72
+            mt = material_at(bx, bz)
+            if mt.w > 0.18 or mt.z > 0.25 or water_depth(bx, bz) > 0.0 or normal_at(bx, bz).y < 0.78: continue
+            q = v3(bx, height_at(bx, bz), bz)
+            h = hash2(bx, bz)
+            if k < 5: place("Rock_Medium_2", q - vec3(0, 0.22, 0), angle, 0.5 + h * 0.65, MOSS, false)
+            else if k < 12: place("Mushroom_Common", q, angle, 0.22 + h * 0.17, vec4(0.8, 0.86, 0.74, 0), false)
+            else: place("Fern_1", q, angle, 0.40 + h * h * 0.9, LEAF, false)
+    eprint("round58 roadside understory: {places.len() - route_props} props")
+    # trunks are solid
+    loop i in [0..places.len()):
+        pl_ = places[i]
+        if pl_.collide and pl_.height > 3.5:
+            c=add_cyl(pl_.pos - vec3(0, 1.0, 0), max(pl_.radius * 0.07, 0.25), pl_.height * 0.45, true, .wood)
+            places[i].col=c
+            if tree_suitable(pl_): tree_colliders[c]=i
+        else if pl_.collide: places[i].col=add_cyl(pl_.pos - vec3(0, 0.5, 0), pl_.radius * 0.6, pl_.height * 0.8, true, .rock)
+    eprint("vegetation: {places.len()} placed, {vmodels.len()} models in {time() - t0:.2}s (models {__vm_secs:.2}s, of which textures {__tex_secs:.2}s)")
+
+# ---------------- per frame: cull, bucket by model, draw ----------------
+struct VBucket:
+    items: VInst[]
+    buf: InstBuf
+    uploaded: VInst[]
+
+# Exact bytes, including tint (burnt plants must invalidate the cache too).
+@lib("libc.so.6")
+extern memcmp = (a: *u8, b: *u8, n: int) -> i32
+
+veg_upload = (b: mut VBucket):
+    if b.items.len() == 0: return
+    if b.items.len() == b.uploaded.len():
+        if memcmp(data(b.items) as *u8, data(b.uploaded) as *u8, b.items.len() * size_of(VInst)) == 0: return
+    if __veg_cpu_trace:
+        __veg_upload_count += 1
+        __veg_upload_bytes += b.items.len() * size_of(VInst)
+    inst_update(b.buf, b.items)
+    # An aliased snapshot makes the next clear/push detach a whole bucket.
+    # Retain separate storage, so both lists can reuse their capacity.
+    b.uploaded.resize(b.items.len())
+    mem_copy(data(b.uploaded) as *u8, data(b.items) as *u8, b.items.len() * size_of(VInst))
+
+const VEG_LOD_DIST = 45.0
+# each pass (the view, two shadow cascades) fills its own instance buffers: refilling one that a
+# previous pass's draws still read would stall the GPU
+const VEG_PASSES = 3
+__bk = (vpass: int, model: int) -> int: model * VEG_PASSES + vpass
+buckets: VBucket[]
+far_buckets: VBucket[]
+shadow_buckets: VBucket[]
+crown_buckets: VBucket[]
+veg_ready = false
+
+vegetation_init = ():
+    crown_bake_sh = make_sh(shader(crown_bake_vs, crown_bake_fs))
+    crown_view_sh = make_sh(shader(crown_view_vs, veg_fs))
+    crown_depth_sh = make_sh(shader(crown_view_vs, veg_depth_fs))
+    veg_sh = make_sh(shader(veg_vs, veg_fs))
+    veg_depth_sh = make_sh(shader(veg_vs, veg_depth_fs))
+    veg_shadow_sh = make_sh(shader(veg_vs, veg_shadow_fs))
+    texture_assets_init()
+    vegetation_place()
+    crowns: vec3[]
+    loop p in places:
+        # Small isolated crowns use their real shadow, without a permanent forest-floor disc.
+        # Only established trees contribute the broad shade/leaf-litter canopy map.
+        if p.height > 8.0 and vmodels[p.model].has_low: crowns.push(vec3(p.pos.x, p.pos.z, f32(max(p.radius, p.height * 0.28))))
+    # The map represents closed woodland. An isolated crown, even a taller one seen
+    # as a small tree in the overview, must not stamp a dark forest-floor circle.
+    # Spatial cells avoid a full all-pairs scan of the placed vegetation at load.
+    crown_cells: {int: int[]} = {}
+    loop j in 0.. and c in crowns:
+        cx = int(floor(f64(c.x) / 16.0))
+        cz = int(floor(f64(c.y) / 16.0))
+        key = cx * 100003 + cz
+        ids = crown_cells.get(key) ?? []
+        ids.push(j)
+        crown_cells[key] = ids
+    woods: vec3[]
+    loop j in 0.. and c in crowns:
+        cx = int(floor(f64(c.x) / 16.0))
+        cz = int(floor(f64(c.y) / 16.0))
+        neighbors = 0
+        loop dz in [-1..1]:
+            loop dx in [-1..1]:
+                if neighbors >= 3: continue
+                loop k in crown_cells.get((cx + dx) * 100003 + cz + dz) ?? []:
+                    if k != j and length(crowns[k].xy - c.xy) < 15.0: neighbors += 1
+                    if neighbors >= 3: break
+        if neighbors >= 3: woods.push(c)
+    canopy_bake(woods)
+    __vcells_build()
+    loop i in [0..vmodels.len()):
+        loop k in [0..VEG_PASSES):
+            buckets.push(VBucket([], inst_buffer([VInst(mat4(), vec4(1, 1, 1, 1))])))
+            far_buckets.push(VBucket([], inst_buffer([VInst(mat4(), vec4(1, 1, 1, 1))])))
+            shadow_buckets.push(VBucket([], inst_buffer([VInst(mat4(), vec4(1, 1, 1, 1))])))
+            crown_buckets.push(VBucket([], inst_buffer([VInst(mat4(), vec4(1, 1, 1, 1))])))
+    veg_ready = true
+
+veg_u = (vp: mat4, shadow: bool) -> VegU:
+    VegU(vp, sc.cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density),
+        cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), white_tex,
+        f32(elapsed()), env.wind * f32(env.gust), 0.0, 0.0, 1.0, f32(int(shadow)), f32(env.wet), vec3(1, 1, 1), sc_lp, sc_lc, f32(env.clouds), veg_player, fade_width = f32(veg_fade_width))
+
+# Reuse exact visibility buckets when a stationary view has not changed. Tree burn
+# tint updates invalidate every pass; wind and lighting remain shader uniforms.
+struct VegCullCache:
+    valid = false
+    vp = mat4()
+    cam = vec3(0, 0, 0)
+    reach = 0.0
+    min_height = 0.0
+    lod_dist = 0.0
+    revision = -1
+    count = -1
+__veg_cull_cache = fill(VegCullCache(), VEG_PASSES)
+__veg_revision = 0
+vegetation_changed = (): __veg_revision += 1
+vegetation_pose = (i: int, m: mat4):
+    places[i].m=m
+    __veg_revision += 1
+
+vegetation_tint = (i: int, tint: vec4):
+    old = places[i].tint
+    if old.x == tint.x and old.y == tint.y and old.z == tint.z and old.w == tint.w: return
+    places[i].tint = tint
+    __veg_revision += 1
+
+# Conservative nearby-cell lists rebuild incrementally as the camera moves.
+# Visibility, LOD and tint are still evaluated exactly in placement order every
+# frame. A 32 m envelope gives the 64-cell/frame rebuild room to finish during
+# a sprint. Teleports/edit invalidation use the complete list until it is ready.
+struct VegCellWork:
+    anchor = vec3(0, 0, 0)
+    reach = -1.0
+    count = -1
+    ready = false
+    cells: int[]
+    next_anchor = vec3(0, 0, 0)
+    next_reach = -1.0
+    next_count = -1
+    cursor = -1
+    next_cells: int[]
+__veg_cell_work = fill(VegCellWork(), VEG_PASSES)
+__veg_cell_generation = 0
+__veg_cell_generations = fill(-1, VEG_PASSES)
+
+__veg_cells_step = (vpass: int, cam: vec3, reach: f64):
+    reset = __veg_cell_generations[vpass] != __veg_cell_generation
+    __veg_cell_generations[vpass] = __veg_cell_generation
+    __veg_cells_build_step(__veg_cell_work[vpass], cam, reach, reset)
+
+__veg_cells_build_step = (w: mut VegCellWork, cam: vec3, reach: f64, reset: bool):
+    if reset:
+        w.ready = false
+        w.cursor = -1
+    if w.cursor < 0 and (not w.ready or w.reach != reach or w.count != __vcells.len() or length(vec2(cam.x - w.anchor.x, cam.z - w.anchor.z)) > 12.0):
+        w.next_anchor = cam
+        w.next_reach = reach
+        w.next_count = __vcells.len()
+        w.next_cells.clear()
+        w.cursor = 0
+    if w.cursor >= 0:
+        end = min(w.cursor + 64, __vcells.len())
+        loop ci in [w.cursor..end):
+            c = __vcells[ci]
+            dx = max(c.lo.x - w.next_anchor.x, max(w.next_anchor.x - c.hi.x, 0.0))
+            dz = max(c.lo.z - w.next_anchor.z, max(w.next_anchor.z - c.hi.z, 0.0))
+            # Include explicit view reach in every pass's conservative superset.
+            limit = max(w.next_reach * __vcell_reach_factor(ci, c.hmax), c.view_reach) + 32.0
+            if f64(length(vec2(dx, dz))) <= limit: w.next_cells.push(ci)
+        w.cursor = end
+        if w.cursor == __vcells.len():
+            old = w.cells
+            w.cells = w.next_cells
+            w.next_cells = old
+            w.anchor = w.next_anchor
+            w.reach = w.next_reach
+            w.count = w.next_count
+            w.ready = true
+            w.cursor = -1
+
+# gather what is visible from a camera (max distance per size)
+vegetation_cull = (vp: mat4, cam: vec3, reach: f64, min_height: f64 = 0.0, vpass: int = 0, lod_dist: f64 = VEG_LOD_DIST):
+    if __veg_cpu_trace: __veg_cull_calls[vpass] += 1
+    previous = __veg_cull_cache[vpass]
+    if previous.valid and previous.revision == __veg_revision and previous.count == places.len() and previous.reach == reach and previous.min_height == min_height and previous.lod_dist == lod_dist:
+        if previous.cam.x == cam.x and previous.cam.y == cam.y and previous.cam.z == cam.z and memcmp((&previous.vp) as *u8, (&vp) as *u8, size_of(mat4)) == 0: return
+    if __veg_cpu_trace: __veg_cull_misses[vpass] += 1
+    __veg_cull_cache[vpass] = VegCullCache(true, vp, cam, reach, min_height, lod_dist, __veg_revision, places.len())
+    cpu_mark("veg_select{vpass}")
+    visited = 0
+    candidates = 0
+    uploads_before = __veg_upload_count
+    bytes_before = __veg_upload_bytes
+    f = frustum_from(vp)
+    loop m in [0..vmodels.len()):
+        buckets[__bk(vpass, m)].items.clear()
+        far_buckets[__bk(vpass, m)].items.clear()
+        shadow_buckets[__bk(vpass, m)].items.clear()
+        crown_buckets[__bk(vpass, m)].items.clear()
+    if __vcells.len() == 0: __vcells_build()
+    cpu_mark("veg_cells{vpass}")
+    __veg_cells_step(vpass, cam, reach)
+    nearby = __veg_cell_work[vpass]
+    use_nearby = nearby.ready and nearby.reach == reach and nearby.count == __vcells.len() and length(vec2(cam.x - nearby.anchor.x, cam.z - nearby.anchor.z)) <= 32.0
+    cpu_mark("veg_select{vpass}")
+    count = if use_nearby: nearby.cells.len() else: __vcells.len()
+    loop index in [0..count):
+        ci = if use_nearby: nearby.cells[index] else: index
+        # (a whole cell at once: out of reach for its tallest plant, or out of view)
+        lo = __vcells[ci].lo
+        hi = __vcells[ci].hi
+        hm = __vcells[ci].hmax
+        cd = f64(length(vec3(max(lo.x - cam.x, max(cam.x - hi.x, 0.0)), 0.0, max(lo.z - cam.z, max(cam.z - hi.z, 0.0)))))
+        limit = max(reach * __vcell_reach_factor(ci, hm), (if vpass == 0: __vcells[ci].view_reach else: 0.0))
+        if hm < min_height or cd > limit: continue
+        if not box_visible(f, lo, hi): continue
+        # (a cell wholly in view, with a margin for the crowns spilling out of its box: its plants
+        # need no frustum test each)
+        if __veg_cpu_trace:
+            visited += 1
+            candidates += __vcells[ci].items.len()
+        inside = box_inside(f, lo - vec3(6, 0, 6), hi + vec3(6, 25, 6))
+        loop pi in __vcells[ci].items:
+            __cull_one(places[pi], f, cam, reach, min_height, vpass, lod_dist, inside, pi)
+    cpu_mark("veg_upload{vpass}")
+    loop m in [0..vmodels.len()):
+        k = __bk(vpass, m)
+        veg_upload(buckets[k])
+        veg_upload(far_buckets[k])
+        veg_upload(shadow_buckets[k])
+        veg_upload(crown_buckets[k])
+    if __veg_cpu_trace:
+        cpu_detail("veg{vpass} cells={visited}/{__vcells.len()} candidates={candidates} uploads={__veg_upload_count - uploads_before} bytes={__veg_upload_bytes - bytes_before} revision={__veg_revision}")
+
+__cull_one = (p: VPlace, f: Frustum, cam: vec3, reach: f64, min_height: f64, vpass: int, lod_dist: f64, inside: bool = false, place_index: int = -1):
+        if p.felled or p.height < min_height: return
+        d = f64(length(p.pos - cam))
+        # small things only near: a fern to ~60 m, a bush to ~300 m, a tree to the reach
+        lim = max(reach * __vplace_reach_factor(place_index, p.height), (if vpass == 0: p.view_reach else: 0.0))
+        if d > lim: return
+        if not inside:
+            r = f32(max(p.radius, p.height * 0.5))
+            c = p.pos + vec3(0, f32(p.height * 0.5), 0)
+            if not box_visible(f, c - vec3(r, r, r), c + vec3(r, r, r)): return
+        if vpass == 0 and d > 55.0 and vmodels[p.model].crown.count > 0:
+            crown_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
+            if d >= 70.0: return
+        if vpass == 2 and d > 25.0 and vmodels[p.model].has_low and vmodels[p.model].has_shadow_low:
+            shadow_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
+        else if d > lod_dist and vmodels[p.model].has_low: far_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
+        else: buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
+
+# Ordinary size reach is pure height math. Wide moving views repeat pow() for
+# thousands of candidates. Keep exact f64 results beside the placements/cells,
+# without adding fields to their shared layouts or changing color/shadow overrides.
+# Validate height on lookup: edited/reordered/new placements retain the old formula.
+struct VReachFactor:
+    height: f64
+    factor: f64
+__vplace_reach_factors: VReachFactor[]
+__vcell_reach_factors: VReachFactor[]
+__vplace_reach_factor = (index: int, height: f64) -> f64:
+    if index >= 0 and index < __vplace_reach_factors.len() and __vplace_reach_factors[index].height == height: return __vplace_reach_factors[index].factor
+    clamp(pow(height / 10.0, 1.5), 0.02, 1.0)
+__vcell_reach_factor = (index: int, height: f64) -> f64:
+    if index >= 0 and index < __vcell_reach_factors.len() and __vcell_reach_factors[index].height == height: return __vcell_reach_factors[index].factor
+    clamp(pow(height / 10.0, 1.5), 0.02, 1.0)
+__veg_reach_cache_build = ():
+    __vplace_reach_factors.clear()
+    __vcell_reach_factors.clear()
+    loop p in places: __vplace_reach_factors.push(VReachFactor(p.height, clamp(pow(p.height / 10.0, 1.5), 0.02, 1.0)))
+    loop c in __vcells: __vcell_reach_factors.push(VReachFactor(c.hmax, clamp(pow(c.hmax / 10.0, 1.5), 0.02, 1.0)))
+
+# the places by 64 m cells, each with the box round what stands in it
+struct VCell:
+    lo: vec3
+    hi: vec3
+    hmax: f64
+    items: int[]
+    view_reach = 0.0
+__vcells: VCell[]
+__vcells_build = ():
+    __veg_cell_generation += 1
+    m: {int: int} = {}
+    loop i in 0.. and p in places:
+        k = int(floor(f64(p.pos.x) / 64.0)) * 100000 + int(floor(f64(p.pos.z) / 64.0))
+        ci = m.get(k) ?? -1
+        if ci < 0:
+            ci = __vcells.len()
+            m[k] = ci
+            __vcells.push(VCell(vec3(1e9, 1e9, 1e9), vec3(-1e9, -1e9, -1e9), 0.0, []))
+        r = f32(max(p.radius, p.height * 0.5))
+        __vcells[ci].lo = min(__vcells[ci].lo, p.pos - vec3(r, r, r))
+        __vcells[ci].hi = max(__vcells[ci].hi, p.pos + vec3(r, f32(p.height) + r, r))
+        __vcells[ci].hmax = max(__vcells[ci].hmax, p.height)
+        __vcells[ci].view_reach = max(__vcells[ci].view_reach, p.view_reach)
+        __vcells[ci].items.push(i)
+    __veg_reach_cache_build()
+
+# A vegetation batch owns the program and texture bindings until it returns. Keep
+# unchanged per-pass uniforms on the GPU; only model/part values need rebinding.
+# Reset on every batch and program change, so other renderers cannot stale the cache.
+__veg_instanced_vaos: {int: int} = {}
+__veg_bound_prog = 0
+__veg_bound_u: VegU
+__veg_cpu_trace = env("BOTW_CPU") != none
+__veg_uniform_calls = 0
+__veg_uniform_skips = 0
+__veg_cull_calls = fill(0, VEG_PASSES)
+__veg_cull_misses = fill(0, VEG_PASSES)
+__veg_upload_count = 0
+__veg_upload_bytes = 0
+__veg_profile_frames = 0
+
+__veg_draw = (sh: Shader, m: Mesh, b: InstBuf, params: VegU):
+    if b.count <= 0: return
+    u = params
+    same = __veg_bound_prog == sh.prog
+    if not same: glUseProgram(u32(sh.prog))
+    p = (&u) as *u8
+    previous = (&__veg_bound_u) as *u8
+    unit = 0
+    loop field in sh.uniforms:
+        if field.loc < 0: continue
+        q = p + field.offset
+        k = field.kind
+        if field.count > 0:
+            unit = __bind_uniform_array(field, i32(field.loc), q, unit)
+            continue
+        # Compare reflected values, excluding struct padding and texture dimensions.
+        bytes = if k == 'm': 64 else: (if k == 't' or k == 'i': size_of(int) else: (if k == 'd' or k == '2' or k == 'I': 8 else: (if k == '3': 12 else: (if k == '4': 16 else: (if k == 'b': 1 else: 4)))))
+        unchanged = same and memcmp(q, previous + field.offset, bytes) == 0
+        if __veg_cpu_trace:
+            __veg_uniform_calls += 1
+            if unchanged: __veg_uniform_skips += 1
+        if not unchanged:
+            loc = i32(field.loc)
+            f = q as *f32
+            if k == 'f': glUniform1f(loc, f[0])
+            else if k == 'd': glUniform1f(loc, f32((q as *f64)[0]))
+            else if k == 'i': glUniform1i(loc, i32((q as *int)[0]))
+            else if k == 'b': glUniform1i(loc, i32(q[0]))
+            else if k == 'I': glUniform2iv(loc, 1, q)
+            else if k == '2': glUniform2f(loc, f[0], f[1])
+            else if k == '3': glUniform3f(loc, f[0], f[1], f[2])
+            else if k == '4': glUniform4f(loc, f[0], f[1], f[2], f[3])
+            else if k == 'm': glUniformMatrix4fv(loc, 1, 0, q)
+            else if k == 't':
+                glActiveTexture(GL_TEXTURE0 + u32(unit))
+                glBindTexture(GL_TEXTURE_2D, u32((q as *int)[0]))
+                glUniform1i(loc, i32(unit))
+        # Samplers retain their original unit even when its binding was skipped.
+        if k == 't': unit += 1
+    __veg_bound_prog = sh.prog
+    __veg_bound_u = u
+    # Dedicated VAOs retain both the vertex layout and this pass's instance VBO.
+    # The original mesh VAO stays available to atlas baking / ordinary draws.
+    # All vegetation shaders use the same Vertex3D + VInst attribute layout.
+    key = m.vao * 4294967296 + b.vbo
+    vao = __veg_instanced_vaos.get(key, 0)
+    if vao == 0:
+        if env("BOTW_GPU_FRAME_LOG") != none: eprint("vertex first use: frame {frame_number()} vegetation mesh {m.vao} buffer {b.vbo}")
+        vao = gl_create_vertex_array()
+        bound = m
+        bound.vao = vao
+        __bind_attribs(sh, bound)
+        glBindBuffer(GL_ARRAY_BUFFER, u32(b.vbo))
+        base = sh.attribs.len()
+        loop i in 0.. and a in sh.iattribs:
+            loc = u32(base + i)
+            glEnableVertexAttribArray(loc)
+            glVertexAttribPointer(loc, i32(a.comps), GL_FLOAT, 0, i32(sh.istride), a.offset)
+            glVertexAttribDivisor(loc, 1)
+        if m.index_count > 0: glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, u32(m.ibo))
+        __veg_instanced_vaos[key] = vao
+    else: glBindVertexArray(u32(vao))
+    if m.index_count > 0: glDrawElementsInstanced(u32(m.mode), i32(m.index_count), GL_UNSIGNED_INT, 0, i32(b.count))
+    else: glDrawArraysInstanced(u32(m.mode), 0, i32(m.count), i32(b.count))
+
+# triangles drawn per pass (BOTW_GPU)
+veg_tris = fill(0, 4)
+__veg_frames = 0
+
+__veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
+    if not veg_ready: return
+    __veg_bound_prog = 0
+    if __veg_cpu_trace and vpass == 0 and not prepass:
+        __veg_profile_frames += 1
+        if __veg_profile_frames == 240:
+            eprint("veg cpu: cull calls {__veg_cull_calls} misses {__veg_cull_misses}; uploads {__veg_upload_count} bytes {__veg_upload_bytes}; uniforms {__veg_uniform_calls} skipped {__veg_uniform_skips}")
+            __veg_profile_frames = 0
+            __veg_cull_calls = fill(0, VEG_PASSES)
+            __veg_cull_misses = fill(0, VEG_PASSES)
+            __veg_upload_count = 0
+            __veg_upload_bytes = 0
+            __veg_uniform_calls = 0
+            __veg_uniform_skips = 0
+    if gpu_timing and vpass == 0 and not prepass:
+        __veg_frames += 1
+        if __veg_frames % 120 == 0:
+            eprint("veg triangles per frame: view {veg_tris[0] / 120}  shadow0 {veg_tris[1] / 120}  shadow1 {veg_tris[2] / 120}")
+            veg_tris = fill(0, 4)
+    u = u0
+    sh = if shadow: veg_shadow_sh else: (if prepass: veg_depth_sh else: veg_sh)
+    if prepass: u.shadow_pass = 2.0
+    glDisable(GL_CULL_FACE)
+    loop i in [0..vmodels.len()):
+        b = buckets[__bk(vpass, i)]
+        if b.items.len() == 0: continue
+        vm = vmodels[i]
+        u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
+        u.tree = if vm.has_low: 1.0 else: 0.0
+        u.wood = if contains(vm.name, "Tree") or starts_with(vm.name, "Pine_") or starts_with(vm.name, "Bush_"): 1.0 else: 0.0
+        loop pt in vm.parts:
+            u.tex = pt.tex
+            u.leaves = f32(pt.kind)
+            u.height = f32(max(vm.height, 0.1))
+            u.center_y = (pt.lo.y + pt.hi.y) * 0.5
+            u.bark_tint = vec3(1, 1, 1)
+            u.low = if starts_with(vm.name, "Fern") or starts_with(vm.name, "Plant") or starts_with(vm.name, "Flower"): 1.0 else: 0.0
+            __veg_draw(sh, pt.mesh, b.buf, u)
+            if gpu_timing and not prepass:
+                veg_tris[vpass] += b.items.len() * max(pt.mesh.index_count, pt.mesh.count) / 3
+    # Midrange trees retain original crowns and tapered trunks; crossfade past 60 m.
+    loop i in [0..vmodels.len()):
+        b = far_buckets[__bk(vpass, i)]
+        if b.items.len() == 0: continue
+        vm = vmodels[i]
+        u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
+        u.tree = if vm.has_low: 1.0 else: 0.0
+        u.wood = if contains(vm.name, "Tree") or starts_with(vm.name, "Pine_") or starts_with(vm.name, "Bush_"): 1.0 else: 0.0
+        u.height = f32(max(vm.height, 0.1))
+        u.bark_tint = vec3(1, 1, 1)
+        u.low = 0.0
+        loop pt in vm.parts:
+            if pt.kind != 1: continue
+            u.tex = pt.tex
+            u.leaves = 1.0
+            u.center_y = (pt.lo.y + pt.hi.y) * 0.5
+            u.lod_mode = if not shadow and vm.crown.count > 0: 1.0 else: 0.0
+            __veg_draw(sh, pt.mesh, b.buf, u)
+            u.lod_mode = 0.0
+        u.tex = vm.bark_tex
+        u.leaves = 0.0
+        __veg_draw(sh, vm.low, b.buf, u)
+        if gpu_timing and not prepass:
+            veg_tris[vpass] += b.items.len() * max(vm.low.index_count, vm.low.count) / 3
+            loop pt in vm.parts:
+                if pt.kind == 1: veg_tris[vpass] += b.items.len() * max(pt.mesh.index_count, pt.mesh.count) / 3
+    # Lower-detail distant shadow crowns never enter the colour/depth view passes.
+    if shadow:
+        loop i in [0..vmodels.len()):
+            b = shadow_buckets[__bk(vpass, i)]
+            if b.items.len() == 0: continue
+            vm = vmodels[i]
+            u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
+            u.tree = 1.0
+            u.wood = 1.0
+            u.height = f32(max(vm.height, 0.1))
+            u.low = 0.0
+            loop pt in vm.parts:
+                if pt.kind != 1: continue
+                u.tex = pt.tex
+                u.leaves = 1.0
+                u.center_y = (pt.lo.y + pt.hi.y) * 0.5
+                sm = if pt.shadow_low.count > 0: pt.shadow_low else: pt.mesh
+                __veg_draw(sh, sm, b.buf, u)
+                if gpu_timing: veg_tris[vpass] += b.items.len() * max(sm.index_count, sm.count) / 3
+            u.tex = vm.bark_tex
+            u.leaves = 0.0
+            __veg_draw(sh, vm.low, b.buf, u)
+            if gpu_timing: veg_tris[vpass] += b.items.len() * max(vm.low.index_count, vm.low.count) / 3
+    if not shadow:
+        loop i in [0..vmodels.len()):
+            b = crown_buckets[__bk(vpass, i)]
+            if b.items.len() == 0: continue
+            vm = vmodels[i]
+            u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
+            u.tree = 1.0
+            u.leaves = 1.0
+            u.low = 0.0
+            u.height = f32(vm.height)
+            u.center_y = f32(vm.crown_y)
+            u.tex = vm.crown_tex
+            u.crown_normal = vm.crown_normal
+            u.impostor = 1.0
+            u.lod_mode = 2.0
+            __veg_draw((if prepass: crown_depth_sh else: crown_view_sh), vm.crown, b.buf, u)
+            u.impostor = 0.0
+            u.lod_mode = 0.0
+            if gpu_timing and not prepass: veg_tris[vpass] += b.items.len() * 2
+        # Keep each shader's draws together. Alternating crown/trunk programs for
+        # every model adds driver validation and uniform work to the forest view.
+        loop i in [0..vmodels.len()):
+            b = crown_buckets[__bk(vpass, i)]
+            if b.items.len() == 0: continue
+            vm = vmodels[i]
+            u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
+            u.height = f32(vm.height)
+            u.tex = vm.bark_tex
+            u.leaves = 0.0
+            __veg_draw(sh, vm.low, b.buf, u)
+            if gpu_timing and not prepass: veg_tris[vpass] += b.items.len() * vm.low.index_count / 3
+    glBindVertexArray(0)
+    glEnable(GL_CULL_FACE)
+
+# the view: a depth-only pass first (leaves cut out, the dither applied), then the shading only
+# where a plant is the nearest thing (the crowns overlap many times over)
+vegetation_draw = (vp: mat4, shadow: bool, vpass: int = 0):
+    trees_draw(sc.cam)
+    u = veg_u(vp, shadow)
+    if shadow:
+        __veg_draw_all(u, true, vpass, false)
+        return
+    glColorMask(0, 0, 0, 0)
+    __veg_draw_all(u, false, vpass, true)
+    glColorMask(1, 1, 1, 1)
+    glDepthFunc(GL_EQUAL)
+    glDepthMask(0)
+    __veg_draw_all(u, false, vpass, false)
+    glDepthFunc(GL_LEQUAL)
+    glDepthMask(1)
+
+# The representative world views cannot cover every species/LOD/buffer pair.
+# Validate their vertex bindings and depth/colour programs during loading, rather
+# than allocating a batch of VAOs when a dense cell first enters the view. The
+# instance buffers start with one identity instance; no placement/RNG is changed.
+vegetation_warmup = ():
+    if not veg_ready: return
+    shadow_setup()
+    rt = make_target(64, 64)
+    bind_target(rt)
+    gl_opaque_state()
+    glClearColor(0, 0, 0, 0)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    vp = orthographic(-30.0, 30.0, -5.0, 55.0, 0.1, 100.0) * look_at(vec3(0, 20, 50), vec3(0, 20, 0), vec3(0, 1, 0))
+    u = veg_u(vp, false)
+    u.cam = vec3(0, 20, 50)
+    # Seed only drawable paths. Uploaded snapshots remain empty: the first real
+    # cull always uploads its exact ordered instances, even for a singleton.
+    loop i in [0..vmodels.len()):
+        vm = vmodels[i]
+        loop k in [0..VEG_PASSES):
+            b = __bk(k, i)
+            buckets[b].items.push(VInst(mat4(), vec4(1, 1, 1, 1)))
+            if vm.has_low: far_buckets[b].items.push(VInst(mat4(), vec4(1, 1, 1, 1)))
+            if vm.has_shadow_low: shadow_buckets[b].items.push(VInst(mat4(), vec4(1, 1, 1, 1)))
+            if vm.crown.count > 0: crown_buckets[b].items.push(VInst(mat4(), vec4(1, 1, 1, 1)))
+    glColorMask(0, 0, 0, 0)
+    __veg_draw_all(u, false, 0, true)
+    glColorMask(1, 1, 1, 1)
+    glDepthFunc(GL_EQUAL)
+    glDepthMask(0)
+    __veg_draw_all(u, false, 0, false)
+    # Same depth-only framebuffer and states as the real two vegetation casters.
+    loop k in [0..2):
+        shadow_begin(k)
+        glViewport(0, 0, 64, 64)
+        u.shadow_pass = 1.0
+        __veg_draw_all(u, true, k + 1, false)
+        shadow_end()
+    loop b in [0..buckets.len()):
+        buckets[b].items.clear()
+        far_buckets[b].items.clear()
+        shadow_buckets[b].items.clear()
+        crown_buckets[b].items.clear()
+    __veg_bound_prog = 0
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    free_target(rt)
+    gl_restore_2d()

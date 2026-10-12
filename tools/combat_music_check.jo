@@ -1,0 +1,217 @@
+# Tier density, actual threat/HP selection, hysteresis and production clock continuity.
+use '../game/music.jo'
+use '../game/sfx.jo'
+use '../game/elements.jo'
+use '../game/terrain.jo'
+from '../game/sfx.jo' import __sfx_variations_update as prepare_cues
+use '../game/combat.jo'
+use '../game/enemies.jo'
+use '../game/player.jo'
+from '../game/music.jo' import __combat_music
+check_combat_music = ():
+    __audio_state = 2
+    # The master must preserve quiet samples, never jump at its knee, and
+    # apply identical gain to both channels of a loud stereo transient.
+    probe: f32[] = [0.30, -0.15, 0.64999, 0.324995, 0.65001, 0.325005, 1.2, -0.3]
+    audio_peak_guard(probe)
+    assert(probe[0] == f32(0.30) and probe[1] == f32(-0.15), "master leaves ordinary samples unchanged")
+    assert(abs(f64(probe[4] - probe[2])) < 0.00003, "master soft knee is continuous")
+    assert(f64(probe[6]) < AUDIO_PEAK_CEILING and abs(f64(probe[6] + 4.0 * probe[7])) < 0.000001, "linked stereo gain and reserved headroom")
+    print("PASS master peak guard: quiet samples unchanged, continuous knee, linked stereo headroom")
+    notes: int[]
+    loop tier in [CombatTier.alert, CombatTier.engaged, CombatTier.low_hp]:
+        strikes = 0
+        drum = 0
+        loop step in [0..128):
+            loop h in combat_step_hits(step, tier):
+                if h.drum == 0:
+                    assert(h.midi >= 36 and h.midi <= 96 and h.vel > 0.0 and h.vel <= 1.0)
+                    strikes += 1
+                else: drum += 1
+        notes.push(strikes)
+        print("combat {tier}: {strikes} piano/{drum} drum strikes per eight bars; {f64(strikes) * COMBAT_BPM / 64.0:.2} notes/min")
+    assert(notes[0] < notes[2] and notes[2] < notes[1])
+    # A recognisable rhythmic/melodic cell survives repeat statements and tier
+    # changes; the low-health register change transposes the complete answer.
+    melody = (bar: int, tier: CombatTier) -> int[]:
+        notes: int[]
+        loop k in [0..16):
+            loop h in combat_step_hits(bar*16+k,tier):
+                if h.drum == 0 and h.midi >= 52: notes.push(h.midi)
+        notes
+    loop tier in [CombatTier.engaged,CombatTier.low_hp]:
+        cell = melody(0,tier)
+        assert(cell == [69,69,72,68], "repeated pickup, minor-third leap, leading-note return")
+        assert(melody(2,tier) == cell and melody(4,tier) == cell, "cell recurs three times per round")
+        positions: int[]
+        loop k in [0..16):
+            loop h in combat_step_hits(k,tier):
+                if h.drum == 0 and h.midi >= 52: positions.push(k)
+        assert(positions == [0,1,4,10], "motif rhythm retained across tiers")
+    # Production ticks are eighth notes at 152 BPM; sixteen ticks per bar.
+    eighth = 60.0 / COMBAT_BPM / 2.0
+    bar_seconds = 16.0 * eighth
+    motif_span = 10.0 * eighth  # first to last onset, not the sample tail
+    assert(abs(COMBAT_BPM - 152.0) < 0.000001)
+    assert(abs(motif_span - 1.9736842105) < 0.000001, "four-note cell onset span stays 1.974s")
+    assert(abs(bar_seconds - 3.1578947368) < 0.000001, "motif statement occupies one 3.158s bar")
+    loop tier in [CombatTier.engaged, CombatTier.low_hp]:
+        statements: int[]
+        loop bar in [0..24):
+            if melody(bar,tier) == melody(0,tier): statements.push(bar)
+        assert(statements == [0,2,4,8,10,12,16,18,20], "cell occurs in bars 0/2/4 of every eight-bar round")
+        loop j in [1..statements.len()):
+            gap = f64(statements[j] - statements[j-1]) * bar_seconds
+            expected = if j % 3 == 0: 12.6315789474 else: 6.3157894737
+            assert(abs(gap - expected) < 0.000001, "motif recurrence remains 6.316/6.316/12.632s")
+    print("PASS combat motif: 1.974s first-to-last onset, 3.158s statement; bars 0/2/4, gaps 6.316/6.316/12.632s; 25.263s eight-bar round, checked over three rounds")
+    answer = melody(1,.engaged)
+    last_heart = melody(1,.low_hp)
+    loop j in [0..answer.len()): assert(last_heart[j] == answer[j]+12, "last-heart answer keeps entire melodic contour")
+    # Compare attack topology/pitches, not cosmetic velocity/RNG changes.
+    signature = (bar: int, tier: CombatTier) -> str:
+        result = ""
+        loop k in [0..16):
+            loop h in combat_step_hits(bar * 16 + k, tier): result = "{result}{k}:{h.midi}:{h.drum};"
+        result
+    loop tier in [CombatTier.alert, CombatTier.engaged, CombatTier.low_hp]:
+        loop step in [0..512):
+            loop h in combat_step_hits(step,tier):
+                if h.drum == 0: assert(h.midi >= 36 and h.midi <= 96 and h.vel > 0.0 and h.vel <= 1.0)
+        changed = 0
+        loop bar in [0..8):
+            if signature(bar,tier) != signature(bar+8,tier): changed += 1
+        assert(changed == 8, "all eight bars change attack topology/register at the next round")
+        assert(signature(27,tier) == "", "fourth round leaves a complete bar silent")
+        print("PASS combat {tier}: {changed}/8 changed bars across rounds; fourth-round whole-bar rest")
+    piano_init()
+    # Actual sequencer: a clean hit drops exactly the next bar and keeps time.
+    seq = Seq(mood = .combat, want = .combat, combat_step = 12, combat_tier = .engaged)
+    pl = Player()
+    pl.events.push("hurt")
+    music_clean_hit()
+    assert(seq.combat_drop_bar == -1, "a traded hit does not buy a clean-hit rest")
+    pl.events.clear()
+    music_clean_hit()
+    assert(seq.combat_drop_bar == 1)
+    seq.combat_step = 16
+    music_clean_hit()
+    assert(seq.combat_drop_bar == 1, "repeat blows cannot prolong the rest")
+    music_note_count = 0
+    __combat_music(16.0 * eighth + 0.000001)
+    assert(seq.combat_step == 32 and music_note_count == 0, "one bar drops out without resetting the 152 BPM clock")
+    __combat_music(eighth)
+    assert(music_note_count > 0, "music resumes at the following bar with real sampled voices")
+    seq.combat_step = 128
+    music_clean_hit()
+    assert(seq.combat_drop_bar == 9, "a new clean-hit rest is available after eight bars")
+    print("PASS clean-hit rest: traded hits rejected, one silent next bar, eight-bar re-arm, clock preserved")
+    held = 0
+    left_offbeats = 0
+    muted = 0
+    loop step in [0..128):
+        loop h in combat_step_hits(step, .low_hp):
+            if h.restrained:
+                held += 1
+                assert(h.midi < 52 and step % 16 == 0 and h.vel <= 0.28)
+            if h.drum == 0 and h.midi < 52 and step % 16 != 0: left_offbeats += 1
+            if h.drum == 0 and h.midi >= 52 and h.vel < 0.7: muted += 1
+    assert(held == 8 and left_offbeats == 0 and muted >= 20, "last-heart texture: 140 ms damped bass, left-hand rests and muted stabs at the same tempo")
+    pl = Player(pos = vec3(0, 0, 0))
+    fight = Fight()
+    seq = Seq()
+    assert(combat_tier_want(0.1) == .alert)
+    enemies = [Enemy(kind = .bokoblin, pos = vec3(20, 0, 0), home = vec3(20, 0, 0), state = .chase)]
+    assert(combat_tier_want(0.1) == .alert)
+    enemies[0].pos = vec3(10, 0, 0)
+    assert(combat_tier_want(0.1) == .engaged)
+    enemies[0].state = .recover
+    assert(combat_tier_want(0.1) == .engaged)
+    enemies[0].pos = vec3(20, 0, 0)
+    assert(combat_tier_want(3.9) == .engaged)
+    assert(combat_tier_want(0.2) == .alert)
+    enemies[0].state = .shoot
+    assert(combat_tier_want(0.1) == .engaged)
+    enemies.clear()
+    pl.hp = 4
+    assert(combat_tier_want(0.1) == .low_hp)
+    seq.combat_tier = .low_hp
+    pl.hp = 5
+    assert(combat_tier_want(5.0) == .low_hp)
+    pl.hp = 6
+    assert(combat_tier_want(0.1) == .alert)
+    seq = Seq(mood = .combat, want = .combat, combat_step = 7, combat_t = 0.1)
+    pl.hp = 4
+    __combat_music(0.11)
+    assert(seq.combat_step == 8 and seq.combat_tier == .alert)
+    __combat_music(0.2)
+    assert(seq.combat_step == 9 and seq.combat_tier == .low_hp)
+    assert(seq.combat_t > 0.0 and seq.combat_t < 60.0 / COMBAT_BPM / 2.0)
+    piano_init()
+    sfx_init()
+    # Include the last upper note's real pitched damped-sample tail as well
+    # as onset span; the audible cell must finish inside its statement bar.
+    last_midi = melody(0,.engaged)[3]
+    sample_index = (last_midi - PIANO_LO + PIANO_STEP / 2) / PIANO_STEP
+    sample_midi = PIANO_LO + sample_index * PIANO_STEP
+    tail = duration(piano.short_notes[sample_index]) / pow(2.0, f64(last_midi - sample_midi) / 12.0)
+    sounding = motif_span + tail
+    assert(sounding > 2.24 and sounding < 2.26 and sounding < bar_seconds, "motif including pitched release stays 2.249s inside its bar")
+    print("PASS combat motif sounding length: {sounding:.3}s including {tail:.3}s pitched final-note release")
+    assert(piano.restrained_soft.len() == 21)
+    loop s in piano.restrained_soft: assert(abs(duration(s) - 0.14) < 0.00001)
+    # Actual direct and filtered handles must duck existing score tails before mixing.
+    loop low in [false, true]:
+        loop cue in [sfx.hit, sfx.parry, sfx.grunt[0], sfx.windup_heavy, sfx.notice]:
+            stop_all()
+            score_voices.clear()
+            music_duck = 1.0
+            music_duck_floor = 1.0
+            music_duck_hold = 0.0
+            pl.hp = if low: 4 else: 12
+            seq = Seq(mood = .combat, want = .combat, volume = 1.0)
+            piano_play(45, 0.28, -0.2, 0.5, true, true, true)
+            id = score_voices[0].id
+            gain = score_voices[0].gain
+            sfx_at(cue, pl.pos + vec3(0, 0, 14), pl.pos, vec3(1, 0, 0))
+            prepare_cues(1.0 / 60.0)
+            target = if low: CUE_DUCK_LOW_HP else: CUE_DUCK_ENGAGED
+            assert(abs(music_duck - target) < 0.000001, "resolved spatial cue ducks music in the same block")
+            loop voice in __voices:
+                if voice.id == id: assert(abs(f64(voice.volume) - gain * target) < 0.000001)
+            music_update(0.5)
+            assert(music_duck == 1.0, "cue duck recovers without permanently reducing the score")
+    stop_all()
+    score_voices.clear()
+    music_duck = 1.0
+    music_duck_floor = 1.0
+    music_duck_hold = 0.0
+    seq = Seq(mood = .field_day, want = .combat, volume = 1.0)
+    piano_play(74, 0.3, 0.0, 0.3)  # Independent notice/story tail.
+    story_id = score_voices[0].id
+    story_gain = score_voices[0].gain
+    play(sfx.parry, 0.7)
+    prepare_cues(1.0 / 60.0)
+    assert(music_duck == CUE_DUCK_LOW_HP, "a cue ducks music during the pending combat handoff")
+    music_update(0.4)
+    assert(is_playing(story_id), "context handoff preserves independent cue tails")
+    music_cue_duck()
+    loop voice in __voices:
+        if voice.id == story_id: assert(abs(f64(voice.volume) - story_gain * CUE_DUCK_LOW_HP) < 0.000001, "notice tail shares the combat cue sidechain")
+    # Grass crackle is audible through the same bounded gain queried by main.
+    hf.n = 16
+    hf.cell = 1.0
+    hf.x0 = 0.0
+    hf.z0 = 0.0
+    hf.h = fill(f32(0), 256)
+    bonfires.clear()
+    flames = [Flame(136, life = 10.0)]
+    assert(fire_audio_level(vec3(8, 0, 8)) > 0.1)
+    loop k in [0..20): flames.push(Flame(136, life = 10.0))
+    assert(fire_audio_level(vec3(8, 0, 8)) == 0.5, "multiple grass cells retain fire headroom")
+    assert(fire_audio_level(vec3(100, 0, 100)) == 0.0)
+    loop mut f in flames: f.t = f.life
+    assert(fire_audio_level(vec3(8, 0, 8)) == 0.0, "spent grass flames are silent")
+    print("PASS combat music: tiers, near/far threats, recovery hold, last-heart hysteresis, next-beat transition without clock reset; 140ms bass, filtered cue duck/recovery, bounded live grass-fire audio")
+
+check_combat_music()

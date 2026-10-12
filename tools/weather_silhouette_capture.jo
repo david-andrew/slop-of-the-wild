@@ -1,0 +1,29 @@
+# One simulation/frame/camera for all three body passes. The normal production
+# draw includes watercolor, rain, HUD and occluders. Keep the same alternating
+# shadow-cascade schedule and hero caster for visible/hidden/mask alike.
+build:
+    opt = release
+use '../game/main.jo'
+use '../game/env.jo'
+use 'performance_output.jo'
+from '../game/chars.jo' import __hero_capture
+from '../game/shadows.jo' import shadow_frame
+
+silhouette_draw = ():
+    if frame_number() != 300:
+        draw()
+        return
+    prefix = env("BOTW_SILHOUETTE_PREFIX")!
+    schedule = shadow_frame
+    loop mode in ["visible", "hidden", "mask"]:
+        shadow_frame = schedule
+        __hero_capture = if mode == "visible": "" else: mode
+        draw()
+        assert(save_png(screenshot(), "{prefix}-{mode}.png"), "silhouette capture failed")
+    __hero_capture = ""
+
+main = ():
+    # Production weather seeds from the wall clock. Hold the strike schedule fixed
+    # for reproducible camera/lighting measurements, as the transition check does.
+    weather_rng_restore(rng(31))
+    performance_output_run(update, silhouette_draw)

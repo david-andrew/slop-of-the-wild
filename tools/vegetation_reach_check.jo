@@ -1,0 +1,27 @@
+# No graphics context: verify lifetime/fallback behavior of ordinary-size caches.
+use '../game/vegetation.jo'
+from '../game/vegetation.jo' import __vcells, __vcells_build, __vplace_reach_factors, __vcell_reach_factors, __vplace_reach_factor, __vcell_reach_factor
+check_reach_cache = ():
+    places = [VPlace(0, mat4(), vec4(1, 1, 1, 1), vec3(0, 0, 0), 1.0, 0.5, false), VPlace(0, mat4(), vec4(1, 1, 1, 1), vec3(1, 0, 1), 1.0, 8.0, false), VPlace(0, mat4(), vec4(1, 1, 1, 1), vec3(100, 0, 100), 1.0, 20.0, false)]
+    __vcells_build()
+    assert(__vplace_reach_factors.len() == 3 and __vcell_reach_factors.len() == 2)
+    # Direct callers without an index, appended/reordered placements, and edits must
+    # retain ordinary range limits instead of borrowing a factor from another height.
+    places[1].height = 9.5
+    places.push(VPlace(0, mat4(), vec4(1, 1, 1, 1), vec3(200, 0, 200), 1.0, 2.0, false))
+    places[0].height = 20.0
+    __vcells[0].hmax = 7.25
+    loop height in [0.0, 0.1, 0.5, 0.7368, 1.0, 2.0, 7.25, 8.0, 9.5, 10.0, 20.0, 100.0]:
+        expected = clamp(pow(height / 10.0, 1.5), 0.02, 1.0)
+        loop index in [-1, 0, 1, 2, 3, 99]:
+            assert(__vplace_reach_factor(index, height) == expected)
+            assert(__vcell_reach_factor(index, height) == expected)
+    # Rebuilding must incorporate edits/appends while leaving placement state intact.
+    __vcells.clear()
+    __vcells_build()
+    assert(__vplace_reach_factors.len() == 4 and places[1].height == 9.5)
+    loop i in 0.. and p in places:
+        assert(__vplace_reach_factor(i, p.height) == clamp(pow(p.height / 10.0, 1.5), 0.02, 1.0))
+    print("vegetation reach: indexed/direct calls, edited/reordered/appended heights, cell rebuilds; 144 cached/fallback comparisons PASS")
+
+check_reach_cache()

@@ -1,0 +1,116 @@
+# Run: tools/status_save_check.sh (both fresh-process phases); direct usage: sloppy/bin/sloppy tools/status_save_test.jo write|read fixture-path.
+# Two fresh processes: consume a 600-second meal, save after 7.25 s, then
+# resume in Mount Hylia, including exact protection expiry and cold damage.
+use '../game/items.jo'
+use '../game/inventory.jo'
+use '../game/cooking.jo'
+use '../game/save.jo'
+use '../game/player.jo'
+use '../game/elements.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/water.jo'
+use '../game/env.jo'
+use '../game/input.jo'
+use '../game/matter.jo'
+
+run = ():
+    if args().len() != 3:
+        print("Usage: tools/status_save_check.sh runs both phases; direct fixture: sloppy/bin/sloppy tools/status_save_test.jo write|read fixture-path")
+        exit(if args().len() == 1: 0 else: 2)
+    if args()[1] != "write" and args()[1] != "read":
+        print("Usage: tools/status_save_check.sh; fixture mode must be write or read")
+        exit(2)
+    items_init()
+    hf.n = 64
+    hf.cell = 1.0
+    hf.x0 = -32.0
+    hf.z0 = -32.0
+    hf.h = fill(f32(0), 4096)
+    hf.mat = fill(u8(0), 4096 * 4)
+    areas = fill(u8(47), 4096)
+    edge_sd = fill(f32(-100), 4096)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
+    use_terrain = true
+    env.weather = .clear
+    env.rain = 0.0
+    env.night = 0.0
+    path = args()[2]
+    if args()[1] == "write":
+        inv_add("pepper", 2)
+        assert(inv_hold("pepper") and inv_hold("pepper"))
+        dish = inv_cook_held()
+        pl = Player(hp = 8, pos = vec3(20, 0, 20))
+        assert(eat_food(dish) and warm_t == 600.0 and count_of(dish) == 0)
+        loop i in [0..435): elements_update(1.0 / 60.0, pl.pos)
+        pl.frozen = 1.25
+        pl.invuln = 0.45
+        inv_add("travelers_sword")
+        inv.weapon = 0
+        lightning_gear = GearTrace(id = "travelers_sword", kind = .weapon, index = 0)
+        lightning_warn = 1.75
+        s = save_capture()
+        s.activated = fill(false, 4)
+        s.completed = fill(false, 4)
+        s.pos = pl.pos
+        s.awake = true
+        s.progress.title_done = true
+        assert(save_write(path, s))
+        inv = Inventory(weapons = ["branch"], weapon = 0)
+        held_id = "branch"
+        held_revision = inv.weapon_revision
+        held_el = Elem(heat = 1.0, burning = 4.5, wet = 0.2)
+        lightning_warn = 0.0
+        cold_dmg_t = 4.75
+        branch = save_capture()
+        branch.warm_t = 0.0
+        branch.frozen = 0.0
+        branch.invuln = 0.0
+        branch.activated = fill(false, 4)
+        branch.completed = fill(false, 4)
+        branch.pos = pl.pos
+        branch.awake = true
+        branch.progress.title_done = true
+        assert(save_write(path + ".gear", branch))
+        print("status save writer: consumed meal, warmth={warm_t:.2}s freeze=1.25s invulnerability=0.45s PASS")
+    else:
+        assert(args()[1] == "read" and warm_t == 0.0 and pl.frozen == 0.0)
+        branch = save_decode(read_file(path + ".gear") ?? "")!
+        save_apply(branch)
+        assert(held_id == "branch" and held_el.burning == 4.5 and held_el.wet == 0.2 and cold_dmg_t == 4.75)
+        lit = false
+        player_torch_update(0.25, lit)
+        assert(lit and held_el.burning == 4.25)
+        hp = pl.hp
+        elements_update(0.125, pl.pos)
+        assert(pl.hp == hp and cold_dmg_t == 4.875, "restored cold countdown preserves time before the boundary")
+        elements_update(0.125, pl.pos)
+        assert(pl.hp == hp - 1 and cold_dmg_t == 0.0, "restored cold countdown damages at exactly five seconds")
+        save_apply(branch)
+        elements_update(0.375, pl.pos)
+        assert(pl.hp == hp - 1 and cold_dmg_t == 0.125, "restored cold countdown retains excess frame time")
+        s = save_decode(read_file(path) ?? "")!
+        save_apply(s)
+        assert(abs(warm_t - 592.75) < 0.000001 and count_of(pot_result(["pepper", "pepper"])) == 0)
+        assert(pl.frozen == 1.25 and pl.invuln == 0.45)
+        assert(lightning_warn == 1.75 and lightning_gear.id == "travelers_sword")
+        elements_update(0.25, pl.pos)
+        assert(lightning_warn == 1.5)
+        save_apply(s)
+        # Exercise the long cold-resistance window independently of a pending strike.
+        lightning_warn = 0.0
+        inv.weapon = -1
+        # Player status runs through its production fixed-step decay, including thaw.
+        act = Actions()
+        player_update(0.25)
+        assert(pl.frozen < 1.25 and pl.invuln < 0.45)
+        hp = pl.hp
+        loop i in [0..35565): elements_update(1.0 / 60.0, pl.pos)
+        assert(pl.hp == hp and warm_t < 0.000001, "restored meal protects for its entire remaining duration")
+        pl.invuln = 0.0
+        loop i in [0..310): elements_update(1.0 / 60.0, pl.pos)
+        assert(pl.hp == hp - 1 and temp_feel < 0.2, "cold damage resumes only after expiry")
+        print("status save reader: 592.75s protection then cold damage, freeze/invulnerability, burning gear, lightning and cold countdowns PASS")
+
+run()

@@ -1,0 +1,268 @@
+use 'gfx.jo'
+use 'asset_stream.jo'
+from 'gfx.jo' import __patch_glsl
+
+# Cache validated program binaries locally; submit independent terrain programs
+# together while CPU assets load. All programs finish before warmup/visible draws.
+# Driver/source changes or bad entries compile normally; software/web keep the runtime.
+@lib("libGLESv2.so.2")
+extern glGetString = (name: u32) -> *u8
+@lib("libEGL.so.1")
+@symbol("eglGetProcAddress")
+extern __load_proc = (name: *u8) -> *u8
+@lib("libGLESv2.so.2")
+extern glCreateShader = (kind: u32) -> u32
+@lib("libGLESv2.so.2")
+extern glShaderSource = (sh: u32, count: i32, strings: **u8, lengths: *i32)
+@lib("libGLESv2.so.2")
+extern glCompileShader = (sh: u32)
+@lib("libGLESv2.so.2")
+extern glCreateProgram = () -> u32
+@lib("libGLESv2.so.2")
+extern glAttachShader = (prog: u32, sh: u32)
+@lib("libGLESv2.so.2")
+extern glLinkProgram = (prog: u32)
+@lib("libGLESv2.so.2")
+extern glGetShaderiv = (sh: u32, name: u32, value: *i32)
+@lib("libGLESv2.so.2")
+extern glGetProgramiv = (prog: u32, name: u32, value: *i32)
+@lib("libGLESv2.so.2")
+extern glGetShaderInfoLog = (sh: u32, size: i32, length: *i32, buffer: *u8)
+@lib("libGLESv2.so.2")
+extern glGetProgramInfoLog = (prog: u32, size: i32, length: *i32, buffer: *u8)
+@lib("libGLESv2.so.2")
+extern glDeleteShader = (sh: u32)
+@lib("libGLESv2.so.2")
+extern glDetachShader = (prog: u32, sh: u32)
+
+struct LoadingShader:
+    source: ShaderSource
+    vertex = u32(0)
+    fragment = u32(0)
+    program = u32(0)
+    ready: Shader
+    cache_path = ""
+    cache_source = ""
+
+__load_refresh: LoadingShader[]
+__load_warming = true
+__load_native = false
+__load_cache = false
+__load_driver = ""
+__load_parallel = false
+__load_init = false
+shader_load_init = ():
+    if __load_init: return
+    __load_init = true
+    when TARGET == "linux":
+        if not lib_available("libGLESv2.so.2") or not lib_available("libEGL.so.1"): return
+        ex = glGetString(0x1F03) # GL_EXTENSIONS; null on the software path
+        if ex == null: return
+        __load_native = true
+        __load_driver = __cstr(glGetString(0x1F00)) + "|" + __cstr(glGetString(0x1F01)) + "|" + __cstr(glGetString(0x1F02))
+        formats: i32 = 0
+        glGetIntegerv(0x87FE, &formats) # GL_NUM_PROGRAM_BINARY_FORMATS
+        __load_cache = formats > 0 and env("BOTW_NO_SHADER_CACHE") == none and mkdir("build") and mkdir("build/shader-cache")
+        if env("BOTW_SERIAL_SHADERS") != none: return
+        if not contains(" " + __cstr(ex) + " ", " GL_KHR_parallel_shader_compile "): return
+        fn = __load_proc(data("glMaxShaderCompilerThreadsKHR\0"))
+        if fn == null: return
+        set_threads = fn as cfn(u32)
+        set_threads(1)
+        __load_parallel = true
+        if env("BOTW_LOADTIME") != none: eprint("    terrain shader compiler: KHR, max 1 requested")
+
+__load_stage = (kind: u32, source: str) -> u32:
+    sh = glCreateShader(kind)
+    ptr = data(source)
+    n = i32(len(source))
+    glShaderSource(sh, 1, &ptr, &n)
+    glCompileShader(sh)
+    sh
+
+# Generated function/local/type numeric suffixes depend on unrelated imports. Rename
+# only those identifiers, bijectively across both stages, so unchanged shader code has
+# the same cache key across entry points/rebuilds. Uniform/attribute names stay intact.
+shader_load_canonical = (src: ShaderSource) -> ShaderSource:
+    text = src.vs + "\n// shader-load-stage-boundary\n" + src.fs
+    out: u8[]
+    names: {str: str} = {}
+    at = 0
+    loop at < len(text):
+        c = text[at]
+        ident = c == '_' or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
+        if not ident:
+            out.push(c)
+            at += 1
+            continue
+        lo = at
+        at += 1
+        loop at < len(text):
+            c = text[at]
+            if not (c == '_' or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')): break
+            at += 1
+        token = text[lo..at)
+        split_at = len(token) - 1
+        loop split_at > 0 and token[split_at] >= '0' and token[split_at] <= '9': split_at -= 1
+        if split_at < len(token) - 1 and token[split_at] == '_' and (starts_with(token, "S_") or starts_with(token, "f_") or starts_with(token, "l_")):
+            if let n = names.get(token): token = n
+            else:
+                n = token[..split_at) + "_load_{names.len()}"
+                names[token] = n
+                token = n
+        loop b in token: out.push(b)
+    parts = split(str_from_bytes(out), "\n// shader-load-stage-boundary\n")
+    s = src
+    s.vs = parts[0]
+    s.fs = parts[1]
+    s
+
+shader_load_submit = (src: ShaderSource) -> LoadingShader:
+    shader_load_init()
+    s = src
+    s.vs = __patch_glsl(s.vs)
+    s.fs = __patch_glsl(s.fs)
+    s = shader_load_canonical(s)
+    if env("BOTW_DUMP_GLSL") != none: print(s.fs)
+    when TARGET != "linux":
+        return LoadingShader(ready = make_shader(s))
+    else:
+        if not __load_native: return LoadingShader(ready = make_shader(s))
+        path = ""
+        text = s.vs + "\n// shader-load-stage-boundary\n" + s.fs
+        if __load_cache:
+            path = "build/shader-cache/{__str_hash(__load_driver)}-{__str_hash(text)}.bin"
+            if let bytes = read_bytes(path):
+                if bytes.len() >= 16:
+                    header = data(bytes) as *u32
+                    n = int(header[1])
+                    nb = int(header[3])
+                    if header[0] == u32(0x42535731) and n == len(text) and nb > 0 and bytes.len() == 16 + n + nb and str_from_bytes(bytes[16..16 + n)) == text:
+                        p = glCreateProgram()
+                        glProgramBinary(p, header[2], data(bytes) + 16 + n, i32(nb))
+                        ok: i32 = 0
+                        glGetProgramiv(p, u32(GL_LINK_STATUS), &ok)
+                        if ok != 0:
+                            if env("BOTW_LOADTIME") != none: eprint("    shader cache hit {__str_hash(text)}")
+                            return LoadingShader(source = s, program = p, cache_path = path, cache_source = text)
+                        glDeleteProgram(p)
+        if not __load_parallel: return LoadingShader(ready = make_shader(s))
+        v = __load_stage(u32(GL_VERTEX_SHADER), s.vs)
+        f = __load_stage(u32(GL_FRAGMENT_SHADER), s.fs)
+        p = glCreateProgram()
+        if __load_cache: glProgramParameteri(p, 0x8257, 1) # PROGRAM_BINARY_RETRIEVABLE_HINT
+        glAttachShader(p, v)
+        glAttachShader(p, f)
+        glLinkProgram(p)
+        LoadingShader(s, v, f, p, cache_path = path, cache_source = text)
+
+__load_check_stage = (sh: u32, source: str):
+    ok: i32 = 0
+    glGetShaderiv(sh, u32(GL_COMPILE_STATUS), &ok)
+    if ok != 0: return
+    buf = fill(u8(0), 4096)
+    n: i32 = 0
+    glGetShaderInfoLog(sh, 4095, &n, data(buf))
+    eprint("shader compile error:\n{__cstr(data(buf))}\n--- source ---\n{source}")
+    panic("shader compilation failed")
+
+shader_load_finish = (p: LoadingShader) -> Shader:
+    when TARGET != "linux":
+        return p.ready
+    else:
+        if p.program == 0: return p.ready
+        if p.vertex != 0: __load_check_stage(p.vertex, p.source.vs)
+        if p.fragment != 0: __load_check_stage(p.fragment, p.source.fs)
+        ok: i32 = 0
+        glGetProgramiv(p.program, u32(GL_LINK_STATUS), &ok)
+        if ok == 0:
+            buf = fill(u8(0), 4096)
+            n: i32 = 0
+            glGetProgramInfoLog(p.program, 4095, &n, data(buf))
+            eprint("shader link error:\n{__cstr(data(buf))}")
+            panic("shader linking failed")
+        # Deletion alone leaves attached shader objects alive for the entire program
+        # lifetime. Release compiler stages once the linked executable owns the code.
+        if p.vertex != 0:
+            glDetachShader(p.program, p.vertex)
+            glDeleteShader(p.vertex)
+        if p.fragment != 0:
+            glDetachShader(p.program, p.fragment)
+            glDeleteShader(p.fragment)
+        if len(p.cache_path) > 0:
+            if p.vertex != 0: __load_cache_write(p)
+            if __load_warming: __load_refresh.push(p)
+        # Same reflection order as the pinned runtime's make_shader. Locations are queried
+        # only after link completion; attribute slots and sampler order remain unchanged.
+        sh = Shader(prog = int(p.program))
+        halves = split(p.source.layout, "|")
+        loop part in split(halves[0], ";"):
+            if starts_with(part, "A"):
+                sh.stride = to_int(part[1..]) ?? 0
+                continue
+            f = split(part, ",")
+            sh.attribs.push(ShaderAttrib(to_int(f[1]) ?? 0, to_int(f[2]) ?? 0))
+        if halves.len() > 2:
+            loop part in split(halves[2], ";"):
+                if starts_with(part, "I"):
+                    sh.istride = to_int(part[1..]) ?? 0
+                    continue
+                f = split(part, ",")
+                sh.iattribs.push(ShaderAttrib(to_int(f[1]) ?? 0, to_int(f[2]) ?? 0))
+        loop part in split(halves[1], ";"):
+            if starts_with(part, "U"):
+                sh.usize = to_int(part[1..]) ?? 0
+                continue
+            f = split(part, ",")
+            kind = f[1][0]
+            if kind == 'v': kind = f[1][1]
+            if f.len() > 3:
+                loc = gl_uniform_location(sh.prog, "u.{f[0]}_[0]")
+                sh.uniforms.push(ShaderUniform(loc, kind, to_int(f[2]) ?? 0, to_int(f[3]) ?? 0, to_int(f[4]) ?? 0))
+            else: sh.uniforms.push(ShaderUniform(gl_uniform_location(sh.prog, "u.{f[0]}_"), kind, to_int(f[2]) ?? 0))
+        sh
+
+@lib("libGLESv2.so.2")
+extern glGetIntegerv = (name: u32, value: *i32)
+@lib("libGLESv2.so.2")
+extern glProgramParameteri = (prog: u32, name: u32, value: i32)
+@lib("libGLESv2.so.2")
+extern glGetProgramBinary = (prog: u32, size: i32, length: *i32, format: *u32, binary: *u8)
+@lib("libGLESv2.so.2")
+extern glProgramBinary = (prog: u32, format: u32, binary: *u8, length: i32)
+@lib("libGLESv2.so.2")
+extern glDeleteProgram = (prog: u32)
+@lib("libc.so.6")
+@symbol("rename")
+extern __load_rename = (from_: *u8, to_: *u8) -> i32
+
+__load_cache_write = (p: LoadingShader):
+    size: i32 = 0
+    glGetProgramiv(p.program, 0x8741, &size) # GL_PROGRAM_BINARY_LENGTH
+    if size <= 0: return
+    binary = fill(u8(0), int(size))
+    length: i32 = 0
+    fmt: u32 = 0
+    glGetProgramBinary(p.program, size, &length, &fmt, data(binary))
+    if length <= 0: return
+    header = [u32(0x42535731), u32(len(p.cache_source)), fmt, u32(length)]
+    # Stream the source and binary independently; write_bytes creates a string copy.
+    temp = p.cache_path + ".tmp-{syscall(39)}"
+    file = asset_create(temp)
+    asset_write(file, data(header) as *u8, 16)
+    asset_write(file, data(p.cache_source), len(p.cache_source))
+    asset_write(file, data(binary), int(length))
+    asset_close(file)
+    if file.ok: __load_rename(data(temp + "\0"), data(p.cache_path + "\0"))
+
+# Driver binaries can gain draw-time specializations. Capture them after the existing
+# representative warmup/glFinish, rather than preserving only the just-linked form.
+# No GL bindings or simulation state change. Keep this work inside the load timer.
+shader_load_cache_commit = ():
+    when TARGET == "linux":
+        started = time()
+        count = __load_refresh.len()
+        loop p in __load_refresh: __load_cache_write(p)
+        __load_refresh.clear()
+        __load_warming = false
+        if env("BOTW_LOADTIME") != none: eprint("  shader_cache_commit {time() - started:.3}s programs {count}")

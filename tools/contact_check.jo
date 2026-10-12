@@ -1,0 +1,145 @@
+import '../game/physics.jo' as ph
+import '../game/terrain.jo' as ter
+use '../game/gfx.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/player.jo'
+use '../game/physics.jo'
+use '../game/input.jo'
+use '../game/hero_motion.jo'
+
+# Exercise final world-space contacts rather than inferring slip from the clip's rate.
+lib = load_humanoid_anims()
+ter.hf.n = 256
+ter.hf.cell = 1.0
+ter.hf.x0 = -128.0
+ter.hf.z0 = -128.0
+ter.hf.h = fill(f32(-10), 256 * 256)
+ter.hf.mat = fill(u8(0), 256 * 256 * 4)
+loop z in [0..256):
+    loop x in [0..256):
+        if x >= 164: ter.hf.h[z * 256 + x] = f32(f64(z - 128) * 0.35)
+ph.use_terrain = false
+add_box(vec3(0, -1, 0), vec3(30, 0.5, 100))
+loop side in [0..12):
+    add_box(v3(20.0, -0.5 + f64(side) * 0.12, f64(side) * 0.40), vec3(2, 0.25, 0.20))
+
+add_cyl(vec3(-20, 0, 2), 1.3, 0.35, false, .rock)
+
+loop model_name in ["hero_bare", "hero"]:
+    m = load_model("assets/models/{model_name}.mdl")
+    loop name in ["idle", "walk", "run", "sprint", "stop", "hard_stop", "turn", "stairs", "rock", "slope", "slope_idle", "slope_down", "jump", "cutscene", "climb", "glide", "swim"]:
+        h = HeroMotion()
+        pl = Player(pos = vec3(0, 0, 0), face = PI)
+        act = Actions()
+        ph.use_terrain = starts_with(name, "slope")
+        if name == "slope_idle" or name == "slope_down": pl.pos = vec3(40, 3.5, 10)
+        if name == "slope_down": pl.face = 0
+        animation = Animator()
+        max_sink = 0.0
+        max_brake = 0.0
+        max_air = 0.0
+        max_land = 0.0
+        airborne_contacts = 0
+        elapsed_ = 0.0
+        loop frame in [0..360):
+            dt = 1.0 / 60.0
+            clip = "idle"
+            speed = 0.0
+            if name == "walk":
+                clip = "walk"
+                speed = WALK_SPEED
+            if name == "run" or name == "stop" or name == "hard_stop" or name == "turn" or name == "jump":
+                clip = "run"
+                speed = RUN_SPEED
+            if name == "sprint" or name == "hard_stop":
+                clip = "sprint"
+                speed = SPRINT_SPEED
+            if name == "slope" or name == "slope_down" or name == "stairs" or name == "rock":
+                clip = "walk"
+                speed = WALK_SPEED
+                pl.pos.x = if starts_with(name, "slope"): 40 else if name == "rock": -20 else: 20
+            if (name == "stop" or name == "hard_stop") and frame >= 120:
+                initial_speed = if name == "hard_stop": SPRINT_SPEED else: RUN_SPEED
+                speed = max(0.0, initial_speed - f64(frame - 119) * dt * 26.0)
+                if speed < 0.2: clip = "idle"
+            act.move = if speed > 0.0: vec2(0, 1) else: vec2(0, 0)
+            if (name == "stop" or name == "hard_stop") and frame >= 120: act.move = vec2(0, 0)
+            if name == "turn" and frame >= 120 and frame < 150: pl.face += 0.1
+            pl.vel = forward_of(pl.face) * f32(speed)
+            pl.pos += pl.vel * f32(dt)
+            pl.grounded = true
+            pl.state = .ground
+            pl.landed = false
+            pl.pos.y = f32(ground_at(f64(pl.pos.x), f64(pl.pos.z), f64(pl.pos.y), 0.5, RADIUS).y)
+            if name == "jump" and frame >= 120 and frame < 150:
+                pl.state = .air
+                pl.grounded = false
+                pl.jump_t = f64(frame - 120) * dt
+                pl.pos.y = f32(sin(f64(frame - 120) / 30.0 * PI) * 0.95)
+                clip = "run_jump"
+            if name == "jump" and frame == 150: pl.landed = true
+            if name == "cutscene": pl.state = .cutscene
+            if name == "climb": pl.state = .climb
+            if name == "glide": pl.state = .glide
+            if name == "swim": pl.state = .swim
+            rate = locomotion_rate(clip, speed)
+            if clip == "idle" or clip == "run_jump": rate = 1.0
+            anim_play(animation, clip_index(lib, clip), 0.2, true, false, rate)
+            anim_update(animation, dt)
+            pose = anim_pose(lib, animation)
+            world = translation(pl.pos) * rotation_y(PI - pl.face)
+            if model_name == "hero_bare": world = world * scaling(vec3(0.86, 1, 0.88))
+            start = time()
+            hero_motion_apply(h, m, lib, pose, world, dt, true)
+            elapsed_ += time() - start
+            hero_motion_measure(h, m, pose, world)
+            max_sink = max(max_sink, -h.sink)
+            max_brake = max(max_brake, h.brake_t)
+            max_air = max(max_air, h.air_lean)
+            max_land = max(max_land, h.landing_t)
+            if not pl.grounded:
+                loop foot in h.feet:
+                    if foot.planted or foot.weight > 0.0: airborne_contacts += 1
+        disabled = name == "cutscene" or name == "climb" or name == "glide" or name == "swim"
+        if disabled:
+            assert(h.samples == 0, "contacts outside locomotion")
+            print("{model_name:9} {name:10} contacts disabled, samples {h.samples}")
+            continue
+        print("{model_name:9} {name:10} samples {h.samples:4} drift {h.drift:.4} m sole {h.sole:.4} m gap {h.separation:.4} m IK {elapsed_ * 1000.0 / 360.0:.3} ms sink {max_sink:.3}")
+        assert(h.samples > 20, "no stance contacts")
+        assert(h.drift < 0.01, "planted foot drift")
+        assert(h.sole > -0.005, "sole below floor")
+        assert(h.separation > 0.04, "feet crossed")
+        assert(airborne_contacts == 0, "contacts in air")
+        if name == "stop" or name == "hard_stop": assert(max_brake > 0.20, "brake never planted")
+        if name == "hard_stop": assert(h.brake_hard, "hard stop never settled")
+        if name == "jump": assert(max_land > 0.25, "landing never compressed")
+        if name == "jump": assert(max_air > 0.10, "moving jump never leaned")
+# Both models and several rim heights/headings: the final wrists, after the arm solve,
+# remain at the fixed world-space ledge points throughout the pull.
+worst_hand = 0.0
+loop model_name in ["hero_bare", "hero"]:
+    m = load_model("assets/models/{model_name}.mdl")
+    loop height in [0.7, 1.2, 1.8]:
+        loop heading in [0.0, 0.9, 2.1]:
+            f = forward_of(heading)
+            pl = Player(state = .mantle, face = heading, mantle_from = vec3(0, 0, 0), mantle_to = f * 0.9 + v3(0.0, height, 0.0))
+            mantle_grips(f * 0.55)
+            loop frame in [0..31):
+                phase = f64(frame) / 60.0
+                pl.st_t = phase * 0.55
+                up = smooth01(phase / 0.65)
+                fw = smooth01((phase - 0.45) / 0.55)
+                pl.pos = f * f32(0.9 * fw) + v3(0.0, (height + 0.05) * up, 0.0)
+                pose = sample_clip(lib, clip_index(lib, "climb_up"), phase * clip_duration(lib, clip_index(lib, "climb_up")), false)
+                world = translation(pl.pos) * rotation_y(PI - heading)
+                if model_name == "hero_bare": world = world * scaling(vec3(0.86, 1, 0.88))
+                mantle_arms(m, lib, pose, world)
+                loop side in [0..2):
+                    hand = bone_index(m, if side == 0: "hand_l" else: "hand_r")
+                    gap = f64(length(transform_point(world, motion_point(m, pose, hand)) - pl.mantle_hands[side]))
+                    worst_hand = max(worst_hand, gap)
+assert(worst_hand < 0.02, "mantle hands slip off ledge")
+print("mantle: worst hand drift {worst_hand:.6} m")
+print("contact check PASS")

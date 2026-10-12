@@ -1,0 +1,822 @@
+use 'gfx.jo'
+use 'shade.jo'
+use 'charshade.jo'
+
+# Skeletal characters at run time: baked models (.mdl) and animation libraries (.anim),
+# clip sampling, pose blending and layering, skinning on the GPU, bone transforms for
+# attachments. See docs/CHARACTERS.md.
+#
+#   hero = load_model("assets/models/hero.mdl")
+#   anims = load_anims("assets/models/humanoid.anim")
+#   walk = clip_index(anims, "walk")
+#   pose = sample_clip(anims, walk, t, true)
+#   sk = skin(hero, pose)                              # bone matrices -> GPU palette row
+#   draw_character(hero, world, sk, scene)             # lit pass (HDR target bound)
+#   draw_character_shadow(hero, world, sk, shadow_vp)  # between shadow_begin/shadow_end
+#   hand = world * bone_world(hero, sk, "hand_r")      # attach a sword
+#
+# Poses live in the animation library's skeleton ("canonical" bones): rotations are the bones'
+# local rotations, translations are offsets from the rest pose, scales are factors of the rest
+# scale. A model maps each of its bones to a library bone (models whose bones were re-oriented
+# onto the canonical skeleton at bake time take the rotations as they are: retargeting costs
+# nothing at run time).
+
+const MDL_MAGIC = 0x4C444D4A        # "JMDL"
+const ANM_MAGIC = 0x4D4E414A        # "JANM"
+const MDL_VERSION = 1
+const ANM_VERSION = 1
+const MAX_BONES = 128               # per model (palette width = 3 * MAX_BONES texels)
+const PAL_ROWS = 256                # skinned instances per frame
+
+# ---------------- binary files ----------------
+struct BinW:
+    b: u8[]
+
+w_u8 = (w: mut BinW, v: int): w.b.push(u8(v & 255))
+w_u32 = (w: mut BinW, v: int):
+    w.b.push(u8(v & 255))
+    w.b.push(u8((v >> 8) & 255))
+    w.b.push(u8((v >> 16) & 255))
+    w.b.push(u8((v >> 24) & 255))
+w_f32 = (w: mut BinW, v: f64):
+    x = f32(v)
+    w_u32(w, int((x as u32)))
+w_str = (w: mut BinW, s: str):
+    w_u32(w, s.len())
+    loop k in [0..s.len()): w.b.push(s[k])
+w_v3 = (w: mut BinW, v: vec3):
+    w_f32(w, f64(v.x))
+    w_f32(w, f64(v.y))
+    w_f32(w, f64(v.z))
+w_v4 = (w: mut BinW, v: vec4):
+    w_f32(w, f64(v.x))
+    w_f32(w, f64(v.y))
+    w_f32(w, f64(v.z))
+    w_f32(w, f64(v.w))
+w_m4 = (w: mut BinW, m: mat4):
+    loop c in [0..4): w_v4(w, m[c])
+# bulk: raw bytes of an array of plain values
+w_raw[T] = (w: mut BinW, xs: T[]):
+    n = xs.len() * size_of(T)
+    if n == 0: return
+    old = w.b.len()
+    w.b.extend(fill(u8(0), n))
+    mem_copy(data(w.b) + old, data(xs) as *u8, n)
+
+struct BinR:
+    b: u8[]
+    pos = 0
+    bad = false
+
+r_u8 = (r: mut BinR) -> int:
+    if r.pos >= r.b.len():
+        r.bad = true
+        return 0
+    v = int(r.b[r.pos])
+    r.pos += 1
+    v
+r_u32 = (r: mut BinR) -> int:
+    if r.pos + 4 > r.b.len():
+        r.bad = true
+        return 0
+    p = r.pos
+    r.pos += 4
+    int(r.b[p]) | (int(r.b[p + 1]) << 8) | (int(r.b[p + 2]) << 16) | (int(r.b[p + 3]) << 24)
+r_i32 = (r: mut BinR) -> int:
+    v = r_u32(r)
+    if v >= 0x80000000: return v - 0x100000000
+    v
+r_f32 = (r: mut BinR) -> f32: u32(r_u32(r)) as f32
+r_str = (r: mut BinR) -> str:
+    n = r_u32(r)
+    if r.pos + n > r.b.len():
+        r.bad = true
+        return ""
+    s = str_from_bytes(r.b[r.pos..r.pos + n))
+    r.pos += n
+    s
+r_v3 = (r: mut BinR) -> vec3:
+    x = r_f32(r)
+    y = r_f32(r)
+    vec3(x, y, r_f32(r))
+r_v4 = (r: mut BinR) -> vec4:
+    x = r_f32(r)
+    y = r_f32(r)
+    z = r_f32(r)
+    vec4(x, y, z, r_f32(r))
+r_m4 = (r: mut BinR) -> mat4:
+    m = mat4()
+    loop c in [0..4): m[c] = r_v4(r)
+    m
+# bulk: n values of a plain type into an array
+r_raw[T] = (r: mut BinR, out: mut T[], n: int):
+    bytes = n * size_of(T)
+    if n <= 0: return
+    if r.pos + bytes > r.b.len():
+        r.bad = true
+        return
+    __r_copy(r.b, r.pos, data(out) as *u8, bytes)
+    r.pos += bytes
+# (borrowed parameter: data() of it does not copy)
+__r_copy = (b: u8[], at: int, dst: *u8, n: int): mem_copy(dst, data(b) + at, n)
+
+# ---------------- quaternion helpers ----------------
+quat_conj = (q: vec4) -> vec4: vec4(-q.x, -q.y, -q.z, q.w)
+quat_nlerp = (a: vec4, b: vec4, t: f32) -> vec4:
+    bb = b
+    if dot(a, b) < 0.0: bb = b * -1.0
+    normalize(a + (bb - a) * t)
+const QUAT_ID = vec4(0, 0, 0, 1)
+
+# translation, rotation, scale as a matrix
+trs = (t: vec3, r: vec4, s: vec3) -> mat4:
+    m = quat_to_mat4(r)
+    m[0] = m[0] * s.x
+    m[1] = m[1] * s.y
+    m[2] = m[2] * s.z
+    m[3] = vec4(t.x, t.y, t.z, 1)
+    m
+
+# ---------------- animation library ----------------
+struct Clip:
+    name = ""
+    fps = 30.0
+    frames = 1
+    duration = 0.0
+    looping = false                 # a hint (the clip is made to loop); sample_clip decides
+    motion = vec3(0, 0, 0)          # root motion removed at bake time (meters, canonical scale)
+    roff: int[]                     # per bone: first key in AnimLib.rq (quaternions)
+    rn: int[]                       # per bone: keys (0: rest, 1: constant, else one per frame)
+    toff: int[]
+    tn: int[]
+    soff: int[]
+    sn: int[]
+
+struct AnimLib:
+    name = ""
+    bones: str[]
+    parent: int[]
+    rest_t: vec3[]
+    rest_r: vec4[]
+    rest_s: vec3[]
+    hip = 1.0                       # pelvis rest height (translation scale)
+    clips: Clip[]
+    rq: i16[]                       # quaternion keys, x y z w * 32767
+    tv: vec3[]                      # translation offsets
+    sv: vec3[]                      # scale factors
+    index: {str: int}               # clip names and aliases
+    aliases: str[]
+    alias_clip: int[]
+
+struct Pose:
+    r: vec4[]                       # local rotation
+    t: vec3[]                       # translation offset from rest
+    s: vec3[]                       # scale factor
+
+clip_index = (lib: AnimLib, name: str) -> int: lib.index.get(name, -1)
+clip_duration = (lib: AnimLib, ci: int) -> f64:
+    if ci < 0: return 0.0
+    lib.clips[ci].duration
+bone_count = (lib: AnimLib) -> int: lib.bones.len()
+lib_bone = (lib: AnimLib, name: str) -> int:
+    loop i in [0..lib.bones.len()):
+        if lib.bones[i] == name: return i
+    -1
+
+rest_pose = (lib: AnimLib) -> Pose:
+    n = lib.bones.len()
+    Pose(lib.rest_r, fill(vec3(0, 0, 0), n), fill(vec3(1, 1, 1), n))
+
+load_anims = (path: str) -> AnimLib:
+    lib = AnimLib()
+    r = BinR(read_bytes(path) ?? [])
+    if r_u32(r) != ANM_MAGIC or r_u32(r) != ANM_VERSION:
+        eprint("load_anims: {path} is not an animation library (version {ANM_VERSION})")
+        return lib
+    lib.name = r_str(r)
+    nb = r_u32(r)
+    loop i in [0..nb):
+        lib.bones.push(r_str(r))
+        lib.parent.push(r_i32(r))
+        lib.rest_t.push(r_v3(r))
+        lib.rest_r.push(r_v4(r))
+        lib.rest_s.push(r_v3(r))
+    lib.hip = f64(r_f32(r))
+    nc = r_u32(r)
+    nq = 0
+    nt = 0
+    ns = 0
+    loop ci in [0..nc):
+        c = Clip(name = r_str(r))
+        c.fps = f64(r_f32(r))
+        c.frames = r_u32(r)
+        c.looping = r_u8(r) != 0
+        c.motion = r_v3(r)
+        c.duration = f64(c.frames - 1) / c.fps
+        loop b in [0..nb):
+            k = r_u32(r)
+            c.roff.push(nq)
+            c.rn.push(k)
+            nq += k
+            k = r_u32(r)
+            c.toff.push(nt)
+            c.tn.push(k)
+            nt += k
+            k = r_u32(r)
+            c.soff.push(ns)
+            c.sn.push(k)
+            ns += k
+        lib.clips.push(c)
+        lib.index[c.name] = ci
+    lib.rq = fill(i16(0), nq * 4)
+    r_raw(r, lib.rq, nq * 4)
+    lib.tv = fill(vec3(0, 0, 0), nt)
+    r_raw(r, lib.tv, nt)
+    lib.sv = fill(vec3(1, 1, 1), ns)
+    r_raw(r, lib.sv, ns)
+    na = r_u32(r)
+    loop k in [0..na):
+        a = r_str(r)
+        ci = r_u32(r)
+        lib.aliases.push(a)
+        lib.alias_clip.push(ci)
+        if not lib.index.has(a): lib.index[a] = ci
+    if r.bad: eprint("load_anims: {path} is truncated")
+    lib
+
+__qk = (lib: AnimLib, k: int) -> vec4:
+    o = k * 4
+    vec4(f32(lib.rq[o]), f32(lib.rq[o + 1]), f32(lib.rq[o + 2]), f32(lib.rq[o + 3])) * (1.0 / 32767.0)
+
+# shorten a clip's swing about each bone's mean pose, keeping the loop and its timing
+clip_scale_swing = (lib: mut AnimLib, ci: int, bones: str[], amount: f64):
+    if ci < 0 or ci >= lib.clips.len(): return
+    c = lib.clips[ci]
+    loop name in bones:
+        b = lib_bone(lib, name)
+        if b < 0 or c.rn[b] < 2: continue
+        n = c.rn[b]
+        count = if c.looping: n - 1 else: n
+        ref = __qk(lib, c.roff[b])
+        avg = vec4(0, 0, 0, 0)
+        loop k in [0..count):
+            q = __qk(lib, c.roff[b] + k)
+            avg += if dot(ref, q) < 0.0: q * -1.0 else: q
+        avg = normalize(avg)
+        off = lib.rq.len() / 4
+        loop k in [0..n):
+            q = quat_nlerp(avg, __qk(lib, c.roff[b] + k), f32(amount))
+            loop v in [q.x, q.y, q.z, q.w]: lib.rq.push(i16(round(f64(v) * 32767.0)))
+        lib.clips[ci].roff[b] = off
+
+# the clip's pose at time t (seconds); looping wraps, otherwise holds the last frame
+sample_clip = (lib: AnimLib, ci: int, t: f64, looping: bool) -> Pose:
+    p = rest_pose(lib)
+    sample_into(lib, ci, t, looping, p)
+    p
+
+sample_into = (lib: AnimLib, ci: int, t: f64, looping: bool, out: mut Pose):
+    if ci < 0 or ci >= lib.clips.len(): return
+    c = lib.clips[ci]
+    nb = lib.bones.len()
+    last = f64(c.frames - 1)
+    f = t * c.fps
+    if looping and last > 0.0: f = mod(f, last)
+    f = clamp(f, 0.0, last)
+    i0 = int(f)
+    i1 = min(i0 + 1, c.frames - 1)
+    a = f32(f - f64(i0))
+    loop b in [0..nb):
+        n = c.rn[b]
+        if n > 1:
+            q0 = __qk(lib, c.roff[b] + i0)
+            q1 = __qk(lib, c.roff[b] + i1)
+            out.r[b] = quat_nlerp(q0, q1, a)
+        else if n == 1: out.r[b] = normalize(__qk(lib, c.roff[b]))
+        else: out.r[b] = lib.rest_r[b]
+        n = c.tn[b]
+        if n > 1:
+            t0 = lib.tv[c.toff[b] + i0]
+            out.t[b] = t0 + (lib.tv[c.toff[b] + i1] - t0) * a
+        else if n == 1: out.t[b] = lib.tv[c.toff[b]]
+        else: out.t[b] = vec3(0, 0, 0)
+        n = c.sn[b]
+        if n > 1:
+            s0 = lib.sv[c.soff[b] + i0]
+            out.s[b] = s0 + (lib.sv[c.soff[b] + i1] - s0) * a
+        else if n == 1: out.s[b] = lib.sv[c.soff[b]]
+        else: out.s[b] = vec3(1, 1, 1)
+
+# crossfade: w = 0 gives a, w = 1 gives b
+blend_pose = (a: Pose, b: Pose, w: f64) -> Pose:
+    p = a
+    blend_into(p, b, w)
+    p
+
+blend_into = (a: mut Pose, b: Pose, w: f64):
+    k = f32(clamp(w, 0.0, 1.0))
+    if k <= 0.0: return
+    loop i in [0..a.r.len()):
+        a.r[i] = quat_nlerp(a.r[i], b.r[i], k)
+        a.t[i] = a.t[i] + (b.t[i] - a.t[i]) * k
+        a.s[i] = a.s[i] + (b.s[i] - a.s[i]) * k
+
+# per-bone weights: 1 for `root_bone` and everything below it, 0 elsewhere
+bone_mask = (lib: AnimLib, root_bone: str) -> f32[]:
+    n = lib.bones.len()
+    m = fill(f32(0.0), n)
+    rb = lib_bone(lib, root_bone)
+    if rb < 0: return m
+    loop i in [0..n):
+        j = i
+        loop j >= 0 and j != rb: j = lib.parent[j]
+        if j == rb: m[i] = 1.0
+    m
+
+# a layer: bones in the mask take `top` (weighted by w * mask), the rest keep `base`
+# (e.g. legs from locomotion, upper body from an attack: bone_mask(lib, "spine_01"))
+layer_pose = (base: Pose, top: Pose, mask: f32[], w: f64) -> Pose:
+    p = base
+    layer_into(p, top, mask, w)
+    p
+
+layer_into = (base: mut Pose, top: Pose, mask: f32[], w: f64):
+    loop i in [0..base.r.len()):
+        k = mask[i] * f32(w)
+        if k <= 0.0: continue
+        base.r[i] = quat_nlerp(base.r[i], top.r[i], k)
+        base.t[i] = base.t[i] + (top.t[i] - base.t[i]) * k
+        base.s[i] = base.s[i] + (top.s[i] - base.s[i]) * k
+
+# additive: adds (add - ref) on top of base, scaled by w (e.g. a breathing or recoil clip
+# relative to its first frame, or a lean pose relative to idle)
+add_pose = (base: mut Pose, add: Pose, ref: Pose, w: f64, mask: f32[] = []):
+    loop i in [0..base.r.len()):
+        k = f32(w)
+        if mask.len() > 0: k = k * mask[i]
+        if k == 0.0: continue
+        d = quat_mul(quat_conj(ref.r[i]), add.r[i])
+        if d.w < 0.0: d = d * -1.0
+        base.r[i] = normalize(quat_mul(base.r[i], quat_nlerp(QUAT_ID, d, k)))
+        base.t[i] = base.t[i] + (add.t[i] - ref.t[i]) * k
+
+# the model-space rotation of a library bone in a pose (rotations only)
+pose_rot = (lib: AnimLib, p: Pose, bone: int) -> vec4:
+    q = p.r[bone]
+    j = lib.parent[bone]
+    loop j >= 0:
+        q = quat_mul(p.r[j], q)
+        j = lib.parent[j]
+    q
+
+# rotate a bone (and everything below it) about a model-space axis through its pivot:
+# leaning into turns, aiming the head or the bow arm, recoil
+rotate_bone = (lib: AnimLib, p: mut Pose, bone: int, axis: vec3, angle: f64):
+    if bone < 0: return
+    par = QUAT_ID
+    if lib.parent[bone] >= 0: par = pose_rot(lib, p, lib.parent[bone])
+    la = quat_rotate(quat_conj(par), normalize(axis))
+    p.r[bone] = normalize(quat_mul(quat_axis_angle(la, angle), p.r[bone]))
+
+# ---------------- a clip player with crossfades ----------------
+#   a = Animator()
+#   anim_play(a, clip_index(lib, "run"), 0.2)          (no-op while that clip already plays)
+#   anim_update(a, dt)
+#   pose = anim_pose(lib, a)
+#   if anim_finished(lib, a): ...                        (a one-shot reached its end)
+struct Animator:
+    clip = -1
+    t = 0.0
+    looping = true
+    speed = 1.0
+    prev = -1
+    prev_t = 0.0
+    prev_loop = true
+    fade = 0.0                      # crossfade time left
+    fade_len = 0.0
+
+anim_play = (a: mut Animator, clip: int, fade: f64 = 0.2, looping: bool = true, restart: bool = false, speed: f64 = 1.0):
+    a.speed = speed
+    if clip == a.clip and not restart: return
+    if a.clip >= 0 and fade > 0.0:
+        a.prev = a.clip
+        a.prev_t = a.t
+        a.prev_loop = a.looping
+        a.fade = fade
+        a.fade_len = fade
+    else:
+        a.prev = -1
+        a.fade = 0.0
+    a.clip = clip
+    a.t = 0.0
+    a.looping = looping
+
+anim_update = (a: mut Animator, dt: f64):
+    a.t += dt * a.speed
+    if a.fade > 0.0:
+        a.prev_t += dt * a.speed
+        a.fade = max(a.fade - dt, 0.0)
+        if a.fade <= 0.0: a.prev = -1
+
+anim_pose = (lib: AnimLib, a: Animator) -> Pose:
+    p = sample_clip(lib, a.clip, a.t, a.looping)
+    if a.prev >= 0 and a.fade > 0.0:
+        q = sample_clip(lib, a.prev, a.prev_t, a.prev_loop)
+        w = smoothstep(0.0, 1.0, 1.0 - a.fade / max(a.fade_len, 0.0001))
+        blend_into(q, p, w)
+        return q
+    p
+
+# 0..1 through the current clip (one-shots: attack windows, footsteps, events)
+anim_phase = (lib: AnimLib, a: Animator) -> f64:
+    d = clip_duration(lib, a.clip)
+    if d <= 0.0: return 1.0
+    if a.looping: return mod(a.t, d) / d
+    clamp(a.t / d, 0.0, 1.0)
+
+anim_finished = (lib: AnimLib, a: Animator) -> bool:
+    not a.looping and a.t >= clip_duration(lib, a.clip)
+
+# ---------------- models ----------------
+struct ModelPart:
+    name = ""
+    mesh = Mesh()
+    slot = 0                        # texture slot
+    two_sided = false
+    verts = 0
+    tris = 0
+
+# CPU contact geometry stays outside ModelPart, which every draw pass copies.
+# Retaining nested arrays in that hot draw record increases reference traffic.
+model_body_vertices: {str: ChVert[]} = {}
+model_body_indices: {str: u32[]} = {}
+
+struct Model:
+    name = ""
+    skeleton = ""                   # the AnimLib it is animated with
+    bones: str[]
+    parent: int[]
+    canon: int[]                    # library bone driving each bone (-1: stays at rest)
+    use_t: bool[]                   # takes the pose's translation offsets (root, pelvis)
+    rest_t: vec3[]
+    rest_r: vec4[]
+    rest_s: vec3[]
+    ibm: mat4[]
+    tscale = 1.0                    # pose translation scale (hip height / library hip height)
+    bmin = vec3(0, 0, 0)
+    bmax = vec3(0, 0, 0)
+    slots = 1
+    variants = 1
+    textures: Texture[]             # variants * slots
+    parts: ModelPart[]
+    ok = false
+
+bone_index = (m: Model, name: str) -> int:
+    loop i in [0..m.bones.len()):
+        if m.bones[i] == name: return i
+    ln = lower(name)
+    loop i in [0..m.bones.len()):
+        if lower(m.bones[i]) == ln: return i
+    -1
+
+part_index = (m: Model, name: str) -> int:
+    loop i in [0..m.parts.len()):
+        if m.parts[i].name == name: return i
+    -1
+
+model_height = (m: Model) -> f64: f64(m.bmax.y - m.bmin.y)
+
+__white = Texture(0, 0, 0)
+__white_tex = () -> Texture:
+    if __white.id == 0: __white = bytes_texture(1, 1, [u8(255), 255, 255, 0], false, true)
+    __white
+
+load_model = (path: str) -> Model:
+    m = Model()
+    r = BinR(read_bytes(path) ?? [])
+    if r_u32(r) != MDL_MAGIC or r_u32(r) != MDL_VERSION:
+        eprint("load_model: {path} is not a model (version {MDL_VERSION})")
+        return m
+    m.name = r_str(r)
+    m.skeleton = r_str(r)
+    nb = r_u32(r)
+    loop i in [0..nb):
+        m.bones.push(r_str(r))
+        m.parent.push(r_i32(r))
+        m.canon.push(r_i32(r))
+        m.use_t.push(r_u8(r) != 0)
+        m.rest_t.push(r_v3(r))
+        m.rest_r.push(r_v4(r))
+        m.rest_s.push(r_v3(r))
+        m.ibm.push(r_m4(r))
+    m.tscale = f64(r_f32(r))
+    m.bmin = r_v3(r)
+    m.bmax = r_v3(r)
+    m.slots = r_u32(r)
+    m.variants = r_u32(r)
+    loop k in [0..m.slots * m.variants):
+        w = r_u32(r)
+        h = r_u32(r)
+        if w == 0:
+            m.textures.push(__white_tex())
+            continue
+        px = fill(u8(0), w * h * 4)
+        r_raw(r, px, w * h * 4)
+        m.textures.push(bytes_texture(w, h, px, true, true))
+    np = r_u32(r)
+    loop k in [0..np):
+        pt = ModelPart(name = r_str(r))
+        pt.slot = r_u32(r)
+        pt.two_sided = r_u8(r) != 0
+        nv = r_u32(r)
+        vs = fill(ChVert(vec3(0, 0, 0), vec3(0, 0, 0), vec2(0, 0), vec4(0, 0, 0, 0), vec4(0, 0, 0, 0), vec4(0, 0, 0, 0)), nv)
+        r_raw(r, vs, nv)
+        ni = r_u32(r)
+        idx = fill(u32(0), ni)
+        r_raw(r, idx, ni)
+        pt.verts = nv
+        pt.tris = ni / 3
+        if pt.name != "club" and pt.name != "bow" and pt.name != "sword" and pt.name != "shield" and pt.name != "hood":
+            model_body_vertices["{m.name}:{k}"] = vs
+            model_body_indices["{m.name}:{k}"] = idx
+        pt.mesh = mesh(vs, idx)
+        m.parts.push(pt)
+    if r.bad:
+        eprint("load_model: {path} is truncated")
+        return m
+    m.ok = true
+    m
+
+# ---------------- skinning ----------------
+struct Skin:
+    world: mat4[]                   # model-space bone transforms
+    mats: f32[]                     # 12 floats per bone: rows of world * inverse bind
+    row = -1                        # palette row (valid in frame `frame`)
+    frame = -1
+
+# the model's bones in a pose (no GPU upload)
+skin_cpu = (m: Model, p: Pose) -> Skin: skin_cpu(m, p, fill(vec3(1, 1, 1), 0))
+
+# (thin: a scale per bone in its own frame, for the flesh it carries alone: a slimmer arm
+# without a shorter one, or a narrower chest; empty for none)
+# Optional model-space bone anchor: its descendants inherit the same transform.
+# Attack hands can stay on a shared CPU socket while the torso/feet keep their layers.
+skin_cpu = (m: Model, p: Pose, thin: vec3[], anchor: int = -1, at: mat4 = mat4()) -> Skin:
+    n = m.bones.len()
+    sk = Skin(fill(mat4(), n), fill(f32(0.0), n * 12))
+    np = p.r.len()
+    loop i in [0..n):
+        c = m.canon[i]
+        t = m.rest_t[i]
+        r = m.rest_r[i]
+        s = m.rest_s[i]
+        if c >= 0 and c < np:
+            r = p.r[c]
+            s = s * p.s[c]
+            if m.use_t[i]: t = t + p.t[c] * f32(m.tscale)
+        l = trs(t, r, s)
+        pi = m.parent[i]
+        if pi >= 0: sk.world[i] = sk.world[pi] * l
+        else: sk.world[i] = l
+        if i == anchor: sk.world[i] = at
+        k = if i < thin.len(): sk.world[i] * scaling(thin[i]) * m.ibm[i] else: sk.world[i] * m.ibm[i]
+        o = i * 12
+        sk.mats[o] = k[0].x
+        sk.mats[o + 1] = k[1].x
+        sk.mats[o + 2] = k[2].x
+        sk.mats[o + 3] = k[3].x
+        sk.mats[o + 4] = k[0].y
+        sk.mats[o + 5] = k[1].y
+        sk.mats[o + 6] = k[2].y
+        sk.mats[o + 7] = k[3].y
+        sk.mats[o + 8] = k[0].z
+        sk.mats[o + 9] = k[1].z
+        sk.mats[o + 10] = k[2].z
+        sk.mats[o + 11] = k[3].z
+    sk
+
+# the skin for a pose, uploaded to this frame's bone palette
+skin = (m: Model, p: Pose) -> Skin: skin(m, p, fill(vec3(1, 1, 1), 0))
+skin = (m: Model, p: Pose, thin: vec3[]) -> Skin:
+    sk = skin_cpu(m, p, thin)
+    sk.row = __pal_upload(sk.mats)
+    sk.frame = frame_number()
+    sk
+
+skin_at = (m: Model, p: Pose, bone: int, at: mat4) -> Skin:
+    sk = skin_cpu(m, p, fill(vec3(1, 1, 1), 0), bone, at)
+    sk.row = __pal_upload(sk.mats)
+    sk.frame = frame_number()
+    sk
+
+# the rest pose (no library needed)
+skin_rest = (m: Model) -> Skin:
+    n = m.bones.len()
+    p = Pose(fill(vec4(0, 0, 0, 1), 0), fill(vec3(0, 0, 0), 0), fill(vec3(1, 1, 1), 0))
+    sk = skin_cpu(m, p)
+    sk.row = __pal_upload(sk.mats)
+    sk.frame = frame_number()
+    sk
+
+# model-space transform of a bone (x axis, y along the bone, z; origin at the joint)
+bone_world = (m: Model, sk: Skin, bone: int) -> mat4:
+    if bone < 0 or bone >= sk.world.len(): return mat4()
+    sk.world[bone]
+bone_world = (m: Model, sk: Skin, name: str) -> mat4: bone_world(m, sk, bone_index(m, name))
+
+# the same straight from a pose (walks the chain: for one or two bones without skinning)
+bone_world = (m: Model, p: Pose, bone: int) -> mat4:
+    if bone < 0: return mat4()
+    out = mat4()
+    j = bone
+    loop j >= 0:
+        c = m.canon[j]
+        t = m.rest_t[j]
+        r = m.rest_r[j]
+        s = m.rest_s[j]
+        if c >= 0 and c < p.r.len():
+            r = p.r[c]
+            s = s * p.s[c]
+            if m.use_t[j]: t = t + p.t[c] * f32(m.tscale)
+        out = trs(t, r, s) * out
+        j = m.parent[j]
+    out
+
+# ---- the bone palette: one RGBA32F texture, a row per skinned instance per frame ----
+# skin() copies the matrices into a CPU staging copy; the first draw of the frame uploads all
+# rows used so far in one call
+# (three textures in turn, one per frame: this frame's uploads never touch the one the GPU may
+# still be drawing last frame's characters from, which stalled the driver)
+const PAL_RING = 3
+struct Palette:
+    texs: Texture[]
+    tex = Texture(0, 0, 0)
+    staging: f32[]
+    row = 0
+    frame = -1
+    dirty_lo = PAL_ROWS
+    dirty_hi = -1
+
+__pal = Palette()
+
+palette_texture = () -> Texture:
+    if __pal.texs.len() == 0:
+        __pal.staging = fill(f32(0.0), MAX_BONES * 3 * PAL_ROWS * 4)
+        loop k in [0..PAL_RING): __pal.texs.push(rgba32f_texture(MAX_BONES * 3, PAL_ROWS, __pal.staging))
+    __pal.tex = __pal.texs[frame_number() % PAL_RING]
+    __pal.tex
+
+__pal_upload = (mats: f32[]) -> int:
+    palette_texture()
+    f = frame_number()
+    if f != __pal.frame:
+        __pal.frame = f
+        __pal.row = 0
+    row = __pal.row % PAL_ROWS
+    __pal.row += 1
+    n = min(mats.len(), MAX_BONES * 12)
+    __pal_copy(__pal.staging, row * MAX_BONES * 12, mats, n)
+    __pal.dirty_lo = min(__pal.dirty_lo, row)
+    __pal.dirty_hi = max(__pal.dirty_hi, row)
+    row
+
+__pal_copy = (dst: mut f32[], at: int, src: f32[], n: int): mem_copy((data(dst) as *u8) + at * 4, data(src) as *u8, n * 4)
+
+# upload the rows written since the last flush (called by the draw functions)
+palette_flush = ():
+    if __pal.dirty_hi < __pal.dirty_lo: return
+    lo = __pal.dirty_lo
+    rows = __pal.dirty_hi - lo + 1
+    __pal_flush_rows(__pal.staging, palette_texture(), lo, rows)
+    __pal.dirty_lo = PAL_ROWS
+    __pal.dirty_hi = -1
+
+__pal_flush_rows = (st: f32[], t: Texture, lo: int, rows: int):
+    w = MAX_BONES * 3
+    glBindTexture(GL_TEXTURE_2D, u32(t.id))
+    gl_tex_sub_image(0, lo, w, rows, GL_RGBA, GL_FLOAT, (data(st) as *u8) + lo * w * 16, rows * w * 16)
+
+# Distant actors reuse a pose on alternating frames. Upload an older pose once
+# per frame, rather than rewriting the live palette in every shadow/colour pass.
+# Keep the source array alive until the next frame: its pointer cannot be reused,
+# and an edit detaches shared storage instead of changing a cached pose in place.
+struct SkinRow:
+    mats: f32[]
+    row: int
+    serial: int
+__skin_rows: {int: SkinRow} = {}
+__skin_rows_frame = -1
+__skin_row = (sk: Skin) -> int:
+    n = frame_number()
+    if __skin_rows_frame != n:
+        __skin_rows.clear()
+        __skin_rows_frame = n
+    if sk.frame == n and sk.row >= 0: return sk.row
+    key = (data(sk.mats) as *u8) as int
+    if let previous = __skin_rows.get(key):
+        if previous.mats.len() == sk.mats.len() and __pal.row - previous.serial < PAL_ROWS: return previous.row
+    row = __pal_upload(sk.mats)
+    __skin_rows[key] = SkinRow(sk.mats, row, __pal.row)
+    row
+
+# ---------------- drawing ----------------
+# the lit pass: into the bound (HDR) target, depth test on
+draw_character = (m: Model, world: mat4, sk: Skin, scene: CharScene, p: CharParams = CharParams()):
+    if not m.ok: return
+    ch_init_shaders()
+    row = __skin_row(sk)
+    bones = palette_texture()
+    palette_flush()
+    glEnable(GL_DEPTH_TEST)
+    glDepthMask(1)
+    glDisable(GL_BLEND)
+    var_ = clamp(p.variant, 0, m.variants - 1)
+    loop k in [0..m.parts.len()):
+        if (p.hide >> k) & 1 != 0: continue
+        pt = m.parts[k]
+        if pt.two_sided: glDisable(GL_CULL_FACE)
+        else:
+            glEnable(GL_CULL_FACE)
+            glCullFace(GL_BACK)
+        tex = m.textures[var_ * m.slots + pt.slot]
+        draw_fast(ch_shaders.lit, pt.mesh, ch_uniforms(scene, p, world, bones, row, tex, pt.two_sided))
+    glEnable(GL_CULL_FACE)
+
+# depth only, for the shadow maps (call between shadow_begin(k) and shadow_end())
+draw_character_shadow = (m: Model, world: mat4, sk: Skin, shadow_vp: mat4, p: CharParams = CharParams()):
+    if not m.ok: return
+    ch_init_shaders()
+    row = __skin_row(sk)
+    palette_flush()
+    u = ChSU(shadow_vp, world, palette_texture(), f32(row), f32(p.dissolve), f32(p.wake_shape))
+    loop k in [0..m.parts.len()):
+        if (p.hide >> k) & 1 != 0: continue
+        draw_fast(ch_shaders.depth, m.parts[k].mesh, u)
+
+# ---------------- props: rigid meshes drawn with the character shader ----------------
+# (a quick way to a prop from boxes, for tools; the game's items are built in items.jo)
+struct PropBox:
+    center: vec3
+    size: vec3
+    color: vec4
+
+__box_faces = [vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1)]
+
+# a one-bone model made of boxes (colors in the game's albedo range, see CHARACTERS.md)
+prop_boxes = (boxes: PropBox[], name: str = "prop") -> Model:
+    vs: ChVert[]
+    idx: u32[]
+    lo = vec3(1e9, 1e9, 1e9)
+    hi = vec3(-1e9, -1e9, -1e9)
+    loop b in boxes:
+        h = b.size * 0.5
+        loop n in __box_faces:
+            # two axes spanning the face
+            u = vec3(n.y, n.z, n.x)
+            v = cross(n, u)
+            base = u32(vs.len())
+            loop k in [0..4):
+                su = (if k == 1 or k == 2: f32(1.0) else: f32(-1.0))
+                sv = (if k >= 2: f32(1.0) else: f32(-1.0))
+                p = b.center + (n + u * su + v * sv) * h
+                lo = min(lo, p)
+                hi = max(hi, p)
+                vs.push(ChVert(p, n, vec2(0, 0), b.color, vec4(0, 0, 0, 0), vec4(1, 0, 0, 0)))
+            idx.extend([base, base + 1, base + 2, base, base + 2, base + 3])
+    m = Model(name = name, skeleton = "", ok = true, bmin = lo, bmax = hi)
+    m.bones.push("prop")
+    m.parent.push(-1)
+    m.canon.push(-1)
+    m.use_t.push(false)
+    m.rest_t.push(vec3(0, 0, 0))
+    m.rest_r.push(QUAT_ID)
+    m.rest_s.push(vec3(1, 1, 1))
+    m.ibm.push(mat4())
+    m.textures.push(__white_tex())
+    # faces wind either way: draw both sides
+    m.parts.push(ModelPart(name = name, mesh = mesh(vs, idx), slot = 0, two_sided = true, verts = vs.len(), tris = idx.len() / 3))
+    m
+
+draw_prop = (m: Model, world: mat4, scene: CharScene, p: CharParams = CharParams()):
+    draw_character(m, world, skin_rest(m), scene, p)
+
+draw_prop_shadow = (m: Model, world: mat4, shadow_vp: mat4):
+    draw_character_shadow(m, world, skin_rest(m), shadow_vp)
+
+# attachment points: a bone and an offset in its frame. Props are modeled with their handle at
+# the origin, pointing along +y (blade, shaft), front face toward +z.
+struct Socket:
+    bone = ""
+    offset = mat4()
+
+# the right hand's grip (sword, club, spear: the blade along +y points out of the fist)
+SOCKET_HAND_R = Socket("hand_r", translation(vec3(-0.035, 0.085, 0.0)) * rotation_x(PI / 2.0))
+# the left hand's grip (bow: +y up along the bow)
+SOCKET_HAND_L = Socket("hand_l", translation(vec3(0.035, 0.085, 0.0)) * rotation_x(PI / 2.0))
+# the shield on the left forearm (the shield's front, +z, faces out of the arm)
+SOCKET_SHIELD = Socket("lowerarm_l", translation(vec3(0.0, 0.15, 0.06)) * rotation_y(PI / 2.0))
+# on the back (sword or shield when sheathed)
+SOCKET_BACK = Socket("spine_03", translation(vec3(0.0, 0.0, -0.14)))
+
+# world transform of a socket on a skinned character
+socket_world = (m: Model, world: mat4, sk: Skin, s: Socket) -> mat4: world * bone_world(m, sk, s.bone) * s.offset

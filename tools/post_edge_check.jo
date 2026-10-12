@@ -1,0 +1,54 @@
+# Production ink metric on GPU: a smooth plane at a grazing angle must stay
+# clean, while a figure against the sky or a nearer object retains its outline.
+# Run: flock /tmp/botw-render.lock sloppy/bin/sloppy tools/post_edge_check.jo
+use '../game/post.jo'
+use '../game/gfx.jo'
+struct EdgeCheckU:
+    scale: f32
+edge_check_fs = (i: PostO, u: EdgeCheckU) -> vec4:
+    inv = 0.012 + i.uv.x * 0.03
+    dx = inv * 0.82
+    dy = inv * 0.08
+    plane = ink_curvature(1.0 / inv, 1.0 / (inv + dx), 1.0 / (inv - dx), 1.0 / (inv + dy), 1.0 / (inv - dy))
+    texel = vec2(1.0 / 128.0, 1.0 / 128.0)
+    projection = vec2(0.83, 0.47)
+    up = vec3(0, 1, 0)
+    uv = vec2(0.5, 0.5)
+    sky = ink_curvature(8.0, 2000.0, 8.0, 8.0, 8.0) * ink_surface(8.0, 2000.0, 8.0, 8.0, 8.0, uv, texel, projection, up)
+    object = ink_curvature(8.0, 30.0, 8.0, 8.0, 8.0) * ink_surface(8.0, 30.0, 8.0, 8.0, 8.0, uv, texel, projection, up)
+    # A horizontal slope viewed almost along its tangent, with an overlapping
+    # terrain patch suddenly exposing the distant depth on its right side.
+    floor_uv = vec2(0.1, 0.05)
+    floor_ray = vec3((floor_uv * 2.0 - vec2(1, 1)) * projection, -1)
+    floor_normal = normalize(vec3(0, 0.945, -0.327))
+    floor_inv = -dot(floor_normal, floor_ray) * 0.3
+    floor_delta = -floor_normal.y * 0.3 * 2.0 * texel.y * projection.y
+    floor_mask = ink_surface(1.0 / floor_inv, 1.0 / floor_inv, 2000.0, 1.0 / (floor_inv + floor_delta), 1.0 / (floor_inv - floor_delta), floor_uv, texel, projection, up)
+    vec4(plane, sky, object, floor_mask)
+edge_check_vs = (v: FsVert, u: EdgeCheckU) -> PostO:
+    PostO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+window("Post edge regression", 128, 128)
+sh = make_sh(shader(edge_check_vs, edge_check_fs))
+target = make_target(128, 128, false, false)
+gl_delete_texture(target.color.id)
+target.color = color_texture(128, 128, GL_RGBA32F, GL_RGBA, GL_FLOAT, GL_NEAREST)
+glBindFramebuffer(GL_FRAMEBUFFER, u32(target.fbo))
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(target.color.id), 0)
+assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+bind_target(target)
+glDisable(GL_DEPTH_TEST)
+glDisable(GL_CULL_FACE)
+glDisable(GL_BLEND)
+draw_fast(sh, fullscreen_mesh(), EdgeCheckU(1.0))
+values = fill(f32(0), 128 * 128 * 4)
+gl_read_pixels_f32(0, 0, 128, 128, data(values) as *u8)
+worst = 0.0
+loop k in [0..128 * 128):
+    assert(values[k * 4 + 3] < 0.001)
+    worst = max(worst, f64(values[k * 4]))
+    assert(values[k * 4 + 1] > 0.99)
+    assert(values[k * 4 + 2] > 0.70)
+assert(worst < 0.00001)
+print("post edge: 16384 grazing-plane GPU samples max {worst:.9}; grazing terrain overlaps suppressed; sky and object silhouettes retain ink PASS")
+glBindFramebuffer(GL_FRAMEBUFFER, 0)
+free_target(target)

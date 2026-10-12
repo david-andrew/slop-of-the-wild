@@ -1,0 +1,205 @@
+# CPU rays against the actual cliff triangles: catch winding errors, open joins,
+# flat replacement walls and excessive mesh growth without a graphics context.
+use '../game/structures.jo'
+use '../game/physics.jo'
+use '../game/worldgen.jo'
+use '../game/gfx.jo'
+use '../game/water.jo'
+from '../game/structures.jo' import __west_cliffs
+from '../game/structures.jo' import __cliff_bed, __cliff_depth, __cliff_ray
+
+worldgen_load()
+structures_pads()
+worldgen_finish()
+__west_cliffs()
+
+hit = (o: vec3, d: vec3) -> f64:
+    nearest = 1000.0
+    loop strip in [0..cliff_surfaces.len() / 3):
+        b = cliff_surfaces[strip * 3]
+        loop i in [0..b.idx.len() / 3):
+            a = b.verts[int(b.idx[i * 3])].pos
+            bb = b.verts[int(b.idx[i * 3 + 1])].pos
+            c = b.verts[int(b.idx[i * 3 + 2])].pos
+            e1 = bb - a
+            e2 = c - a
+            h = cross(d, e2)
+            det = f64(dot(e1, h))
+            if det < 0.000001: continue
+            s = o - a
+            u = f64(dot(s, h)) / det
+            if u < 0.0 or u > 1.0: continue
+            q = cross(s, e1)
+            v = f64(dot(d, q)) / det
+            if v < 0.0 or u + v > 1.0: continue
+            t = f64(dot(e2, q)) / det
+            if t > 0.001 and t < nearest: nearest = t
+    nearest
+
+rays = 0
+# Off-grid increments avoid merely hitting the mesh's station vertices.
+loop zi in [0..104):
+    z = 1608.3 + f64(zi) * 1.79
+    loop y in [128.7, 149.1, 172.3, 199.7, 220.3]:
+        t = hit(v3(-1640, y, z), vec3(1, 0, 0))
+        if t >= 170.0: print("missing west face at {z}, {y}: {t}")
+        assert(t < 170.0, "closed west face")
+        rays += 1
+# Both shoulders continue around the waterfall; don't bridge the water itself.
+loop z in [1800.1, 1802.2, 1846.2, 1851.7, 1876.1, 1907.3, 1938.2]:
+    loop y in [150.3, 189.7, 220.3]:
+        t = hit(v3(-1640, y, z), vec3(1, 0, 0))
+        if t >= 220.0: print("missing shoulder at {z}, {y}: {t}")
+        assert(t < 220.0, "closed shoulder")
+        rays += 1
+assert(hit(v3(-1550, 170, 1823), vec3(1, 0, 0)) > 200.0, "waterfall stays open")
+# Local relief after subtracting the smoothly receding rim: several metres,
+# not thin stripes painted onto one plane.
+relief_min = 1000.0
+relief_max = -1000.0
+loop k in [0..48):
+    z = 1720.0 + f64(k) * 1.4
+    t = hit(v3(-1640, 190, z), vec3(1, 0, 0))
+    residual = t - (z - 1720.0) * 0.4
+    relief_min = min(relief_min, residual)
+    relief_max = max(relief_max, residual)
+assert(relief_max - relief_min > 7.0, "buttresses project by metres")
+# A downward ray outside the terrain rim lands on a capped crown or a ledge.
+loop z in [1691.7, 1727.3, 1753.1, 1784.2]:
+    t = hit(v3(-1640, 200, z), vec3(1, 0, 0))
+    assert(hit(v3(-1640 + t + 4.0, 320, z), vec3(0, -1, 0)) < 120.0, "solid top")
+triangles = 0
+loop strip in [0..cliff_surfaces.len() / 3):
+    triangles += cliff_surfaces[strip * 3].idx.len() / 3
+assert(triangles < 22000, "bounded cliff geometry")
+print("cliff mesh PASS: {rays} front rays, open waterfall, capped tops; relief {relief_max - relief_min:.2} m; {triangles} triangles")
+loop lod in [0..3):
+    count = 0
+    loop strip in [0..cliff_surfaces.len() / 3): count += cliff_surfaces[strip * 3 + lod].idx.len() / 3
+    print("cliff LOD {lod}: {count} triangles")
+
+# Independent physics rays must find climbable rock near the actual skin, not
+# a hidden core behind an entire buttress. Check several heights and both bays.
+worst = 0.0
+samples = 0
+loop z in [1631.3, 1661.7, 1705.1, 1721.3, 1749.7, 1770.3, 1790.1, 1877.3, 1913.1]:
+    loop y in [155.7, 189.3, 218.7, 240.3]:
+        o = v3(-1640, y, z)
+        visible = hit(o, vec3(1, 0, 0))
+        if visible > 220.0: continue
+        physical = raycast(o, vec3(1, 0, 0), 220, true, false)
+        if not physical.hit: print("missing physical {z},{y}: visible {visible}")
+        assert(physical.hit, "continuous physical cliff")
+        if physical.collider >= 0: assert(colliders[physical.collider].climbable, "cliff remains climbable")
+        error = abs(visible - physical.dist)
+        worst = max(worst, error)
+        indexed = __cliff_ray(o, vec3(1, 0, 0), 220)
+        assert(indexed.hit and abs(indexed.dist - visible) < 0.001, "spatial collision index agrees with brute-force triangles")
+        samples += 1
+print("cliff collision: {samples} probes; maximum production collision residual {worst:.3} m; {cliff_triangles.len()} triangles")
+
+# Inspect every LOD's welded edges, not just selected camera rays. Any open edge
+# must be buried under the heightfield; interior joins must be used twice.
+point_key = (p: vec3) -> str: "{p.x:.3},{p.y:.3},{p.z:.3}"
+loop mesh_id in [0..cliff_surfaces.len()):
+    b = cliff_surfaces[mesh_id]
+    edges: {str: int} = {}
+    exposed: {str: bool} = {}
+    loop i in [0..b.idx.len() / 3):
+        ps = [b.verts[int(b.idx[i * 3])].pos, b.verts[int(b.idx[i * 3 + 1])].pos, b.verts[int(b.idx[i * 3 + 2])].pos]
+        assert(length(cross(ps[1] - ps[0], ps[2] - ps[0])) > 0.00001, "nondegenerate triangle")
+        loop k in [0..3):
+            a = ps[k]
+            c = ps[(k + 1) % 3]
+            ak = point_key(a)
+            ck = point_key(c)
+            key = if ak < ck: "{ak}/{ck}" else: "{ck}/{ak}"
+            edges[key] = edges.get(key, 0) + 1
+            exposed[key] = f64(a.y) > gy(f64(a.x), f64(a.z)) + 0.05 or f64(c.y) > gy(f64(c.x), f64(c.z)) + 0.05
+    open = 0
+    loop key, count in edges:
+        if count == 1 and exposed[key]:
+            open += 1
+            if open < 4: print("LOD {mesh_id} open edge {key}")
+        if count > 2: print("nonmanifold {count}: {key}")
+        assert(count <= 2, "manifold surface")
+    print("cliff topology LOD {mesh_id}: {open} exposed open edges")
+    assert(open == 0, "all exposed joins closed")
+# A pure periodic rib would have the same relief profile at different heights.
+# The depth's vertical difference must itself vary substantially along the face.
+dmin = 1000.0
+dmax = -1000.0
+bmin = 1000.0
+bmax = -1000.0
+loop i in [0..80):
+    z = 1690.0 + f64(i)
+    p = v3(-1530, 207, z)
+    delta = __cliff_depth(p) - __cliff_depth(p + vec3(0, 23, 0))
+    dmin = min(dmin, delta)
+    dmax = max(dmax, delta)
+    phase = __cliff_bed(p)
+    bmin = min(bmin, phase)
+    bmax = max(bmax, phase)
+assert(dmax - dmin > 5.0, "buttresses change with height")
+assert(bmax - bmin > 0.6, "strata are tilted and warped, never level courses")
+print("cliff variation: {dmax - dmin:.2} m height-dependent relief; bedding changes {bmax - bmin:.2} cycles along 80 m")
+
+assert(worst < 0.025, "production raycast uses the actual displaced surface")
+# Lighting normals come from the deformed triangles; grassy ledges must occur
+# on upward-facing parts, with cool bare gullies and overhang undersides too.
+up = 0
+down = 0
+green = 0
+loop strip in [0..cliff_surfaces.len() / 3):
+    b = cliff_surfaces[strip * 3]
+    loop v in b.verts:
+        if v.pos.y < 150.0 or v.pos.y > 240.0: continue
+        if v.normal.y > 0.6: up += 1
+        if v.normal.y < -0.3: down += 1
+        if v.normal.y > 0.5 and v.color.y > v.color.x: green += 1
+assert(up > 100 and down > 100, "displaced shelves and undercuts carry lighting normals")
+assert(green > 20, "moss grows on upward ledges")
+print("cliff normals: {up} shelf, {down} underside and {green} grassy vertices")
+
+# A closed mesh can still disappear behind the heightfield. Check the upper
+# west face itself so misplaced bays cannot bring back flat terrain patches.
+clear_vertices = 0
+loop strip in [0..cliff_surfaces.len() / 3):
+    # Inspect the outer skin, not the buried return caps of the gorge walls.
+    loop k in [0..cliff_front_vertices[strip * 3]):
+        v = cliff_surfaces[strip * 3].verts[k]
+        if v.pos.y < 170 or v.pos.y > 250 or v.normal.x > -0.5: continue
+        assert(f64(v.pos.y) >= gy(f64(v.pos.x), f64(v.pos.z)) - 0.05, "upper cliff face clears the heightfield")
+        clear_vertices += 1
+assert(clear_vertices > 1000, "dense upper-face clearance coverage")
+print("cliff heightfield clearance: {clear_vertices} exposed upper-face vertices")
+
+# Probe the new inner gorge skins from the open falling-water corridor. The
+# collision index must agree with the visible front wall on both banks.
+gorge_probes = 0
+loop x in [-1484.0, -1468.0, -1448.0, -1432.0, -1416.0]:
+    level = water_level(x, 1823.0) ?? 100.0
+    o = v3(x, level + 4.0, 1823)
+    loop side in [-1.0, 1.0]:
+        d = v3(0, 0, side)
+        visible = __cliff_ray(o, d, 36)
+        physical = raycast(o, d, 36, true, false)
+        assert(visible.hit and physical.hit, "rock walls frame both sides of the fall")
+        assert(abs(visible.dist - physical.dist) < 0.025, "gorge collision follows visible wall")
+        assert(visible.dist > 18.0, "bank walls stay outside the falling sheet")
+        gorge_probes += 1
+print("gorge collision: {gorge_probes} matched probes, open central channel")
+# The cliff-top camera sees the bank above the water and past the former
+# uphill endpoint. This upper face must be authored rock, with exact collision.
+loop x in [-1448.0,-1399.0]:
+    o=v3(x,270.0,1823.0)
+    d=vec3(0,0,1)
+    visible=__cliff_ray(o,d,36)
+    physical=raycast(o,d,36,true,false)
+    assert(visible.hit and physical.hit and abs(visible.dist-physical.dist)<0.025,"upper bank has visible and physical rock")
+print("PASS gorge crown: upper bank and uphill reach have authored collision")
+loop x in [-1448.0, -1466.0]:
+    depth = water_depth(x, 1823.0)
+    assert(depth > 0.4 and depth < 1.0, "water spreads across real shallow rock benches")
+assert(water_depth(-1486.0, 1823.0) > 3.0, "plunge pool is deeper than the benches")
+print("waterfall course: two shallow rock benches and a deeper plunge pool")

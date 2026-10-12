@@ -1,0 +1,58 @@
+# CPU-only visual emission invariants: the pale inner tongue must exist at every
+# normal frame rate, without adding simulation sources or changing gameplay RNG.
+# Screen coverage is measured separately by fire_gpu_check.sh.
+use '../game/fx.jo'
+loop hz in [30,60,120]:
+    seed_random(701)
+    particles.clear()
+    loop k in [0..hz*20): fx_fire(vec3(0,0,0),1.0,1.0/f64(hz))
+    # Golden next draws from the unmodified d81b2f6 emitter.
+    assert(random()==[0.5315837494644204, 0.3274293497589855, 0.14122088292793178][if hz==30:0 else if hz==60:1 else:2],"visual fire preserves gameplay RNG sequence")
+    flames=0
+    cores=0
+    embers=0
+    smoke=0
+    spread=0.0
+    loop p in particles:
+        if p.kind==.flame:
+            flames+=1
+            if p.color.y>0.7: cores+=1
+            spread=max(spread,f64(length(p.pos.xz)))
+        if p.kind==.ember: embers+=1
+        if p.kind==.smoke: smoke+=1
+    assert(flames>650 and flames<950,"bounded flame-source budget")
+    assert(cores>80 and cores<flames-80,"inner and outer tongues at every frame rate")
+    assert(embers>30 and embers<140,"satellites use the original bounded ember sources")
+    assert(smoke<210,"bounded smoke-source budget")
+    assert(spread>0.45 and spread<0.7,"flames occupy depth around their emitter")
+    print("PASS fire {hz}Hz: flames={flames} cores={cores} embers={embers} smoke={smoke} spread={spread:.3}")
+
+# The old pool lifetime/cap also controls whether emit consumes a rotation draw.
+seed_random(902)
+particles.clear()
+loop k in [0..12000): fx_fire(vec3(0,0,0),4.0,1.0/60.0)
+assert(random()==0.7225353668259109,"saturated particle pool preserves gameplay RNG")
+print("PASS fire RNG: original 30/60/120Hz and saturated-pool sequences preserved")
+# Rain extinguishing equipment stays at its contact and leaves no long-lived plume.
+particles.clear()
+seed_random(801)
+expected_rng = random()
+seed_random(801)
+p = vec3(2, 3, 4)
+fx_equipment_douse(p)
+assert(random() == expected_rng, "equipment douse must not consume chemistry/weather RNG")
+assert(particles.len() == 6, "single bounded douse burst")
+douse_smoke = 0
+douse_steam = 0
+loop q in particles:
+    assert((q.kind == .smoke or q.kind == .steam) and length(q.pos - p) < 0.2 and q.life <= 0.65 and q.size <= 0.17, "douse stays local and brief")
+    if q.color.x < f32(0.3):
+        assert(q.kind == .smoke, "soot retains ordinary smoke")
+        douse_smoke += 1
+    else:
+        assert(q.kind == .steam, "pale douse vapor uses the narrow transparent steam material")
+        douse_steam += 1
+assert(douse_smoke == 2 and douse_steam == 4, "douse contains brief soot and pale steam")
+fx_update(1.0)
+assert(particles.len() == 0, "douse plume expires within a second")
+print("PASS equipment douse: local steam/soot, bounded lifetime, gameplay RNG unchanged")

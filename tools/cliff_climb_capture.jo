@@ -1,0 +1,34 @@
+# Production player controller and hero, with a fixed comparison camera.
+build:
+    opt = release
+use '../game/main.jo'
+use 'performance_output.jo'
+use '../game/gfx.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+
+climb_hit = raycast(v3(-1640, 208, 1752), vec3(1, 0, 0), 200, true, false)
+assert(climb_hit.hit)
+climb_start_y = 0.0
+setup_climb = ():
+    p = climb_hit.pos + climb_hit.normal * 0.45 - vec3(0, 1, 0)
+    pl = Player(pos = p, last_safe = p, state = .air, grounded = false, st_t = 0.3, vel = vec3(0, -1, 0), face = yaw_of(climb_hit.normal * -1.0), air_peak = f64(p.y))
+    cam_yaw_global = yaw_of(climb_hit.normal * -1.0)
+    climb_start_y = f64(p.y)
+    fc_pos = v3(-1568, 213, 1758)
+    fc_yaw = 1.10
+    fc_pitch = -0.08
+    free_cam = true
+setup_climb()
+climb_update = (dt: f64):
+    act = Actions()
+    update(dt)
+    cam_yaw_global = yaw_of(climb_hit.normal * -1.0)
+    act = Actions(move = vec2(0, 1))
+    if frame_number() < 180: player_update(dt)
+    act = Actions()
+    if frame_number() == 179:
+        print("capture climb: state {pl.state}, rise {f64(pl.pos.y)-climb_start_y:.3} m, position {pl.pos}")
+        assert(pl.state == .climb and f64(pl.pos.y) > climb_start_y + 2.0)
+main = (): performance_output_run(climb_update, draw)

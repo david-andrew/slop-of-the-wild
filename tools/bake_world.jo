@@ -1,0 +1,33 @@
+build:
+    opt = release
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/architecture_assets.jo'
+use '../game/water_render.jo'
+use '../game/farland.jo'
+use '../game/terrain.jo'
+use '../game/terrain_assets.jo'
+assert(env("BOTW_BAKE_ASSETS") != none, "run through tools/prepare_assets.sh")
+assert(mkdir("assets/prepared"))
+t = time()
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+assert(world_asset_write())
+print("baked terrain {time() - t:.3}s")
+
+terrain_prepare_cpu()
+assert(terrain_asset_write())
+water_build()
+assert(water_asset_write())
+farland_build()
+assert(farland_asset_write())
+init_dressing = ():
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+init_dressing()
+sor_interior()
+structures_generate()
+assert(architecture_write())
+print("baked water/farland/structures {time() - t:.3}s")

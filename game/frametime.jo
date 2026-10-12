@@ -1,0 +1,83 @@
+use 'gfx.jo'
+
+# Real update-to-update intervals, independent of the scripted 1/60 simulation step.
+# CPU is update + draw; gap also includes runtime submit/audio/poll/present. No overlay.
+# Runtime __last_present measures the preceding platform present call independently.
+# Append present, gap-minus-present and gap thread CPU to raw rows (old columns stay stable).
+# Last four raw columns are runtime-gap voluntary/involuntary switches and user/system CPU.
+# They separate blocking presentation from preemption outside the game callbacks.
+# Raw samples are buffered and printed once per 120 frames, after measuring the interval.
+frame_stats_on = (env("SLOPPY_STATS") ?? "") == "log" or env("BOTW_FRAME_LOG") != none or env("BOTW_CPU") != none
+__frame_raw = env("BOTW_FRAME_LOG") != none
+__frame_last = 0.0
+__frame_cpu_start = 0.0
+__frame_cpu = 0.0
+__frame_thread = 0.0
+__frame_thread_start = 0.0
+__frame_thread_end = 0.0
+__frame_samples: f64[]
+__frame_line = ""
+__frame_first = 0
+__frame_switch_start = (0, 0, 0.0, 0.0)
+__frame_switches = (0, 0, 0.0, 0.0)
+__frame_switch_end = (0, 0, 0.0, 0.0)
+
+when TARGET == "linux":
+    @lib("libc.so.6")
+    extern clock_gettime = (clock: i32, ts: *i64) -> i32
+    @lib("libc.so.6")
+    extern getrusage = (who: i32, usage: *i64) -> i32
+
+# Main-thread-only timing scratch; reuse it instead of allocating per stage.
+__frame_clock = fill(i64(1), 2)
+__frame_usage = fill(i64(1), 18)
+
+frame_thread_time = () -> f64:
+    when TARGET == "linux":
+        if clock_gettime(3, data(__frame_clock)) == 0: return f64(__frame_clock[0]) + f64(__frame_clock[1]) * 1e-9
+    time()
+
+# Linux rusage: two timevals and fourteen longs; final fields are voluntary/involuntary switches.
+frame_switch_counts = () -> (int, int, f64, f64):
+    when TARGET == "linux":
+        if getrusage(1, data(__frame_usage)) == 0:
+            return (int(__frame_usage[16]), int(__frame_usage[17]), f64(__frame_usage[0]) + f64(__frame_usage[1]) * 1e-6, f64(__frame_usage[2]) + f64(__frame_usage[3]) * 1e-6)
+    (0, 0, 0.0, 0.0)
+
+frame_stats_begin = (scale: f64):
+    if not frame_stats_on: return
+    now = time()
+    n = frame_number()
+    gap_usage = frame_switch_counts()
+    if __frame_last > 0.0:
+        ms = (now - __frame_last) * 1000.0
+        if __frame_samples.len() == 0: __frame_first = n
+        __frame_samples.push(ms)
+        if __frame_raw:
+            __frame_line = "{__frame_line}frame sample: {n} {ms:.3} {__frame_cpu * 1000.0:.3} {(now - __frame_last - __frame_cpu) * 1000.0:.3} {__frame_thread * 1000.0:.3} {inst_uploads} {inst_bytes} {__frame_switches.0} {__frame_switches.1} {__frame_switches.2 * 1000.0:.3} {__frame_switches.3 * 1000.0:.3} {__last_present * 1000.0:.3} {(now - __frame_last - __frame_cpu - __last_present) * 1000.0:.3} {(frame_thread_time() - __frame_thread_end) * 1000.0:.3} {gap_usage.0 - __frame_switch_end.0} {gap_usage.1 - __frame_switch_end.1} {(gap_usage.2 - __frame_switch_end.2) * 1000.0:.3} {(gap_usage.3 - __frame_switch_end.3) * 1000.0:.3}\n"
+        if __frame_samples.len() == 120:
+            __frame_samples.sort()
+            px = pixel_size()
+            eprint("frame percentiles: frames {__frame_first}-{n} p50 {__frame_samples[59]:.3} p95 {__frame_samples[113]:.3} p99 {__frame_samples[118]:.3} worst {__frame_samples[119]:.3} ms; {int(px.x)}x{int(px.y)} scale {scale:.2}")
+            if __frame_raw: eprint(__frame_line)
+            __frame_line = ""
+            __frame_samples.clear()
+    __frame_last = now
+    inst_uploads = 0
+    inst_bytes = 0
+    __frame_cpu_start = time()
+    __frame_thread_start = frame_thread_time()
+    __frame_switch_start = frame_switch_counts()
+
+frame_stats_end = ():
+    if not frame_stats_on: return
+    __frame_cpu = time() - __frame_cpu_start
+    __frame_thread_end = frame_thread_time()
+    __frame_thread = __frame_thread_end - __frame_thread_start
+    switches = frame_switch_counts()
+    __frame_switch_end = switches
+    __frame_switches = (switches.0 - __frame_switch_start.0, switches.1 - __frame_switch_start.1, switches.2 - __frame_switch_start.2, switches.3 - __frame_switch_start.3)
+    if __frame_cpu > 0.012:
+        eprint("cpu wall/thread: frame {frame_number()} {__frame_cpu * 1000.0:.3}/{__frame_thread * 1000.0:.3} ms; user/sys {__frame_switches.2 * 1000.0:.3}/{__frame_switches.3 * 1000.0:.3} ms; switches voluntary {__frame_switches.0} involuntary {__frame_switches.1}; uploads {inst_uploads} bytes {inst_bytes}")
+    if frame_number() == 0:
+        eprint("first frame: cpu {__frame_cpu * 1000.0:.3} thread {__frame_thread * 1000.0:.3} ms; uploads {inst_uploads} bytes {inst_bytes}")

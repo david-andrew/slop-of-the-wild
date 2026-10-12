@@ -1,0 +1,89 @@
+# Round-57 wordless feedback, spawn banners, combat visibility and continuous arcs.
+# Headless: sloppy/bin/sloppy tools/presentation_check.jo
+use '../game/ui.jo'
+use '../game/input.jo'
+use '../game/combat.jo'
+use '../game/items.jo'
+use '../game/fx.jo'
+use '../game/physics.jo'
+use '../game/enemies.jo'
+use '../game/player.jo'
+use '../game/element_puzzles.jo'
+use '../game/wildlife.jo'
+from '../game/ui.jo' import __location_age, __location_shown
+from '../game/elements.jo' import __scars
+
+presentation_checks = ():
+    use_terrain=false
+    items_init()
+    ui = UIState()
+    __location_age = 0.0
+    __location_shown = {}
+    ui_location("Temple of Thyme")
+    assert(ui.location == "Temple of Thyme" and ui.location_t == 0.0, "spawn identifies place without announcing discovery")
+    __location_age = 20.0
+    ui_location("Eastern Abbey")
+    assert(ui.location_t == 3.6, "first walked-in place announces discovery")
+    ui.location_t = 0.0
+    __location_age = 30.0
+    ui_location("Temple of Thyme")
+    assert(ui.location_t == 0.0, "short return stays quiet")
+    __location_age = 40.0
+    ui_location("Eastern Abbey")
+    __location_age = 631.0
+    ui_location("Temple of Thyme")
+    assert(ui.location_t == 3.6, "returning place can announce after a long absence")
+    act = Actions()
+    pl = Player()
+    fight = Fight()
+    inv = Inventory()
+    enemies = [Enemy(kind=.bokoblin,pos=vec3(5,0,0),home=vec3(5,0,0),state=.chase)]
+    loop k in [0..360): ui_update(1.0/60.0)
+    assert(slots_a > 0.98, "combat keeps bindings available between attacks")
+    enemies.clear()
+    loop k in [0..480): ui_update(1.0/60.0)
+    assert(slots_a < 0.02, "bindings fade after combat ends")
+    particles.clear()
+    fx_charcoal(vec3(0,0,0))
+    fragments=0
+    loop p in particles:
+        assert(p.color.x >= p.color.z and p.kind != .glow, "burned wood cannot create purple malice or sparkles")
+        if p.kind == .leaf: fragments += 1
+    assert(fragments == 10, "burned object leaves falling charcoal fragments")
+    particles.clear()
+    enemies = [Enemy(kind=.bokoblin,pos=vec3(0,0,0),state=.idle,burning=1.0,hp=1.0)]
+    enemy_damage(enemies[0],1.0,vec3(0,0,0))
+    assert(enemies[0].state == .dead and enemies[0].burning == 0.0, "production death resets the monster burn state")
+    __scars=[vec4(0,0,f32(elapsed()),0)]
+    fx_poof(vec3(0,0,0))
+    loop p in particles: assert(p.kind != .glow and p.color.x >= p.color.z, "delayed fire death stays soot after nearby flames are doused")
+    enemies.clear()
+    __scars=[vec4(0,0,f32(elapsed()-9.0),0)]
+    particles.clear()
+    fx_poof(vec3(0,0,0))
+    ordinary_glows=0
+    loop p in particles:
+        if p.kind == .glow: ordinary_glows += 1
+    assert(ordinary_glows==10, "old burned ground does not recolor an unrelated monster death")
+    __scars.clear()
+    particles.clear()
+    corpse=Animal(kind=.fox,pos=vec3(0,0,0),state=.gone)
+    corpse.el.burning=1.0
+    animals=[corpse]
+    fx_poof(vec3(0,0,0))
+    loop p in particles: assert(p.kind != .glow and p.color.x >= p.color.z, "settled burned wildlife leaves charcoal after rain douses the grass")
+    animals.clear()
+    particles.clear()
+    fx_steam(vec3(0,0,0),8)
+    assert(particles.len()==8)
+    loop p in particles: assert(p.kind==.smoke and p.vel.y>1.0 and p.color.w>0.7, "dousing has a visible rising steam plume")
+    particles.clear()
+    a=vec3(1,0.04,1)
+    b=vec3(2,0.10,2)
+    emit(.arc,(a+b)*0.5,b-a,0.24,0.022,rgba(0.55,0.78,1,0.85))
+    before=particles[0].pos
+    fx_update(1.0/60.0)
+    assert(particles[0].pos==before and particles[0].vel==b-a, "stroke direction remains geometry, never particle velocity")
+    print("PASS presentation: spawn/discovery/absence banners; combat/idle bindings; ten charcoal fragments; eight steam puffs; stationary connected stroke")
+
+presentation_checks()

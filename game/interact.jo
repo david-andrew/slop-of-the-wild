@@ -1,0 +1,166 @@
+use 'gfx.jo'
+use 'physics.jo'
+use 'terrain.jo'
+use 'scene.jo'
+use 'items.jo'
+
+# Things the player can use with the action button: chests, terminals, pedestals, doors,
+# people. Each has a place, a reach, the word shown on the button, and what happens.
+
+struct Usable:
+    pos: vec3
+    reach: f64
+    prompt: str
+    action: () -> void
+    enabled = true
+    once = true
+    used = false
+    automatic_use = true       # chests commit only after inventory acceptance
+    object_pos: vec3?          # obstruction target when reach uses a point in front
+
+usables: Usable[]
+
+add_usable = (pos: vec3, reach: f64, prompt: str, action: () -> void, once: bool = true) -> int:
+    usables.push(Usable(pos, reach, prompt, action, once = once))
+    usables.len() - 1
+
+# the usable in reach (and roughly in front), or -1
+usable_near = (p: vec3, face: vec3) -> int:
+    best = -1
+    bd = 1e9
+    loop i in 0.. and u in usables:
+        if not u.enabled or (u.once and u.used): continue
+        d = u.pos - p
+        dist = f64(length(vec3(d.x, d.y * 0.5, d.z)))
+        if dist > u.reach: continue
+        base = u.object_pos ?? u.pos
+        target = base + vec3(0, 0.8, 0)
+        if use_terrain: target.y = max(target.y, f32(height_at(f64(target.x), f64(target.z)) + 0.8))
+        sight = target - (p + vec3(0, 0.8, 0))
+        if length(sight) > 0.001:
+            cover = raycast(p + vec3(0, 0.8, 0), sight, max(f64(length(sight)) - 0.01, 0.001))
+            if cover.hit:
+                if cover.collider < 0: continue
+                c = colliders[cover.collider]
+                # A small centered pedestal/barrel accepts interaction on its own surface.
+                # Any intervening collider, including a wall beside it, still blocks it.
+                if max(c.half.x, c.half.z) > 0.75 or length(vec2(c.pos.x - base.x, c.pos.z - base.z)) > 0.05: continue
+        facing = f64(dot(normalize(vec3(d.x, 0, d.z) + vec3(0.0001, 0, 0)), face))
+        score = dist - facing * 0.8
+        if score < bd:
+            bd = score
+            best = i
+    best
+
+use_it = (i: int):
+    if not usables[i].enabled or (usables[i].once and usables[i].used): return
+    if usables[i].automatic_use: usables[i].used = true
+    usables[i].action()
+
+# ---------------- chests ----------------
+struct Chest:
+    pos: vec3
+    yaw: f64
+    content: str
+    count = 1
+    opened = false
+    lid = 0.0               # 0 closed .. 1 open
+    sheikah = false
+    usable = -1
+
+chests: Chest[]
+chest_box: Mesh
+chest_lid: Mesh
+chest_iron: Mesh          # the bands, corners and lock (drawn in their own color)
+chest_lid_iron: Mesh
+__chest_ready = false
+
+# a half cylinder along x (a barrel lid): radius r, from x0 to x1, its flat side down at y = 0
+__half_cyl = (b: mut MeshB, x0: f64, x1: f64, r: f64, col: vec4, seg: int = 10):
+    base = u32(b.vs.len())
+    loop i in [0..seg + 1):
+        a = PI * f64(i) / f64(seg)
+        n = v3(0.0, sin(a), cos(a))
+        b.vs.push(Vertex3D(v3(x0, sin(a) * r * 0.62, cos(a) * r), n, vec2(0, 0), col))
+        b.vs.push(Vertex3D(v3(x1, sin(a) * r * 0.62, cos(a) * r), n, vec2(0, 0), col))
+    loop i in [0..seg):
+        k = base + u32(i * 2)
+        loop q in [k, k + 1, k + 2, k + 1, k + 3, k + 2]: b.idx.push(q)
+    # the ends
+    loop e in [x0, x1]:
+        c = u32(b.vs.len())
+        nx = if e < 0.0: -1.0 else: 1.0
+        b.vs.push(Vertex3D(v3(e, 0.0, 0.0), v3(nx, 0.0, 0.0), vec2(0, 0), col))
+        loop i in [0..seg + 1):
+            a = PI * f64(i) / f64(seg)
+            b.vs.push(Vertex3D(v3(e, sin(a) * r * 0.62, cos(a) * r), v3(nx, 0.0, 0.0), vec2(0, 0), col))
+        loop i in [0..seg):
+            loop q in [c, c + u32(i) + 1, c + u32(i) + 2]: b.idx.push(q)
+
+__chest_meshes = ():
+    if __chest_ready: return
+    __chest_ready = true
+    # the body: planks (a little lighter and darker each) between a dark plinth and rim
+    b = MeshB()
+    loop k in [0..5):
+        y = 0.07 + f64(k) * 0.125
+        sh = 0.88 + 0.12 * f64((k * 7) % 3) / 2.0
+        mb_box(b, v3(0.0, y + 0.06, 0.0), v3(0.55, 0.06, 0.38), rgb(sh, sh, sh))
+    chest_box = mesh(b.vs, b.idx)
+    bi = MeshB()
+    iron = rgb(1, 1, 1)
+    loop sx in [-1.0, 1.0]:
+        loop sz in [-1.0, 1.0]: mb_box(bi, v3(sx * 0.53, 0.32, sz * 0.36), v3(0.04, 0.33, 0.04), iron)
+        mb_box(bi, v3(sx * 0.3, 0.32, 0.0), v3(0.035, 0.33, 0.39), iron)
+    mb_box(bi, v3(0.0, 0.03, 0.0), v3(0.57, 0.03, 0.4), iron)
+    mb_box(bi, v3(0.0, 0.5, 0.39), v3(0.09, 0.1, 0.012), iron)
+    chest_iron = mesh(bi.vs, bi.idx)
+    b2 = MeshB()
+    __half_cyl(b2, -0.55, 0.55, 0.39, rgb(1, 1, 1))
+    chest_lid = mesh(b2.vs, b2.idx)
+    b3 = MeshB()
+    loop sx in [-0.53, -0.3, 0.3, 0.53]: __half_cyl(b3, sx - 0.035, sx + 0.035, 0.41, iron)
+    mb_box(b3, v3(0.0, 0.0, 0.405), v3(0.07, 0.06, 0.012), iron)
+    chest_lid_iron = mesh(b3.vs, b3.idx)
+
+add_chest = (pos: vec3, yaw: f64, content: str, count: int = 1, sheikah: bool = false, on_open: () -> void = __no_op) -> int:
+    __chest_meshes()
+    ci = chests.len()
+    chests.push(Chest(pos, yaw, content, count, sheikah = sheikah))
+    add_box(pos, v3(0.55, 0.32, 0.38), yaw, false, .wood)
+    front = pos + transform_dir(rotation_y(yaw), v3(0.0, 0.0, 1.2))
+    chests[ci].usable = add_usable(front, 1.6, "Open", ():
+        c = chests[ci]
+        if c.opened: return
+        if c.content != "" and not inv_add(c.content, c.count): return
+        chests[ci].opened = true
+        usables[chests[ci].usable].used = true
+        chest_opened(ci)
+        on_open()
+    )
+    usables[chests[ci].usable].automatic_use = false
+    usables[chests[ci].usable].object_pos = pos
+    ci
+
+__no_op = (): pass
+
+# set by the game: presentation after a chest reward has been accepted
+chest_opened: (int) -> void = (i: int): pass
+
+chests_update = (dt: f64):
+    loop mut c in chests:
+        if c.opened: c.lid = min(1.0, c.lid + dt * 2.0)
+
+chests_draw = (cam: vec3):
+    if not __chest_ready: return
+    loop c in chests:
+        if f64(length(c.pos - cam)) > 120.0: continue
+        col = if c.sheikah: rgb(0.2, 0.24, 0.32) else: rgb(0.5, 0.36, 0.22)
+        m = translation(c.pos) * rotation_y(c.yaw)
+        glow = if c.sheikah: 0.25 else: 0.0
+        draw_prop(chest_box, m, col, glow)
+        icol = if c.sheikah: rgb(0.3, 0.75, 1.0) else: rgb(0.28, 0.26, 0.25)
+        draw_prop(chest_iron, m, icol, (if c.sheikah: 1.2 else: 0.0))
+        lm = m * translation(v3(0.0, 0.64, -0.38)) * rotation_x(-c.lid * 1.7) * translation(v3(0.0, 0.0, 0.38))
+        draw_prop(chest_lid, lm, col, glow)
+        draw_prop(chest_lid_iron, lm, icol, (if c.sheikah: 1.2 else: 0.0))

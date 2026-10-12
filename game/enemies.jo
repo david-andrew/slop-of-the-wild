@@ -1,0 +1,1404 @@
+use 'gfx.jo'
+use 'camera.jo'
+use 'terrain.jo'
+use 'physics.jo'
+use 'water.jo'
+use 'env.jo'
+use 'player.jo'
+use 'combat.jo'
+use 'wildlife.jo'
+use 'input.jo'
+use 'items.jo'
+use 'worldgen.jo'
+use 'matter.jo'
+use 'enemy_contacts.jo'
+use 'talus.jo'
+
+# Monsters of the plateau, placed where the original places them: Bokoblins at their camps
+# (red, and blue ones at the strongholds; archers on lookouts), Stalkoblins that rise at night,
+# Chuchus, Keese, the decayed Guardians at the Eastern Abbey, and the forest Stone Talus.
+
+enum EKind: bokoblin, blue_bokoblin, stalkoblin, chuchu, ice_chuchu, keese, guardian, talus
+
+enum EState: idle, wander, sleep, notice, chase, windup, attack, recover, shoot, stagger, knocked, dead, gone, buried, laser, gather, celebrate, retreat, seek_skull, reassemble
+
+enum CampRole: none, sitter, club, spear, lookout
+
+struct Enemy:
+    kind: EKind
+    pos: vec3
+    home: vec3
+    face = 0.0
+    vel = vec3(0, 0, 0)
+    state = EState.idle
+    t = 0.0
+    hp = 13.0
+    hp_max = 13.0
+    weapon = ""
+    contact_previous = vec3(0, 0, 0)
+    contact_time = -1.0
+    contact_move = 0
+    archer = false
+    lookout = false
+    alert = 0.0            # 0 unaware .. 1 knows where the player is
+    seen_t = 0.0
+    last_swing = -1
+    stun = 0.0
+    brace = 0.0
+    reaction = 0
+    recoil = vec3(0, 0, 1)
+    blow_dir = vec3(0, 0, 1)       # blade travel for the flinch; recoil moves away from attacker
+    impact_t = 0.0
+    impact = 0.0
+    contact_scale = vec3(1.14, 1.14, 1.14) # same per-instance rig size as chars.jo
+    move = 0                      # 0 swing, 1 slam, 2 shove, 3 kick, 4 rock throw
+    held = ""                    # a scavenged rock in the throwing hand
+    fetch_item = -1
+    throw_cooldown = 0.0
+    retreat_t = 0.0
+    patrol = false
+    patrol_to = vec3(0, 0, 0)
+    patrol_back = false
+    may_engage = false            # one of the two nearest in the fight: may close in and strike
+    slot = 0.0                    # the bearing (from the player) it closes in along
+    taunt = 0.0                   # waiting its turn in a fight, jeering
+    lift = 0.0                    # height off the ground in a leap (drawn)
+    burning = 0.0
+    frozen = 0.0
+    anim_t = 0.0
+    speed = 0.0
+    camp_role = CampRole.none
+    camp = -1
+    rhythm = 0.0
+    respawn_t = 0.0
+    night_only = false
+    flash = 0.0
+    laser_t = 0.0
+    laser_target = vec3(0, 0, 0)
+    dead_t = 0.0
+    bob = 0.0
+    talus_col = -1
+    talus_shake = 0.0
+    talus_attacks = 0
+    talus_contact = false
+    talus_drops: int[]
+    el = Elem()
+    # A detached skull is a physical, vulnerable object owned by this body.
+    skull_out = false
+    skull_hp = 1.0
+    skull_pos = vec3(0, 0, 0)
+    skull_vel = vec3(0, 0, 0)
+    skull_roll = 0.0
+    skull_el = Elem()
+    skull_age = 0.0
+    skull_swing = -1
+    skull_head = vec3(0, -10000, 0) # last drawn skull centre; fallback for headless tests
+    skull_reforms = 0
+
+enemies: Enemy[]
+
+struct EEvent:
+    kind: str
+    pos: vec3
+    stop = 0.065
+
+enemy_events: EEvent[]
+
+enemy_stats = (k: EKind) -> f64:
+    match k:
+        bokoblin: 13.0
+        blue_bokoblin: 72.0
+        stalkoblin: 6.0
+        chuchu: 3.0
+        ice_chuchu: 20.0
+        keese: 1.0
+        guardian: 500.0
+        talus: 300.0
+
+spawn_enemy = (k: EKind, p: vec3, weapon: str = "") -> int:
+    hp = enemy_stats(k)
+    tone = fract(f64(enemies.len()) * 0.61803398875)
+    build_ = v3(1.10 + tone * 0.08, 1.11 + fract(f64(enemies.len()) * 0.381966) * 0.06, 1.10 + tone * 0.08)
+    enemies.push(Enemy(k, p, p, face = random(0.0, TAU), hp = hp, hp_max = hp, weapon = weapon, contact_scale = build_, rhythm = fract(f64(enemies.len()) * 0.61803398875)))
+    i = enemies.len() - 1
+    if k == .talus: talus_attach(enemies[i])
+    i
+
+enemies_place = ():
+    enemy_contacts_init()
+    seed_random(31)
+    weapons = ["boko_club", "boko_club", "boko_spear", "boko_club", "branch"]
+    loop a in actors:
+        x = f64(a.pos.x)
+        z = f64(a.pos.z)
+        if not in_bounds(x, z) or edge_at(x, z) > -4.0: continue
+        g = height_at(x, z)
+        p = v3(x, max(g, f64(a.pos.y)), z)
+        n = a.name
+        if n == "Enemy_Bokoblin_Junior" or n == "Enemy_Bokoblin_Guard_Junior" or n == "Enemy_Bokoblin_Guard_Junior_TreeHouseTop":
+            i = spawn_enemy(.bokoblin, p, weapons[random_int(0, weapons.len())])
+            if contains(n, "TreeHouseTop") or f64(a.pos.y) > g + 3.0:
+                enemies[i].archer = true
+                enemies[i].weapon = ""
+                has_tower = false
+                deck = 0.0
+                loop b in actors:
+                    if b.name == "FldObj_EnemyLookout_B_01" and hypot(f64(b.pos.x) - x, f64(b.pos.z) - z) < 6.0:
+                        has_tower = true
+                        # on the deck as structures.jo builds it (at least 3 m up)
+                        gb = height_at(f64(b.pos.x), f64(b.pos.z))
+                        deck = gb + clamp(f64(a.pos.y) - gb, 3.0, 12.0) + 0.1
+                if has_tower:
+                    enemies[i].lookout = true
+                    enemies[i].pos.y = f32(deck)
+                    enemies[i].home = enemies[i].pos
+                else:
+                    enemies[i].pos.y = f32(g)
+                    enemies[i].home = enemies[i].pos
+            else if random() < 0.15: enemies[i].archer = true
+        else if n == "Enemy_Bokoblin_Middle":
+            spawn_enemy(.blue_bokoblin, p, (if random() < 0.5: "spiked_club" else: "boko_spear"))
+        else if starts_with(n, "Enemy_Bokoblin_Bone"):
+            i = spawn_enemy(.stalkoblin, p, "")
+            enemies[i].night_only = true
+            enemies[i].state = .buried
+        else if starts_with(n, "Enemy_Chuchu_Ice"):
+            spawn_enemy(.ice_chuchu, p)
+        else if starts_with(n, "Enemy_Chuchu"):
+            spawn_enemy(.chuchu, p)
+        else if starts_with(n, "Enemy_Keese"):
+            i = spawn_enemy(.keese, p + v3(0.0, 3.0, 0.0))
+            enemies[i].home = p + v3(0.0, 3.0, 0.0)
+        else if n == "Enemy_Golem_Junior":
+            spawn_enemy(.talus, v3(x, g, z))
+        else if n == "Enemy_Guardian_A_Fixed_Moss":
+            i = spawn_enemy(.guardian, v3(x, g + 0.2, z))
+            enemies[i].face = a.rot
+    # Only a few ground guards walk between nearby camp patches. Reject unsafe routes.
+    patrols = 0
+    loop i in [0..enemies.len()):
+        if enemies[i].kind != .bokoblin or enemies[i].archer or enemies[i].lookout: continue
+        if i % 5 == 0:
+            p = enemies[i].home + vec3(1.6, 0, 0)
+            if enemy_walkable(enemies[i].home, p):
+                p.y = f32(height_at(f64(p.x), f64(p.z)) + 0.12)
+                spawn_placement("rock", p, p)
+        if patrols >= 3: continue
+        home = enemies[i].home
+        if abs(f64(home.y) - height_at(f64(home.x), f64(home.z))) > 0.5: continue
+        loop other in enemies:
+            dist = f64(length(other.home - home))
+            if other.kind != .bokoblin or other.lookout or dist < 22.0 or dist > 100.0: continue
+            if abs(f64(other.home.y) - height_at(f64(other.home.x), f64(other.home.z))) > 0.5: continue
+            safe = true
+            loop step in [1..33]:
+                a = mix(home, other.home, f32(f64(step - 1) / 32.0))
+                b = mix(home, other.home, f32(f64(step) / 32.0))
+                a.y = f32(height_at(f64(a.x), f64(a.z)))
+                if not enemy_walkable(a, b): safe = false
+            if not safe: continue
+            enemies[i].patrol = true
+            enemies[i].patrol_to = other.home
+            patrols += 1
+            break
+    eprint("enemies: {enemies.len()}, {patrols} patrol guards")
+
+enemy_pos = (i: int) -> vec3:
+    e = enemies[i]
+    if e.state == .dead or e.state == .gone or e.state == .buried: return vec3(0, -10000, 0)
+    if e.kind == .talus:
+        if e.state == .sleep: return vec3(0, -10000, 0)
+        return talus_ore(e)
+    e.pos + vec3(0, (if e.kind == .chuchu or e.kind == .ice_chuchu: 0.4 else: 1.0), 0)
+
+# ---------------- perception ----------------
+__can_see = (e: Enemy, range: f64, any_way: bool = false) -> bool:
+    d = pl.pos - e.pos
+    dist = f64(length(d))
+    if dist > range: return false
+    f = forward_of(e.face)
+    if not any_way and f64(dot(normalize(vec3(d.x, 0, d.z) + vec3(0.0001, 0, 0)), f)) < 0.3 and dist > 4.0: return false
+    # the land in between
+    eye = e.pos + vec3(0, 1.4, 0)
+    to = pl.pos + vec3(0, 1.2, 0)
+    h = raycast(eye, to - eye, dist, false)
+    not h.hit
+
+__alert_camp = (from: vec3):
+    # the first to see him sounds the horn (once a while per camp)
+    if elapsed() - __last_horn > 20.0:
+        __last_horn = elapsed()
+        enemy_events.push(EEvent("horn", from))
+    loop mut o in enemies:
+        if o.state == .idle or o.state == .wander or o.state == .sleep:
+            if f64(length(o.pos - from)) < 28.0 and o.kind != .guardian and o.kind != .keese and o.kind != .talus:
+                o.alert = 1.0
+                o.state = .notice
+                o.t = 0.0
+
+__last_horn = -100.0
+
+# ---------------- hits taken ----------------
+# All HP loss ends here: one death event, no subsequent recoil/AI state overwrite.
+enemy_alive = (e: Enemy) -> bool: e.state != .dead and e.state != .gone and e.state != .buried
+
+const STALK_SKULL_RADIUS = 0.29
+
+stalk_detach = (e: mut Enemy, from: vec3, knock: f64):
+    if e.skull_out or e.skull_hp <= 0.0: return
+    e.skull_reforms = 0
+    away = normalize(vec3(e.pos.x - from.x, 0, e.pos.z - from.z) + vec3(0.001, 0, 0))
+    e.skull_out = true
+    e.skull_el = Elem()
+    e.skull_pos = if e.skull_head.y > -9000.0: e.skull_head else: e.pos + vec3(0, 1.4, 0)
+    e.skull_vel = away * f32(3.6 + min(knock, 8.0) * 0.25) + vec3(0, 2.6, 0)
+    e.skull_age = 0.0
+    e.skull_roll = 0.0
+    e.hp = e.hp_max
+    e.contact_time = -1.0
+    e.may_engage = false
+    enemy_events.push(EEvent("skull_pop", e.skull_pos))
+
+# Small swept steps plus capsule clearance prevent tunnelling through thin walls.
+# Ground friction, bounce and slope gravity continue after the launch animation.
+stalk_skull_step = (e: mut Enemy, dt: f64):
+    if not e.skull_out or e.skull_hp <= 0.0: return
+    e.skull_age += dt
+    steps = max(1, int(ceil(dt * 120.0)))
+    h = dt / f64(steps)
+    loop k in [0..steps):
+        e.skull_vel.y -= f32(18.0 * h)
+        path = e.skull_vel * f32(h)
+        distance = f64(length(path))
+        hit = if distance > 0.00001: raycast(e.skull_pos, path, distance + STALK_SKULL_RADIUS) else: Hit()
+        if hit.hit:
+            e.skull_pos += normalize(path) * f32(max(0.0, hit.dist - STALK_SKULL_RADIUS))
+            into = dot(e.skull_vel, hit.normal)
+            if into < 0.0: e.skull_vel -= hit.normal * into * 1.35
+        else: e.skull_pos += path
+        feet = e.skull_pos - v3(0.0, STALK_SKULL_RADIUS, 0.0)
+        push = push_out(feet, STALK_SKULL_RADIUS, STALK_SKULL_RADIUS * 2.0)
+        e.skull_pos = feet + v3(0.0, STALK_SKULL_RADIUS, 0.0)
+        if length(push) > 0.00001:
+            n = normalize(push)
+            into = dot(e.skull_vel, n)
+            if into < 0.0: e.skull_vel -= n * into * 1.35
+        g = ground_at(f64(feet.x), f64(feet.z), f64(feet.y) + 0.1, 0.0, 0.12)
+        if f64(feet.y) <= g.y + 0.01:
+            e.skull_pos.y = f32(g.y + STALK_SKULL_RADIUS)
+            e.skull_vel.y = if e.skull_vel.y < -1.2: -e.skull_vel.y * 0.28 else: 0.0
+            normal = normal_at(f64(feet.x), f64(feet.z))
+            if g.collider < 0:
+                e.skull_vel.x += normal.x * f32(10.0 * h)
+                e.skull_vel.z += normal.z * f32(10.0 * h)
+            e.skull_vel.x *= f32(exp(-2.8 * h))
+            e.skull_vel.z *= f32(exp(-2.8 * h))
+        e.skull_roll += f64(length(e.skull_vel.xz)) * h / STALK_SKULL_RADIUS
+
+# Headless neighbours can claim each other's skulls. Exchange ownership as well as
+# the physical record so destroying the claimed skull kills its current body.
+stalk_choose_skulls = ():
+    loop i in [0..enemies.len()):
+        a = enemies[i]
+        if a.kind != .stalkoblin or not a.skull_out or not enemy_alive(a) or a.state == .reassemble: continue
+        loop j in [i+1..enemies.len()):
+            b = enemies[j]
+            if b.kind != .stalkoblin or not b.skull_out or not enemy_alive(b) or b.state == .reassemble: continue
+            own = f64(length(a.pos - a.skull_pos) + length(b.pos - b.skull_pos))
+            other = f64(length(a.pos - b.skull_pos) + length(b.pos - a.skull_pos))
+            if other + 0.8 >= own or length(a.pos - b.pos) > 16.0: continue
+            enemies[i].skull_pos = b.skull_pos
+            enemies[i].skull_vel = b.skull_vel
+            enemies[i].skull_el = b.skull_el
+            enemies[i].skull_hp = b.skull_hp
+            enemies[i].skull_age = b.skull_age
+            enemies[i].skull_roll = b.skull_roll
+            enemies[i].skull_swing = b.skull_swing
+            enemies[j].skull_pos = a.skull_pos
+            enemies[j].skull_vel = a.skull_vel
+            enemies[j].skull_el = a.skull_el
+            enemies[j].skull_hp = a.skull_hp
+            enemies[j].skull_age = a.skull_age
+            enemies[j].skull_roll = a.skull_roll
+            enemies[j].skull_swing = a.skull_swing
+            break
+
+stalk_seek = (e: mut Enemy, dt: f64):
+    e.contact_time = -1.0
+    e.may_engage = false
+    if e.frozen > 0.0:
+        e.speed = 0.0
+        return
+    if e.state == .knocked:
+        __enemy_fall(e, dt)
+        return
+    if e.state == .stagger and e.t < 0.42: return
+    if e.state == .reassemble:
+        e.speed = 0.0
+        if length(e.skull_pos - (e.pos + vec3(0, 0.3, 0))) > 1.0:
+            e.state = .seek_skull
+            e.t = 0.0
+        else if e.t >= 0.55:
+            e.skull_out = false
+            e.skull_age = 0.0
+            e.state = .chase
+            e.t = 0.0
+            e.hp = e.hp_max
+            enemy_events.push(EEvent("skull_attach", e.pos + vec3(0, 1.4, 0)))
+        return
+    e.state = .seek_skull
+    target = e.skull_pos
+    delta = target - e.pos
+    distance = f64(length(delta.xz))
+    if distance < 0.8 and abs(f64(delta.y) - 0.3) < 0.6 and length(e.skull_vel) < 1.0 and e.skull_age > 0.6:
+        hand = e.pos + vec3(0, 0.5, 0)
+        if not raycast(hand, target - hand, max(f64(length(target - hand)) - 0.12, 0.001)).hit:
+            e.state = .reassemble
+            e.t = 0.0
+            return
+    __step_toward(e, target, 1.3, dt)
+    __ground_enemy(e)
+    # Long separation collapses the body, then reforms it still needing the skull.
+    if e.skull_age > f64(e.skull_reforms + 1) * 12.0:
+        e.skull_reforms += 1
+        e.state = .knocked
+        e.t = 0.0
+        e.vel = vec3(0, 1, 0)
+        enemy_events.push(EEvent("bones_reform", e.pos))
+
+stalk_skull_hit = (e: mut Enemy, dmg: f64, from: vec3, stop: f64 = 0.065):
+    if not e.skull_out or e.skull_hp <= 0.0 or dmg <= 0.0: return
+    e.skull_hp = max(0.0, e.skull_hp - dmg)
+    enemy_events.push(EEvent("enemy_hit_big", e.skull_pos, stop = stop))
+    if e.skull_hp <= 0.0: enemy_damage(e, e.hp, from)
+
+enemy_damage = (e: mut Enemy, dmg: f64, from: vec3, knock: f64 = 0.0) -> bool:
+    if not enemy_alive(e): return false
+    if e.kind == .stalkoblin and e.skull_hp > 0.0:
+        if dmg > 0.0: stalk_detach(e, from, knock)
+        return false
+    e.hp = max(0.0, e.hp - max(0.0, dmg))
+    if e.hp > 0.0: return false
+    # Defeat is an autosave milestone: create its recoverable reward before that
+    # save, including native close during the corpse animation. Keep weapon class
+    # for the eventual respawn; dead bodies already suppress its attached draw.
+    if e.kind == .bokoblin or e.kind == .blue_bokoblin:
+        if len(e.weapon) > 0: spawn_item(e.weapon, e.pos + vec3(0, 0.5, 0), vec3(f32(random(-1.0, 1.0)), 3.0, f32(random(-1.0, 1.0))), dropped = true)
+        if random() < 0.4: spawn_item("raw_meat", e.pos + vec3(0, 0.5, 0), vec3(0, 3.0, 0), dropped = true)
+    if e.held != "":
+        spawn_item(e.held, e.pos + vec3(0, 0.5, 0), vec3(0, 2, 0), dropped = true)
+        e.held = ""
+    e.state = .dead
+    e.t = 0.0
+    e.stun = 0.0
+    e.burning = 0.0
+    e.el = Elem()
+    e.lift = 0.0
+    e.laser_t = 0.0
+    e.may_engage = false
+    dv = e.pos - from
+    dv.y = 0
+    e.vel = (if length(dv) > 0.01: normalize(dv) else: vec3(0, 0, 1)) * f32(knock + 2.0) + vec3(0, 5.0, 0)
+    if e.kind == .stalkoblin: e.vel = vec3(0, 0, 0) # skull destroyed: the body collapses in place
+    if e.kind == .talus:
+        e.vel = vec3(0, 0, 0)
+        talus_sync(e)
+        talus_drop(e)
+        enemy_events.push(EEvent("slam", e.pos))
+        if talus_owns(e, pl.climb_col) or talus_owns(e, pl.ground.collider):
+            pl.climb_col = -1
+            pl.air_peak = f64(pl.pos.y)
+            set_state(.air)
+    enemy_events.push(EEvent("enemy_die", e.pos))
+    true
+
+# A short, readable follow-up opening once the first recoil has settled.
+enemy_opening = (e: Enemy) -> bool: (e.state == .stagger and e.t > 0.18) or (e.state == .knocked and e.t > 0.35) or e.stun > 0.0
+# Monotonic contact observation survives both fixed simulation ticks in a displayed frame.
+enemy_contact_serial = 0
+
+__take_hit = (e: mut Enemy, dmg: f64, from: vec3, knock: f64, fire: bool, heavy: bool = false, contact: vec3 = vec3(0, -10000, 0), finisher: bool = false, stop: f64 = 0.065):
+    if e.state == .dead or e.state == .gone or e.state == .buried: return
+    if e.kind == .talus:
+        weak = contact.y > -9000.0 and length(contact - talus_ore(e)) < 0.7
+        talus_hit(e, dmg, from, weak, (if contact.y > -9000.0: contact else: from), stop)
+        return
+    enemy_contact_serial += 1
+    # sneakstrike: an unaware enemy struck from behind
+    mult = 1.0
+    if (e.state == .idle or e.state == .sleep or e.state == .wander) and e.alert < 0.5:
+        d = e.pos - from
+        if f64(dot(normalize(vec3(d.x, 0, d.z) + vec3(0.0001, 0, 0)), forward_of(e.face))) > 0.2:
+            mult = 8.0
+            enemy_events.push(EEvent("sneakstrike", e.pos))
+    if enemy_opening(e) and mult == 1.0:
+        mult = 1.5
+    lethal = enemy_damage(e, dmg * mult, from, knock)
+    e.impact_t = 0.16
+    e.impact = if heavy or finisher or mult > 1.0: 1.0 else: 0.65
+    dv = e.pos - from
+    e.recoil = normalize(vec3(dv.x, 0, dv.z) + vec3(0.0001, 0, 0))
+    e.blow_dir = e.recoil
+    e.flash = 0.2
+    e.alert = 1.0
+    if fire and not lethal: e.burning = max(e.burning, 4.0)
+    # (a finisher, a heavy blow or the last one lands harder)
+    enemy_events.push(EEvent((if heavy or finisher or e.hp <= 0.0 or mult > 1.0: "enemy_hit_big" else: "enemy_hit"), (if contact.y > -9000.0: contact else: e.pos + vec3(0, 0.9, 0)), stop = stop + (if e.hp <= 0.0 or mult > 1.0: 0.035 else: 0.0)))
+    if lethal: return
+    if knock > 4.5 or heavy or e.kind == .chuchu or e.kind == .keese:
+        e.state = .knocked
+        e.t = 0.0
+        dv = e.pos - from
+        dv.y = 0
+        # (thrown clear: well out of the way of the fight, tumbling on along the ground)
+        e.vel = (if length(dv) > 0.01: normalize(dv) else: vec3(0, 0, 1)) * f32(knock * 1.5) + vec3(0, f32(knock * 0.7), 0)
+    else if e.kind != .guardian:
+        e.state = .stagger
+        e.t = 0.0
+        e.reaction += 1
+        dv = e.pos - from
+        e.recoil = normalize(vec3(dv.x, 0, dv.z) + vec3(0.0001, 0, 0))
+    __alert_camp(e.pos)
+
+# The final posed surface can extend beyond the inexpensive root capsule.
+# It shares the existing swing ID, damage, recoil and hit-pause dispatch.
+enemy_surface_hit = (i: int, contact: vec3):
+    if not enemy_alive(enemies[i]): return
+    loop h in player_hits:
+        if h.action != fight.act or h.combo != fight.combo or enemies[i].last_swing == h.id: continue
+        enemies[i].last_swing = h.id
+        __take_hit(enemies[i],h.damage,h.from,h.knock,h.fire,h.heavy,contact,h.finisher,h.stop)
+        break
+
+enemies_take_hits = ():
+    loop mut e in enemies:
+        if e.state == .dead or e.state == .gone or e.state == .buried: continue
+        loop h in player_hits:
+            if e.last_swing == h.id: continue
+            if e.kind == .talus:
+                talus_melee_hit(e, h)
+                continue
+            if e.kind == .stalkoblin and e.skull_out and e.skull_swing != h.id and blade_touches(h, e.skull_pos, STALK_SKULL_RADIUS):
+                e.skull_swing = h.id
+                stalk_skull_hit(e, h.damage, h.from, h.stop)
+                if not enemy_alive(e): break
+            height = if e.kind == .guardian: 3.0 else: (if e.kind == .chuchu or e.kind == .ice_chuchu: 0.65 else: (if e.kind == .keese: 0.3 else: 1.48))
+            feet = e.pos + vec3(0, f32(e.lift), 0)
+            if e.state == .knocked: height = 0.6
+            contact = blade_contact(h, feet, height, (if e.kind == .guardian: 1.25 else: 0.30))
+            if contact.y < -9000.0: continue
+            e.last_swing = h.id
+            __take_hit(e, h.damage, h.from, h.knock, h.fire, h.heavy, contact, h.finisher, h.stop)
+            direction = vec3(h.dir.x, 0, h.dir.z)
+            if length(direction) > 0.001: e.blow_dir = normalize(direction)
+    # Thrown weapons retain the previous production sample before items_physics advances.
+    next: {int: vec3} = {}
+    loop wi in [0..witems.len()):
+        w = witems[wi]
+        if not w.alive or not w.thrown_by_player: continue
+        from = __thrown_prev.get(wi) ?? w.pos
+        path = w.pos - from
+        h = if length(path) > 0.000001: raycast(from, path, f64(length(path))) else: Hit()
+        best = if h.hit: h.dist else: f64(length(path)) + 0.001
+        target = -1
+        animal = -1
+        skull = false
+        loop ei in [0..enemies.len()):
+            if not enemy_alive(enemies[ei]): continue
+            hit = if enemies[ei].kind == .talus: talus_projectile_distance(enemies[ei], from, w.pos) else: swept_actor_distance(from, w.pos, enemies[ei].pos + vec3(0, 0.9, 0), 1.0)
+            if hit >= 0.0 and hit < best:
+                best = hit
+                target = ei
+                skull = false
+            if enemies[ei].kind == .stalkoblin and enemies[ei].skull_out:
+                head_hit = swept_actor_distance(from, w.pos, enemies[ei].skull_pos, STALK_SKULL_RADIUS)
+                if head_hit >= 0.0 and head_hit < best:
+                    best = head_hit
+                    target = ei
+                    skull = true
+        loop ai in [0..animals.len()):
+            hit = wildlife_hit_distance(from, w.pos, ai)
+            if hit >= 0.0 and hit < best:
+                best = hit
+                target = -1
+                animal = ai
+        if target >= 0 or animal >= 0:
+            if target >= 0 and skull: stalk_skull_hit(enemies[target], f64(w.damage), from)
+            else if target >= 0: __take_hit(enemies[target], f64(w.damage), from, 3.0, w.burning > 0.0, contact = from + normalize(path + vec3(0, 0.000001, 0)) * f32(best))
+            else: wildlife_damage(animals[animal], f64(w.damage), from, w.burning > 0.0)
+            witems[wi].pos = from + (if length(path) > 0.000001: normalize(path) * f32(best) else: vec3(0, 0, 0))
+            witems[wi].thrown_by_player = false
+            witems[wi].vel = (if w.wall_stop: w.wall_velocity else: w.vel) * -0.2
+            witems[wi].vel.y = max(witems[wi].vel.y, 1.3)
+            witems[wi].spin *= 0.55
+        else if h.hit:
+            witems[wi].pos = h.pos + h.normal * 0.05
+            witems[wi].thrown_by_player = false
+            witems[wi].vel *= -0.2
+            witems[wi].vel.y = max(witems[wi].vel.y, 1.3)
+            witems[wi].spin *= 0.55
+        else if w.wall_stop: witems[wi].thrown_by_player = false
+        else: next[wi] = w.pos
+        witems[wi].wall_stop = false
+    __thrown_prev = next
+
+__thrown_prev: {int: vec3} = {}
+
+enemy_arrow_distance = (a: Arrow, i: int) -> f64:
+    e = enemies[i]
+    if not enemy_alive(e): return -1.0
+    if e.kind == .talus: return talus_projectile_distance(e, a.prev, a.pos)
+    body = swept_actor_distance(a.prev, a.pos, e.pos + vec3(0, 0.9, 0), 0.9)
+    if e.kind == .stalkoblin and e.skull_out:
+        skull = swept_actor_distance(a.prev, a.pos, e.skull_pos, STALK_SKULL_RADIUS)
+        if skull >= 0.0 and (body < 0.0 or skull < body): return skull
+    body
+
+enemy_arrow_hit = (a: Arrow, i: int):
+    e = enemies[i]
+    if e.kind == .stalkoblin and e.skull_out:
+        skull = swept_actor_distance(a.prev, a.pos, e.skull_pos, STALK_SKULL_RADIUS)
+        body = swept_actor_distance(a.prev, a.pos, e.pos + vec3(0, 0.9, 0), 0.9)
+        if skull >= 0.0 and (body < 0.0 or skull < body):
+            stalk_skull_hit(enemies[i], a.damage, a.prev)
+            return
+    if enemies[i].kind == .talus:
+        talus_hit(enemies[i], a.damage, a.prev, length(a.pos - talus_ore(enemies[i])) < 0.65, a.pos)
+        return
+    head = f64(a.pos.y) > f64(enemies[i].pos.y) + 1.3 and (enemies[i].kind == .bokoblin or enemies[i].kind == .blue_bokoblin)
+    __take_hit(enemies[i], a.damage * (if head: 2.0 else: 1.0), a.prev, 2.0, a.fire)
+    if head and enemy_alive(enemies[i]): enemies[i].stun = 1.5
+
+# ---------------- behavior ----------------
+__step_toward = (e: mut Enemy, target: vec3, speed: f64, dt: f64):
+    d = target - e.pos
+    d.y = 0
+    if length(d) < 0.05:
+        e.speed = approach(e.speed, 0.0, 10.0, dt)
+        return
+    want = yaw_of(normalize(d))
+    e.face = turn_toward(e.face, want, 6.0 * dt)
+    e.speed = approach(e.speed, speed, 6.0, dt)
+    next = e.pos + forward_of(e.face) * f32(min(f64(length(d)), e.speed * dt))
+    # Ground pursuit stops at the bank; recoil/knockback keeps its ballistic path.
+    # A supported bridge above the water remains walkable.
+    if let wl = water_level(f64(next.x), f64(next.z)):
+        if water_depth(f64(next.x), f64(next.z)) > 0.9:
+            g = ground_at(f64(next.x), f64(next.z), f64(e.pos.y) + 0.5, 0.8, 0.4, false)
+            if g.y < wl - 0.6:
+                e.speed = 0.0
+                return
+    e.pos = next
+    push_out(e.pos, 0.4, 1.5)
+
+__ground_enemy = (e: mut Enemy):
+    g = ground_at(f64(e.pos.x), f64(e.pos.z), f64(e.pos.y) + 0.5, 0.8, 0.4)
+    if e.lookout: return
+    if g.y < f64(e.pos.y) - 1.2:
+        # A recoil or a chase can carry a monster off a ledge; do not snap it to the bottom.
+        e.state = .knocked
+        e.t = 0.0
+        e.vel = forward_of(e.face) * f32(e.speed)
+    else: e.pos.y = f32(g.y)
+
+# Every patrol step checks the floor, slope, water and solid cover before moving.
+enemy_walkable = (from: vec3, to: vec3) -> bool:
+    x = f64(to.x)
+    z = f64(to.z)
+    if not in_bounds(x, z) or edge_at(x, z) > -3.0 or water_depth(x, z) > 0.15 or normal_at(x, z).y < 0.78: return false
+    g = ground_at(x, z, f64(from.y) + 0.6, 0.8, 0.4)
+    if abs(g.y - f64(from.y)) > 0.55: return false
+    d = to - from
+    d.y = 0
+    not raycast(from + vec3(0, 0.6, 0), d, max(f64(length(d)) + 0.4, 0.001)).hit
+
+enemy_patrol_step = (e: mut Enemy, dt: f64):
+    target = if e.patrol_back: e.home else: e.patrol_to
+    d = target - e.pos
+    d.y = 0
+    if length(d) < 1.0:
+        e.patrol_back = not e.patrol_back
+        e.speed = 0.0
+        return
+    next = e.pos + normalize(d) * f32(min(1.2 * dt, f64(length(d))))
+    if enemy_walkable(e.pos, next):
+        before = e.pos
+        __step_toward(e, target, 1.2, dt)
+        if not enemy_walkable(before, e.pos):
+            e.pos = before
+            e.patrol_back = not e.patrol_back
+            e.speed = 0.0
+    else:
+        e.patrol_back = not e.patrol_back
+        e.speed = 0.0
+
+# The projectile begins at the exact drawn socket and sweeps solid cover before Link.
+enemy_throw_release = (e: mut Enemy):
+    if e.held == "": return
+    from = enemy_contact_segment(e.pos, e.face, 4, e.held, 0.22, e.contact_scale).grip
+    target = pl.pos + vec3(0, 0.8, 0)
+    time_ = clamp(f64(length(target - from)) / 12.0, 0.35, 1.1)
+    vel = (target - from) / f32(time_) + v3(0.0, 9.0 * time_, 0.0)
+    i = spawn_item(e.held, from, vel)
+    witems[i].thrown_by_enemy = true
+    witems[i].throw_previous = from
+    witems[i].damage = max(2, item(e.held).power)
+    witems[i].spin = 9.0
+    e.held = ""
+    e.throw_cooldown = 8.0 + e.rhythm * 6.0
+
+enemy_throws_update = ():
+    loop mut w in witems:
+        if not w.alive or not w.thrown_by_enemy: continue
+        path = w.pos - w.throw_previous
+        length_ = f64(length(path))
+        if length_ < 0.000001: continue
+        wall = raycast(w.throw_previous, path, length_)
+        target = swept_actor_distance(w.throw_previous, w.pos, pl.pos + vec3(0, 0.8, 0), 0.5)
+        if wall.hit and (target < 0.0 or wall.dist <= target):
+            w.pos = wall.pos + wall.normal * 0.14
+            w.vel *= -0.2
+            w.thrown_by_enemy = false
+        else if target >= 0.0:
+            hit_player(w.damage, w.throw_previous, 3.5)
+            w.pos = w.throw_previous + normalize(path) * f32(target)
+            w.vel *= -0.2
+            w.thrown_by_enemy = false
+        if w.resting or w.wall_stop: w.thrown_by_enemy = false
+        w.wall_stop = false
+        w.throw_previous = w.pos
+
+# One ballistic landing path for Bokoblins, Chuchus and knocked flying monsters.
+__enemy_fall = (e: mut Enemy, dt: f64):
+    start = e.pos
+    vy = f64(e.vel.y)
+    e.pos += e.vel * f32(dt) - vec3(0, f32(9.0 * dt * dt), 0)
+    e.vel.y -= f32(18.0 * dt)
+    push_out(e.pos, 0.4, 1.5)
+    g = ground_at(f64(e.pos.x), f64(e.pos.z), max(f64(start.y), f64(e.pos.y)) + 0.5, 0.8, 0.4).y
+    if f64(e.pos.y) <= g and e.vel.y < 0.0:
+        # Calculate speed at the floor, independent of the update's overshoot.
+        impact = sqrt(max(0.0, vy * vy + 36.0 * (f64(start.y) - g)))
+        e.pos.y = f32(g)
+        if enemy_damage(e, max(0.0, impact - 12.0) * 2.0, e.pos): return
+        e.vel = vec3(e.vel.x, 0, e.vel.z) * f32(max(0.0, 1.0 - 5.0 * dt))
+        if e.kind == .chuchu or e.kind == .ice_chuchu:
+            e.state = .chase
+            e.t = 0.0
+    # Ground monsters cannot recover in midair and skip their landing damage.
+    if (f64(e.pos.y) <= g + 0.01 and e.t > 1.25 + e.rhythm * 0.35) or (e.kind == .keese and e.t > 0.6):
+        e.state = if e.kind == .keese: EState.idle else: EState.chase
+        e.t = 0.0
+
+# who may close in: two at a time; the others keep their distance, circling, until one drops out
+__fighters = 0
+__fighters_next = 0
+
+# (and they take turns: one swing begun holds the others back a moment)
+__swing_lock = 0.0
+__blow_coming = false
+
+enemies_update = (dt: f64, night: bool):
+    enemy_events.clear()
+    enemies_take_hits()
+    enemy_throws_update()
+    stalk_choose_skulls()
+    __fighters = __fighters_next
+    __fighters_next = 0
+    __swing_lock = max(0.0, __swing_lock - dt)
+    lock_threat = -1
+    __blow_coming = false
+    loop i in 0.. and e in enemies:
+        if e.state == .windup and f64(length(pl.pos - e.pos)) < 4.0: lock_threat = i
+        # (one blow at a time: while one winds up or strikes, the others wait; the timed lock alone
+        # ran out mid-blow and two swung at once)
+        if (e.state == .windup or e.state == .attack) and f64(length(pl.pos - e.pos)) < 8.0: __blow_coming = true
+    # the two nearest of those after him are the ones who press in
+    b0 = -1
+    b1 = -1
+    d0 = 1e9
+    d1 = 1e9
+    loop i in 0.. and e in enemies:
+        enemies[i].may_engage = false
+        if not enemy_melee_body(e) or e.archer or e.skull_out: continue
+        if e.state != .chase and e.state != .windup and e.state != .attack and e.state != .recover: continue
+        dd = f64(length(pl.pos - e.pos))
+        if dd < d0:
+            b1 = b0
+            d1 = d0
+            b0 = i
+            d0 = dd
+        else if dd < d1:
+            b1 = i
+            d1 = dd
+    if b0 >= 0:
+        enemies[b0].may_engage = true
+        v0 = enemies[b0].pos - pl.pos
+        enemies[b0].slot = atan2(f64(v0.z), f64(v0.x))
+    if b1 >= 0:
+        enemies[b1].may_engage = true
+        # (the second comes at him from well round to one side of the first)
+        v1 = enemies[b1].pos - pl.pos
+        a1 = atan2(f64(v1.z), f64(v1.x))
+        if b0 >= 0:
+            a0 = enemies[b0].slot
+            dl = wrap_angle(a1 - a0)
+            if abs(dl) < 1.6: a1 = a0 + (if dl >= 0.0: 1.6 else: -1.6)
+        enemies[b1].slot = a1
+    pd = 0.0
+    loop mut e in enemies:
+        e.t += dt
+        e.anim_t += dt
+        e.flash = max(0.0, e.flash - dt)
+        e.impact_t = max(0.0, e.impact_t - dt)
+        e.stun = max(0.0, e.stun - dt)
+        e.brace = max(0.0, e.brace - dt)
+        e.throw_cooldown = max(0.0, e.throw_cooldown - dt)
+        e.retreat_t = max(0.0, e.retreat_t - dt)
+        dist = f64(length(pl.pos - e.pos))
+        if dist > 220.0 and e.state != .dead and e.state != .gone: continue
+        if e.kind == .talus:
+            talus_update(e, dt, dist)
+            continue
+        if enemy_alive(e):
+            # Deep water kills ground monsters; Guardians and flying Keese are exempt.
+            if e.kind != .guardian and e.kind != .keese:
+                if let wl = water_level(f64(e.pos.x), f64(e.pos.z)):
+                    if water_depth(f64(e.pos.x), f64(e.pos.z)) > 0.9 and f64(e.pos.y) < wl - 0.6:
+                        if e.kind == .stalkoblin: e.skull_hp = 0.0
+                        enemy_damage(e, e.hp, e.pos)
+                        enemy_events.push(EEvent("splash", e.pos))
+            if e.hp <= 0.0: enemy_damage(e, 0.0, e.pos)
+        if enemy_alive(e) and e.burning > 0.0 and not (e.kind == .stalkoblin and e.skull_out):
+            burn_dt = min(dt, e.burning)
+            e.burning = max(0.0, e.burning - dt)
+            enemy_damage(e, burn_dt * 2.0, e.pos)
+            # on fire: a Bokoblin drops what it holds and runs about, flailing, until it goes out
+            if e.state != .dead and e.frozen <= 0.0 and (e.kind == .bokoblin or e.kind == .blue_bokoblin or e.kind == .stalkoblin):
+                if len(e.weapon) > 0 and not e.archer:
+                    spawn_item(e.weapon, e.pos + vec3(0, 1.0, 0), vec3(f32(random(-2.0, 2.0)), 3.0, f32(random(-2.0, 2.0))))
+                    e.weapon = ""
+                e.face += sin(e.anim_t * 2.3 + f64(e.home.x)) * 3.5 * dt
+                e.pos += forward_of(e.face) * f32(4.5 * dt)
+                e.pos.y = f32(height_at(f64(e.pos.x), f64(e.pos.z)))
+                e.speed = 4.5
+                e.alert = 1.0
+                continue
+        # night spawns
+        if e.night_only:
+            if e.state == .buried and night and dist < 60.0 and dist > 12.0:
+                # Actor placements can retain a designer's elevated Y. Buried
+                # bones emerge on the supporting floor, never fall from that Y.
+                e.pos.y = f32(ground_at(f64(e.pos.x), f64(e.pos.z), height_at(f64(e.pos.x), f64(e.pos.z)) + 0.5, 0.8, 0.4).y)
+                e.vel = vec3(0, 0, 0)
+                e.lift = 0.0
+                e.burning = 0.0
+                e.el = Elem()
+                e.state = .notice
+                e.t = 0.0
+                e.hp = e.hp_max
+                e.skull_out = false
+                e.skull_hp = 1.0
+                e.skull_head = vec3(0, -10000, 0)
+                enemy_events.push(EEvent("rise", e.pos))
+            if not night and e.state != .buried and e.state != .dead:
+                e.state = .buried
+        match e.state:
+            buried: continue
+            gone:
+                # Ten minutes away from a cleared encounter; reload restores this timer.
+                away = f64(length(pl.pos - e.home)) > 80.0
+                if away: e.respawn_t -= dt
+                # Night-only monsters keep their separate nightly lifecycle.
+                if e.respawn_t <= 0.0 and away and not e.night_only:
+                    e.state = .idle
+                    e.hp = e.hp_max
+                    e.pos = e.home
+                continue
+            dead:
+                e.vel.y -= f32(18.0 * dt)
+                e.pos += e.vel * f32(dt)
+                g = height_at(f64(e.pos.x), f64(e.pos.z))
+                if f64(e.pos.y) < g:
+                    e.pos.y = f32(g)
+                    e.vel = e.vel * 0.3
+                # a moment on the ground, then a burst of dark smoke and it is gone
+                if e.t > 1.0 and e.t - dt <= 1.0: enemy_events.push(EEvent("smoke", e.pos))
+                if e.t > 1.15:
+                    e.state = .gone
+                    e.respawn_t = 600.0
+                continue
+            _: pass
+        if e.kind == .stalkoblin and e.skull_out:
+            stalk_skull_step(e, dt)
+            stalk_seek(e, dt)
+            continue
+        if e.state == .knocked:
+            __enemy_fall(e, dt)
+            continue
+        if e.kind == .guardian:
+            __guardian(e, dt, dist)
+            continue
+        if e.kind == .keese:
+            __keese(e, dt, dist)
+            continue
+        if e.kind == .chuchu or e.kind == .ice_chuchu:
+            __chuchu(e, dt, dist)
+            continue
+        __bokoblin(e, dt, dist, night)
+    enemies_separate()
+    enemies_melee_contacts(dt)
+
+# Resolve the blow after body/collider separation so its root is the one drawn.
+# Scheduling stays in the attack state below; this only finishes that frame's query.
+enemies_melee_contacts = (dt: f64):
+    loop mut e in enemies:
+        if e.contact_time < 0.0: continue
+        time_ = e.contact_time
+        move = e.contact_move
+        e.contact_time = -1.0
+        if not enemy_weapon_contact(e.pos, e.face, move, e.weapon, time_, dt, e.contact_scale, e.contact_previous): continue
+        if move == 2 or move == 3:
+            before = pl.hp
+            damage_player(1, e.pos, 6.5)
+            e.last_swing = -2
+            if pl.hp < before:
+                combat_hit_reaction(before, e.pos)
+                e.state = .celebrate
+                e.t = 0.0
+                enemy_events.push(EEvent("player_hit", pl.pos))
+        else:
+            before = pl.hp
+            dmg = (if len(e.weapon) > 0: item(e.weapon).power else: 2) + (if move == 1: 2 else: 0)
+            if hit_player(dmg, e.pos, (if move == 1: 6.0 else: 4.0), .vertical):
+                enemy_events.push(EEvent("player_hit", pl.pos))
+                if pl.hp < before:
+                    e.state = .celebrate
+                    e.t = 0.0
+            else if move == 0:
+                e.stun = 1.2
+                if fight.act == .guard: e.brace = 0.18
+            if move == 0 and e.state == .attack: e.last_swing = -2
+
+__body = (e: Enemy) -> bool:
+    e.state != .gone and e.state != .buried and e.state != .dead and e.kind != .keese and e.kind != .talus and f64(length(e.pos - pl.pos)) < 80.0
+
+# A capsule occupies the whole upright segment, including an airborne player.
+# Root-height differences alone miss Link's shoulder when he stands on a step.
+enemy_melee_body = (e: Enemy) -> bool:
+    e.kind == .bokoblin or e.kind == .blue_bokoblin or e.kind == .stalkoblin
+
+enemy_body_radius = (e: Enemy) -> f64: if e.kind == .guardian: 1.25 else: 0.4
+
+enemy_body_height = (e: Enemy) -> f64:
+    if e.kind == .guardian: return 3.0
+    if e.kind == .chuchu or e.kind == .ice_chuchu or e.state == .knocked: return 0.65
+    1.5
+
+body_vertical_overlap = (a: vec3, ah: f64, b: vec3, bh: f64) -> bool:
+    f64(a.y) < f64(b.y) + bh - 0.04 and f64(b.y) < f64(a.y) + ah - 0.04
+
+# Keep a visible body gap even while a boot, shove or landing reaches Link.
+# These are root distances; the weapon/contact segment still owns hit reach.
+enemy_attack_ring = (e: Enemy) -> f64:
+    if not enemy_melee_body(e) or e.skull_out: return RADIUS + enemy_body_radius(e)
+    if e.move == 3 or (e.move == 1 and e.state == .attack): return 1.2
+    if e.move == 2 or len(e.weapon) == 0: return 1.35
+    if e.state == .chase and fight.act == .guard and length((e.pos-pl.pos).xz) < 1.85: return 1.2
+    if e.state == .knocked or e.state == .stagger: return 1.65
+    # A committed player stroke closes to its drawn blade's reach; the
+    # waiting/approach ring stays wider. Retain a 0.60 m capsule body gap.
+    if fight.act == .swing or fight.act == .spin or fight.act == .flurry or fight.act == .jump_attack: return if item(equipped_weapon()).shape == .sword: 1.28 else: 1.35
+    1.9
+
+# The broad shoulders must clear the entire camera-to-Link corridor, and the
+# lens itself. Slide to the nearest side instead of pushing through the hero.
+# Use the current chase lens, so orbiting and lock-on share the same constraint.
+enemy_camera_clear = (p: vec3, side_choice: f64) -> vec3:
+    if cam.override or not cam.shown: return p
+    back = vec3(cam.shown_pos.x-pl.pos.x, 0, cam.shown_pos.z-pl.pos.z)
+    span = f64(length(back))
+    if span < 0.5: return p
+    back = back / f32(span)
+    side = vec3(-back.z, 0, back.x)
+    d = p - pl.pos
+    along = f64(dot(d, back))
+    across = f64(dot(d, side))
+    # A cone near Link opens into a 2.8 m corridor and a 5.2 m lens zone.
+    if along <= 0.0 or along > span + 5.2: return p
+    width = min(2.8, along * 1.8)
+    if abs(along-span) < 5.2: width = max(width, sqrt(max(0.0, 27.04-(along-span)*(along-span))))
+    if abs(across) >= width: return p
+    sign = if abs(across) > 0.02: (if across > 0.0: 1.0 else: -1.0) else: side_choice
+    p + side * f32(sign * width - across)
+
+# World and crowd constraints share the solve. A final scenery-only push used
+# to undo all five crowd passes, folding a guard back into Link beside a wall.
+__crowd: int[]
+enemies_separate = ():
+    __crowd.clear()
+    loop i in 0.. and e in enemies:
+        if __body(e): __crowd.push(i)
+    loop pass_ in [0..20):
+        correction = 0.0
+        loop i in __crowd:
+            e = enemies[i]
+            if e.kind == .guardian or e.lookout: continue
+            before = e.pos
+            push_out(enemies[i].pos, enemy_body_radius(e), enemy_body_height(e))
+            if enemies[i].state != .knocked: __ground_enemy(enemies[i])
+            e = enemies[i]
+            if body_vertical_overlap(e.pos, enemy_body_height(e), pl.pos, HEIGHT):
+                d = vec3(e.pos.x - pl.pos.x, 0, e.pos.z - pl.pos.z)
+                l = f64(length(d))
+                r = enemy_attack_ring(e)
+                if l < r:
+                    n = if l > 0.001: d / f32(l) else: forward_of(f64(i) * 2.4)
+                    candidate = e.pos + n * f32(r - l)
+                    push_out(candidate, enemy_body_radius(e), enemy_body_height(e))
+                    # If a wall blocks the radial push, slide around the same
+                    # ring on a clear side, rather than oscillating into it.
+                    if length(vec2(candidate.x - pl.pos.x, candidate.z - pl.pos.z)) < f32(r - 0.002):
+                        angle = atan2(f64(n.z), f64(n.x))
+                        found = false
+                        loop step in [1..9):
+                            loop side in [-1.0, 1.0]:
+                                a = angle + side * f64(step) * 0.16
+                                next = v3(f64(pl.pos.x) + cos(a) * r, f64(e.pos.y), f64(pl.pos.z) + sin(a) * r)
+                                path = next - e.pos
+                                distance = f64(length(path))
+                                if raycast(e.pos + vec3(0, 0.5, 0), path, max(distance, 0.001)).hit: continue
+                                push_out(next, enemy_body_radius(e), enemy_body_height(e))
+                                if length(vec2(next.x - pl.pos.x, next.z - pl.pos.z)) < f32(r - 0.002): continue
+                                candidate = next
+                                found = true
+                                break
+                            if found: break
+                    enemies[i].pos = candidate
+            if enemy_melee_body(e):
+                candidate = enemy_camera_clear(enemies[i].pos, (if i % 2 == 0: 1.0 else: -1.0))
+                push_out(candidate, enemy_body_radius(e), enemy_body_height(e))
+                enemies[i].pos = candidate
+            correction = max(correction, f64(length(enemies[i].pos - before)))
+        loop ai in [0..__crowd.len()):
+            i = __crowd[ai]
+            loop bi in [ai + 1..__crowd.len()):
+                j = __crowd[bi]
+                a = enemies[i]
+                b = enemies[j]
+                if not body_vertical_overlap(a.pos, enemy_body_height(a), b.pos, enemy_body_height(b)): continue
+                d = vec3(b.pos.x - a.pos.x, 0, b.pos.z - a.pos.z)
+                l = f64(length(d))
+                # The 0.4 m physics capsule excludes the wide animated shoulders,
+                # ears and arms. Combat states need their visible envelope even
+                # when a scripted encounter starts before alert has risen.
+                fighting = (a.alert > 0.5 or a.state == .chase or a.state == .windup or a.state == .attack or a.state == .recover) and (b.alert > 0.5 or b.state == .chase or b.state == .windup or b.state == .attack or b.state == .recover)
+                sep = max(enemy_body_radius(a) + enemy_body_radius(b), (if fighting: (if (a.kind == .bokoblin or a.kind == .blue_bokoblin) and (b.kind == .bokoblin or b.kind == .blue_bokoblin): 2.5 else: 2.1) else: 1.35))
+                if l >= sep - 0.001: continue
+                n = if l > 0.001: d / f32(l) else: forward_of(f64(i * 17 + j) * 2.4)
+                am = if a.kind == .guardian or a.lookout: 0.0 else: 1.0
+                bm = if b.kind == .guardian or b.lookout: 0.0 else: 1.0
+                if am + bm == 0.0: continue
+                push = n * f32((sep - l) / (am + bm))
+                enemies[i].pos -= push * f32(am)
+                enemies[j].pos += push * f32(bm)
+                correction = max(correction, sep - l)
+        if correction < 0.001: break
+
+__bokoblin = (e: mut Enemy, dt: f64, dist: f64, night: bool):
+    if e.hp < e.hp_max * 0.3 and e.retreat_t <= 0.0 and e.state == .chase and dist < 3.5:
+        e.state = .retreat
+        e.t = 0.0
+        e.retreat_t = 10.0
+    range = if night: 12.0 else: 20.0
+    if pl.sneaking: range *= 0.55
+    hear = pl.noise * 3.0
+    match e.state:
+        idle, wander, sleep:
+            # by night the camp sleeps (and wakes with the day)
+            if night and e.camp == 1 and not e.lookout and e.state != .sleep and e.alert < 0.3: e.state = .sleep
+            if not night and e.state == .sleep: e.state = .idle
+            # look around the camp, wander a little
+            if e.state != .sleep:
+                if e.t > 4.0 and not e.patrol:
+                    e.t = 0.0
+                    e.state = if not e.lookout and random() < 0.5: EState.wander else: EState.idle
+                    if not e.lookout and e.camp_role == .none: e.face += random(-1.5, 1.5)
+                # a lookout sweeps the land, slowly, one way and back
+                if e.lookout: e.face += sin(e.anim_t * 0.3 + f64(e.home.x)) * 0.35 * dt
+                if e.camp == 1 and e.state == .wander: e.state = .idle
+                if e.patrol and not night:
+                    e.state = .wander
+                    enemy_patrol_step(e, dt)
+                else if e.state == .wander and not e.lookout:
+                    tgt = e.home + v3(sin(e.face) * 3.0, 0.0, -cos(e.face) * 3.0)
+                    __step_toward(e, tgt, 1.2, dt)
+                else: e.speed = approach(e.speed, 0.0, 6.0, dt)
+            # asleep: eyes shut, and it takes more noise to wake
+            if e.state == .sleep:
+                range = 0.0
+                hear = hear * 0.5
+            # (a blade swung or a shield raised nearby is heard; something moving at the edge
+            # of sight close by makes them turn and look)
+            loud = if (fight.act != .idle or act.lock) and not pl.sneaking: 26.0 else: 0.0
+            if pl.state != .dead and (__can_see(e, range) or dist < max(hear, loud) or (dist < 4.0 and not pl.sneaking)):
+                e.alert += dt * (if dist < 8.0: 2.6 else: 1.8)
+            else if pl.state != .dead and e.state != .sleep and dist < 12.0 and not pl.sneaking and __can_see(e, range, true):
+                e.alert += dt * 1.4
+                dv = pl.pos - e.pos
+                if e.alert > 0.4: e.face = turn_toward(e.face, yaw_of(vec3(dv.x, 0, dv.z)), 2.0 * dt)
+            else: e.alert = max(0.0, e.alert - dt * 0.2)
+            if e.alert >= 1.0:
+                e.state = .notice
+                e.t = 0.0
+                enemy_events.push(EEvent("notice", e.pos))
+                # Sound the alarm at recognition, before the visible reaction finishes.
+                __alert_camp(e.pos)
+        notice:
+            # Face the threat while signaling; camp roles keep their feet grounded.
+            dv = pl.pos - e.pos
+            if e.camp_role != .sitter or e.t >= 0.18:
+                e.face = turn_toward(e.face, yaw_of(vec3(dv.x, 0, dv.z)), 8.0 * dt)
+            # a startled hop
+            e.lift = if e.t < 0.35 and e.kind != .guardian and e.camp_role == .none and not e.lookout: sin(e.t / 0.35 * PI) * 0.35 else: 0.0
+            if e.t > (if e.camp_role == .sitter: 0.70 else: 0.45 + e.rhythm * 0.5):
+                e.lift = 0.0
+                e.state = if e.archer: EState.shoot else: EState.chase
+                e.t = 0.0
+        chase:
+            if pl.state == .dead or dist > 45.0 or f64(length(e.pos - e.home)) > 60.0:
+                e.state = .wander
+                e.alert = 0.0
+                __step_toward(e, e.home, 2.5, dt)
+            else:
+                # Put the sword back in the hand before a close melee blow.
+                if e.held != "" and dist <= 3.5:
+                    spawn_item(e.held, e.pos + vec3(0, 0.4, 0), vec3(0, 1, 0))
+                    e.held = ""
+                    e.move = 0
+                # (they strike from a weapon's length, stepping into the blow)
+                reach = if contains(e.weapon, "spear"): 2.7 else: 2.25
+                # the nearest two press in; the rest wait their turn a few meters off, circling
+                # A chase-state bystander yields while another commits its windup.
+                engaged = e.may_engage and not __blow_coming
+                fetching = false
+                # empty-handed (dropped or knocked away): run for the nearest weapon lying close by
+                if len(e.weapon) == 0 and not e.archer and e.kind != .chuchu and e.kind != .keese and e.kind != .guardian:
+                    best = -1
+                    bd = 12.0
+                    loop wi in 0.. and w in witems:
+                        if not w.alive or not w.resting or w.thrown_by_player or w.thrown_by_enemy or w.burning > 0.0 or item(w.id).kind != .weapon: continue
+                        wd = f64(length(w.pos - e.pos))
+                        if wd < bd:
+                            bd = wd
+                            best = wi
+                    if best >= 0:
+                        engaged = false
+                        fetching = true
+                        if bd < 0.9:
+                            e.weapon = witems[best].id
+                            witems[best].alive = false
+                            witems[best].respawn = 0.0
+                        else: __step_toward(e, witems[best].pos, 5.0, dt)
+                # A waiting guard occasionally fetches a loose rock and throws it once.
+                if not fetching and not e.archer and e.held == "" and e.throw_cooldown <= 0.0 and dist > 4.0 and dist < 14.0 and e.anim_t > 1.5:
+                    loop wi in 0.. and w in witems:
+                        if not w.alive or not w.resting or w.id != "rock" or f64(length(w.pos - e.pos)) > 4.0: continue
+                        if raycast(e.pos + vec3(0, 0.5, 0), w.pos - e.pos - vec3(0, 0.5, 0), max(0.001, f64(length(w.pos - e.pos)) - 0.1)).hit: continue
+                        e.fetch_item = wi
+                        e.state = .gather
+                        e.t = 0.0
+                        fetching = true
+                        break
+                if e.held != "" and dist > 3.5 and dist < 16.0 and __swing_lock <= 0.0 and not __blow_coming and __can_see(e, 18.0, true):
+                    e.move = 4
+                    e.state = .windup
+                    e.t = 0.0
+                    __swing_lock = 1.4
+                    fetching = true
+                if engaged: __fighters_next += 1
+                if fetching: pass
+                else if not engaged:
+                    # Keep waiting weapons beyond the player, away from the foreground lens.
+                    # Walk into place rather than jumping when the camera orbits.
+                    dv = e.pos - pl.pos
+                    front = forward_of(cam_yaw_global)
+                    side = vec3(-front.z, 0, front.x)
+                    bearing = if dot(dv, side) >= 0.0: 1.0 else: -1.0
+                    want = pl.pos + front * 4.6 + side * f32(bearing * 4.0)
+                    if dist > 8.0: __step_toward(e, want, 4.5, dt)
+                    else:
+                        step = want - e.pos
+                        step.y = 0
+                        e.speed = approach(e.speed, 1.5 + e.rhythm * 0.6, 6.0, dt)
+                        if length(step) > 0.05: e.pos += normalize(step) * f32(min(f64(length(step)), e.speed * dt))
+                        push_out(e.pos, 0.4, 1.5)
+                    tp = pl.pos - e.pos
+                    e.face = turn_toward(e.face, yaw_of(vec3(tp.x, 0, tp.z)), 6.0 * dt)
+                    e.taunt = if dist < 8.0 and fract(e.anim_t * 0.12 + fract(f64(e.home.z) * 0.7)) < 0.18: 1.0 else: 0.0
+                    e.t = 0.0
+                else if engaged and dist > 3.0 and dist < 6.5 and __swing_lock <= 0.0 and not __blow_coming and e.t > 1.0 + e.rhythm and random() < dt * 0.5 and len(e.weapon) > 0:
+                    # a leap: crouch, then spring at him and slam down
+                    __swing_lock = 1.3
+                    e.move = 1
+                    e.state = .windup
+                    e.t = 0.0
+                    enemy_events.push(EEvent((if len(e.weapon) > 0 and item(e.weapon).two_handed: "windup_heavy" else: "windup"), e.pos))
+                else if dist > reach:
+                    sp = if e.kind == .blue_bokoblin: 5.4 else: 5.0
+                    # (in along its own bearing, to arm's length: two come at him from two sides)
+                    __step_toward(e, pl.pos + v3(cos(e.slot), 0.0, sin(e.slot)) * f32(reach * 0.92), sp, dt)
+                else:
+                    # Establish the assigned bearing before winding up. Without
+                    # this, two close guards stayed at the same side of Link.
+                    away = e.pos - pl.pos
+                    angle = atan2(f64(away.z), f64(away.x))
+                    turn = wrap_angle(e.slot - angle)
+                    if abs(turn) > 0.25:
+                        a = angle + clamp(turn, -1.5 * dt, 1.5 * dt)
+                        ring = max(enemy_attack_ring(e), f64(length(vec2(away.x, away.z))))
+                        e.pos.x = f32(f64(pl.pos.x) + cos(a) * ring)
+                        e.pos.z = f32(f64(pl.pos.z) + sin(a) * ring)
+                        e.t = min(e.t, 0.2)
+                        e.speed = 1.5 * ring
+                    else: e.speed = approach(e.speed, 0.0, 10.0, dt)
+                    dv = pl.pos - e.pos
+                    e.face = turn_toward(e.face, yaw_of(vec3(dv.x, 0, dv.z)), 8.0 * dt)
+                    # (one swing at a time: wait while another's blow is coming)
+                    if __swing_lock > 0.0 or __blow_coming: e.t = min(e.t, 0.2)
+                    if e.t > 0.3 + e.rhythm * 0.35:
+                        __swing_lock = 1.1
+                        e.state = .windup
+                        e.t = 0.0
+                        # against a raised shield, sometimes a shove to knock it aside
+                        e.move = if dist <= 1.65 and fight.act == .guard: 3 else: (if dist <= 1.8 and random() < 0.25: 2 else: 0)
+                        enemy_events.push(EEvent((if len(e.weapon) > 0 and item(e.weapon).two_handed: "windup_heavy" else: "windup"), e.pos))
+        windup:
+            # the swing is telegraphed: raised weapon, a short pause
+            e.speed = 0.0
+            dv = pl.pos - e.pos
+            e.face = turn_toward(e.face, yaw_of(vec3(dv.x, 0, dv.z)), 4.0 * dt)
+            if (e.move == 2 or e.move == 3) and dist > 1.85:
+                e.state = .chase
+                e.t = 0.0
+                e.move = 0
+                return
+            wt = (if e.move >= 3: 0.48 else: (if e.move == 1: 0.6 else: (if e.move == 2: 0.35 else: (if e.kind == .blue_bokoblin: 0.55 else: 0.75)))) * (0.85 + 0.3 * fract(f64(e.home.x) * 0.37))
+            if e.t > wt:
+                e.state = .attack
+                e.t = 0.0
+        attack:
+            e.contact_previous = e.pos
+            f = forward_of(e.face)
+            if e.move == 4:
+                if e.t >= 0.22 and e.last_swing != -2:
+                    e.last_swing = -2
+                    enemy_throw_release(e)
+                if e.t > 0.65:
+                    e.state = .recover
+                    e.t = 0.0
+                    e.last_swing = -1
+            else if e.move == 3:
+                # Step into the short boot reach while keeping a body's width clear.
+                if dist <= 1.85 and e.t < 0.16: e.pos += f * f32(clamp(dist - 1.2, 0.0, 0.3) * dt / 0.16)
+                if dist <= 1.85 and e.t >= 0.16 and e.t - dt <= 0.30 and e.last_swing != -2:
+                    e.contact_time = e.t
+                    e.contact_move = 3
+                if e.t > 0.55:
+                    e.state = .recover
+                    e.t = 0.0
+                    e.last_swing = -1
+            else if e.move == 1:
+                # the leap: across the ground in an arc, landing with a swept weapon contact
+                if e.t < 0.5:
+                    # (landing a stride short of him, not on top of him)
+                    e.pos += f * f32(clamp(dist - 1.9, 0.0, 7.0) / 0.5 * dt)
+                    e.lift = enemy_attack_lift(e.move, e.t)
+                else: e.lift = 0.0
+                if e.t >= 0.5 and e.last_swing != -2:
+                    e.last_swing = -2
+                    enemy_events.push(EEvent("slam", e.pos))
+                    e.contact_time = e.t
+                    e.contact_move = 1
+                if e.t > 1.1:
+                    e.state = .recover
+                    e.t = 0.0
+                    e.last_swing = -1
+            else if e.move == 2:
+                # the shove: the held weapon (or bare fist) throws the guard aside
+                if e.t > 0.12 and e.last_swing != -2:
+                    e.last_swing = -2
+                    e.contact_time = e.t
+                    e.contact_move = 2
+                if e.t > 0.5:
+                    e.state = .recover
+                    e.t = 0.0
+                    e.last_swing = -1
+            else: e.pos += f * f32(2.5 * dt * (if e.t < 0.15: 1.0 else: 0.0))
+            if e.move == 0 and e.t >= 0.1 and e.t - dt <= 0.25 and e.last_swing != -2:
+                e.contact_time = e.t
+                e.contact_move = 0
+            if e.move == 0 and e.t > 0.7:
+                e.state = .recover
+                e.t = 0.0
+                e.last_swing = -1
+        gather:
+            e.speed = 0.0
+            if e.fetch_item < 0 or e.fetch_item >= witems.len() or not witems[e.fetch_item].alive:
+                e.state = .chase
+                e.t = 0.0
+            else:
+                w = witems[e.fetch_item]
+                if length(w.pos - e.pos) > 0.9:
+                    __step_toward(e, w.pos, 2.0, dt)
+                    e.t = 0.0
+                else if e.t > 0.5:
+                    e.held = w.id
+                    witems[e.fetch_item].alive = false
+                    witems[e.fetch_item].respawn = 0.0
+                    e.state = .chase
+                    e.t = 0.0
+        celebrate:
+            e.speed = 0.0
+            if e.t > 0.8:
+                e.state = .chase
+                e.t = 0.0
+                e.last_swing = -1
+                e.move = 0
+        retreat:
+            away = e.pos - pl.pos
+            away.y = 0
+            __step_toward(e, e.pos + normalize(away + vec3(0.001, 0, 0)) * 4.0, 3.8, dt)
+            if e.t > 1.2 or dist > 7.0:
+                e.state = .chase
+                e.t = 0.0
+        recover:
+            if e.t > (if e.stun > 0.0: 1.4 else: 0.5 + e.rhythm * 0.45):
+                e.state = .chase
+                e.t = 0.0
+                e.move = 0
+        shoot:
+            dv = pl.pos - e.pos
+            e.face = turn_toward(e.face, yaw_of(vec3(dv.x, 0, dv.z)), 5.0 * dt)
+            if dist > 60.0 or pl.state == .dead:
+                e.state = .idle
+                e.alert = 0.0
+            else if e.t > 2.2:
+                e.t = 0.0
+                from = e.pos + vec3(0, 1.4, 0)
+                to = pl.pos + vec3(0, 1.1, 0) + pl.vel * f32(dist / 40.0)
+                d = normalize(to - from)
+                # a little high to arc, and not perfectly aimed
+                d = normalize(d + vec3(f32(random(-0.03, 0.03)), f32(dist * 0.0021), f32(random(-0.03, 0.03))))
+                fire_arrow(from, d, 4.0, true)
+                enemy_events.push(EEvent("bow", e.pos))
+            if dist < 6.0 and not e.lookout:
+                e.state = .chase
+                e.t = 0.0
+        stagger:
+            e.speed = 0.0
+            shift = smoothstep(0.0, 0.32, e.t) - smoothstep(0.0, 0.32, e.t - dt)
+            if not e.lookout:
+                e.pos += e.recoil * f32(shift * 0.24)
+                push_out(e.pos, 0.4, 1.5)
+            if e.t > 0.48 + e.rhythm * 0.2:
+                e.state = .chase
+                e.t = 0.0
+        _: pass
+    __ground_enemy(e)
+
+__chuchu = (e: mut Enemy, dt: f64, dist: f64):
+    # hops: a jelly that bounces toward the player and bursts on contact
+    e.bob += dt * 3.0
+    if dist < 14.0 and pl.state != .dead:
+        if e.state != .chase: enemy_events.push(EEvent("notice", e.pos))
+        e.state = .chase
+    if e.state == .chase:
+        if dist > 20.0:
+            e.state = .idle
+        hop = sin(e.bob * PI) > 0.0
+        if hop: __step_toward(e, pl.pos, 2.2, dt)
+        if dist < 0.9 and e.t > 1.0:
+            e.t = 0.0
+            if hit_player(2, e.pos, 2.0):
+                enemy_events.push(EEvent("player_hit", pl.pos))
+                if e.kind == .ice_chuchu: pl.frozen = 2.5
+    __ground_enemy(e)
+
+__keese = (e: mut Enemy, dt: f64, dist: f64):
+    # flutters near its roost; swoops at the player
+    e.bob += dt
+    if dist < 16.0 and pl.state != .dead: e.state = .chase
+    if e.state == .chase:
+        tgt = pl.pos + vec3(f32(sin(e.bob * 3.0) * 1.5), 1.5 + f32(sin(e.bob * 5.0) * 0.6), f32(cos(e.bob * 3.0) * 1.5))
+        if f64(fract(e.bob * 0.4)) > 0.75: tgt = pl.pos + vec3(0, 1.2, 0)
+        d = tgt - e.pos
+        e.pos += normalize(d + vec3(0.0001, 0, 0)) * f32(min(6.0, f64(length(d)) * 3.0) * dt)
+        e.face = yaw_of(vec3(d.x, 0, d.z))
+        if f64(length(pl.pos + vec3(0, 1.2, 0) - e.pos)) < 0.8 and e.t > 1.0:
+            e.t = 0.0
+            if hit_player(2, e.pos, 1.0): enemy_events.push(EEvent("player_hit", pl.pos))
+        if dist > 30.0: e.state = .idle
+    else:
+        tgt = e.home + vec3(f32(sin(e.bob) * 3.0), f32(sin(e.bob * 2.3) * 0.5), f32(cos(e.bob * 0.8) * 3.0))
+        e.pos = e.pos + (tgt - e.pos) * f32(min(1.0, dt * 1.5))
+
+__guardian = (e: mut Enemy, dt: f64, dist: f64):
+    # a decayed Guardian: its eye searches; once it sees the player a red sight settles on
+    # them for three seconds, then the laser fires (dodge, hide, or parry with a shield)
+    eye = e.pos + vec3(0, 2.6, 0)
+    sees = dist < 70.0 and pl.state != .dead and not raycast(eye, pl.pos + vec3(0, 1, 0) - eye, dist, true).hit
+    match e.state:
+        laser:
+            e.laser_t += dt
+            e.laser_target = e.laser_target + (pl.pos + vec3(0, 1.0, 0) - e.laser_target) * f32(min(1.0, dt * (if e.laser_t < 2.6: 4.0 else: 0.5)))
+            dv = pl.pos - e.pos
+            e.face = turn_toward(e.face, yaw_of(vec3(dv.x, 0, dv.z)), 1.5 * dt)
+            if not sees and e.laser_t < 2.5:
+                e.state = .idle
+                e.laser_t = 0.0
+            if e.laser_t > 3.0:
+                # the shot lands where the sight was, or on whatever stands in its way (cover found
+                # late still saves him: the shot had passed through the wall)
+                to = e.laser_target - eye
+                lt = f64(length(to))
+                bh = raycast(eye, to, max(lt, 0.001), true)
+                if bh.hit: e.laser_target = bh.pos
+                enemy_events.push(EEvent("laser", e.laser_target))
+                # did the player stay there?
+                combat_revalidate_equipment()
+                blast_from = if bh.hit: bh.pos + bh.normal * 0.04 else: e.laser_target
+                blast_to = pl.pos + vec3(0, 1, 0) - blast_from
+                if f64(length(blast_to)) < 1.6 and not raycast(blast_from, blast_to, max(f64(length(blast_to)) - 0.05, 0.001)).hit:
+                    if perfect_guard():
+                        enemy_events.push(EEvent("deflect", e.pos))
+                        enemy_damage(e, 125.0, pl.pos)
+                        if e.state == .dead:
+                            enemy_events.push(EEvent("explode", eye))
+                            return
+                    else:
+                        hit_player(12, e.laser_target - normalize(pl.pos - e.pos) * 2.0, 6.0)
+                        enemy_events.push(EEvent("player_hit", pl.pos))
+                enemy_events.push(EEvent("explode", e.laser_target))
+                e.state = .recover
+                e.t = 0.0
+                e.laser_t = 0.0
+        recover:
+            if e.t > 3.0: e.state = .idle
+        _:
+            e.face += sin(e.anim_t * 0.4) * dt * 0.5
+            if sees:
+                e.state = .laser
+                e.laser_t = 0.0
+                e.laser_target = eye + normalize(pl.pos - e.pos) * 3.0
+                enemy_events.push(EEvent("guardian_lock", e.pos))
+
+# is any monster hunting the player (for the battle music)
+in_combat = () -> bool:
+    loop e in enemies:
+        # The boss encounter stays active through reveal, mining recoils and shakes.
+        if e.kind == .talus:
+            if enemy_alive(e) and e.state != .sleep and f64(length(e.pos-pl.pos)) < 35.0: return true
+            continue
+        if (e.state == .chase or e.state == .windup or e.state == .attack or e.state == .shoot or e.state == .laser or e.state == .seek_skull or e.state == .reassemble) and f64(length(e.pos - pl.pos)) < 35.0: return true
+    false

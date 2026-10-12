@@ -1,0 +1,122 @@
+{
+  "protocol": "rootless POSIX_FADV_DONTNEED on all eight prepared packs, local shader binaries and executable; mincore verifies zero resident pages before each cold launch; other caches remain warm",
+  "executable_sha256": "5e245593b37152d8c3e26b9dfa3cd5319b936ee6c6a99cdec342b0112b9130da",
+  "cold": {
+    "load_s": {
+      "median": 2.48,
+      "min": 2.48,
+      "max": 2.53
+    },
+    "elapsed_s": {
+      "median": 2.67,
+      "min": 2.66,
+      "max": 2.73
+    },
+    "major_faults": {
+      "median": 6,
+      "min": 6,
+      "max": 6
+    }
+  },
+  "warm": {
+    "load_s": {
+      "median": 1.6,
+      "min": 1.57,
+      "max": 1.61
+    },
+    "elapsed_s": {
+      "median": 1.77,
+      "min": 1.76,
+      "max": 1.78
+    },
+    "major_faults": {
+      "median": 0,
+      "min": 0,
+      "max": 0
+    }
+  },
+  "runs": [
+    {
+      "mode": "cold",
+      "repeat": 1,
+      "load_s": 2.48,
+      "elapsed_s": 2.67,
+      "major_faults": 6,
+      "loadavg": "4.01 4.23 4.10 1/2091 1692942",
+      "tested_files": 155,
+      "tested_bytes": 579005915,
+      "tested_pages": 141441,
+      "resident_pages_before": 0
+    },
+    {
+      "mode": "warm",
+      "repeat": 1,
+      "load_s": 1.61,
+      "elapsed_s": 1.78,
+      "major_faults": 0,
+      "loadavg": "3.77 4.18 4.08 1/2099 1692974",
+      "tested_files": 155,
+      "tested_bytes": 579005915,
+      "tested_pages": 141441,
+      "resident_pages_before": 137091
+    },
+    {
+      "mode": "cold",
+      "repeat": 2,
+      "load_s": 2.48,
+      "elapsed_s": 2.66,
+      "major_faults": 6,
+      "loadavg": "3.77 4.18 4.08 1/2098 1692998",
+      "tested_files": 155,
+      "tested_bytes": 579005915,
+      "tested_pages": 141441,
+      "resident_pages_before": 0
+    },
+    {
+      "mode": "warm",
+      "repeat": 2,
+      "load_s": 1.6,
+      "elapsed_s": 1.77,
+      "major_faults": 0,
+      "loadavg": "3.63 4.14 4.07 3/2098 1693020",
+      "tested_files": 155,
+      "tested_bytes": 579005915,
+      "tested_pages": 141441,
+      "resident_pages_before": 137091
+    },
+    {
+      "mode": "cold",
+      "repeat": 3,
+      "load_s": 2.53,
+      "elapsed_s": 2.73,
+      "major_faults": 6,
+      "loadavg": "3.63 4.14 4.07 1/2099 1693044",
+      "tested_files": 155,
+      "tested_bytes": 579005915,
+      "tested_pages": 141441,
+      "resident_pages_before": 0
+    },
+    {
+      "mode": "warm",
+      "repeat": 3,
+      "load_s": 1.57,
+      "elapsed_s": 1.76,
+      "major_faults": 0,
+      "loadavg": "3.74 4.16 4.07 2/2091 1693066",
+      "tested_files": 155,
+      "tested_bytes": 579005915,
+      "tested_pages": 141441,
+      "resident_pages_before": 137091
+    }
+  ],
+  "prepared_packs_sha256": {
+    "chime.bin": "578069922b00336347956d58284312d4cb1f19d74bd66a67a93bd021a9267a88",
+    "farland.bin": "5f913ee33e7e9d88bbfd0b40a359cefd294750c8f23b28c9891095d91cb2e13d",
+    "piano.bin": "e609f5707952526137998232f7be9f4e684a7276072ea593d7690a490ff40c42",
+    "sfx.bin": "5626e9e40f531ca6b064359860ee0f5e1651aed7ff5a465053c47e442197fec2",
+    "structures.bin": "93e1d7f12e8efe7f803f73cb61b8d28544a1734043be889aa4c5662976010f88",
+    "terrain.bin": "e6770a0201e03be42ae2c6216704b00e22c181ca2a3d7cd36b26b796670616a6",
+    "water.bin": "b84e25287e24e96ab802f8e14216aa9ee6a6bfa308f07e2583672a20dacc8fd0",
+    "world.bin": "01aea7af042b6987fd7dfd0c969285e7c50d27cfbd4a43e017e21ff1f6942f56"
+  }
+}

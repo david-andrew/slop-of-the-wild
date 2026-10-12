@@ -1,0 +1,909 @@
+{
+  "schema_version": 1,
+  "accessed": "2026-10-11",
+  "base_commit": "25c186d73d751fc6062e6885289ebbf5e46dde46",
+  "decision": "36 measured response diagnostics; zero newly accepted controlled BotW response baselines. Removed fake numeric targets and demoted reversal clip-to-heading comparison. No player/camera tuning justified by current evidence.",
+  "sources": [
+    {
+      "id": "player-general",
+      "title": "Player_Link parameters",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/Player_Link.gparamlist.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/GeneralParamList/Player_Link.gparamlist.yml",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "sha256": "8e5a5f1860983c7172ecd78cb43a0d1c7c4e29b31badf339871297610e12b7c5",
+      "gives": "MaxSpeedInAir=0.3; TurnEnableDirSub=120; TurnEnableStickSub=30; TurnEnableSpeed=0; LookPosOffsetY=1.5.",
+      "limitations": "No ground acceleration/release-braking equation or air steering trajectory; turn thresholds are not response rates.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "player-ai",
+      "title": "Player_Link action parameters",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/Player_Link.aiprog.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/Player_Link.aiprog.yml",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "sha256": "09904f9cfc5a5a467e8bbfb8b04143c07ec1e422ba3f17f669c6f84236c4d64b",
+      "gives": "PlayerParashawlGlide Action_35: GlideSpeedMax=0.02, Lv2GlideSpeedMax=0.35, GlideRotRate=0.2, GlideRotSpeed=20, OverSpeedDec=0.002; EnergyGlide=28.",
+      "limitations": "Glide runtime units/consumers unresolved; no defensible forward speed, sink or turn conversion.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "camera-ai",
+      "title": "GameRomCamera action parameters",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/GameRomCamera.aiprog.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AIProgram/GameRomCamera.aiprog.yml",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "sha256": "d39d5330a81121cf52dfa9450da4d024aa547f7390ce7a67a854434b21e0cc8e",
+      "gives": "DefaultNormal CameraChase: radius=5.3; Fovy=0.872665 rad; lngCus=0.1; AtHCusMin/Max=0.6/1.0; atVCusMin/Max=0.4/1.0.",
+      "limitations": "Radius and FOV usable; response coefficients have no validated update equation.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "move-as",
+      "title": "Player_Move animation state tree",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AS/Player_Move.as.yml",
+      "raw_url": "https://raw.githubusercontent.com/leoetlino/botw/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/AS/Player_Move.as.yml",
+      "commit": "f50b984f5e645dcf71b1c6340a8834bb1dee0153",
+      "sha256": "9e77c5a5506acce594d749a8bd34e9b87efadbb9fadd07ec9474d03520e3c8fc",
+      "gives": "Startup and turn animation selectors/blenders, including InputLimit.",
+      "limitations": "Animation blending is not a calibrated input-to-position curve.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "decomp-move",
+      "title": "Switch 1.5.0 PlayerMove decompilation",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerMove.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerMove.cpp",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "sha256": "88c82aa946c4f0cf63449b426eb610d35f92a0548c916b04de9491059db6284a",
+      "gives": "Parameter loading; calc_ calls PlayerAction::calc_. Current master web copy still has this stub.",
+      "limitations": "No completed normal on-foot movement equation.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "decomp-jump",
+      "title": "Switch 1.5.0 PlayerJump decompilation",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerJump.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerJump.cpp",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "sha256": "8c8e5ecfd0028c31516392ffc3f410ff1c9b576c8863e9ed48100a7f9b7f565d",
+      "gives": "Parameter loading/delegation to base calculation.",
+      "limitations": "No completed jump air-steering equation.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "decomp-glide",
+      "title": "Switch 1.5.0 PlayerParashawlGlideBase decompilation",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerParashawlGlideBase.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Player/Action/actionPlayerParashawlGlideBase.cpp",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "sha256": "4c8ba414c7a8023f089e70713164d8903c5abe617a67c6c165efeb68309fb7e8",
+      "gives": "Loads native glide parameters; calc_ calls PlayerAction::calc_. Current master web copy still has this stub.",
+      "limitations": "No runtime speed/sink/rotation equation.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "decomp-camera",
+      "title": "Switch 1.5.0 CameraChase decompilation",
+      "url": "https://github.com/zeldaret/botw/blob/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Camera/Action/actionCameraChase.cpp",
+      "raw_url": "https://raw.githubusercontent.com/zeldaret/botw/49c6b5c18344de6555163b3af7044970ad9d7c5e/src/Game/Actor/Camera/Action/actionCameraChase.cpp",
+      "commit": "49c6b5c18344de6555163b3af7044970ad9d7c5e",
+      "sha256": "3a067ba69b06d5220230bfa3f4491d3a265f9722b6c6bf094972fcf3741d1a1f",
+      "gives": "Constructor/destructor only in pinned file.",
+      "limitations": "No follow/lag update equation.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "wiiu-root-report",
+      "title": "Published Wii U v208 root-motion research",
+      "url": "https://github.com/ntngel1/botw-renderer/blob/656ceeb6ab2dd0eb0d6fa352cd1a3adddf0ec10b/docs/research/wiiu-as-frame-ctrl.md",
+      "raw_url": "https://raw.githubusercontent.com/ntngel1/botw-renderer/656ceeb6ab2dd0eb0d6fa352cd1a3adddf0ec10b/docs/research/wiiu-as-frame-ctrl.md",
+      "commit": "656ceeb6ab2dd0eb0d6fa352cd1a3adddf0ec10b",
+      "sha256": "acd29b08e73ef11ef8f4fc13e45bb5249622355bac50ec3414f44446ad111a30",
+      "gives": "24-frame run loop: 2.963 m at rate 1.5 => 5.556 m/s; sprint 3.703 m at rate 1.75 => 8.10 m/s. Reversal Brake clips: walk 9 frames at rate 0.9; run 8; sprint 18. Wait uses separate 18-frame stop clips and a blend.",
+      "limitations": "Clip/research evidence, not a synchronized retail trajectory. Brake duration is not physical heading time; Wait is not an 8-frame release stop.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "tas-input",
+      "title": "Published BotW TAS input script",
+      "url": "https://github.com/MCMi460/BOTW-TAS/blob/b09637c3e9b452f577cbfdfeee845fafe04ddced/any%25/SoR/script1.py",
+      "raw_url": "https://raw.githubusercontent.com/MCMi460/BOTW-TAS/b09637c3e9b452f577cbfdfeee845fafe04ddced/any%25/SoR/script1.py",
+      "commit": "b09637c3e9b452f577cbfdfeee845fafe04ddced",
+      "sha256": "fcd4e5a103b481f2dc16d904c72c98b2a8a30e7c3126863091a58337b0de3bee",
+      "gives": "90 one-frame B-held calls with left stick (-6113,32033), right stick (0,0), then KEY_A and neutral left stick.",
+      "limitations": "Input-only; no synchronized world position/velocity trace, frame-rate/start-state linkage or published response measurement.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "player-physics",
+      "title": "Player_Link bphysics dump",
+      "url": "https://github.com/leoetlino/botw/blob/f50b984f5e645dcf71b1c6340a8834bb1dee0153/Actor/Physics/Player_Link.physics.yml",
+      "sha256": "6d5a42ddfed31eb1d39c555d8a25618fc48984b197dbb14098c30a93895ed7b7",
+      "gives": "CharacterController shape/capsule data and rigid-body damping; nav_mesh_character_max_acceleration=0.0.",
+      "limitations": "Rigid-body/navmesh settings do not establish player-controller acceleration or stick-release braking.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "schema",
+      "title": "ZeldaMods bgparamlist schema",
+      "url": "https://zeldamods.org/wiki/Bgparamlist",
+      "gives": "Parameter field names/types and DEFAULT values; points readers to actor-specific game data.",
+      "limitations": "Schema defaults are not Player_Link per-build parameters.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "leicester",
+      "title": "McKee et al., Paragliding through Hyrule, 2019-12-06",
+      "url": "https://journals.le.ac.uk/index.php/pst/article/download/3330/3017/8787",
+      "gives": "Vertical-only tower drop, approximately 70 m in around 22 s: approximately 3.2 m/s sink; visually settles in 2-4 frames at 30 fps.",
+      "limitations": "Estimate; original video, input trace, build and error bounds absent. No horizontal-speed or forward-input sink/turn measurement. Neutral stick in our trial retains 5.845 m/s horizontal speed and is not the same protocol.",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "community-speed-study",
+      "title": "Author stopwatch movement-speed study",
+      "url": "https://www.reddit.com/r/botw/comments/xlrzrq/",
+      "gives": "Dry-weather travel comparisons along the road from Dueling Peaks to Proxim Bridge; glide follows the minimap road.",
+      "limitations": "No synchronized input/world response or calibrated straight-line speed/sink pair acquired; no numeric response baseline adopted.",
+      "accessed": "2026-10-11"
+    }
+  ],
+  "tolerance_policy": {
+    "displacement_speed_relative": 0.05,
+    "response_timing_seconds": 0.06666666666666667,
+    "heading_crossing_degrees": 5,
+    "stop_speed_threshold_m_s": 0.05,
+    "missing_reference": "null; unscored GAP, no calculated tolerance",
+    "legacy_footage": "Climb lunge/mantle retain annotation uncertainty 0.134 s; not controlled input response and not proof of the two-frame criterion."
+  },
+  "response_rows": [
+    {
+      "measure": "time to 90% run",
+      "ours": 0.233333,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "run release stop time (<0.05 m/s)",
+      "ours": 0.2,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "run release stop distance",
+      "ours": 0.547208,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "180 run heading response (<5 deg)",
+      "ours": 0.25,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "glide forward speed (0.5 s warmup)",
+      "ours": 7.67807,
+      "unit": "m/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "glide forward sink rate",
+      "ours": 2.600012,
+      "unit": "m/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "neutral glide horizontal speed",
+      "ours": 5.84483,
+      "unit": "m/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "run startup displacement at 6/60 s",
+      "ours": 0.119167,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "run startup displacement at 12/60 s",
+      "ours": 0.458333,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "run startup displacement at 30/60 s",
+      "ours": 2.099418,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "run startup displacement at 60/60 s",
+      "ours": 4.877414,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "90 run heading response (<5 deg)",
+      "ours": 0.183333,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "jump 90 steer lateral displacement",
+      "ours": 0.895928,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "jump 90 steer forward displacement",
+      "ours": 1.723463,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "jump 90 steer airtime",
+      "ours": 0.533333,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "steady run look-point lag",
+      "ours": 0.088288,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "camera-ai",
+        "decomp-camera",
+        "player-general",
+        "tas-input"
+      ],
+      "category": "camera"
+    },
+    {
+      "measure": "90 world turn camera reaches 45 deg",
+      "ours": 1.35,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "camera-ai",
+        "decomp-camera",
+        "player-general",
+        "tas-input"
+      ],
+      "category": "camera"
+    },
+    {
+      "measure": "90 world turn peak yaw rate",
+      "ours": 46.75294,
+      "unit": "deg/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "camera-ai",
+        "decomp-camera",
+        "player-general",
+        "tas-input"
+      ],
+      "category": "camera"
+    },
+    {
+      "measure": "90 world turn settles within 5 deg",
+      "ours": 5.333333,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "camera-ai",
+        "decomp-camera",
+        "player-general",
+        "tas-input"
+      ],
+      "category": "camera"
+    },
+    {
+      "measure": "time to 90% sprint from rest",
+      "ours": 0.333333,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "sprint startup displacement at 6/60 s",
+      "ours": 0.119167,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "sprint startup displacement at 12/60 s",
+      "ours": 0.458333,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "sprint startup displacement at 30/60 s",
+      "ours": 2.592501,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "sprint startup displacement at 60/60 s",
+      "ours": 6.642508,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "sprint release stop time (<0.05 m/s)",
+      "ours": 0.3,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "sprint release stop distance",
+      "ours": 1.206112,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "player-ai",
+        "player-physics",
+        "move-as",
+        "decomp-move",
+        "wiiu-root-report",
+        "tas-input"
+      ],
+      "category": "ground"
+    },
+    {
+      "measure": "90 run velocity heading response (<5 deg)",
+      "ours": 0.183333,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "90 run minimum speed during turn",
+      "ours": 4.256,
+      "unit": "m/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "180 run velocity heading response (<5 deg)",
+      "ours": 0.25,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "180 run minimum speed during turn",
+      "ours": 0.0,
+      "unit": "m/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-general",
+        "move-as",
+        "decomp-move",
+        "decomp-jump",
+        "tas-input"
+      ],
+      "category": "control"
+    },
+    {
+      "measure": "steady forward displacement over 2 s",
+      "ours": 15.547119,
+      "unit": "m",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "steady forward speed (2 s window)",
+      "ours": 7.77356,
+      "unit": "m/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "steady forward sink (2 s window)",
+      "ours": 2.600098,
+      "unit": "m/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "90 glide heading response (<5 deg)",
+      "ours": 0.783333,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "90 glide velocity response (<5 deg)",
+      "ours": 2.1,
+      "unit": "s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "timing_seconds": 0.06666666666666667
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    },
+    {
+      "measure": "90 glide peak heading rate",
+      "ours": 108.861981,
+      "unit": "deg/s",
+      "reference": null,
+      "tolerance": null,
+      "declared_tolerance_policy": {
+        "relative": 0.05
+      },
+      "verdict": "GAP",
+      "source_ids_searched": [
+        "player-ai",
+        "decomp-glide",
+        "leicester",
+        "community-speed-study",
+        "tas-input"
+      ],
+      "category": "glide"
+    }
+  ],
+  "verification": {
+    "reference_agreement": 99.8,
+    "reference_pass": 25,
+    "reference_fail": 0,
+    "behavior_pass": 29,
+    "behavior_total": 29,
+    "response_gaps": 36,
+    "trace_checks": 203,
+    "traversal_checks_passed": 1607,
+    "traversal_checks_total": 1607,
+    "journey_frames": 67487,
+    "journey_stuck_points": 0,
+    "journey_hard_falls": 0,
+    "stride_max_slip_percent": 0.047,
+    "contact_pass": true,
+    "pinned_sources_verified": 36,
+    "pinned_source_bytes": 12299189,
+    "render_runs": 0,
+    "implementation_constants_changed": [],
+    "logs_sha256": {
+      "after": "53b8a611b36aa7bfaadf34d6076fd593f4461510eca6d74b68ea8f8d493b481f",
+      "trace-check": "428525d5fb2ab4f83ecf796768567f69f025910014f091e7fe2c20a8171b3c52",
+      "traversal": "f9c118ee2b25da4474ad97e5e0af2fe6c85bd6cdbd762add9e2ddbfa03653fd6",
+      "journey": "2df8f9a7f9e18e7064034b67f0ff075b52d73facfc5e5b02d8f43c3d4969703f",
+      "stride": "6661eefef0cee1dc2830aa9f41d7b313cce0577c351013b095bfda741150b7a4",
+      "contact": "b34e01982ca9f84ceb5e52e6afd7ff44fd1681d58a5e8a7a481ac84dc0dd65a8",
+      "source-check": "b31b5087bcd699e2b40ea6c9a99123c70cc599d2cfca22ef08fb318d91ceedab"
+    }
+  },
+  "protocols": {
+    "run": "Flat course, reset at rest; full forward for 3 s, release for 1.5 s; startup exports 1 s and displacement at 0.1/0.2/0.5/1 s.",
+    "sprint": "Flat course, rest; full forward + sprint for 1.5 s then release for 1.5 s; startup displacements and time to 90% terminal speed.",
+    "turns": "Steady run for 2 s then absolute world 90/180-degree command with neutral camera input for 2 s; first nonzero velocity heading within 5 degrees, minimum speed; body-heading traces also retained.",
+    "air": "Steady run for 1 s, forward jump with jump held; next frame hold world-east until landing; lateral/forward displacement and airtime, then stationary tail.",
+    "glide": "Walk off 60 m platform for 90 frames; jump opens glider normally; world forward for 2 s warmup, measure next 2 s, then world-east for 4 s. Assert glide state through entire sample window.",
+    "camera": "Steady run for 2 s, then world-east command for 6 s, right stick neutral; target lag at onset, yaw half-response, peak rate, final 5-degree settling. Settling only guaranteed through finite 6 s window."
+  },
+  "artifacts": "build/movement-quantification/after: measurements.tsv and per-frame CSVs; all logs/scratch under build; source hash cache build/movement-reference-sources."
+}

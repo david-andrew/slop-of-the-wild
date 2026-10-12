@@ -1,0 +1,138 @@
+# Continuous vortex geometry and wet creature volume, using production helpers.
+use '../game/malice.jo'
+use '../game/malice_shape.jo'
+use '../game/shade.jo'
+use '../game/gfx.jo'
+use '../game/fx.jo'
+from '../game/fx.jo' import __calamity_points
+use '../game/env.jo'
+
+loop tt in [0.0, 12.0, 120.0, 900.0]:
+    previous = malice_spine(0.0, f32(tt))
+    min_y = previous.y
+    max_y = previous.y
+    loop k in [1..MALICE_SEGMENTS + 1):
+        phase = f32(k) / f32(MALICE_SEGMENTS)
+        q = malice_spine(phase, f32(tt))
+        assert(length(q - previous) < malice_thickness(phase) + malice_thickness(f32(k - 1) / f32(MALICE_SEGMENTS)), "neighbouring tube sections cannot separate")
+        assert(length(q.xz) > 75.0 and length(q.xz) < 170.0, "vortex wraps outside the keep")
+        assert(q.y > 40.0 and q.y < 500.0, "spires remain exposed")
+        min_y = min(min_y, q.y)
+        max_y = max(max_y, q.y)
+        previous = q
+    assert(max_y - min_y > 330.0, "spiral rises continuously through the castle body")
+    loop yaw in [0.0, 0.6, 1.57, 2.7, 3.14, 5.8]:
+        toward = vec3(f32(cos(yaw)), 0, f32(sin(yaw)))
+        front = 0
+        back = 0
+        loop k in [0..MALICE_SEGMENTS + 1):
+            q = malice_spine(f32(k) / f32(MALICE_SEGMENTS), f32(tt))
+            if dot(q, toward) > 0.0: front += 1
+            else: back += 1
+        assert(front > 60 and back > 60, "all viewpoints retain foreground and background wraps")
+print("PASS continuous malice: adjacent sections join; tight climbing 2.65-turn funnel; front/back wraps at 24 time/view combinations")
+
+# The alpha overlay must follow the mesh across the former arm boundaries.
+loop tt in [0.0, 12.0, 120.0]:
+    calamity_cache(tt)
+    assert(__calamity_points.len() == 90, "fixed density-point cache budget")
+    loop k in [0..90):
+        phase = f32(k) / 89.0
+        q = calamity_coil(k, tt)
+        assert(q == __calamity_points[k] and calamity_tangent(k, tt) == calamity_cached_tangent(k), "cached points/tangents retain exact geometry")
+        assert(length(q - malice_spine(phase, f32(tt))) < 0.00001, "smoke density shares mesh spine")
+        assert(calamity_radius(k) <= f64(malice_thickness(phase)), "density remains inside vortex envelope")
+        if k > 0:
+            assert(length(q - calamity_coil(k - 1, tt)) < 47.0, "density climbs continuously across old arm boundaries")
+print("PASS malice overlay: 270 shared-spine samples; bounded density and continuous former arm joins")
+
+alb = vec3(0.20, 0.15, 0.11)
+sky = vec3(0.35, 0.38, 0.42)
+sun = vec3(0.13, 0.12, 0.10)
+top = creature_bounce(alb, vec3(0, 1, 0), sun, sky, 1.0)
+side = creature_bounce(alb, vec3(1, 0, 0), sun, sky, 1.0)
+belly = creature_bounce(alb, vec3(0, -1, 0), sun, sky, 1.0)
+assert(luma(top) > luma(side) * 4.0 and luma(side) >= luma(belly), "wet fill retains top/side/belly volume")
+assert(luma(top) < luma(alb * sky), "creature fill stays below one ambient exposure")
+assert(length(creature_bounce(alb, vec3(0, 1, 0), sun, sky, 0.0)) == 0.0, "dry creatures do not receive wet fill")
+previous = vec3(0, 0, 0)
+loop k in [0..101):
+    current = creature_bounce(alb, vec3(0, 1, 0), sun, sky, f32(k) / 100.0)
+    assert(length(current - previous) < 0.002, "weather fill stays continuous")
+    previous = current
+print("PASS creature wet fill: restrained upper planes, shaded sides/belly, dry gate and continuous weather ramp")
+
+# The generated strike has fine lower bends, descending branches and exactly
+# three separated flashes. Cosmetic geometry cannot consume gameplay RNG.
+particles.clear()
+seed_random(101)
+expected = random()
+seed_random(101)
+fx_lightning_path(vec3(0, 0, 0), vec3(0, 2, 20))
+assert(random() == expected, "bolt geometry leaves gameplay RNG untouched")
+assert(particles.len() >= 240 and particles.len() <= 336, "168 main bends plus finely bent bounded branches")
+lower = 0
+loop p in particles:
+    assert(p.kind == .arc and abs(p.vel.y) > 0.025, "no horizontal branch runs")
+    if p.pos.y < 25.0: lower += 1
+assert(lower >= 15, "pond camera sees at least fifteen lower bends")
+peaks = 0
+active = false
+loop k in [0..101):
+    pulse = lightning_pulse(1.0 - f64(k) / 100.0)
+    next = pulse > 0.012
+    if next and not active: peaks += 1
+    active = next
+assert(peaks == 3, "scene and bolt share three separated diminishing pulses")
+print("PASS lightning: {particles.len()} irregular segments, {lower} lower bends, no horizontal runs, three flashes and cosmetic RNG isolation")
+
+use '../game/charshade.jo'
+use '../game/water.jo'
+water_grid_set(fill(f32(1), 64), 8, -4.0, -4.0, 1.0)
+water = character_waterline(vec3(0, 0.8, 0), 1.0)
+assert(water.x == 1.0 and water.y > 0.99, "hero tint queries the same surface as leg foam")
+assert(character_waterline(vec3(0, 1.1, 0), 1.0).y == 0.0, "dry feet do not change pigment")
+assert(character_waterline(vec3(0, 0.8, 0), 0.0).y == 0.0, "hero absorption cannot change NPC/creature fill")
+color = vec3(0.3, 0.25, 0.2)
+assert(submerged_pigment(color, 1.01, 1.0, 1.0) == color, "pigment above the waterline stays unchanged")
+wet = submerged_pigment(color, 0.5, 1.0, 1.0)
+assert(wet.x < color.x * 0.7 and wet.z > color.z * 0.8, "submerged legs absorb warm light but retain blue-green volume")
+print("PASS waterline: shared plane query, dry/nonhero isolation, unchanged upper body and continuous submerged absorption")
+
+lo = 0.0
+hi = 1.0
+loop k in [0..32):
+    edge = (lo + hi) * 0.5
+    profile = pow(f64(smoothstep(0.5, 0.0, f32(edge * 0.5))), 1.3)
+    if profile >= 0.5: lo = edge
+    else: hi = edge
+minimum = 1000.0
+loop p in particles:
+    if p.color.w < 0.99: continue
+    range = f64(length(p.pos - vec3(0, 2, 20)))
+    pixels = p.size * 1080.0 / (tan(27.0 * PI / 180.0) * range) * lo
+    assert(pixels >= (if p.pos.y < 44.0: 3.0 else: 6.0), "visible near detail and distant trunk retain distinct readable cores")
+    minimum = min(minimum, pixels)
+print("PASS actual lightning widths: minimum {minimum:.3} px near core at 1080p; distant trunk >=6 px")
+
+# The normal camera's centre ray gets a visible nearby strike rather than a
+# random distant canopy contact; a horizontal view keeps a forward fallback.
+use '../game/terrain.jo'
+hf.n=64
+hf.cell=4.0
+hf.x0=-128.0
+hf.z0=-128.0
+hf.h=fill(f32(0),4096)
+loop eye in [vec3(0,3,0),vec3(15,8,10)]:
+    loop yaw in [-1.1,0.2,1.57]:
+        gaze=normalize(v3(sin(yaw)*cos(0.2),-sin(0.2),-cos(yaw)*cos(0.2)))
+        target=scripted_lightning_target(eye,gaze)
+        delta=vec3(target.x-eye.x,0,target.y-eye.z)
+        distance=length(delta)
+        assert(distance>=23.999 and distance<=80.001,"visible strike has bounded distance outside body shock reach")
+        side=normalize(cross(gaze,vec3(0,1,0)))
+        assert(abs(dot(delta,side))<0.0001,"strike remains on camera's central azimuth")
+        assert(dot(normalize(vec3(target.x,0,target.y)-eye),gaze)>0.98,"impact sits in the central scene")
+fallback=scripted_lightning_target(vec3(0,3,0),vec3(0,0,-1))
+assert(abs(fallback.x)<0.00001 and abs(fallback.y+55.0)<0.00001,"level-camera forward fallback")
+print("PASS scripted lightning: six camera/height cases; central terrain contact, bounded safe distance and forward fallback")

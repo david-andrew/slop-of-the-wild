@@ -1,0 +1,96 @@
+# Appended to defect_hunt's production callback fixture. Three independent processes.
+gear_check = (kind: IKind, expected: f64):
+    index = if kind == .weapon: inv.weapon else: (if kind == .shield: inv.shield else: inv.bow)
+    el = gear_element(kind, index)
+    print("gear roundtrip kind={kind} index={index} timer={el.burning:.6} heat={el.heat:.6} wet={el.wet:.6}")
+    assert(abs(el.burning - expected) < 0.00001 and abs(el.heat - 1.2) < 0.00001 and abs(el.wet - 0.2) < 0.00001, "gear heat/wetness/burning survives transaction")
+
+fixture_save = (path: str):
+    s = save_capture()
+    s.activated = fill(false, 4)
+    s.completed = fill(false, 4)
+    s.pos = pl.pos
+    s.awake = true
+    assert(save_write(path, s))
+fixture_load = (path: str): save_apply(save_decode(read_file(path) ?? "")!)
+
+transactions = ():
+    setup()
+    path = args()[2] + "/save"
+    mode = args()[1]
+    rusty = spawn_placement("rusty_broadsword", vec3(1, 2, 3), pl.pos + vec3(0, 0.3, 0))
+    apple = spawn_placement("apple", vec3(4, 5, 6), pl.pos + vec3(1, 0.3, 0))
+    shroom = spawn_placement("shroom", vec3(7, 8, 9), pl.pos + vec3(-1, 0.3, 0))
+    rock = spawn_placement("rock", vec3(10, 11, 12), pl.pos + vec3(2, 0.3, 0))
+    if mode == "write":
+        field_pickup()
+        assert(not witems[rusty].alive and inv.weapons == ["rusty_broadsword"])
+        assert(pickup_item(apple) and pickup_item(shroom) and pickup_item(rock))
+        assert(inv_add("branch") and inv_add("pot_lid") and inv_add("travelers_bow"))
+        inv.weapon = 1
+        held_id = "branch"
+        held_revision = inv.weapon_revision
+        held_index = 1
+        held_el = Elem(heat = 1.2, burning = 9.8, wet = 0.2)
+        shield_el = CarriedElem("pot_lid", inv.shield_revision, inv.shield, held_el)
+        bow_el = CarriedElem("travelers_bow", inv.bow_revision, inv.bow, held_el)
+        fixture_save(path + ".hand")
+        # Inventory's actual drop transactions, one per tab.
+        menu(0, 1, .x)
+        menu(1, 0, .x)
+        menu(2, 0, .x)
+        drops = 0
+        loop w in witems:
+            if not w.dropped or not w.alive: continue
+            assert(abs(w.el.burning - 9.8) < 0.00001 and w.burning > 0.0 and w.el.heat == 1.2 and w.el.wet == 0.2, "dropping burning gear carries material and visible fire")
+            drops += 1
+        assert(drops == 3)
+        fixture_save(path + ".ground")
+        print("PASS collected Rusty Broadsword/camp rock/apple/mushroom and burning weapon/shield/bow hand -> ground saved")
+    else if mode == "read":
+        fixture_load(path + ".hand")
+        loop kind in [IKind.weapon, IKind.shield, IKind.bow]: gear_check(kind, 9.8)
+        assert(not witems[rusty].alive and not witems[apple].alive and not witems[shroom].alive and not witems[rock].alive)
+        field_pickup()
+        assert(count_of("rock") == 1 and not witems[rock].alive, "placed camp rock remains collected on reload")
+        assert(inv.weapons.len() == 2, "placed Rusty Broadsword cannot duplicate on reload")
+        fixture_load(path + ".ground")
+        # Re-pickup while another weapon is selected, then equip the transferred entry.
+        drops = 0
+        loop wi in [0..witems.len()):
+            if not witems[wi].dropped or not witems[wi].alive: continue
+            pl.pos = witems[wi].pos - vec3(0, 0.3, 0)
+            field_pickup()
+            assert(not witems[wi].alive)
+            drops += 1
+        assert(drops == 3)
+        inv.weapon = 1
+        lit = false
+        player_torch_update(0.0, lit)
+        loop kind in [IKind.weapon, IKind.shield, IKind.bow]: gear_check(kind, 9.8)
+        fixture_save(path + ".repicked")
+        # Long material timers survive reload, pause when not stepped, and require distance.
+        assert(collected_placements.len() == 4)
+        placements_update(MATERIAL_REGROW - 0.25)
+        assert(not witems[apple].alive and not witems[shroom].alive and not witems[rusty].alive)
+        fixture_save(path + ".timer")
+        print("PASS reload preserves collected placements and burning gear, ground -> hand -> save")
+    else:
+        fixture_load(path + ".repicked")
+        lit = false
+        player_torch_update(0.0, lit)
+        loop kind in [IKind.weapon, IKind.shield, IKind.bow]: gear_check(kind, 9.8)
+        fixture_load(path + ".timer")
+        assert(collected_placements.len() == 4 and not witems[apple].alive)
+        placements_update(0.25)
+        assert(not witems[apple].alive and not witems[shroom].alive, "materials wait until player leaves after timer")
+        pl.pos = vec3(500, 0, 500)
+        placements_update(0.0)
+        assert(witems[apple].alive and witems[shroom].alive and not witems[rusty].alive and collected_placements.len() == 2)
+        rusty_count = 0
+        loop id in inv.weapons:
+            if id == "rusty_broadsword": rusty_count += 1
+        assert(rusty_count == 1 and count_of("rock") == 1 and not witems[rock].alive)
+        print("PASS second reload retains equipped fire and exact regrowth timer; only materials respawn after 7200 s away")
+
+transactions()

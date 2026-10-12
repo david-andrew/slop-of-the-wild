@@ -1,0 +1,87 @@
+use '../game/matter.jo'
+
+# The element rules (game/matter.jo) run through cases that chain: rain then fire, a dip in water,
+# a barrel of powder by a fire, food in a fire, an Ice Chuchu in the heat, lightning on metal.
+#   sloppy/bin/sloppy tools/element_test.jo     -> one line per case, and how many failed
+
+const DT = 1.0 / 60.0
+fails = 0
+
+check = (name: str, ok: bool, note: str):
+    print("{(if ok: "ok  " else: "FAIL")} {name:52} {note}")
+    if not ok: fails += 1
+
+# run a thing under an exposure for some seconds; the first reaction other than nothing, and when
+struct Run:
+    first = Reaction.nothing
+    at = -1.0
+
+run = (m: Matter, s: mut Elem, ex: Exposure, secs: f64) -> Run:
+    r = Run()
+    loop k in [0..int(secs / DT)):
+        x = react(m, s, ex, DT)
+        if x != .nothing and r.at < 0.0:
+            r.first = x
+            r.at = f64(k + 1) * DT
+    r
+
+# wetness stays between 0 and 1 however long it rains, and heat still builds (slower)
+s = Elem()
+run(WOOD, s, Exposure(rain = 1.0), 600.0)
+check("ten minutes of rain soak wood no more than a dip", s.wet <= 1.0, "wet {s.wet:.3}")
+run(WOOD, s, Exposure(heat = 1.0), 1.0)
+check("rain-soaked wood still warms by a fire", s.heat > 0.0, "heat {s.heat:.3}")
+dry = Elem()
+a = run(WOOD, dry, Exposure(heat = 1.0), 10.0)
+s = Elem()
+s.wet = 1.0
+b = run(WOOD, s, Exposure(heat = 1.0), 30.0)
+check("dry wood catches by a fire", a.first == .ignited, "after {a.at:.2} s")
+check("wet wood catches, later than dry", b.first == .ignited and b.at > a.at, "after {b.at:.2} s")
+# burning wood: water puts it out, and it burns away if left
+s = Elem()
+run(WOOD, s, Exposure(heat = 1.0), 2.0)
+r = run(WOOD, s, Exposure(water = true), 0.1)
+check("water puts burning wood out", r.first == .put_out and not burning(s), "")
+s = Elem()
+run(WOOD, s, Exposure(heat = 1.0), 2.0)
+r = run(WOOD, s, Exposure(), 20.0)
+check("left alone, burning wood burns away", r.first == .burnt_up, "after {r.at:.1} s")
+# a torch lights at once and burns until put out
+s = Elem()
+r = run(TORCH, s, Exposure(heat = 1.0), 1.0)
+check("a torch lights from a fire", r.first == .ignited and s.burning < 0.0, "after {r.at:.2} s")
+r = run(TORCH, s, Exposure(rain = 1.0), 1.0)
+check("heavy rain puts a torch out and keeps it out", r.first == .put_out and not burning(s) and s.heat == 0.0, "")
+r = run(TORCH, s, Exposure(heat = 2.0, rain = 1.0), 2.0)
+check("exposed torch cannot relight beside fire in heavy rain", r.first == .nothing and not burning(s), "")
+r = run(TORCH, s, Exposure(heat = 1.0), 2.0)
+check("doused torch can be reused at fire out of rain", r.first == .ignited and burning(s), "")
+# powder goes off, food cooks, ice melts, stone does nothing
+s = Elem()
+r = run(POWDER, s, Exposure(heat = 2.0), 2.0)
+check("a powder barrel by a fire explodes", r.first == .exploded, "after {r.at:.2} s")
+s = Elem()
+r = run(FOOD, s, Exposure(heat = 1.0), 3.0)
+check("an apple in a fire cooks", r.first == .cooked, "after {r.at:.2} s")
+s = Elem()
+r = run(ICE_FLESH, s, Exposure(heat = 1.0), 2.0)
+check("an Ice Gloop in the heat melts", r.first == .melted, "after {r.at:.2} s")
+s = Elem()
+r = run(STONE, s, Exposure(heat = 5.0, rain = 1.0), 10.0)
+check("stone neither burns nor reacts", r.first == .nothing, "")
+# electricity: metal and the wet conduct, dry wood does not
+s = Elem()
+check("lightning on metal shocks it", react(METAL, s, Exposure(shock = 1.0), DT) == .shocked, "")
+s = Elem()
+check("dry wood does not conduct", react(WOOD, s, Exposure(shock = 1.0), DT) == .nothing, "")
+s = Elem()
+run(WOOD, s, Exposure(rain = 1.0), 20.0)
+check("rain-soaked wood conducts", react(WOOD, s, Exposure(shock = 1.0), DT) == .shocked, "wet {s.wet:.2}")
+# cold freezes the living; heat thaws them
+s = Elem()
+r = run(FLESH, s, Exposure(cold = 1.0), 2.0)
+check("cold freezes a living thing", r.first == .froze, "after {r.at:.2} s")
+r = run(FLESH, s, Exposure(heat = 1.0), 2.0)
+check("heat thaws it", r.first == .thawed, "after {r.at:.2} s")
+print("{fails} failed")
