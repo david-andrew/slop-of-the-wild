@@ -106,7 +106,7 @@ terrain_count_shader = (src: ShaderSource) -> ShaderSource:
         if frame_number() == 300:
             assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
             px = fill(f32(1), target_rt.w * target_rt.h * 4)
-            gl_read_pixels_f32(0, 0, target_rt.w, target_rt.h, data(px) as *u8)
+            game_read_pixels_f32(0, 0, target_rt.w, target_rt.h, data(px) as *u8)
             counts = fill(0, 3)
             noise_sum = fill(0.0, 3)
             fbm_sum = fill(0.0, 3)

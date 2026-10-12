@@ -161,13 +161,9 @@ Three paired processes per view and mode. Normal Wayland output: **2133×1200**;
 CPU means cover game update/draw. Presentation is timed around the runtime's actual present
 call; the JSON separates remaining runtime/thread work and voluntary/involuntary switches.
 
-`SLOPPY_PRESENT=mailbox` is an opt-in local addition to the pinned Sloppy library. It skips
-waiting for `wl_surface.frame` callbacks and lets the compositor replace pending commits;
-all buffer-release waits remain, so busy buffers are never reused and the three-buffer pool
-bounds submission. Normal pacing remains the default. These are **producer intervals**, not
-measurements of when each image was displayed; a mailbox can replace frames before display.
-The tests retain shared OS/driver caches and the same compositor; X11 remains a separate GPU
-headroom measurement, not proof that EGL/Wayland presentation waits have disappeared.
+Sloppy 0.6.0 uses its upstream Vulkan swapchain. `SLOPPY_VSYNC=0` selects
+mailbox/immediate; FIFO is the release default. Historical dma-buf measurements
+below describe the earlier toolchain and are not 0.6.0 swapchain timings.
 
 | View / mode | p50 ms | p95 ms | p99 ms | Worst ms | Present p95 ms | Game CPU mean ms |
 |---|---:|---:|---:|---:|---:|---:|

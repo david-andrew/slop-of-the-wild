@@ -31,7 +31,7 @@ PY
 sloppy/bin/sloppy build "$out/machinery-visual.jo" -o "$out/machinery-visual"
 if [[ ${VISUAL_PREPARE:-0} == 1 ]]; then exit 0; fi
 for shrine in 1 3; do
- env BOTW_SKIP=1 BOTW_TOWER=1 BOTW_SHRINE="$shrine" BOTW_SCALE=1 BOTW_NOVSYNC=1 \
+ env BOTW_SKIP=1 BOTW_TOWER=1 BOTW_SHRINE="$shrine" BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 \
   SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=180 \
   SLOPPY_SCREENSHOT="$out/shrine-$shrine.png" \
   timeout 240 "$out/machinery-visual" > "$out/shrine-$shrine.log" 2>&1

@@ -221,8 +221,10 @@ crown_bake = (vm: mut VModel):
         if normals == 0: vm.crown_tex = rt.color
         else: vm.crown_normal = rt.color
         # Keep the atlas texture, release only the temporary attachment and framebuffer.
-        gl_delete_texture(rt.depth.id)
+        # End the pass while its depth image still exists. Vulkan records the
+        # attachment transition when the framebuffer is released.
         gl_delete_framebuffer(rt.fbo)
+        gl_delete_texture(rt.depth.id)
     vs: Vertex3D[]
     loop q in [vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1)]:
         vs.push(Vertex3D(v3(f64(q.x) * radius, f64(q.y) * half_h, cy), vec3(0, 0, 1), q * 0.5 + vec2(0.5, 0.5), vec4(1, 1, 1, 1)))
@@ -262,7 +264,7 @@ veg_occluder_fade = (i: VegO, u: VegU) -> f32:
 veg_depth_fs = (i: VegO, u: VegU) -> vec4:
     # Complementary coverage in both depth passes avoids a hard switch at 60 m.
     blend = smoothstep(55.0, 70.0, i.lod_distance)
-    dither = glsl_pixel_dither(0.0)
+    dither = glsl_pixel_dither(i.pos.xy)
     if u.lod_mode > 0.5 and u.lod_mode < 1.5: glsl_discard(blend > dither)
     if u.lod_mode > 1.5: glsl_discard(blend <= dither)
     t = sample(u.tex, i.uv)
@@ -277,10 +279,10 @@ veg_depth_fs = (i: VegO, u: VegU) -> vec4:
     if u.leaves > 0.5:
         # Derivative-sized coverage at the cutout rim. The same screen-space pattern in the
         # depth and colour passes lets the watercolor resolve it without transparent sorting.
-        if u.low < 0.5 and (u.shadow_pass < 0.5 or u.shadow_pass > 1.5): glsl_leaf_edge(ta, cut)
+        if u.low < 0.5 and (u.shadow_pass < 0.5 or u.shadow_pass > 1.5): glsl_leaf_edge(ta, cut, i.pos.xy)
         else: glsl_discard(ta < cut)
     if u.shadow_pass > 0.5 and u.shadow_pass < 1.5: return vec4(1, 1, 1, 1)
-    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_dither(0.0))
+    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_dither(i.pos.xy))
     vec4(1, 1, 1, 1)
 
 veg_fs = (i: VegO, u: VegU) -> vec4:
@@ -764,6 +766,12 @@ vegetation_snow_cover = (x: f64, z: f64) -> f32:
             cover += f64(material_at(x + dx, z + dz).z) * (0.65 / 9.0)
     f32(smoothstep(0.02, 0.92, cover))
 
+# The previous compiler read contiguous x/y in this CPU swizzle expression.
+# Preserve the established per-tree width seed explicitly; shader hashes still
+# use their intended x/z inputs on both renderers.
+vegetation_pine_shape = (pos: vec3) -> f32:
+    hash12(vec2(pos.x, pos.y) + vec2(7.3, 29.1))
+
 place = (name: str, pos: vec3, rot: f64, height: f64, tint: vec4, collide: bool = true):
     loop e in __shrine_bases:
         if hypot(f64(e.x - pos.x), f64(e.z - pos.z)) < 8.0: return
@@ -794,7 +802,7 @@ place = (name: str, pos: vec3, rot: f64, height: f64, tint: vec4, collide: bool 
     w = if height > 4.0: s * 1.18 else: s
     # Conifers vary in width and cross-section without another runtime shader path.
     # Stable position hash preserves the placement RNG and every tree's rooted collider.
-    pine_shape = if starts_with(name, "Pine_"): f64(hash12(pos.xz + vec2(7.3, 29.1))) else: 0.5
+    pine_shape = if starts_with(name, "Pine_"): f64(vegetation_pine_shape(pos)) else: 0.5
     px = if starts_with(name, "Pine_"): 0.80 + pine_shape * 0.32 else: 1.0
     pz = if starts_with(name, "Pine_"): 1.06 - pine_shape * 0.23 else: 1.0
     broad = if starts_with(name, "CommonTree"): hash2(f64(pos.x), f64(pos.z)) else: 0.5
@@ -1595,6 +1603,9 @@ __veg_profile_frames = 0
 
 __veg_draw = (sh: Shader, m: Mesh, b: InstBuf, params: VegU):
     if b.count <= 0: return
+    if game_vulkan_backend():
+        draw_static(sh, m, b, params)
+        return
     u = params
     same = __veg_bound_prog == sh.prog
     if not same: glUseProgram(u32(sh.prog))

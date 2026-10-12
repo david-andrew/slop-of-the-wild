@@ -22,7 +22,7 @@ fixture = re.sub(r"(?m)^(use|from) '([^']+)'", lambda m: f"{m[1]} '{(Path('tools
 (out / 'fixture.jo').write_text(source + '\n' + fixture)
 PY
 sloppy/bin/sloppy build "$out/fixture.jo" -o "$out/fixture"
-if flock /tmp/botw-render.lock env BOTW_SKIP=1 BOTW_AT=-1030,1805,1.57 BOTW_HOUR=7 BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 \
+if flock /tmp/botw-render.lock env BOTW_SKIP=1 BOTW_AT=-1030,1805,1.57 BOTW_HOUR=7 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 \
     SLOPPY_INPUT="" SLOPPY_SCREENSHOT="$out/final.png" SLOPPY_FRAMES=780 timeout 180 "$out/fixture" > "$out/run.log" 2>&1; then
     if grep -E 'panic:|error:|FAIL' "$out/run.log"; then exit 1; fi
 else

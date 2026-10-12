@@ -37,6 +37,15 @@ struct UIState:
 
 ui = UIState()
 
+clock_t = 3.0
+slots_active = -1
+slots_t = 0.0
+clock_signature = ""
+clock_a = 1.0
+slots_signature = ""
+slots_busy = false
+slots_a = 0.0
+
 ui_pickup = (name: str):
     if ui.pickup_name == name and ui.pickup_t > 0.0: ui.pickup_count += 1
     else: ui.pickup_count = 1
@@ -215,14 +224,6 @@ stamina_draw = ():
             arc(c, 23.0 + f64(k - 1) * 7.0, 4.0, f, green)
 
 # the clock fades out while nothing changes (walking about) and back when it matters
-clock_a = 1.0
-clock_t = 3.0
-clock_signature = ""
-slots_active = -1
-slots_a = 0.0
-slots_t = 0.0
-slots_signature = ""
-slots_busy = false
 clock_draw = ():
     # (not inside the shrines: no day or weather down there)
     if clock_a < 0.02 or env.indoor > 0.5: return

@@ -3,6 +3,10 @@
 use '../game/vegetation.jo'
 use '../game/gfx.jo'
 from '../game/vegetation.jo' import __fir_tex
+# Legacy placement seeds from the pre-0.6 executable: no reshaping established firs
+# when the release fixes noncontiguous CPU swizzle operands.
+assert(vegetation_pine_shape(vec3(-2011.26,198.65419,1111.51)) == f32(0.9619140625))
+assert(vegetation_pine_shape(vec3(-2004.14,198.88391,1112.8)) == f32(0.446533203125))
 window("Fir pigment and coverage", 32, 32)
 t = __fir_tex()
 assert(t.id != 0 and __fir_tex().id == t.id, "fir texture is allocated once")
@@ -22,7 +26,7 @@ glClearColor(1, 0, 1, 0)
 glClear(GL_COLOR_BUFFER_BIT)
 draw_static(sh, m, b, CrownBakeU(mat4(), mat4(), t, vec3(0, 0, -1), 0.0))
 pixels = fill(u8(0), 32 * 32 * 4)
-gl_read_pixels(0, 0, 32, 32, data(pixels))
+game_read_pixels(0, 0, 32, 32, data(pixels))
 loop k in [0..32 * 32):
     assert(abs(int(pixels[k * 4]) - 51) <= 1 and abs(int(pixels[k * 4 + 1]) - 88) <= 1 and abs(int(pixels[k * 4 + 2]) - 0) <= 1, "atlas preserves the green fir pigment instead of sampling black texture zero")
     assert(pixels[k * 4 + 3] == 255, "solid bough coverage survives leaf alpha testing")

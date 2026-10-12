@@ -14,8 +14,7 @@ struct Voice:
     pitch: f64
     looping: bool
     id: int
-    ramp_left = 0
-    ramp_gain: f32 = 0.0
+    stream = false      # music, decoded as it plays (play_music): its __Stream has this id
 
 enum Wave: sine, square, triangle, saw, noise
 
@@ -41,26 +40,21 @@ stop = (id: int):
     loop i < __voices.len():
         if __voices[i].id == id: __voices.remove(i)
         else: i += 1
+    i = 0
+    loop i < __streams.len():
+        if __streams[i].id == id: __streams.remove(i)
+        else: i += 1
 
-stop_all = (): __voices.clear()
+stop_all = ():
+    __voices.clear()
+    __streams.clear()
 is_playing = (id: int) -> bool:
     loop v in __voices:
         if v.id == id: return true
     false
 set_volume = (id: int, volume: f64):
     loop mut v in __voices:
-        if v.id == id:
-            v.volume = f32(volume)
-            v.ramp_left = 0
-# Opt-in dezippering for continuously automated gains. Ordinary set_volume
-# retains immediate semantics; repeated ramps start at the last mixed gain.
-set_volume_ramped = (id: int, volume: f64, seconds: f64 = 0.02):
-    loop mut v in __voices:
-        if v.id == id:
-            if v.volume == f32(volume): return
-            if v.ramp_left == 0: v.ramp_gain = v.volume
-            v.volume = f32(volume)
-            v.ramp_left = max(1, int(seconds * f64(MIX_RATE)))
+        if v.id == id: v.volume = f32(volume)
 set_pitch = (id: int, pitch: f64):
     loop mut v in __voices:
         if v.id == id: v.pitch = pitch
@@ -74,6 +68,10 @@ __mix = (n: int):
     i = 0
     loop i < __voices.len():
         v = __voices[i]
+        if v.stream:
+            if __mix_stream(i, out, n): i += 1
+            else: __voices.remove(i)
+            continue
         src = data(v.sound.samples)
         total = v.sound.samples.len() / 2
         if total == 0:
@@ -84,9 +82,6 @@ __mix = (n: int):
         pos = v.pos
         step = v.pitch
         done = false
-        ramp_left = v.ramp_left
-        ramp_gain = v.ramp_gain
-        ramp_step = if ramp_left > 0: (v.volume - ramp_gain) / f32(ramp_left) else: f32(0)
         loop f in [0..n):
             ip = int(pos)
             if ip >= total:
@@ -101,41 +96,17 @@ __mix = (n: int):
             if nx >= total: nx = 0
             l = src[ip * 2] + (src[nx * 2] - src[ip * 2]) * fr
             r = src[ip * 2 + 1] + (src[nx * 2 + 1] - src[ip * 2 + 1]) * fr
-            if ramp_left > 0:
-                # The first sample keeps the previous gain exactly.
-                out[f * 2] += l * ramp_gain * f32(__master) * (1.0 - max(v.pan, 0.0))
-                out[f * 2 + 1] += r * ramp_gain * f32(__master) * (1.0 + min(v.pan, 0.0))
-                ramp_gain += ramp_step
-                ramp_left -= 1
-            else:
-                out[f * 2] += l * gl_
-                out[f * 2 + 1] += r * gr
+            out[f * 2] += l * gl_
+            out[f * 2 + 1] += r * gr
             pos += step
         if done: __voices.remove(i)
         else:
             __voices[i].pos = pos
-            __voices[i].ramp_left = ramp_left
-            __voices[i].ramp_gain = ramp_gain
             i += 1
-    # soft clip: linked stereo soft knee leaves ordinary samples untouched and reserves
-    # intersample headroom. It is continuous through the knee (unlike the old
-    # >1-only tanh switch). Offline manual score buffers use the same guard.
-    audio_peak_guard(__mix_buf)
-
-const AUDIO_PEAK_KNEE = 0.65
-const AUDIO_PEAK_CEILING = 0.84       # -1.51 dBFS; verify actual dBTP on full mixes
-
-audio_peak_guard = (samples: mut f32[]):
-    loop frame in [0..samples.len() / 2):
-        l = samples[frame * 2]
-        r = samples[frame * 2 + 1]
-        peak = f64(max(abs(l), abs(r)))
-        if peak > AUDIO_PEAK_KNEE:
-            headroom = AUDIO_PEAK_CEILING - AUDIO_PEAK_KNEE
-            target = AUDIO_PEAK_KNEE + headroom * tanh((peak - AUDIO_PEAK_KNEE) / headroom)
-            gain = f32(target / peak)
-            samples[frame * 2] = l * gain
-            samples[frame * 2 + 1] = r * gain
+    # soft clip
+    loop k in [0..n * 2):
+        x = out[k]
+        if x > 1.0 or x < -1.0: out[k] = f32(tanh(f64(x)))
 
 tanh = (x: f64) -> f64:
     if x > 20.0: return 1.0
@@ -242,26 +213,62 @@ melody = (notes: str, bpm: f64 = 120.0, wave: Wave = .triangle, volume: f64 = 0.
         i += held
     out
 
+# a melody made to be played with looping = true: exactly as long as its notes, with the end of
+# the last ones (and their release) carried round to the start, so the loop has no seam
+melody_loop = (notes: str, bpm: f64 = 120.0, wave: Wave = .triangle, volume: f64 = 0.3, step: f64 = 0.5) -> Sound:
+    beat = 60.0 / bpm * step
+    toks = words(notes)
+    total = int(f64(toks.len()) * beat * f64(MIX_RATE))
+    out = Sound(fill(f32(0), total * 2))
+    if total == 0: return out
+    i = 0
+    loop i < toks.len():
+        if toks[i] == "." or toks[i] == "-":
+            i += 1
+            continue
+        held = 1
+        loop i + held < toks.len() and toks[i + held] == "-": held += 1
+        f = note_freq(toks[i])
+        if f > 0.0:
+            nt = tone(f, beat * f64(held) * 0.95, wave, volume, 0.01, beat * 0.5)
+            start = int(f64(i) * beat * f64(MIX_RATE)) * 2
+            loop k in 0.. and x in nt.samples: out.samples[(start + k) % (total * 2)] += x
+        i += held
+    out
+
 # ---------------- WAV files ----------------
+# a WAV file's sound: integer samples of 8, 16, 24 or 32 bits or floats of 32 or 64, any number of
+# channels (the first two are used; mono plays on both), any rate (resampled to MIX_RATE). Other
+# files are an error that says what they are.
 load_wav = (file: u8[]) -> Sound:
-    if file.len() < 44 or file[0] != 'R' or file[8] != 'W': panic("not a WAV file")
+    if file.len() < 12 or file[0] != 'R' or file[1] != 'I' or file[2] != 'F' or file[3] != 'F' or file[8] != 'W': panic("load_wav: not a WAV file (no RIFF/WAVE header)")
+    u16_at = (o: int) -> int: int(file[o]) | (int(file[o + 1]) << 8)
+    u32_at = (o: int) -> int: u16_at(o) | (u16_at(o + 2) << 16)
     pos = 12
-    fmt_ = 1
-    channels = 2
-    rate = 44100
-    bits = 16
+    fmt_ = -1
+    channels = 0
+    rate = 0
+    bits = 0
     loop pos + 8 <= file.len():
         id = str_from_bytes(file[pos..pos + 4))
-        n = int(file[pos + 4]) | (int(file[pos + 5]) << 8) | (int(file[pos + 6]) << 16) | (int(file[pos + 7]) << 24)
+        n = u32_at(pos + 4)
         b = pos + 8
         if id == "fmt ":
-            fmt_ = int(file[b]) | (int(file[b + 1]) << 8)
-            channels = int(file[b + 2]) | (int(file[b + 3]) << 8)
-            rate = int(file[b + 4]) | (int(file[b + 5]) << 8) | (int(file[b + 6]) << 16)
-            bits = int(file[b + 14]) | (int(file[b + 15]) << 8)
+            if n < 16 or b + 16 > file.len(): panic("load_wav: the format chunk is too short")
+            fmt_ = u16_at(b)
+            channels = u16_at(b + 2)
+            rate = u32_at(b + 4)
+            bits = u16_at(b + 14)
+            # (WAVE_FORMAT_EXTENSIBLE: the real format is the first two bytes of the sub-format)
+            if fmt_ == 0xFFFE and n >= 26 and b + 26 <= file.len(): fmt_ = u16_at(b + 24)
+            if fmt_ != 1 and fmt_ != 3: panic("load_wav: compressed WAV files (format {fmt_}) are not supported: save it as PCM")
+            if fmt_ == 1 and bits != 8 and bits != 16 and bits != 24 and bits != 32: panic("load_wav: {bits}-bit samples are not supported (8, 16, 24 or 32)")
+            if fmt_ == 3 and bits != 32 and bits != 64: panic("load_wav: {bits}-bit float samples are not supported (32 or 64)")
+            if channels < 1 or rate < 1: panic("load_wav: the format chunk says {channels} channels at {rate} Hz")
         else if id == "data":
+            if fmt_ < 0: panic("load_wav: the data comes before the format chunk")
             bps = bits / 8
-            nframes = n / (bps * channels)
+            nframes = min(n, file.len() - b) / (bps * channels)
             src: f32[]
             src.reserve(nframes * 2)
             loop f in [0..nframes):
@@ -269,16 +276,26 @@ load_wav = (file: u8[]) -> Sound:
                     c = min(ch, channels - 1)
                     o = b + (f * channels + c) * bps
                     v: f32 = 0.0
-                    if fmt_ == 3 and bits == 32: v = ((data(file) + o) as *f32)[0]
+                    if fmt_ == 3:
+                        if bits == 32: v = ((data(file) + o) as *f32)[0]
+                        else: v = f32(((data(file) + o) as *f64)[0])
+                    else if bits == 8: v = (f32(file[o]) - 128.0) / 128.0
                     else if bits == 16:
-                        x = int(file[o]) | (int(file[o + 1]) << 8)
+                        x = u16_at(o)
                         if x >= 32768: x -= 65536
                         v = f32(x) / 32768.0
-                    else if bits == 8: v = (f32(file[o]) - 128.0) / 128.0
+                    else if bits == 24:
+                        x = u16_at(o) | (int(file[o + 2]) << 16)
+                        if x >= 0x800000: x -= 0x1000000
+                        v = f32(f64(x) / 8388608.0)
+                    else:
+                        x = u32_at(o)
+                        if x >= 0x80000000: x -= 0x100000000
+                        v = f32(f64(x) / 2147483648.0)
                     src.push(v)
             return __resample(src, rate)
         pos = b + n + (n & 1)
-    panic("WAV file has no data")
+    panic("load_wav: the file has no data chunk")
     Sound([])
 
 __resample = (src: f32[], rate: int) -> Sound:

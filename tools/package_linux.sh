@@ -24,12 +24,15 @@ cp "$stage/slop-of-the-wild" "$pkg/"
 rsync -a --exclude src "$stage/assets" "$pkg/"
 rsync -a "$stage/game" "$pkg/"
 rsync -a "$stage/sloppy/lib" "$pkg/sloppy/"
-rsync -a "$root/assets/src/nature/Textures" "$pkg/assets/src/nature/"
+# Input textures may be symlinks into a local asset checkout. Materialize them
+# with their target mtimes so the exported pack keys stay valid and self-contained.
+mkdir -p "$pkg/assets/src/nature/Textures"
+rsync -aL "$root/assets/src/nature/Textures/" "$pkg/assets/src/nature/Textures/"
 cat > "$pkg/play.sh" <<'EOF'
 #!/bin/bash
 # Runs the game from this folder (its assets are read relative to it).
 cd "$(dirname "$0")"
-export SLOPPY_PRESENT=${SLOPPY_PRESENT-mailbox}
+export SLOPPY_VSYNC=${SLOPPY_VSYNC-0}
 exec ./slop-of-the-wild "$@"
 EOF
 chmod +x "$pkg/play.sh"
@@ -40,6 +43,9 @@ The Legend of Jo: Slop of the Wild
 Linux x86-64. Run:
 
     ./play.sh
+
+Vulkan mailbox presentation is the default; SLOPPY_VSYNC=1 ./play.sh selects FIFO.
+SLOPPY_VULKAN=0 ./play.sh selects OpenGL.
 
 The first launch prepares shaders for your GPU (up to ~30 s); later launches take a few seconds.
 Progress is saved to ~/.botw-clone-save (choose "Start over" in the menu, or run

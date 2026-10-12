@@ -58,7 +58,7 @@ def main():
         for old in clip.glob('*.png'):
             old.unlink()
         env = {**clean, 'BOTW_SKIP': '1', 'BOTW_HOUR': '12',
-               'BOTW_NOVSYNC': '1', 'SLOPPY_PLATFORM': 'x11', 'SLOPPY_WINDOW': '1280x720',
+               'BOTW_NOVSYNC': '1', 'SLOPPY_VSYNC': '0', 'SLOPPY_PLATFORM': 'x11', 'SLOPPY_WINDOW': '1280x720',
                'SLOPPY_FRAMES': str(frames), 'SLOPPY_SCREENSHOT': str(directory / 'final.png'),
                'ELEMENT_INPUT_MODE': mode, 'ELEMENT_INPUT_OUT': str(directory),
                'ELEMENT_INPUT_SAVE': str(out / 'mid-burn.save'), **settings}

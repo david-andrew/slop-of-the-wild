@@ -125,7 +125,7 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
     # discarded beam pixels in the paint pass left a brown ghost over the legs.
     # Remove those foreground supports completely, preserving the held shaft.
     if u.fade_width > 1.1 and fade > 0.001: fade = 1.0
-    glsl_discard(fade > glsl_occluder_dither(0.0))
+    glsl_discard(fade > glsl_occluder_dither(i.pos.xy))
     n = normalize(i.normal)
     w = i.world
     alb = i.color.xyz

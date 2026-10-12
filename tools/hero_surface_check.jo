@@ -28,7 +28,7 @@ glDisable(GL_CULL_FACE)
 glDisable(GL_BLEND)
 draw_fast(sh,fullscreen_mesh(),SurfaceU(0))
 values=fill(f32(0),128*128*4)
-gl_read_pixels_f32(0,0,128,128,data(values) as *u8)
+game_read_pixels_f32(0,0,128,128,data(values) as *u8)
 largest=0.0
 legacy_jump=0.0
 loop x in [0..128):

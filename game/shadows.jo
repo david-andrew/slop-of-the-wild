@@ -68,12 +68,14 @@ shadow_begin = (k: int):
     glDepthMask(1)
     glDisable(GL_BLEND)
     glColorMask(0, 0, 0, 0)
+    game_shadow_offset = true
     glEnable(GL_POLYGON_OFFSET_FILL)
-    glPolygonOffset(1.5, 2.0)
+    if not game_vulkan_backend(): glPolygonOffset(1.5, 2.0)
     glDisable(GL_CULL_FACE)
 
 shadow_end = ():
     glColorMask(1, 1, 1, 1)
+    game_shadow_offset = false
     glDisable(GL_POLYGON_OFFSET_FILL)
 
 shadow_tex = (k: int) -> Texture: cascades.maps[k].depth

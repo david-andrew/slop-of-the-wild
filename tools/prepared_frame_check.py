@@ -29,7 +29,7 @@ def main():
         assert hashlib.sha256((out / 'game-resume').read_bytes()).digest() == prior_hash, 'executable changed; rerun without --resume'
     base = {**clean, 'SLOPPY_PLATFORM': 'x11', 'SLOPPY_WINDOW': '1280x720',
             'SLOPPY_FRAMES': '1', 'SLOPPY_INPUT': '', 'BOTW_LOADTIME': '1',
-            'BOTW_NOVSYNC': '1', 'BOTW_SCALE': '1', 'BOTW_HOUR': '11', 'BOTW_WEATHER': 'clear'}
+            'BOTW_NOVSYNC': '1', 'SLOPPY_VSYNC': '0', 'BOTW_SCALE': '1', 'BOTW_HOUR': '11', 'BOTW_WEATHER': 'clear'}
     views = {'opening': {}, 'overlook': {'BOTW_SKIP': '1', 'BOTW_AT': '-1024,1799,0'},
              'pond': {'BOTW_SKIP': '1', 'BOTW_AT': '-1190,1665,-0.9'},
              'shrine': {'BOTW_SKIP': '1', 'BOTW_SHRINE': '1', 'BOTW_TOWER': '1'}}

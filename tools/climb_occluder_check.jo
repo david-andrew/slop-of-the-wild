@@ -28,7 +28,7 @@ loop mode in [0..3):
     u.keep_center = if mode == 1: vec2(0,0) else: vec2(-3,0)
     u.shadow_pass = if mode == 2: 1.0 else: 0.0
     draw_fast(sh,fullscreen_mesh(),u)
-    gl_read_pixels_f32(0,0,128,128,data(values) as *u8)
+    game_read_pixels_f32(0,0,128,128,data(values) as *u8)
     loop pixel in [0..128*128):
         alpha = values[pixel*4+3]
         if mode == 0: assert(alpha == 0.0,"climbing support leaves no ghost pigment or depth fragments")

@@ -45,10 +45,10 @@ keys = ():
     __key_typed = fill(false, 128)
     __mouse_btn = fill(false, 8)
     __mouse_pressed = fill(false, 8)
-    __pad_on = false
-    __pad_axes = fill(0.0, 6)
-    __pad_down = fill(false, 15)
-    __pad_prev = fill(false, 15)
+    __pad_on[0] = false
+    __pad_axes = fill(0.0, 48)
+    __pad_down = fill(false, 120)
+    __pad_prev = fill(false, 120)
     act = Actions()
 press = (k: Key):
     keys()
@@ -151,28 +151,28 @@ runtime = ():
     inv = Inventory()
     inv_add("travelers_bow")
     inv.arrows = 5
-    __pad_on = true
+    __pad_on[0] = true
     __pad_axes[5] = 1.0
     input_update(DT, false)
     combat_update(DT, (i: int) -> vec3: vec3(0, 0, -4), 0)
     loop i in [0..40):
         input_update(DT, false)
         combat_update(DT, (i: int) -> vec3: vec3(0, 0, -4), 0)
-    __pad_on = false
-    __pad_axes = fill(0.0, 6)
-    __pad_down = fill(false, 15)
+    __pad_on[0] = false
+    __pad_axes = fill(0.0, 48)
+    __pad_down = fill(false, 120)
     input_update(DT, false)
     combat_update(DT, (i: int) -> vec3: vec3(0, 0, -4), 0)
     check(inv.arrows == 5 and fight.act == .idle, "pad disconnect cancels drawn bow without firing")
-    __pad_on = true
+    __pad_on[0] = true
     __pad_axes[5] = 1.0
     loop i in [0..40):
         input_update(DT, false)
         combat_update(DT, (i: int) -> vec3: vec3(0, 0, -4), 0)
     assert(fight.act == .aim)
     invui = InvUI(open = true, t = 1.0)
-    __pad_on = false
-    __pad_axes = fill(0.0, 6)
+    __pad_on[0] = false
+    __pad_axes = fill(0.0, 48)
     loop i in [0..3):
         input_update(DT, false)
         assert(inventory_update(DT))
@@ -184,15 +184,15 @@ runtime = ():
     inv_add("travelers_sword")
     fight = Fight()
     keys()
-    __pad_on = true
+    __pad_on[0] = true
     __pad_down[int(PadButton.x)] = true
     loop i in [0..100):
         input_update(DT, false)
         __pad_prev = __pad_down
         combat_update(DT, (i: int) -> vec3: vec3(0, 0, -4), 0)
     assert(fight.act == .charge)
-    __pad_on = false
-    __pad_down = fill(false, 15)
+    __pad_on[0] = false
+    __pad_down = fill(false, 120)
     input_update(DT, false)
     combat_update(DT, (i: int) -> vec3: vec3(0, 0, -4), 0)
     check(fight.act == .idle, "pad disconnect cancels charged spin")

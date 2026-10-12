@@ -38,7 +38,10 @@ pack_array = (s: mut AssetStream, xs: mut str[], writing: bool):
         s.ok = false
         return
     if not writing: xs = fill("", n)
-    loop mut x in xs: pack_value(s, x, writing)
+    loop i in [0..xs.len()):
+        x = xs[i]
+        pack_value(s, x, writing)
+        xs[i] = x
 
 pack_map[K, V] = (s: mut AssetStream, xs: mut {K: V}, writing: bool):
     keys: K[]

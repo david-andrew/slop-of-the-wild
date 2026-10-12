@@ -44,7 +44,7 @@ profiles = {}
 for name, (weather, hour, gameplay) in views.items():
     settings = dict(clean, BOTW_SKIP='1', BOTW_CAM='-1030,260,1805,0.5,0',
         BOTW_HOUR=hour, BOTW_TIMESCALE='0', BOTW_WEATHER=weather,
-        BOTW_NOVSYNC='1', BOTW_SCALE='1', ROUND75_FIXED_VIEW='1',
+        BOTW_NOVSYNC='1', SLOPPY_VSYNC='0', BOTW_SCALE='1', ROUND75_FIXED_VIEW='1',
         SLOPPY_PLATFORM='x11', SLOPPY_WINDOW='1280x720', SLOPPY_FRAMES='300',
         SLOPPY_INPUT='', SLOPPY_SCREENSHOT=str(out / f'{name}.png'))
     if gameplay:

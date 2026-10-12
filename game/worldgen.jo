@@ -117,38 +117,36 @@ hylia_pass = (x: f64, z: f64) -> f64:
     across = 1.0 - smoothstep(7.0, 25.0, abs(x - centre))
     across * smoothstep(2088.0, 2108.0, z) * (1.0 - smoothstep(2156.0, 2176.0, z))
 
+# A soft elliptical mound of unit height centred on (cx, cz).
+relief_mass = (x: f64, z: f64, cx: f64, cz: f64, rx: f64, rz: f64) -> f64:
+    1.0 - smoothstep(0.0, 1.0, hypot((x - cx) / rx, (z - cz) / rz))
+
 # The prominent northern cone in the overview is outside the playable wall.
 # A west shoulder, lower east spur and two drainage cuts replace its round cap.
 # All relief ends north of the field scatter and opening/journey routes.
 northern_crown = (x: f64, z: f64) -> f64:
     if x < -1400.0 or x > -1130.0 or z < 1280.0 or z > 1430.0: return 0.0
-    mass = (cx: f64, cz: f64, rx: f64, rz: f64) -> f64:
-        d = hypot((x-cx)/rx,(z-cz)/rz)
-        1.0-smoothstep(0.0,1.0,d)
-    d = mass(-1295.0,1380.0,88.0,43.0)*17.0
-    d += mass(-1216.0,1340.0,72.0,48.0)*9.0
-    d -= mass(-1250.0,1363.0,35.0,40.0)*12.0
-    d -= mass(-1235.0,1358.0,30.0,36.0)*10.0
+    d = relief_mass(x, z, -1295.0,1380.0,88.0,43.0)*17.0
+    d += relief_mass(x, z, -1216.0,1340.0,72.0,48.0)*9.0
+    d -= relief_mass(x, z, -1250.0,1363.0,35.0,40.0)*12.0
+    d -= relief_mass(x, z, -1235.0,1358.0,30.0,36.0)*10.0
     # An oblique gully opens the saddle down its south-east flank.
     across = abs(x-(-1212.0-(z-1380.0)*0.38))
-    d -= (1.0-smoothstep(5.0,19.0,across))*mass(-1212.0,1380.0,62.0,50.0)*7.0
+    d -= (1.0-smoothstep(5.0,19.0,across))*relief_mass(x, z, -1212.0,1380.0,62.0,50.0)*7.0
     d
 
 # Two visible crowns have unequal shoulders and a shallow drainage saddle.
 # These broad changes survive the overview mesh; they are off the opening route.
 plateau_crowns = (x: f64, z: f64) -> f64:
     if x < -1430.0 or x > -1030.0 or z < 1620.0 or z > 1850.0: return 0.0
-    mass = (cx: f64, cz: f64, rx: f64, rz: f64) -> f64:
-        d = hypot((x-cx)/rx,(z-cz)/rz)
-        1.0-smoothstep(0.0,1.0,d)
-    west = mass(-1315.0,1730.0,62.0,68.0)
-    d = -west*7.0 + mass(-1360.0,1710.0,66.0,43.0)*9.0
-    d -= mass(-1273.0,1739.0,29.0,58.0)*7.0
-    d += mass(-1149.0,1786.0,64.0,45.0)*10.0
-    d -= mass(-1106.0,1788.0,27.0,46.0)*6.0
+    west = relief_mass(x, z, -1315.0,1730.0,62.0,68.0)
+    d = -west*7.0 + relief_mass(x, z, -1360.0,1710.0,66.0,43.0)*9.0
+    d -= relief_mass(x, z, -1273.0,1739.0,29.0,58.0)*7.0
+    d += relief_mass(x, z, -1149.0,1786.0,64.0,45.0)*10.0
+    d -= relief_mass(x, z, -1106.0,1788.0,27.0,46.0)*6.0
     # A tapering north-facing gully separates the crown from its low eastern spur.
     centre = -1080.0-(z-1760.0)*0.22
-    gully = (1.0-smoothstep(4.0,17.0,abs(x-centre))) * mass(-1080.0,1767.0,65.0,70.0)
+    gully = (1.0-smoothstep(4.0,17.0,abs(x-centre))) * relief_mass(x, z, -1080.0,1767.0,65.0,70.0)
     d -= gully*5.0
     # Leave the mouth, standing overlook and southern footpath at their old height.
     d * (1.0-smoothstep(1810.0,1838.0,z))

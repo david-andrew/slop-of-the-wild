@@ -20,7 +20,7 @@ from '../game/inventory.jo' import __tab_items, __bind
 
 # Exercise the real field callback and HUD after a paused inventory mutation.
 transaction_slot_checks = ():
-    __pad_on = false
+    __pad_on[0] = false
     __key_pressed = fill(false, 128)
     __mouse_pressed = fill(false, 8)
     __mouse_dx = 0.0
@@ -199,10 +199,10 @@ main = ():
     inv_add("branch")
     invui = InvUI(open = true, tab = 0, sel = 0, t = 1.0)
     invui_open_hint = true
-    __pad_on = true
-    __pad_axes = fill(0.0, 6)
-    __pad_down = fill(false, 15)
-    __pad_prev = fill(false, 15)
+    __pad_on[0] = true
+    __pad_axes = fill(0.0, 48)
+    __pad_down = fill(false, 120)
+    __pad_prev = fill(false, 120)
     __pad_down[int(PadButton.right)] = true
     input_update(1.0 / 60.0, false)
     inventory_update(1.0 / 60.0)

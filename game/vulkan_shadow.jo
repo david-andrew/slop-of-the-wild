@@ -1,0 +1,63 @@
+# Game-owned equivalent of the shadow pass's GLES polygon offset. Program
+# modules/layout stay identical; a separate program ID owns biased pipelines.
+# The release's draw path still handles descriptors, uniforms and dynamic state.
+game_shadow_offset = false
+game_shadow_programs: {int: int} = {}
+game_draw_program = (sh: Shader, mode: int) -> int:
+    when TARGET == "wasm": return sh.prog
+    else:
+        if not game_shadow_offset: return sh.prog
+        id = game_shadow_programs.get(sh.prog) ?? 0
+        if id == 0:
+            p = __vgp[sh.prog]
+            id = __vgp.len()
+            __vgp.push(__VgProg(p.vs, p.fs, {}, p.tex_offs))
+            game_shadow_programs[sh.prog] = id
+        topo = __vg_topology(mode)
+        cf, df = __vg_fb_formats(__vg_fb)
+        assert(cf == 0 and df != 0, "polygon offset is only used in depth-only shadow passes")
+        key = __vg_class(topo) | (1 << 5) | (__vg_cmask << 6)
+        if not __vgp[id].pipelines.has(key):
+            pl = game_shadow_pipeline(id, topo, cf, df, false)
+            __vgp[id].pipelines[key] = pl
+        id
+
+when TARGET != "wasm":
+    game_shadow_pipeline = (p: int, topo: u32, cf: u32, df: u32, blend_on: bool) -> int:
+        name = "main"
+        stages: VkPipelineShaderStageCreateInfo[] = [
+            VkPipelineShaderStageCreateInfo(stype = 18, stage = 1, module = __vgp[p].vs, name = data(name)),
+            VkPipelineShaderStageCreateInfo(stype = 18, stage = 0x10, module = __vgp[p].fs, name = data(name))]
+        vin = VkPipelineVertexInputStateCreateInfo(stype = 19)
+        ia = VkPipelineInputAssemblyStateCreateInfo(stype = 20, topology = topo)
+        vp = VkPipelineViewportStateCreateInfo(stype = 22, nviewports = 1, nscissors = 1)
+        rs = VkPipelineRasterizationStateCreateInfo(stype = 23, bias_on = 1, bias = 2.0, bias_slope = 1.5, line_width = 1.0)
+        pv: u32[] = [1000254001, 0, 0, 0, 1, 0]               # the last vertex provokes (as GL)
+        if __vk_provoking_last: rs.next = data(pv) as *u8
+        ms = VkPipelineMultisampleStateCreateInfo(stype = 24, samples = 1)
+        ds = VkPipelineDepthStencilStateCreateInfo(stype = 25, max_bounds = 1.0)
+        att = VkPipelineColorBlendAttachmentState(mask = u32(__vg_cmask))
+        if blend_on:
+            att.on = 1
+            att.src = __vg_factor(__vg_bf.0)
+            att.dst = __vg_factor(__vg_bf.1)
+            att.src_a = __vg_factor(__vg_bf.2)
+            att.dst_a = __vg_factor(__vg_bf.3)
+        cb = VkPipelineColorBlendStateCreateInfo(stype = 26)
+        if cf != 0:
+            cb.natts = 1
+            cb.atts = (&att) as *u8
+        dyn: u32[] = [0, 1, 1000267000, 1000267001, 1000267002, 1000267006, 1000267007, 1000267008]
+        dy = VkPipelineDynamicStateCreateInfo(stype = 27, nstates = u32(dyn.len()), states = data(dyn))
+        rinfo = VkPipelineRenderingCreateInfo(stype = 1000044002, depth = df)
+        cfv = cf
+        if cf != 0:
+            rinfo.ncolors = 1
+            rinfo.colors = &cfv
+        gi = VkGraphicsPipelineCreateInfo(stype = 28, next = (&rinfo) as *u8, nstages = 2, stages = data(stages) as *u8, vertex_input = (&vin) as *u8,
+            input_assembly = (&ia) as *u8, viewport = (&vp) as *u8, raster = (&rs) as *u8, multisample = (&ms) as *u8, depth = (&ds) as *u8,
+            blend = (&cb) as *u8, dynamic = (&dy) as *u8, layout = __vk_layout, base_index = -1)
+        pl = 0
+        __vk_check(vkCreateGraphicsPipelines(__vk_dev, __vk_pcache, 1, (&gi) as *u8, null, &pl), "vkCreateGraphicsPipelines")
+        __vk_pcache_dirty = true
+        pl

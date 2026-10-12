@@ -1,0 +1,63 @@
+# The release GL compatibility layer allocates one mip level. Static game RGBA
+# textures need their full pyramid for distant leaf cutouts and trilinear sampling.
+# Own the image here; the release keeps its usual texture slots and deferred lifetime.
+when TARGET != "wasm":
+    game_mip_barrier = (cb: *u8, image: int, level: int, old: int, new: int, src_access: int, dst_access: int):
+        b = VkImageMemoryBarrier2(stype = 1000314002, src_stages = VK_STAGE_ALL, src_access = src_access,
+            dst_stages = VK_STAGE_ALL, dst_access = dst_access, old_layout = u32(old), new_layout = u32(new),
+            src_family = 0xFFFFFFFF, dst_family = 0xFFFFFFFF, image = image, aspect = 1, base_mip = u32(level), mips = 1, layers = 1)
+        dep = VkDependencyInfo(stype = 1000314003, nimg = 1, img = (&b) as *u8)
+        vkCmdPipelineBarrier2(cb, (&dep) as *u8)
+
+    game_mip_texture = (t: int, w: int, h: int, pixels: u8[], repeat: bool):
+        levels = 1
+        size = max(w, h)
+        loop size > 1:
+            levels += 1
+            size /= 2
+        info = VkImageCreateInfo(stype = 14, image_type = 1, format = u32(VK_FORMAT_R8G8B8A8_UNORM),
+            width = u32(w), height = u32(h), depth = 1, mips = u32(levels), layers = 1, samples = 1,
+            usage = u32(VK_USAGE_SAMPLED | VK_USAGE_TRANSFER_DST | VK_USAGE_TRANSFER_SRC))
+        img = __VkImage(width = w, height = h, format = u32(VK_FORMAT_R8G8B8A8_UNORM), aspect = 1)
+        __vk_check(vkCreateImage(__vk_dev, (&info) as *u8, null, &img.image), "game mip image")
+        req = VkMemoryRequirements()
+        vkGetImageMemoryRequirements(__vk_dev, img.image, (&req) as *u8)
+        img.mem = __vk_alloc(req, u32(VK_MEM_DEVICE_LOCAL), 0, 1)
+        __vk_check(vkBindImageMemory(__vk_dev, img.image, __vk_range_mem(img.mem), u64(__vk_range_off(img.mem))), "game mip memory")
+        view = VkImageViewCreateInfo(stype = 15, image = img.image, view_type = 1, format = img.format,
+            aspect = 1, mips = u32(levels), layers = 1)
+        __vk_check(vkCreateImageView(__vk_dev, (&view) as *u8, null, &img.view), "game mip view")
+        blk, off = __vk_upload(data(pixels), pixels.len())
+        __vk_begin_frame()
+        __vg_end_pass()
+        cb = __vk_cb()
+        loop level in [0..levels):
+            game_mip_barrier(cb, img.image, level, VK_LAYOUT_UNDEFINED, VK_LAYOUT_TRANSFER_DST, 0, VK_ACCESS_TRANSFER_WRITE)
+        region = VkBufferImageCopy(offset = u64(off), aspect = 1, layers = 1, width = u32(w), height = u32(h), depth = 1)
+        vkCmdCopyBufferToImage(cb, __vk_blocks[blk].buffer, img.image, u32(VK_LAYOUT_TRANSFER_DST), 1, (&region) as *u8)
+        width = w
+        height = h
+        loop level in [1..levels):
+            game_mip_barrier(cb, img.image, level - 1, VK_LAYOUT_TRANSFER_DST, VK_LAYOUT_TRANSFER_SRC, VK_ACCESS_TRANSFER_WRITE, VK_ACCESS_TRANSFER_READ)
+            nw = max(width / 2, 1)
+            nh = max(height / 2, 1)
+            reg = VkImageBlit2(stype = 1000337008, src_aspect = 1, src_mip = u32(level - 1), src_layers = 1,
+                src1 = [i32(width), i32(height), 1], dst_aspect = 1, dst_mip = u32(level), dst_layers = 1,
+                dst1 = [i32(nw), i32(nh), 1])
+            blit = VkBlitImageInfo2(stype = 1000337004, src = img.image, src_layout = u32(VK_LAYOUT_TRANSFER_SRC),
+                dst = img.image, dst_layout = u32(VK_LAYOUT_TRANSFER_DST), nregions = 1, regions = (&reg) as *u8, filter = 1)
+            vkCmdBlitImage2(cb, (&blit) as *u8)
+            width = nw
+            height = nh
+        loop level in [0..levels):
+            old = if level == levels - 1: VK_LAYOUT_TRANSFER_DST else: VK_LAYOUT_TRANSFER_SRC
+            access = if level == levels - 1: VK_ACCESS_TRANSFER_WRITE else: VK_ACCESS_TRANSFER_READ
+            game_mip_barrier(cb, img.image, level, old, VK_LAYOUT_SHADER_READ, access, VK_ACCESS_SHADER_READ)
+        img.layout = u32(VK_LAYOUT_SHADER_READ)
+        __vgt[t].img = img
+        __vgt[t].live = true
+        __vgt[t].linear = true
+        __vgt[t].repeat = repeat
+        __vg_tex_slot(t)
+else:
+    game_mip_texture = (t: int, w: int, h: int, pixels: u8[], repeat: bool): pass

@@ -124,19 +124,15 @@ clear[K, V] = (m: mut Map[K, V]):
     m.slots.clear()
     m.hashes.clear()
 
-# remove a key; returns true if it was present. The last entry moves into the hole.
+# remove a key; returns true if it was present. The entries after it move up (the rest keep
+# their order).
 remove[K, V] = (m: mut Map[K, V], k: K) -> bool:
     h = hash(k)
     e = __map_find(m, k, h)
     if e < 0: return false
-    last = m.keys.len() - 1
-    if e != last:
-        m.keys[e] = m.keys[last]
-        m.vals[e] = m.vals[last]
-        m.hashes[e] = m.hashes[last]
-    m.keys.pop()
-    m.vals.pop()
-    m.hashes.pop()
+    m.keys.remove(e)
+    m.vals.remove(e)
+    m.hashes.remove(e)
     __map_rehash(m, m.slots.len())
     true
 

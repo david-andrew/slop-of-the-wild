@@ -20,7 +20,7 @@ fixture = re.sub(r"(?m)^(use|from) '([^']+)'", lambda m: f"{m[1]} '{(Path('tools
 PY
 sloppy/bin/sloppy build "$out/fixture.jo" -o "$out/fixture"
 status=0
-flock /tmp/botw-render.lock env BOTW_SKIP=1 BOTW_AT=-1030,1805,0 BOTW_HOUR=12 BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 \
+flock /tmp/botw-render.lock env BOTW_SKIP=1 BOTW_AT=-1030,1805,0 BOTW_HOUR=12 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 \
     SLOPPY_INPUT="" SLOPPY_SCREENSHOT="$out/final.png" SLOPPY_FRAMES=4 timeout 180 "$out/fixture" > "$out/run.log" 2>&1 || status=$?
 cat "$out/run.log"
 (( status == 0 )) || exit "$status"

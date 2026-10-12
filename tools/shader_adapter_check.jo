@@ -1,0 +1,60 @@
+# Real pixels for the game's 0.6 shader adapters; caller owns the render lock.
+use '../game/gfx.jo'
+struct AdapterU:
+    tex: Texture
+struct AdapterO:
+    pos: vec4
+    uv: vec2
+adapter_vs = (v: FsVert, u: AdapterU) -> AdapterO:
+    AdapterO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+adapter_fs = (i: AdapterO, u: AdapterU) -> vec4:
+    n = glsl_facet(vec3(1.0 - i.uv.x, i.uv.y, 0))
+    if i.pos.x < 8.0: glsl_discard(glsl_occluder_dither(i.pos.xy) < 0.5)
+    size = vec2(texture_size(u.tex))
+    p = floor(i.uv * size)
+    value = glsl_fetch(u.tex, int(p.x), int(p.y)).x
+    vec4(value, 0.25, n.z * 0.5 + 0.5, 1)
+mip_fs = (i: AdapterO, u: AdapterU) -> vec4:
+    sample_lod(u.tex, i.uv, 2.0)
+window("0.6 shader adapter pixels", 16, 16)
+sh = make_sh(shader(adapter_vs, adapter_fs))
+t = float_texture(2, 2, [f32(0.125), 0.25, 0.5, 0.75])
+rt = make_target(16, 16, false, true)
+bind_target(rt)
+glDisable(GL_DEPTH_TEST)
+glDisable(GL_CULL_FACE)
+glDisable(GL_BLEND)
+glClearColor(0, 0, 0, 0)
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+draw_fast(sh, fullscreen_mesh(), AdapterU(t))
+px = fill(u8(0), 16 * 16 * 4)
+game_read_pixels(0, 0, 16, 16, data(px))
+left = 0
+right = 0
+loop y in [0..16):
+    loop x in [0..16):
+        at = (y * 16 + x) * 4
+        if px[at + 3] == 0: continue
+        if x < 8: left += 1
+        else: right += 1
+        value = [32, 64, 128, 191][(y / 8) * 2 + x / 8]
+        assert(abs(int(px[at]) - value) <= 1, "R32F upload, dimensions and integer texel fetch")
+        assert(px[at + 1] == 64 and px[at + 2] == 0 and px[at + 3] == 255, "signed facet derivatives keep orientation")
+print("adapter coverage: {left} left, {right} right")
+assert(left == 64 and right == 128, "balanced pixel dither and discard preserve half coverage")
+print("PASS shader adapters: 192 lit pixels, R32F/fetch/dimensions, signed derivatives, balanced dither/discard")
+
+# A checker pyramid resolves to 50% red at its 1x1 mip, not a base-level texel.
+checker = fill(u8(0), 4 * 4 * 4)
+loop y in [0..4):
+    loop x in [0..4):
+        checker[(y*4+x)*4] = if (x+y)%2 == 0: u8(255) else: u8(0)
+        checker[(y*4+x)*4+3] = 255
+mt = bytes_texture(4,4,checker,true,false)
+ms = make_sh(shader(adapter_vs,mip_fs))
+bind_target(rt)
+draw_fast(ms,fullscreen_mesh(),AdapterU(mt))
+game_read_pixels(0,0,16,16,data(px))
+loop k in [0..256):
+    assert(abs(int(px[k*4])-128)<=1 and px[k*4+1]==0 and px[k*4+2]==0 and px[k*4+3]==255, "explicit LOD samples generated mip pyramid")
+print("PASS static texture mip pyramid: 256 GPU pixels at LOD 2")

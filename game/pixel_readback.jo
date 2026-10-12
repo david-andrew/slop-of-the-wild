@@ -1,0 +1,44 @@
+# Cropped RGBA/float readback for game diagnostics. The 0.6 Vulkan compatibility
+# entry point reads an entire RGBA8 image, regardless of requested region/type.
+# Keep that release untouched; copy exactly the requested image region here.
+when TARGET != "wasm":
+    game_pixel_buffer = __VkBuffer()
+game_half_float = (v: u16) -> f32:
+    sign = if v & 32768 != 0: -1.0 else: 1.0
+    exponent = int((v >> 10) & 31)
+    fraction = int(v & 1023)
+    if exponent == 0: return f32(sign * f64(fraction) / 16777216.0)
+    bits = (u32(v & 32768) << 16) | (u32(if exponent == 31: 255 else: exponent + 112) << 23) | (u32(fraction) << 13)
+    word = fill(bits, 1)
+    (data(word) as *f32)[0]
+
+game_pixel_readback = (x: int, y: int, w: int, h: int, out: *u8, floats: bool):
+    when TARGET != "wasm":
+        __vk_begin_frame()
+        __vg_end_pass()
+        c = if __vg_fb == 0: 0 else: __vgf[__vg_fb].color
+        img = if c == 0: __vk_screen else: __vgt[c].img
+        assert(w > 0 and h > 0 and x >= 0 and y >= 0 and x + w <= img.width and y + h <= img.height, "readback region is inside the color image")
+        bpp = if img.format == 109 or img.format == 108: 16 else: (if img.format == 97: 8 else: 4)
+        n = w * h * bpp
+        if game_pixel_buffer.size < n:
+            __vk_free_buffer(game_pixel_buffer)
+            game_pixel_buffer = __vk_buffer(n, u32(2), u32(VK_MEM_HOST_VISIBLE | VK_MEM_HOST_COHERENT), u32(VK_MEM_HOST_CACHED))
+        cb = __vk_cb()
+        __vk_barrier(cb, img, u32(VK_LAYOUT_TRANSFER_SRC), VK_STAGE_ALL, VK_ACCESS_MEMORY_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
+        region = VkBufferImageCopy(aspect = 1, layers = 1, x = i32(x), y = i32(y), width = u32(w), height = u32(h), depth = 1)
+        vkCmdCopyImageToBuffer(cb, img.image, u32(VK_LAYOUT_TRANSFER_SRC), game_pixel_buffer.buffer, 1, (&region) as *u8)
+        __vk_memory_barrier(cb, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE, VK_STAGE_HOST, VK_ACCESS_HOST_READ)
+        __vk_barrier(cb, img, u32(VK_LAYOUT_SHADER_READ), VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ, VK_STAGE_ALL, VK_ACCESS_SHADER_READ)
+        __vk_submit_and_wait()
+        if c == 0: __vk_screen = img
+        else: __vgt[c].img = img
+        p = game_pixel_buffer.ptr
+        loop i in [0..w * h * 4):
+            value = 0.0
+            if img.format == 109: value = (p as *f32)[i]
+            else if img.format == 97: value = game_half_float((p as *u16)[i])
+            else if img.format == 100: value = if i % 4 == 0: (p as *f32)[i / 4] else: (if i % 4 == 3: f32(1) else: f32(0))
+            else: value = f64(p[i]) / 255.0
+            if floats: (out as *f32)[i] = f32(value)
+            else: out[i] = u8(round(clamp(value, 0.0, 1.0) * 255.0))

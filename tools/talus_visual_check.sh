@@ -147,7 +147,7 @@ for scene in ${TALUS_SCENES:-dormant reveal awake front climb ride weak defeat};
  if [[ $scene == weak ]]; then frames=900; input=(SLOPPY_INPUT='10:w+'); fi
  if [[ $scene == defeat ]]; then frames=1800; input=(SLOPPY_INPUT='10:w+'); fi
  "${capture_runner[@]}" env BOTW_SKIP=1 BOTW_AT=-1087.75,1673.18,0 BOTW_HOUR=10 BOTW_WEATHER=clear \
-  "${input[@]}" TALUS_VISUAL="$scene" BOTW_SCALE=1 BOTW_NOVSYNC=1 \
+  "${input[@]}" TALUS_VISUAL="$scene" BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 \
   SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
   SLOPPY_SCREENSHOT="$out/$scene.png" SLOPPY_FRAMES="$frames" \
   timeout 240 "$out/talus-visual" > "$out/$scene.log" 2>&1

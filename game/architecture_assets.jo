@@ -28,7 +28,10 @@ pack_array = (s: mut AssetStream, xs: mut Builder[], writing: bool):
         return
     zero: Builder
     if not writing: xs = fill(zero, n)
-    loop mut x in xs: pack_value(s, x, writing)
+    loop i in [0..xs.len()):
+        x = xs[i]
+        pack_value(s, x, writing)
+        xs[i] = x
 
 pack_value = (s: mut AssetStream, x: mut RainCell, writing: bool):
     pack_array(s, x.heights, writing)
@@ -41,7 +44,10 @@ pack_array = (s: mut AssetStream, xs: mut RainCell[], writing: bool):
         return
     zero: RainCell
     if not writing: xs = fill(zero, n)
-    loop mut x in xs: pack_value(s, x, writing)
+    loop i in [0..xs.len()):
+        x = xs[i]
+        pack_value(s, x, writing)
+        xs[i] = x
 
 pack_value = (s: mut AssetStream, x: mut Zone, writing: bool):
     pack_value(s, x.name, writing)
@@ -55,7 +61,10 @@ pack_array = (s: mut AssetStream, xs: mut Zone[], writing: bool):
         return
     zero: Zone
     if not writing: xs = fill(zero, n)
-    loop mut x in xs: pack_value(s, x, writing)
+    loop i in [0..xs.len()):
+        x = xs[i]
+        pack_value(s, x, writing)
+        xs[i] = x
 
 pack_value = (s: mut AssetStream, x: mut Shrine, writing: bool):
     pack_value(s, x.name, writing)
@@ -72,7 +81,10 @@ pack_array = (s: mut AssetStream, xs: mut Shrine[], writing: bool):
         return
     zero: Shrine
     if not writing: xs = fill(zero, n)
-    loop mut x in xs: pack_value(s, x, writing)
+    loop i in [0..xs.len()):
+        x = xs[i]
+        pack_value(s, x, writing)
+        xs[i] = x
 
 pack_map = (s: mut AssetStream, xs: mut {int: Builder}, writing: bool):
     keys: int[]

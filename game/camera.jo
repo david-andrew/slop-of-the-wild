@@ -68,6 +68,8 @@ cave_mouth = vec3(0, -10000, 0)      # the cave's mouth, and the way into it (se
 cave_in = vec3(1, 0, 0)
 
 # how far the line from the look point back toward the camera runs before it meets the ground
+aim_fov = 50.0
+
 __cam_free = (t: vec3, b: vec3, d: f64) -> f64:
     loop i in [1..13):
         s = 0.8 + (d - 0.8) * f64(i) / 12.0
@@ -638,7 +640,6 @@ camera_aim_blend = (a: vec3, at: vec3, b: vec3, bt: vec3, k: f64) -> vec3:
 # the camera actually used this frame (player camera blended with a cutscene camera)
 view_pos = () -> vec3: if cam.override: mix(cam.from_pos, cam.o_pos, f32(smooth01(cam.blend))) else: mix(cam.pos, cam.from_pos, f32(smooth01(cam.blend)))
 view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, cam.target, cam.from_pos, cam.from_target, smooth01(cam.blend))
-aim_fov = 50.0
 view_fov = () -> f64: if cam.override: lerp(cam.from_fov, cam.o_fov, smooth01(cam.blend)) else: lerp(aim_fov, cam.from_fov, smooth01(cam.blend))
 __camdbg = env("BOTW_CAMDBG") != none
 __camdbg_n = 0

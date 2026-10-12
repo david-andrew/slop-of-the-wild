@@ -126,7 +126,7 @@ def capture_view(binary, output, view):
         final = output / f"{name}-final.png"
         final.unlink(missing_ok=True)
         settings = dict(clean, BOTW_SKIP="1", BOTW_AT=at, BOTW_HOUR="11",
-            BOTW_WEATHER=weather, BOTW_NOVSYNC="1", BOTW_SCALE="0.8",
+            BOTW_WEATHER=weather, BOTW_NOVSYNC="1", SLOPPY_VSYNC="0", BOTW_SCALE="0.8",
             BOTW_SILHOUETTE_PREFIX=str(prefix), SLOPPY_PLATFORM="x11",
             SLOPPY_WINDOW="960x540", SLOPPY_FRAMES="300",
             SLOPPY_SCREENSHOT=str(final.resolve()))

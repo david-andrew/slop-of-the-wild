@@ -1309,7 +1309,8 @@ hero_form = (bm: mut BModel, sk: Skel, bare: bool):
     shoulder = sk.gm[skel_find(sk,"upperarm_l")][3].xyz
     elbow = sk.gm[skel_find(sk,"lowerarm_l")][3].xyz
     wrist = sk.gm[skel_find(sk,"hand_l")][3].xyz
-    loop mut part in bm.parts:
+    loop pi in [0..bm.parts.len()):
+        part = bm.parts[pi]
         skin_part = contains(part.key,"Superhero") or contains(part.key,"Regular_Male")
         if skin_part and bare: hero_shoulder_loops(part,sk.names.len())
         if skin_part: hero_soft_normals(part,1.0)
@@ -1362,6 +1363,7 @@ hero_form = (bm: mut BModel, sk: Skel, bare: bool):
 
 # Bake-only silhouette and painted form. Contacts, topology and influences remain
 # those of the source mesh; the hand/grip positions are deliberately untouched.
+        bm.parts[pi] = part
 hero_cloth_point = (p: vec3, name: str) -> vec3:
     q = p
     if name == "Male_Ranger_Body":

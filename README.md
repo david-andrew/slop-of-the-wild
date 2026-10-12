@@ -1,6 +1,6 @@
 # The Legend of Jo: Slop of the Wild
 
-[Play and evaluate](docs/EVALUATE.md): latest full committed-source sweep **127 PASS / 0 FAIL**
+[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **136 PASS / 0 FAIL**
 ([evidence](docs/EVALUATE.md#whole-regression-suite)).
 [Compact performance summary](docs/PERFORMANCE.md), [current listening evidence](docs/MUSIC.md),
 and [Round 81 targeted findings and evidence](docs/ROUND81_SOL.md).
@@ -20,17 +20,19 @@ map-data and save compatibility.
 ## Run
 
 ```
-tools/play.sh                           # recommended: compile/run with Wayland mailbox presentation
-tools/warm_assets.sh                    # optional: bake world/mesh/audio/texture packs and shader binaries
+tools/play.sh                           # compile/run with the Sloppy 0.6.0 renderer
+tools/warm_assets.sh                    # optional: bake world/mesh/audio/texture packs and GPU pipelines
 ```
 
-`tools/play.sh` launches without a render lock and defaults the existing
-`SLOPPY_PRESENT` option to `mailbox`. Agent captures use `tools/play_locked.sh`,
-which owns the shared render lock; never wrap that variant in another `flock`.
-Use `SLOPPY_PRESENT=paced tools/play.sh` to restore callback pacing, or pass a
-compiled game as its argument. X11 and web retain their native presentation
-behavior; the option applies to Wayland.
-The direct `sloppy/bin/sloppy game/main.jo` command retains the runtime default.
+`tools/play.sh` launches without a render lock. Agent captures use
+`tools/play_locked.sh`, which owns the shared render lock; never wrap it in
+another `flock`. Pass a compiled executable as the play script's argument.
+Sloppy 0.6.0 uses Vulkan 1.3 by default on supported Linux drivers. The launcher
+sets `SLOPPY_VSYNC=0` for mailbox (or immediate if unavailable), whose measured
+p99 is lower in forest, fire and overlook. `SLOPPY_VSYNC=1 tools/play.sh` restores
+the release's FIFO default;
+`SLOPPY_VULKAN=0` selects OpenGL. Presentation measurements are in
+[PERFORMANCE.md](docs/PERFORMANCE.md).
 
 Prepared startup timings, warmup attribution, compilation and process totals
 are consolidated in [PERFORMANCE.md](docs/PERFORMANCE.md). In-game load includes
@@ -41,7 +43,8 @@ measurement flushes shared-library or driver caches.
 Run `tools/warm_assets.sh` after source changes. It CPU-bakes world grids,
 terrain/upload data, water/farland/architecture buffers, collision/roof maps,
 audio and the referenced vegetation/title/name RGBA textures into
-`assets/prepared/`, then warms driver-specific shader binaries. All nature inputs
+`assets/prepared/`, then warms the release's default Vulkan pipelines. GLES
+program binaries warm on OpenGL launches with `SLOPPY_VULKAN=0`. All nature inputs
 must exist in `assets/src/nature/Textures`; preparation fails if a referenced
 image is missing. `tools/prepare_assets.sh` performs only the CPU bake.
 Version/size/mtime headers reject stale packs and retain generation on launch.
@@ -60,11 +63,11 @@ complete generated/prepared world, collision, audio and texture bytes;
 `python3 tools/prepared_frame_check.py` verifies identical opening, overlook,
 pond and shrine pixels. [Protocol and current measurements](docs/PERFORMANCE.md).
 
-`sloppy/` is a pinned copy of the Sloppy toolchain (binary + standard library; the
-upstream commit is in `sloppy/VERSION`). The game was written against Jot and moved to Sloppy 0.2 with a few
-mechanical changes: `.jo` files, `SLOPPY_*` test variables, and names shared between files no longer
-starting with `_` (now private to their file). The local library adds an opt-in
-Wayland mailbox path (`SLOPPY_PRESENT=mailbox`); normal pacing remains the default.
+`sloppy/` is the **unmodified official Sloppy 0.6.0 release** (binary and
+standard library), pinned to `7c8d133` in `sloppy/VERSION`. It has no local
+compiler or library patches. Rendering adapters, score gain envelopes and
+export peak guards belong to the game. See [SLOPPY_NOTES](docs/SLOPPY_NOTES.md)
+for the migration and remaining game-owned adapters.
 
 ## Performance
 

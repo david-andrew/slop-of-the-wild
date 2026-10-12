@@ -78,7 +78,7 @@ def main():
                 frozen = pack.read_bytes()
                 resident = (root / 'assets/prepared' / pack.name).read_bytes()
                 assert resident[:8] + resident[16:] == frozen[:8] + frozen[16:], 'resident pack payload differs'
-        flags = dict(BOTW_LOADTIME='1', BOTW_NOVSYNC='1', BOTW_SCALE='1',
+        flags = dict(BOTW_LOADTIME='1', BOTW_NOVSYNC='1', SLOPPY_VSYNC='0', BOTW_SCALE='1',
                      BOTW_FRAME_LOG='1', SLOPPY_PLATFORM='x11', SLOPPY_WINDOW='1280x720', SLOPPY_FRAMES='1', SLOPPY_FRAME_STATS='1')
         summary = {'revision': revision, 'worktree_snapshot': a.worktree, 'copy': str(copy), 'flags': flags, 'mesh_packs': mesh_packs,
                    'protocol': 'git archive plus ignored terrain inputs to clean snapshot; cp -r under build/; warm_assets.sh; complete ignored nature PNG inputs; fresh one-frame X11 processes, one flock per launch; time excludes lock wait',

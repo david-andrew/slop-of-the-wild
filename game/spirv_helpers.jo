@@ -1,0 +1,48 @@
+# Game-owned signed derivative bridge for the unmodified 0.6.0 compiler.
+# Tagged functions contain one OpFwidth plus a unique float constant. Replace
+# only that function's derivative, and zero the tag; preserve IDs and module ABI.
+game_spirv_derivatives = (src: str) -> str:
+    if src == "": return src
+    words = fill(u32(0), src.len() / 4)
+    mem_copy(data(words) as *u8, data(src), src.len())
+    tags: {u32: u32} = {}
+    at = 5
+    loop at < words.len():
+        n = int(words[at] >> 16)
+        op = words[at] & 65535
+        assert(n > 0 and at + n <= words.len(), "invalid SPIR-V instruction")
+        if op == 43 and n == 4:
+            if words[at + 3] == u32(0x49800000): tags[words[at + 2]] = 207
+            if words[at + 3] == u32(0x4A000000): tags[words[at + 2]] = 208
+        at += n
+    at = 5
+    start = 0
+    derivative = u32(0)
+    loop at < words.len():
+        n = int(words[at] >> 16)
+        op = words[at] & 65535
+        if op == 54:
+            start = at
+            derivative = 0
+        if start > 0 and op == 129 and n == 5:
+            derivative = tags.get(words[at + 4]) ?? derivative
+        if op == 56 and start > 0:
+            if derivative != 0:
+                k = start
+                count = 0
+                loop k < at:
+                    if words[k] & 65535 == 209:
+                        words[k] = (words[k] & u32(0xFFFF0000)) | derivative
+                        count += 1
+                    k += int(words[k] >> 16)
+                assert(count == 1, "signed derivative helper changed shape")
+            start = 0
+        at += n
+    at = 5
+    loop at < words.len():
+        n = int(words[at] >> 16)
+        if words[at] & 65535 == 43 and tags.has(words[at + 2]): words[at + 3] = 0
+        at += n
+    bytes = fill(u8(0), src.len())
+    mem_copy(data(bytes), data(words) as *u8, bytes.len())
+    str_from_bytes(bytes)

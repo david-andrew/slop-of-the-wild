@@ -20,11 +20,11 @@ if '--locked' not in sys.argv:
 summary={'binary_sha256':hashlib.sha256((out/'pacing').read_bytes()).hexdigest(),'runs':[],
  'protocol':'forest, fixed scale 1; nearest-rank producer intervals >=241; all samples retained. These are not scanout timestamps.'}
 for size in ('1280x720','2133x1200'):
- for platform,mode in [('wayland','paced'),('wayland','mailbox'),('x11','paced'),('x11','uncapped')]:
+ for platform,mode in [('wayland','fifo'),('wayland','mailbox'),('x11','fifo'),('x11','uncapped')]:
   for repeat in range(1,3):
    name=f'{platform}-{mode}-{size}-{repeat}'
    e={k:v for k,v in os.environ.items() if not k.startswith(('BOTW_','SLOPPY_'))}
-   e.update(BOTW_SKIP='1',BOTW_AT='-1000,1620,3.14',BOTW_HOUR='11',BOTW_WEATHER='clear',BOTW_SCALE='1',BOTW_FRAME_LOG='1',BOTW_LOADTIME='1',BOTW_SCENE_LOG='1',SLOPPY_FRAME_STATS='1',SLOPPY_PLATFORM=platform,SLOPPY_PRESENT=mode,SLOPPY_WINDOW=('768x432' if size=='1280x720' else '1280x720') if platform=='wayland' else size,SLOPPY_FRAMES='1440',SLOPPY_SCREENSHOT=str(out/(name+'.png')))
+   e.update(BOTW_SKIP='1',BOTW_AT='-1000,1620,3.14',BOTW_HOUR='11',BOTW_WEATHER='clear',BOTW_SCALE='1',BOTW_FRAME_LOG='1',BOTW_LOADTIME='1',BOTW_SCENE_LOG='1',SLOPPY_FRAME_STATS='1',SLOPPY_PLATFORM=platform,SLOPPY_VSYNC=('1' if mode=='fifo' else '0'),SLOPPY_WINDOW=('768x432' if size=='1280x720' else '1280x720') if platform=='wayland' else size,SLOPPY_FRAMES='1440',SLOPPY_SCREENSHOT=str(out/(name+'.png')))
    if mode=='uncapped':e['BOTW_NOVSYNC']='1'
    cmd=['timeout','180',str(out/'pacing')]
    if platform=='x11':cmd=['python3','tools/performance_window.py',size,*cmd]
@@ -44,7 +44,7 @@ for size in ('1280x720','2133x1200'):
    assert dims and all(d==size and scale=='1.00' for d,scale in dims),(name,dims)
    positions=re.findall(r'perf scene: frame \d+ pos (\S+) hp',text)
    assert positions and all(p=='-1000.0,188.0,1620.0' for p in positions),(name,positions)
-   assert platform!='wayland' or f'dma-buf, {mode},' in text,'native Wayland mode unconfirmed'
+   assert platform!='wayland' or 'vulkan (' in text,'native Wayland mode unconfirmed'
    def metrics(column):
     a=sorted(r[column] for r in rows)
     return {'p50':a[math.ceil(len(a)*.5)-1],'p99':a[math.ceil(len(a)*.99)-1],'worst':a[-1]}
@@ -58,7 +58,7 @@ for size in ('1280x720','2133x1200'):
 
 summary['pooled']=[]
 for size in ('1280x720','2133x1200'):
- for platform,mode in [('wayland','paced'),('wayland','mailbox'),('x11','paced'),('x11','uncapped')]:
+ for platform,mode in [('wayland','fifo'),('wayland','mailbox'),('x11','fifo'),('x11','uncapped')]:
   rows=[]
   for repeat in range(1,3):
    text=(out/f'{platform}-{mode}-{size}-{repeat}.log').read_text()

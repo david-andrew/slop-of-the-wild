@@ -64,13 +64,13 @@ for scene in ${FAUNA_SCENES:-frog lizard firefly boar fox}; do
     for motion in run sneak; do
       extra=(); input='1:w+'; [[ $motion != sneak ]] || { extra=(FAUNA_SNEAK=1); input='1:c+'; }
       env BOTW_SKIP=1 BOTW_AT=-1220,1675,0 BOTW_HOUR=8 BOTW_WEATHER=clear \
-        FAUNA_VISUAL="$scene" "${extra[@]}" BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
+        FAUNA_VISUAL="$scene" "${extra[@]}" BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
         SLOPPY_INPUT="$input" SLOPPY_FRAMES=3 SLOPPY_SCREENSHOT="$out/$label-$scene-$motion.png" \
         timeout 180 "$out/fauna-visual" > "$out/$label-$scene-$motion.log" 2>&1
     done
   else
     env BOTW_SKIP=1 BOTW_AT=-1220,1675,0 BOTW_HOUR="$hour" BOTW_WEATHER=clear \
-      FAUNA_VISUAL="$scene" FAUNA_PROMPT_IMAGE="$out/$label-$scene-prompt.png" BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
+      FAUNA_VISUAL="$scene" FAUNA_PROMPT_IMAGE="$out/$label-$scene-prompt.png" BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
       SLOPPY_INPUT='1:c+,2:c-,20:e+,21:e-' SLOPPY_FRAMES=30 SLOPPY_SCREENSHOT="$out/$label-$scene.png" \
       timeout 180 "$out/fauna-visual" > "$out/$label-$scene.log" 2>&1
   fi

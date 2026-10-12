@@ -47,6 +47,32 @@ clamp = (x: f32, lo: f32, hi: f32) -> f32:
     if x < lo: return lo
     if x > hi: return hi
     x
+# the other integer types keep their type (the int ones above take mixed ones: min(i8, u8))
+abs = (x: i32) -> i32: if x < 0: -x else: x
+abs = (x: i16) -> i16: if x < 0: -x else: x
+abs = (x: i8) -> i8: if x < 0: -x else: x
+min = (a: i32, b: i32) -> i32: if a < b: a else: b
+min = (a: u32, b: u32) -> u32: if a < b: a else: b
+min = (a: i16, b: i16) -> i16: if a < b: a else: b
+min = (a: u16, b: u16) -> u16: if a < b: a else: b
+min = (a: i8, b: i8) -> i8: if a < b: a else: b
+min = (a: u8, b: u8) -> u8: if a < b: a else: b
+min = (a: u64, b: u64) -> u64: if a < b: a else: b
+max = (a: i32, b: i32) -> i32: if a > b: a else: b
+max = (a: u32, b: u32) -> u32: if a > b: a else: b
+max = (a: i16, b: i16) -> i16: if a > b: a else: b
+max = (a: u16, b: u16) -> u16: if a > b: a else: b
+max = (a: i8, b: i8) -> i8: if a > b: a else: b
+max = (a: u8, b: u8) -> u8: if a > b: a else: b
+max = (a: u64, b: u64) -> u64: if a > b: a else: b
+clamp = (x: i32, lo: i32, hi: i32) -> i32: if x < lo: lo else if x > hi: hi else: x
+clamp = (x: u32, lo: u32, hi: u32) -> u32: if x < lo: lo else if x > hi: hi else: x
+clamp = (x: i16, lo: i16, hi: i16) -> i16: if x < lo: lo else if x > hi: hi else: x
+clamp = (x: u16, lo: u16, hi: u16) -> u16: if x < lo: lo else if x > hi: hi else: x
+clamp = (x: i8, lo: i8, hi: i8) -> i8: if x < lo: lo else if x > hi: hi else: x
+clamp = (x: u8, lo: u8, hi: u8) -> u8: if x < lo: lo else if x > hi: hi else: x
+clamp = (x: u64, lo: u64, hi: u64) -> u64: if x < lo: lo else if x > hi: hi else: x
+
 sign = (x: f64) -> f64:
     if x > 0.0: return 1.0
     if x < 0.0: return -1.0

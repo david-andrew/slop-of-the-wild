@@ -4,6 +4,8 @@
 Owns ONE flock per bounded render; do not wrap this script in flock. All scratch
 stays under build/. Presentation timestamps are call returns, never scanout.
 """
+import sys
+sys.dont_write_bytecode = True
 import argparse
 import hashlib
 import json
@@ -50,7 +52,7 @@ def analyze(log, soak=False):
     assert [int(r[0]) for r in rows] == list(range(len(rows))), 'missing/duplicate frame rows'
     assert all(b[1] > a[1] for a, b in zip(rows, rows[1:])), 'non-monotonic return timestamps'
     assert all(r[6:] == [2133, 1200] for r in rows), 'physical viewport mismatch'
-    assert 'dma-buf' in text, 'native GPU Wayland path not confirmed'
+    assert 'vulkan (' in text, 'Vulkan presentation not confirmed'
     game_rows = [[float(v) for v in line.split()[2:]] for line in text.splitlines()
                  if line.startswith('frame sample:')]
     returns = {int(r[0]): r for r in rows}
@@ -130,8 +132,8 @@ def run(exe, out, name, flags, seconds=None, frames=2400):
                     proc.wait()
     if seconds is not None:
         assert 'PROBE_SECONDS' in env and 'SLOPPY_SCREENSHOT' not in env
-    expected_mode = 'mailbox' if env.get('SLOPPY_PRESENT') == 'mailbox' else 'paced'
-    assert f'dma-buf, {expected_mode},' in log_path.read_text(), 'presentation mode mismatch'
+    expected_mode = 'mailbox' if env.get('SLOPPY_VSYNC') == '0' else 'fifo'
+    assert f'probe swapchain: {1 if expected_mode == "mailbox" else 2}' in log_path.read_text(), 'presentation mode mismatch'
     meta['load_after'] = Path('/proc/loadavg').read_text().strip()
     from PIL import Image
     assert Image.open(out/(name+'.png')).size == (2133, 1200)
@@ -156,6 +158,7 @@ def main():
     p.add_argument('--views', nargs='+', choices=['forest', 'fire', 'overlook'], default=['forest', 'fire', 'overlook'])
     p.add_argument('--stage-trace', action='store_true', help='attribute return tails to poll/resize/runtime and existing game CPU/GPU stages')
     p.add_argument('--frames', type=int, default=2400)
+    p.add_argument('--present-modes', nargs='+', choices=['default','mailbox'], default=['default','mailbox'])
     p.add_argument('--seconds', type=int, default=600)
     a = p.parse_args()
     os.chdir(ROOT)
@@ -174,7 +177,7 @@ def main():
               'sources': {str(p): digest(p) for p in sorted(Path('game').glob('*.jo'))},
               'tools': {str(p): digest(p) for p in [Path('tools/render_session.jo'), Path(__file__)]},
               'runtime': {str(p): digest(p) for p in sorted(Path('sloppy/lib').rglob('*.jo'))},
-              'protocol': 'Wayland dma-buf; 2133x1200 physical pixels; default dynamic scene scale; '
+              'protocol': 'Vulkan swapchain; 2133x1200 physical pixels; default dynamic scene scale; '
                           'steady probes use fixed 1/60 simulation dt, soak uses real production dt; '
                           'nearest-rank percentiles; present-call return timestamps, NOT compositor delivery; '
                           '240 warmup frames excluded only from pacing aggregate; per-minute soak includes all transitions',
@@ -183,23 +186,33 @@ def main():
              'BOTW_GPU': '1', 'BOTW_GPU_FRAME_LOG': '1'} if a.stage_trace else {}
     result['stage_tracing'] = a.stage_trace
     if a.mode == 'soak':
-        result['runs']['soak-mailbox'] = run(exe, out, 'soak-mailbox',
-            {**trace, 'SLOPPY_PRESENT': 'mailbox', 'BOTW_AT': '-1000,1620,3.14',
-             'BOTW_GIVE': 'travelers_sword,travelers_shield,warm_doublet'}, seconds=a.seconds)
+        for mode in a.present_modes:
+            flags = {**trace, 'BOTW_AT': '-1000,1620,3.14',
+                     'BOTW_GIVE': 'travelers_sword,travelers_shield,warm_doublet'}
+            if mode == 'mailbox': flags['SLOPPY_VSYNC'] = '0'
+            name = f'soak-{mode}'
+            result['runs'][name] = run(exe, out, name, flags, seconds=a.seconds)
+            from cpu_tail_bench import summarize
+            result['runs'][name]['windows'] = summarize(out/(name+'.log'))['windows']
+            windows = result['runs'][name]['windows']
+            result['runs'][name]['window_count'] = len(windows)
+            result['runs'][name]['windows_over_20ms'] = sum(w['interval']['p99'] > 20 for w in windows)
+            result['runs'][name]['windows_over_17_5ms'] = sum(w['interval']['p99'] > 17.5 for w in windows)
+            (out/'soak.json').write_text(json.dumps(result, indent=2)+'\n')
     else:
         views = {'forest': {'BOTW_AT': '-1000,1620,3.14'}, 'fire': {'BOTW_FIRE': '1'},
                  'overlook': {'BOTW_AT': '-1050,1828,-2.36'}}
         views = {view: flags for view, flags in views.items() if view in a.views}
         for repeat in range(1, a.repeats+1):
             for view, flags in views.items():
-                for mode in (['default', 'mailbox'] if repeat % 2 else ['mailbox', 'default']):
+                for mode in (a.present_modes if repeat % 2 else list(reversed(a.present_modes))):
                     name = f'{view}-{mode}-{repeat}'
-                    settings = {**trace, **flags, **({'SLOPPY_PRESENT': 'mailbox'} if mode == 'mailbox' else {})}
+                    settings = {**trace, **flags, **({'SLOPPY_VSYNC': '0'} if mode == 'mailbox' else {})}
                     result['runs'][name] = run(exe, out, name, settings, frames=a.frames)
                     (out/'pacing.json').write_text(json.dumps(result, indent=2)+'\n')
         result['pooled'] = {}
         for view in views:
-            for mode in ['default', 'mailbox']:
+            for mode in a.present_modes:
                 logs = [out/f'{view}-{mode}-{i}.log' for i in range(1, a.repeats+1)]
                 rows = [[float(v) for v in l.split()[2:]] for log in logs
                         for l in log.read_text().splitlines() if l.startswith('present return:')]

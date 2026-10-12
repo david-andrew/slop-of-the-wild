@@ -21,7 +21,7 @@ def section(start, end):
 
 # Include the production cooking callback, pot registration and Give reward.
 actions = section('# Cook exactly the materials selected with Hold', '\nshrines_setup()')
-actions = actions[actions.index('cook_at_pot ='):]
+actions = actions[actions.index('__cook_dish ='):]
 # These updates live in main's render loop, outside the imported story module.
 update = section('    # cooking: kneel at the pot a moment, the prompt away until done\n', '    # a camp\'s chest opens once')
 give_rule = next(line for line in source.splitlines() if line.startswith('    usables[give_u].enabled ='))

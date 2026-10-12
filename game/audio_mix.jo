@@ -1,0 +1,18 @@
+# Mix headroom for the game's own offline renders and checks. The live mixer is Sloppy's
+# (soft clip above full scale); scores and listening exports reserve the same headroom here.
+const AUDIO_PEAK_KNEE = 0.65
+const AUDIO_PEAK_CEILING = 0.84       # -1.51 dBFS; verify actual dBTP on full mixes
+
+# Linked stereo soft knee: ordinary samples are untouched, peaks above the knee bend
+# smoothly toward the ceiling.
+audio_peak_guard = (samples: mut f32[]):
+    loop frame in [0..samples.len() / 2):
+        l = samples[frame * 2]
+        r = samples[frame * 2 + 1]
+        peak = f64(max(abs(l), abs(r)))
+        if peak > AUDIO_PEAK_KNEE:
+            headroom = AUDIO_PEAK_CEILING - AUDIO_PEAK_KNEE
+            target = AUDIO_PEAK_KNEE + headroom * tanh((peak - AUDIO_PEAK_KNEE) / headroom)
+            gain = f32(target / peak)
+            samples[frame * 2] = l * gain
+            samples[frame * 2 + 1] = r * gain

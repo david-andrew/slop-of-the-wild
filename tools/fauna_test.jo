@@ -35,7 +35,7 @@ rig = (path: str = "assets/models/bokoblin.mdl") -> Model:
     r = BinR(read_bytes(path) ?? [])
     r_u32(r)
     r_u32(r)
-    m = Model(name = r_str(r), skeleton = r_str(r))
+    let m = Model(name = r_str(r), skeleton = r_str(r))
     n = r_u32(r)
     loop i in [0..n):
         m.bones.push(r_str(r))

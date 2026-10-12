@@ -808,7 +808,8 @@ elements_update = (dt: f64, cam: vec3):
             if not w.alive: continue
         wet = __in_water(w.pos, 0.05) and not w.hang
         was_burning = burning(w.el)
-        r = react(matter_of(w.id), w.el, __exposure(w.pos, wet), dt)
+        ex = __exposure(w.pos, wet)
+        r = react(matter_of(w.id), w.el, ex, dt)
         if not was_burning and burning(w.el): __heat_items.push(wi)
         match r:
             ignited:
@@ -846,7 +847,8 @@ elements_update = (dt: f64, cam: vec3):
         if f64(length(e.pos - pl.pos)) > 120.0: continue
         if e.kind == .stalkoblin and e.skull_out:
             wet_skull = __in_water(e.skull_pos, 0.9)
-            sr = react(FLESH, e.skull_el, __exposure(e.skull_pos, wet_skull), dt)
+            sr_ex = __exposure(e.skull_pos, wet_skull)
+            sr = react(FLESH, e.skull_el, sr_ex, dt)
             if wet_skull or sr == .ignited or sr == .shocked:
                 stalk_skull_hit(e, e.skull_hp, e.skull_pos)
                 if wet_skull: fx_splash(e.skull_pos, 8)
@@ -858,7 +860,8 @@ elements_update = (dt: f64, cam: vec3):
             talus: STONE
             _: FLESH
         wet = __in_water(e.pos, 0.6)
-        r = react(m, e.el, __exposure(e.pos + vec3(0, 0.6, 0), wet), dt)
+        r_ex = __exposure(e.pos + vec3(0, 0.6, 0), wet)
+        r = react(m, e.el, r_ex, dt)
         match r:
             ignited: e.burning = 4.0
             melted:
@@ -1032,7 +1035,8 @@ player_carried_element = (kind: IKind, gear: mut CarriedElem, dt: f64):
         gear = CarriedElem(id = id, revision = revision, index = index, el = gear_element(kind, index))
     if id == "": return
     p = carried_gear_pos(kind, id)
-    r = react(matter_of(id), gear.el, __exposure(p, pl.state == .swim), dt)
+    r_ex = __exposure(p, pl.state == .swim)
+    r = react(matter_of(id), gear.el, r_ex, dt)
     match r:
         ignited: elem_events.push(ElemEvent("ignite", p))
         burnt_up:
@@ -1073,7 +1077,8 @@ player_torch_update = (dt: f64, lit: mut bool):
         tip = transform_point(hand, v3(0.0, weapon_length(d), 0.0))
     torch_tip = vec3(0, -10000, 0)
     wet = pl.state == .swim
-    r = react(matter_of(w), held_el, __exposure(tip, wet), dt)
+    r_ex = __exposure(tip, wet)
+    r = react(matter_of(w), held_el, r_ex, dt)
     match r:
         ignited: elem_events.push(ElemEvent("ignite", tip))
         burnt_up:

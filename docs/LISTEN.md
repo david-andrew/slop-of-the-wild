@@ -19,7 +19,19 @@ foley and RNGs (seed 70070). Walking clips emit steps at 0–12 s and 21–33 s.
 The long captures maintain movement inputs; the scenario is scripted audio
 integration, not a claim of autonomous traversal.
 
-## Measured levels (2026-10-12)
+## Sloppy 0.6.0 rerun (2026-10-12)
+
+`build/sloppy060/listen/levels.json` retains the unchanged targets and new
+production-sequencer exports. Day/night/rain/shrine/title/cave-exit values below
+are unchanged; engaged is now **-22.0 LUFS / -3.9 dBTP**, and low health is
+**-22.9 / -4.7**. The eight-clip worst remains **-3.3 dBTP**. Game-owned 20 ms
+score ramps replace the removed library ramp; the export peak guard belongs to
+the game. Cue audibility keeps both the raw onset and the settled body after
+the 20 ms ramp; the body retains the 6 dB margin (see MUSIC for master parity).
+Separate live-mixer scenarios measure a worst **-1.3 dBTP** with the
+unmodified release mixer; see [MUSIC](MUSIC.md) for levels and scope.
+
+## Previous music-pass levels (2026-10-12)
 
 Fresh baseline at `bf6f56e` versus this music/sound pass; same fixed 45 s timelines.
 Baseline combined bed is the unnormalized sum of isolated hum and room stems.

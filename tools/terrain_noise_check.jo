@@ -50,7 +50,7 @@ loop offset in [vec2(-2048.03, -512.11), vec2(-1024.01, -256.01), vec2(1023.99, 
     glClear(GL_COLOR_BUFFER_BIT)
     draw_fast(check, fullscreen_mesh(), NoiseCheckU(terrain_noise_tex, offset))
     errors = fill(f32(1), 128 * 128 * 4)
-    gl_read_pixels_f32(0, 0, 128, 128, data(errors) as *u8)
+    game_read_pixels_f32(0, 0, 128, 128, data(errors) as *u8)
     loop k in [0..128 * 128):
         assert(errors[k * 4 + 3] > 0.99)
         max_error = max(max_error, f64(errors[k * 4]))

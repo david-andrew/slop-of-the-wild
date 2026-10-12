@@ -205,7 +205,9 @@ main = ():
         __swing_lock = 0.0
         __blow_coming = false
         enemy_events.clear()
-        __bokoblin(e, 1.0 / 60.0, 2.0, false)
+        alarm = false
+        __bokoblin(e, 1.0 / 60.0, 2.0, false, alarm)
+        assert(not alarm, "already chasing actor does not emit a new camp alarm")
         expected = if weapon == "travelers_claymore": "windup_heavy" else: "windup"
         assert(e.state == .windup and enemy_events.len() == 1 and enemy_events[0].kind == expected, "heavy weapon has its distinct tell before contact")
         print("enemy tell {weapon}: {expected} at windup start")

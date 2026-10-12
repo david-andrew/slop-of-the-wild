@@ -23,7 +23,7 @@ read_row = (row: int) -> f32:
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(t.id), 0)
     assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
     values = fill(f32(-1), 4)
-    gl_read_pixels_f32(0, row, 1, 1, data(values) as *u8)
+    game_read_pixels_f32(0, row, 1, 1, data(values) as *u8)
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
     gl_delete_framebuffer(fb)
     values[0]

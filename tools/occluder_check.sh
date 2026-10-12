@@ -39,4 +39,4 @@ main = ():
 subprocess.run(['sloppy/bin/sloppy', 'build', str(root / 'fixture.jo'), '-o', str(root / 'fixture')], check=True)
 PY
 if [[ ${OCCLUDER_BUILD_ONLY:-} == 1 ]]; then exit 0; fi
-env BOTW_SKIP=1 BOTW_HOUR=12 BOTW_WEATHER=clear BOTW_NOVSYNC=1 BOTW_GPU=1 SLOPPY_PLATFORM=x11 BOTW_SCALE=0.8 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=360 SLOPPY_SCREENSHOT="$output/tree.png" timeout 300 "$output/fixture" > "$output/tree.log" 2>&1
+env BOTW_SKIP=1 BOTW_HOUR=12 BOTW_WEATHER=clear BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 BOTW_GPU=1 SLOPPY_PLATFORM=x11 BOTW_SCALE=0.8 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=360 SLOPPY_SCREENSHOT="$output/tree.png" timeout 300 "$output/fixture" > "$output/tree.log" 2>&1

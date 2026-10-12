@@ -135,6 +135,7 @@ __pool_start = ():
                 __pool_workers += 1
 
 # run f(lo, hi) over 0..total split into chunks, on all threads; returns when everything is done
+@parallel
 __parallel_run = (total: int, f: (int, int) -> void):
     if total <= 0: return
     when TARGET == "wasm":

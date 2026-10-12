@@ -45,7 +45,7 @@ for name, flags in views.items():
     target = out / f'{name}.png'
     target.unlink(missing_ok=True)
     settings = dict(clean, **flags, SLOPPY_PLATFORM='x11', SLOPPY_WINDOW='1600x900' if name == 'snow' else '1280x720',
-                    BOTW_NOVSYNC='1', BOTW_GPU='1', BOTW_SCALE='1.0',
+                    BOTW_NOVSYNC='1', SLOPPY_VSYNC='0', BOTW_GPU='1', BOTW_SCALE='1.0',
                     SLOPPY_FRAMES='600' if name == 'passage600' else '360',
                     SLOPPY_SCREENSHOT=str(target))
     with (out / f'{name}.log').open('w') as log:

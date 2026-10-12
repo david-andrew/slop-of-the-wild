@@ -1,41 +1,34 @@
 # What this tree shows about Sloppy
 
-One language drives world generation, rendering and GLSL translation, physics,
-element reactions, animation and software audio. Production functions also power
-headless tests and deterministic captures. Prepared packs and fast native builds
-keep iteration short.
+One language drives world generation, Vulkan/SPIR-V and OpenGL/GLSL rendering,
+physics, element reactions, animation and software audio. Production functions
+also power headless tests and deterministic captures. The pinned toolchain is
+the **unmodified official Sloppy 0.6.0 release**, `7c8d133`; every adapter belongs
+to the game.
 
-- **Prepared startup:** compiled load/process medians **1.635 / 1.830 s**, six
-  complete-input 720p launches; pre-texture-fix `6f4aad8` was **3.660 / 3.870 s**.
-  Source medians are **1.660 / 3.120 s**; independent compilation is **1.400 s**.
-  All 20 nature PNGs are present; prepared launches decode zero PNGs.
-- **2133×1200 Wayland present-return p99, default / mailbox:** forest
-  **21.13 / 13.63 ms**, fire **23.50 / 8.53 ms**, overlook **19.33 / 9.98 ms**.
-  These are handoff proxies, **not delivered frames or scanout**.
-- **Ten rendered minutes:** forest, combat, fire, storm and snow; second-cycle
-  RSS stays within **1.70 MiB**, live heap allocations within **25**, large-block
-  cache at **50.5 MiB**; GPU memory **954–972 MiB**. Total RSS growth is **7.03 MiB**.
-  Per-minute return p99 is **11.99–20.21 ms**, retaining the fire miss and rare hitches.
+Prepared packs retain world, mesh, collision, roof, audio and texture bytes and
+named-mesh draw order. Fresh-export startup separates compilation, in-game load,
+first-callback CPU and whole process. The Linux package includes the source
+files and materialized texture dependencies that its pack keys require.
+[Current measurements, protocols and evidence](PERFORMANCE.md).
 
-Build, loading, callback wall/thread execution and present calls are separate
-measurements. Heap counters do not expose total live bytes. [Current table,
-protocols, exact commands and all-repeat evidence](PERFORMANCE.md).
+The migration keeps actor mutation in place while releasing references before
+camp alarms, and preserves the old CPU pine-width seed explicitly. Game-owned
+20 ms score envelopes smooth gain changes without patching the live mixer.
+[Audio levels and transition verification](MUSIC.md).
 
-## Where Sloppy fell short
+Vulkan adapters supply signed derivatives, static mip pyramids, R32F textures,
+shadow bias, snapshots and typed readback. Upload batches fit Pascal's small
+host-visible device-memory aperture. OpenGL remains available with
+`SLOPPY_VULKAN=0`; Vulkan retains some shading/filtering differences, including
+absence of the OpenGL path's 8× anisotropy.
 
-GPU warmup/caches, texture-backed bone uniforms and shader-marker rewriting were
-needed; per-frame parallel tree culling cost more than it saved. The pinned
-Wayland runtime offers mailbox and call duration, but discards frame-callback
-timestamps and does not bind `wp_presentation`. The inspected upstream Vulkan
-backend calls `vkQueuePresentKHR` without display-timing/present-wait feedback.
+Presentation probes measure producer returns and CPU, not scanout or delivered
+frames. GLES per-pass timer queries apply only to OpenGL. The launchers select
+`SLOPPY_VSYNC=0` after lower measured p99 in forest, fire and overlook; direct
+release launches default to FIFO. The performance report retains every outlier
+and counts complete windows over 20 and 17.5 ms.
 
-Delivery evidence needs a runtime change: bind `wp_presentation`, request
-feedback before each surface commit, associate frame IDs, and expose clock ID,
-presented time/refresh/sequence/flags and discarded events. Keep bounded buffers
-and release ownership; report hardware-timing flags and discard counts rather
-than assuming every commit reaches scanout. `tools/play.sh` selects the pinned
-mailbox option; direct launches retain runtime-default pacing.
-
-[Runtime findings/workarounds](SLOPPY_NOTES.md),
-[movement reference gaps](MOVEMENT_REFERENCE.md). Historical profiling stays in
-focused reports and git history, rather than overlapping showcase tables.
+[Runtime adapters and historical language findings](SLOPPY_NOTES.md),
+[movement reference gaps](MOVEMENT_REFERENCE.md),
+[pre-0.6 performance history](rounds/PERFORMANCE_PRE_060.md).

@@ -64,13 +64,16 @@ e = talus_course()
 enemies[e].state = .chase
 talus_sync(enemies[e],false)
 col = enemies[e].talus_col+2
-pl = Player(pos=vec3(0.5,4.65,0),ground=Ground(y=4.65,collider=col))
+deck = colliders[col]
+shoulder = f64(deck.pos.y) + 2.0 * f64(deck.half.y)
+standing = vec3(0.5,f32(shoulder),0)
+pl = Player(pos=standing,ground=Ground(y=shoulder,collider=col))
 s = save_capture()
 s.awake = true
 s.activated = fill(false,4)
 s.completed = fill(false,4)
 save_apply(s)
-talus_check(pl.pos == vec3(0.5,4.65,0) and pl.ground.collider == col,"saved shoulder rider resumes supported")
+talus_check(pl.pos == standing and pl.ground.collider == col,"saved shoulder rider resumes supported")
 pl.state = .climb
 pl.climb_col = col
 s = save_capture()

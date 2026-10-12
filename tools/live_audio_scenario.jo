@@ -189,13 +189,14 @@ capture = ():
         loop v in sum:
             prepeak = max(prepeak, abs(f64(v)))
             if abs(v) >= 1.0: overload += 1
-        audio_peak_guard(sum)
+        loop mut sample in sum:
+            if abs(sample) > 1.0: sample = f32(tanh(f64(sample)))
         __voices.clear()
         loop v in saved: __voices.push(v)
         __mix(MIX_RATE / 60)
         error = 0.0
         loop i in [0..sum.len()): error = max(error, abs(f64(sum[i] - __mix_buf[i])))
-        assert(error < 0.000001, "linear stems plus master guard reproduce the actual mixed samples")
+        assert(error < 0.000001, "linear stems plus release soft clip reproduce the actual mixed samples")
         line(csv, "{t:.6},preclip,0,{prepeak:.9},{overload},{__mix_buf.len()}\n")
         __write_fd(raw, data(__mix_buf) as *u8, __mix_buf.len() * 4)
     loop fd in [raw, csv, events]: syscall(3, fd)

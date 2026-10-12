@@ -69,7 +69,7 @@ update = (dt: f64):
 (out/'cooking-visual.jo').write_text(source)
 PY
 sloppy/bin/sloppy build "$out/cooking-visual.jo" -o "$out/cooking-visual"
-env BOTW_SKIP=1 BOTW_HOUR=10 BOTW_WEATHER=clear BOTW_SCALE=1 BOTW_NOVSYNC=1 \
+env BOTW_SKIP=1 BOTW_HOUR=10 BOTW_WEATHER=clear BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 \
   SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 BOTW_CAPTURE_DIR="$out" BOTW_CAPTURE_EVERY=1 \
   SLOPPY_INPUT="" SLOPPY_SCREENSHOT="$out/complete.png" SLOPPY_FRAMES=350 \
   timeout 180 "$out/cooking-visual" > "$out/run.log" 2>&1

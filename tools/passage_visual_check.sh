@@ -24,7 +24,7 @@ s=s.replace(anchor,'if __capture_dir != none and __capture_every > 0 and frame_n
 for p in out.glob('frame-*.png'): p.unlink()
 PY
 sloppy/bin/sloppy build "$out/capture.jo" -o "$out/game"
-env BOTW_PASSAGE=1 BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=960x540 \
+env BOTW_PASSAGE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=960x540 \
     SLOPPY_INPUT=20:w+ BOTW_CAPTURE_DIR="$out" BOTW_CAPTURE_EVERY=1 \
     SLOPPY_SCREENSHOT="$out/final.png" SLOPPY_FRAMES=900 "$out/game" > "$out/run.log" 2>&1
 python3 - "$out" <<'PY'

@@ -197,6 +197,7 @@ main = ():
             probe_memory(minute)
         if finished:
             eprint("probe presentation: {__present_how()}")
+            if __vk: eprint("probe swapchain: {__vk_present_mode()}")
             if let path = env("PROBE_PNG"): save_png(screenshot(), path)
             eprint("probe complete: frames {frame_number()} elapsed {done-probe_start:.6}")
             exit(0)

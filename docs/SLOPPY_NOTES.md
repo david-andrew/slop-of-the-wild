@@ -1,13 +1,11 @@
-# Notes on the language
+# Notes on Sloppy
 
-Written while building the game in Jot; the language has since been renamed Sloppy, and the game
-moved to Sloppy 0.2 (see the end). Several of the gaps below have been closed upstream since.
+The game pins the **unmodified official Sloppy 0.6.0 release**, `7c8d133`, in
+`sloppy/`. `sloppy/VERSION` records the release commit; there are no local patches.
+These notes began with Jot (`jot/`, slop-lang `00abb0e`); sections marked historical
+retain earlier findings, several of which are now fixed upstream.
 
-
-Historical notes from the Jot toolchain (`jot/`, slop-lang `00abb0e`). The current
-checkout uses the unmodified toolchain in `sloppy/`; its revision is in `sloppy/VERSION`.
-
-## Library addition: pointer lock (the only change to the pinned standard library)
+## Historical Jot library addition: pointer lock (now upstream)
 
 Mouse look needs the pointer locked to the window with relative motion. The library had no
 pointer lock, so `jot/lib/game/` gained `mouse_lock(on: bool = true) -> bool` (window.jo):
@@ -18,6 +16,53 @@ pointer lock, so `jot/lib/game/` gained `mouse_lock(on: bool = true) -> bool` (w
   middle mouse button is held.
 
 About 70 lines; the data-driven protocol tables in wlclient.jo made it easy.
+
+## Moving to Sloppy 0.6.0
+
+- Enemy mutation uses indices, releasing each in-place actor reference before
+  dispatching its camp alarm. Neighbours still react before the next actor's turn;
+  hit reactions, spacing and contact queries keep their simulation order.
+- The pine width hash keeps the previous compiler's contiguous x/y CPU input
+  explicit, preserving existing silhouettes after 0.6 corrects swizzle operands.
+- Assigning globals are declared before their first function; test scratch values
+  use `let`. Parallel builders use directly visible functions and safe array writes.
+- Texture fetch, LOD, discard and vertex/instance IDs use release shader builtins.
+  `game/spirv_helpers.jo` supplies signed derivatives absent from 0.6's public API;
+  its tagged helpers become `OpDPdx`/`OpDPdy` in Vulkan and `dFdx`/`dFdy` in GLSL.
+- The game routes cached plain/static/vegetation draws through native Vulkan draws.
+  Game-owned adapters supply R32F uploads, opaque color/depth snapshots and biased
+  shadow pipelines, cropped typed readback and full static RGBA mip pyramids.
+  The release compatibility mipmap call is a no-op; game-owned mip images keep
+  trilinear/explicit-LOD sampling. Release Vulkan does not enable anisotropy.
+  These native adapters are excluded from the browser build. Startup uploads submit in bounded batches, allowing Pascal's
+  small host-visible device-memory aperture to be reused.
+- Score handles bake interrupted 20 ms gain envelopes into privately owned samples.
+  The library mixer remains unmodified. The linked stereo soft knee in
+  `game/audio_mix.jo` is an export guard, not a live mixer limiter.
+- Regression captures that request uncapped GLES rendering also set the public
+  `SLOPPY_VSYNC=0` before window creation. The old `BOTW_NOVSYNC` flag controls
+  EGL only; leaving Vulkan FIFO in static menu captures can exceed their timeout.
+- Vulkan presents through its swapchain: FIFO by default, mailbox/immediate with
+  `SLOPPY_VSYNC=0`. The launchers select 0 after lower measured p99 in all three
+  views; set `SLOPPY_VSYNC=1` to restore FIFO. `SLOPPY_VULKAN=0` retains OpenGL. The historical
+  `SLOPPY_PRESENT` callback-bypass patch is gone. Vulkan pipeline caches are in
+  `~/.cache/sloppy`; the game's GLES program cache remains in `build/shader-cache`.
+- GLES per-pass timer queries apply only to OpenGL. Vulkan measurements use
+  producer/present-return intervals and main-thread CPU, without claiming scanout.
+
+Fixture corrections preserve their intended assertions: pad storage follows the
+release's eight-controller API; steam checks the authored thin `.steam` particle;
+saved Talus footing derives the scaled shoulder height from its actual collider.
+Cook-action extractors include the hoisted globals. Daylight captures guard damage
+and save completed draws, avoiding death-camera brightness changes. Cue masking
+keeps raw onset measurements and the unchanged 6 dB settled-body requirement after
+the 20 ms ramp; the old mixer reproduces the raw onset result within 0.00005 dB.
+Camp alert latency remains at most **0.5583 s**, and all **37,872 spacing checks**
+pass. Detailed audio parity and render limits are in [MUSIC](MUSIC.md) and
+[PERFORMANCE](PERFORMANCE.md).
+
+The following sections retain historical Jot/OpenGL findings; the missing shader
+operations, map mutation and flat-uniform limits described there are now upstream.
 
 ## Worked around in the game (no library or compiler changes)
 

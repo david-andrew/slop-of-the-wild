@@ -224,6 +224,9 @@ __can_see = (e: Enemy, range: f64, any_way: bool = false) -> bool:
     h = raycast(eye, to - eye, dist, false)
     not h.hit
 
+__last_horn = -100.0
+__thrown_prev: {int: vec3} = {}
+
 __alert_camp = (from: vec3):
     # the first to see him sounds the horn (once a while per camp)
     if elapsed() - __last_horn > 20.0:
@@ -236,7 +239,6 @@ __alert_camp = (from: vec3):
                 o.state = .notice
                 o.t = 0.0
 
-__last_horn = -100.0
 
 # ---------------- hits taken ----------------
 # All HP loss ends here: one death event, no subsequent recoil/AI state overwrite.
@@ -417,7 +419,12 @@ enemy_opening = (e: Enemy) -> bool: (e.state == .stagger and e.t > 0.18) or (e.s
 # Monotonic contact observation survives both fixed simulation ticks in a displayed frame.
 enemy_contact_serial = 0
 
-__take_hit = (e: mut Enemy, dmg: f64, from: vec3, knock: f64, fire: bool, heavy: bool = false, contact: vec3 = vec3(0, -10000, 0), finisher: bool = false, stop: f64 = 0.065):
+__take_hit = (i: int, dmg: f64, from: vec3, knock: f64, fire: bool, heavy: bool = false, contact: vec3 = vec3(0, -10000, 0), finisher: bool = false, stop: f64 = 0.065):
+    alarm = false
+    __take_hit_actor(enemies[i], dmg, from, knock, fire, heavy, contact, finisher, stop, alarm)
+    if alarm: __alert_camp(enemies[i].pos)
+
+__take_hit_actor = (e: mut Enemy, dmg: f64, from: vec3, knock: f64, fire: bool, heavy: bool = false, contact: vec3 = vec3(0, -10000, 0), finisher: bool = false, stop: f64 = 0.065, alarm: mut bool):
     if e.state == .dead or e.state == .gone or e.state == .buried: return
     if e.kind == .talus:
         weak = contact.y > -9000.0 and length(contact - talus_ore(e)) < 0.7
@@ -458,7 +465,7 @@ __take_hit = (e: mut Enemy, dmg: f64, from: vec3, knock: f64, fire: bool, heavy:
         e.reaction += 1
         dv = e.pos - from
         e.recoil = normalize(vec3(dv.x, 0, dv.z) + vec3(0.0001, 0, 0))
-    __alert_camp(e.pos)
+    alarm = true
 
 # The final posed surface can extend beyond the inexpensive root capsule.
 # It shares the existing swing ID, damage, recoil and hit-pause dispatch.
@@ -467,30 +474,11 @@ enemy_surface_hit = (i: int, contact: vec3):
     loop h in player_hits:
         if h.action != fight.act or h.combo != fight.combo or enemies[i].last_swing == h.id: continue
         enemies[i].last_swing = h.id
-        __take_hit(enemies[i],h.damage,h.from,h.knock,h.fire,h.heavy,contact,h.finisher,h.stop)
+        __take_hit(i,h.damage,h.from,h.knock,h.fire,h.heavy,contact,h.finisher,h.stop)
         break
 
 enemies_take_hits = ():
-    loop mut e in enemies:
-        if e.state == .dead or e.state == .gone or e.state == .buried: continue
-        loop h in player_hits:
-            if e.last_swing == h.id: continue
-            if e.kind == .talus:
-                talus_melee_hit(e, h)
-                continue
-            if e.kind == .stalkoblin and e.skull_out and e.skull_swing != h.id and blade_touches(h, e.skull_pos, STALK_SKULL_RADIUS):
-                e.skull_swing = h.id
-                stalk_skull_hit(e, h.damage, h.from, h.stop)
-                if not enemy_alive(e): break
-            height = if e.kind == .guardian: 3.0 else: (if e.kind == .chuchu or e.kind == .ice_chuchu: 0.65 else: (if e.kind == .keese: 0.3 else: 1.48))
-            feet = e.pos + vec3(0, f32(e.lift), 0)
-            if e.state == .knocked: height = 0.6
-            contact = blade_contact(h, feet, height, (if e.kind == .guardian: 1.25 else: 0.30))
-            if contact.y < -9000.0: continue
-            e.last_swing = h.id
-            __take_hit(e, h.damage, h.from, h.knock, h.fire, h.heavy, contact, h.finisher, h.stop)
-            direction = vec3(h.dir.x, 0, h.dir.z)
-            if length(direction) > 0.001: e.blow_dir = normalize(direction)
+    loop i in [0..enemies.len()): __enemy_take_hits(i)
     # Thrown weapons retain the previous production sample before items_physics advances.
     next: {int: vec3} = {}
     loop wi in [0..witems.len()):
@@ -524,7 +512,7 @@ enemies_take_hits = ():
                 animal = ai
         if target >= 0 or animal >= 0:
             if target >= 0 and skull: stalk_skull_hit(enemies[target], f64(w.damage), from)
-            else if target >= 0: __take_hit(enemies[target], f64(w.damage), from, 3.0, w.burning > 0.0, contact = from + normalize(path + vec3(0, 0.000001, 0)) * f32(best))
+            else if target >= 0: __take_hit(target, f64(w.damage), from, 3.0, w.burning > 0.0, contact = from + normalize(path + vec3(0, 0.000001, 0)) * f32(best))
             else: wildlife_damage(animals[animal], f64(w.damage), from, w.burning > 0.0)
             witems[wi].pos = from + (if length(path) > 0.000001: normalize(path) * f32(best) else: vec3(0, 0, 0))
             witems[wi].thrown_by_player = false
@@ -542,7 +530,32 @@ enemies_take_hits = ():
         witems[wi].wall_stop = false
     __thrown_prev = next
 
-__thrown_prev: {int: vec3} = {}
+
+__enemy_take_hits = (i: int):
+    loop h in player_hits:
+        alarm = false
+        __enemy_melee_hit(enemies[i], h, alarm)
+        if alarm: __alert_camp(enemies[i].pos)
+
+__enemy_melee_hit = (e: mut Enemy, h: PHit, alarm: mut bool):
+    if e.state == .dead or e.state == .gone or e.state == .buried: return
+    if e.last_swing == h.id: return
+    if e.kind == .talus:
+        talus_melee_hit(e, h)
+        return
+    if e.kind == .stalkoblin and e.skull_out and e.skull_swing != h.id and blade_touches(h, e.skull_pos, STALK_SKULL_RADIUS):
+        e.skull_swing = h.id
+        stalk_skull_hit(e, h.damage, h.from, h.stop)
+        if not enemy_alive(e): return
+    height = if e.kind == .guardian: 3.0 else: (if e.kind == .chuchu or e.kind == .ice_chuchu: 0.65 else: (if e.kind == .keese: 0.3 else: 1.48))
+    feet = e.pos + vec3(0, f32(e.lift), 0)
+    if e.state == .knocked: height = 0.6
+    contact = blade_contact(h, feet, height, (if e.kind == .guardian: 1.25 else: 0.30))
+    if contact.y < -9000.0: return
+    e.last_swing = h.id
+    __take_hit_actor(e, h.damage, h.from, h.knock, h.fire, h.heavy, contact, h.finisher, h.stop, alarm)
+    direction = vec3(h.dir.x, 0, h.dir.z)
+    if length(direction) > 0.001: e.blow_dir = normalize(direction)
 
 enemy_arrow_distance = (a: Arrow, i: int) -> f64:
     e = enemies[i]
@@ -566,7 +579,7 @@ enemy_arrow_hit = (a: Arrow, i: int):
         talus_hit(enemies[i], a.damage, a.prev, length(a.pos - talus_ore(enemies[i])) < 0.65, a.pos)
         return
     head = f64(a.pos.y) > f64(enemies[i].pos.y) + 1.3 and (enemies[i].kind == .bokoblin or enemies[i].kind == .blue_bokoblin)
-    __take_hit(enemies[i], a.damage * (if head: 2.0 else: 1.0), a.prev, 2.0, a.fire)
+    __take_hit(i, a.damage * (if head: 2.0 else: 1.0), a.prev, 2.0, a.fire)
     if head and enemy_alive(enemies[i]): enemies[i].stun = 1.5
 
 # ---------------- behavior ----------------
@@ -746,108 +759,117 @@ enemies_update = (dt: f64, night: bool):
             if abs(dl) < 1.6: a1 = a0 + (if dl >= 0.0: 1.6 else: -1.6)
         enemies[b1].slot = a1
     pd = 0.0
-    loop mut e in enemies:
-        e.t += dt
-        e.anim_t += dt
-        e.flash = max(0.0, e.flash - dt)
-        e.impact_t = max(0.0, e.impact_t - dt)
-        e.stun = max(0.0, e.stun - dt)
-        e.brace = max(0.0, e.brace - dt)
-        e.throw_cooldown = max(0.0, e.throw_cooldown - dt)
-        e.retreat_t = max(0.0, e.retreat_t - dt)
-        dist = f64(length(pl.pos - e.pos))
-        if dist > 220.0 and e.state != .dead and e.state != .gone: continue
-        if e.kind == .talus:
-            talus_update(e, dt, dist)
-            continue
-        if enemy_alive(e):
-            # Deep water kills ground monsters; Guardians and flying Keese are exempt.
-            if e.kind != .guardian and e.kind != .keese:
-                if let wl = water_level(f64(e.pos.x), f64(e.pos.z)):
-                    if water_depth(f64(e.pos.x), f64(e.pos.z)) > 0.9 and f64(e.pos.y) < wl - 0.6:
-                        if e.kind == .stalkoblin: e.skull_hp = 0.0
-                        enemy_damage(e, e.hp, e.pos)
-                        enemy_events.push(EEvent("splash", e.pos))
-            if e.hp <= 0.0: enemy_damage(e, 0.0, e.pos)
-        if enemy_alive(e) and e.burning > 0.0 and not (e.kind == .stalkoblin and e.skull_out):
-            burn_dt = min(dt, e.burning)
-            e.burning = max(0.0, e.burning - dt)
-            enemy_damage(e, burn_dt * 2.0, e.pos)
-            # on fire: a Bokoblin drops what it holds and runs about, flailing, until it goes out
-            if e.state != .dead and e.frozen <= 0.0 and (e.kind == .bokoblin or e.kind == .blue_bokoblin or e.kind == .stalkoblin):
-                if len(e.weapon) > 0 and not e.archer:
-                    spawn_item(e.weapon, e.pos + vec3(0, 1.0, 0), vec3(f32(random(-2.0, 2.0)), 3.0, f32(random(-2.0, 2.0))))
-                    e.weapon = ""
-                e.face += sin(e.anim_t * 2.3 + f64(e.home.x)) * 3.5 * dt
-                e.pos += forward_of(e.face) * f32(4.5 * dt)
-                e.pos.y = f32(height_at(f64(e.pos.x), f64(e.pos.z)))
-                e.speed = 4.5
-                e.alert = 1.0
-                continue
-        # night spawns
-        if e.night_only:
-            if e.state == .buried and night and dist < 60.0 and dist > 12.0:
-                # Actor placements can retain a designer's elevated Y. Buried
-                # bones emerge on the supporting floor, never fall from that Y.
-                e.pos.y = f32(ground_at(f64(e.pos.x), f64(e.pos.z), height_at(f64(e.pos.x), f64(e.pos.z)) + 0.5, 0.8, 0.4).y)
-                e.vel = vec3(0, 0, 0)
-                e.lift = 0.0
-                e.burning = 0.0
-                e.el = Elem()
-                e.state = .notice
-                e.t = 0.0
-                e.hp = e.hp_max
-                e.skull_out = false
-                e.skull_hp = 1.0
-                e.skull_head = vec3(0, -10000, 0)
-                enemy_events.push(EEvent("rise", e.pos))
-            if not night and e.state != .buried and e.state != .dead:
-                e.state = .buried
-        match e.state:
-            buried: continue
-            gone:
-                # Ten minutes away from a cleared encounter; reload restores this timer.
-                away = f64(length(pl.pos - e.home)) > 80.0
-                if away: e.respawn_t -= dt
-                # Night-only monsters keep their separate nightly lifecycle.
-                if e.respawn_t <= 0.0 and away and not e.night_only:
-                    e.state = .idle
-                    e.hp = e.hp_max
-                    e.pos = e.home
-                continue
-            dead:
-                e.vel.y -= f32(18.0 * dt)
-                e.pos += e.vel * f32(dt)
-                g = height_at(f64(e.pos.x), f64(e.pos.z))
-                if f64(e.pos.y) < g:
-                    e.pos.y = f32(g)
-                    e.vel = e.vel * 0.3
-                # a moment on the ground, then a burst of dark smoke and it is gone
-                if e.t > 1.0 and e.t - dt <= 1.0: enemy_events.push(EEvent("smoke", e.pos))
-                if e.t > 1.15:
-                    e.state = .gone
-                    e.respawn_t = 600.0
-                continue
-            _: pass
-        if e.kind == .stalkoblin and e.skull_out:
-            stalk_skull_step(e, dt)
-            stalk_seek(e, dt)
-            continue
-        if e.state == .knocked:
-            __enemy_fall(e, dt)
-            continue
-        if e.kind == .guardian:
-            __guardian(e, dt, dist)
-            continue
-        if e.kind == .keese:
-            __keese(e, dt, dist)
-            continue
-        if e.kind == .chuchu or e.kind == .ice_chuchu:
-            __chuchu(e, dt, dist)
-            continue
-        __bokoblin(e, dt, dist, night)
+    loop i in [0..enemies.len()): __enemy_update(i, dt, night)
     enemies_separate()
     enemies_melee_contacts(dt)
+
+# Release each actor reference before dispatching its alarm. The next actor
+# still sees the alarm in this tick; support queries see in-place movement.
+__enemy_update = (i: int, dt: f64, night: bool):
+    alarm = false
+    __enemy_step(enemies[i], dt, night, alarm)
+    if alarm: __alert_camp(enemies[i].pos)
+
+__enemy_step = (e: mut Enemy, dt: f64, night: bool, alarm: mut bool):
+    e.t += dt
+    e.anim_t += dt
+    e.flash = max(0.0, e.flash - dt)
+    e.impact_t = max(0.0, e.impact_t - dt)
+    e.stun = max(0.0, e.stun - dt)
+    e.brace = max(0.0, e.brace - dt)
+    e.throw_cooldown = max(0.0, e.throw_cooldown - dt)
+    e.retreat_t = max(0.0, e.retreat_t - dt)
+    dist = f64(length(pl.pos - e.pos))
+    if dist > 220.0 and e.state != .dead and e.state != .gone: return
+    if e.kind == .talus:
+        talus_update(e, dt, dist)
+        return
+    if enemy_alive(e):
+        # Deep water kills ground monsters; Guardians and flying Keese are exempt.
+        if e.kind != .guardian and e.kind != .keese:
+            if let wl = water_level(f64(e.pos.x), f64(e.pos.z)):
+                if water_depth(f64(e.pos.x), f64(e.pos.z)) > 0.9 and f64(e.pos.y) < wl - 0.6:
+                    if e.kind == .stalkoblin: e.skull_hp = 0.0
+                    enemy_damage(e, e.hp, e.pos)
+                    enemy_events.push(EEvent("splash", e.pos))
+        if e.hp <= 0.0: enemy_damage(e, 0.0, e.pos)
+    if enemy_alive(e) and e.burning > 0.0 and not (e.kind == .stalkoblin and e.skull_out):
+        burn_dt = min(dt, e.burning)
+        e.burning = max(0.0, e.burning - dt)
+        enemy_damage(e, burn_dt * 2.0, e.pos)
+        # on fire: a Bokoblin drops what it holds and runs about, flailing, until it goes out
+        if e.state != .dead and e.frozen <= 0.0 and (e.kind == .bokoblin or e.kind == .blue_bokoblin or e.kind == .stalkoblin):
+            if len(e.weapon) > 0 and not e.archer:
+                spawn_item(e.weapon, e.pos + vec3(0, 1.0, 0), vec3(f32(random(-2.0, 2.0)), 3.0, f32(random(-2.0, 2.0))))
+                e.weapon = ""
+            e.face += sin(e.anim_t * 2.3 + f64(e.home.x)) * 3.5 * dt
+            e.pos += forward_of(e.face) * f32(4.5 * dt)
+            e.pos.y = f32(height_at(f64(e.pos.x), f64(e.pos.z)))
+            e.speed = 4.5
+            e.alert = 1.0
+            return
+    # night spawns
+    if e.night_only:
+        if e.state == .buried and night and dist < 60.0 and dist > 12.0:
+            # Actor placements can retain a designer's elevated Y. Buried
+            # bones emerge on the supporting floor, never fall from that Y.
+            e.pos.y = f32(ground_at(f64(e.pos.x), f64(e.pos.z), height_at(f64(e.pos.x), f64(e.pos.z)) + 0.5, 0.8, 0.4).y)
+            e.vel = vec3(0, 0, 0)
+            e.lift = 0.0
+            e.burning = 0.0
+            e.el = Elem()
+            e.state = .notice
+            e.t = 0.0
+            e.hp = e.hp_max
+            e.skull_out = false
+            e.skull_hp = 1.0
+            e.skull_head = vec3(0, -10000, 0)
+            enemy_events.push(EEvent("rise", e.pos))
+        if not night and e.state != .buried and e.state != .dead:
+            e.state = .buried
+    match e.state:
+        buried: return
+        gone:
+            # Ten minutes away from a cleared encounter; reload restores this timer.
+            away = f64(length(pl.pos - e.home)) > 80.0
+            if away: e.respawn_t -= dt
+            # Night-only monsters keep their separate nightly lifecycle.
+            if e.respawn_t <= 0.0 and away and not e.night_only:
+                e.state = .idle
+                e.hp = e.hp_max
+                e.pos = e.home
+            return
+        dead:
+            e.vel.y -= f32(18.0 * dt)
+            e.pos += e.vel * f32(dt)
+            g = height_at(f64(e.pos.x), f64(e.pos.z))
+            if f64(e.pos.y) < g:
+                e.pos.y = f32(g)
+                e.vel = e.vel * 0.3
+            # a moment on the ground, then a burst of dark smoke and it is gone
+            if e.t > 1.0 and e.t - dt <= 1.0: enemy_events.push(EEvent("smoke", e.pos))
+            if e.t > 1.15:
+                e.state = .gone
+                e.respawn_t = 600.0
+            return
+        _: pass
+    if e.kind == .stalkoblin and e.skull_out:
+        stalk_skull_step(e, dt)
+        stalk_seek(e, dt)
+        return
+    if e.state == .knocked:
+        __enemy_fall(e, dt)
+        return
+    if e.kind == .guardian:
+        __guardian(e, dt, dist)
+        return
+    if e.kind == .keese:
+        __keese(e, dt, dist)
+        return
+    if e.kind == .chuchu or e.kind == .ice_chuchu:
+        __chuchu(e, dt, dist)
+        return
+    __bokoblin(e, dt, dist, night, alarm)
 
 # Resolve the blow after body/collider separation so its root is the one drawn.
 # Scheduling stays in the attack state below; this only finishes that frame's query.
@@ -1005,7 +1027,7 @@ enemies_separate = ():
                 correction = max(correction, sep - l)
         if correction < 0.001: break
 
-__bokoblin = (e: mut Enemy, dt: f64, dist: f64, night: bool):
+__bokoblin = (e: mut Enemy, dt: f64, dist: f64, night: bool, alarm: mut bool):
     if e.hp < e.hp_max * 0.3 and e.retreat_t <= 0.0 and e.state == .chase and dist < 3.5:
         e.state = .retreat
         e.t = 0.0
@@ -1053,7 +1075,7 @@ __bokoblin = (e: mut Enemy, dt: f64, dist: f64, night: bool):
                 e.t = 0.0
                 enemy_events.push(EEvent("notice", e.pos))
                 # Sound the alarm at recognition, before the visible reaction finishes.
-                __alert_camp(e.pos)
+                alarm = true
         notice:
             # Face the threat while signaling; camp roles keep their feet grounded.
             dv = pl.pos - e.pos

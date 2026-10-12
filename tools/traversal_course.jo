@@ -150,7 +150,7 @@ tr_reset = (name: str, hz: int):
     loop k in tr_keys:
         __key_down[int(k)] = false
         __key_pressed[int(k)] = false
-    __pad_on = false
+    __pad_on[0] = false
 
 tr_key = (key: Key, on: bool):
     __key_pressed[int(key)] = on and not __key_down[int(key)]

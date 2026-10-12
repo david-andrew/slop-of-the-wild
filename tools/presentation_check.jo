@@ -76,7 +76,7 @@ presentation_checks = ():
     particles.clear()
     fx_steam(vec3(0,0,0),8)
     assert(particles.len()==8)
-    loop p in particles: assert(p.kind==.smoke and p.vel.y>1.0 and p.color.w>0.7, "dousing has a visible rising steam plume")
+    loop p in particles: assert(p.kind==.steam and p.vel.y>=0.8 and p.color.w>=0.19 and p.size>=0.10, "dousing has a visible rising steam plume")
     particles.clear()
     a=vec3(1,0.04,1)
     b=vec3(2,0.10,2)

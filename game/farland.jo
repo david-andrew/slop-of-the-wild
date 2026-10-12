@@ -262,6 +262,26 @@ far_fs = (i: FarO, u: FarU) -> vec4:
 far_sh: Shader
 far_mesh: Mesh
 
+far_vertices: FarV[]
+far_indices: u32[]
+far_tree: MeshB
+far_fir: MeshB
+far_ruin: MeshB
+far_rock: MeshB
+far_rocks: PropI[]
+far_trees: PropI[]
+far_firs: PropI[]
+far_ruins: PropI[]
+far_tree_mesh: Mesh
+far_fir_mesh: Mesh
+far_firs_buf = InstBuf()
+far_rock_mesh: Mesh
+far_rocks_buf = InstBuf()
+far_ruin_mesh: Mesh
+far_trees_buf = InstBuf()
+far_ruins_buf = InstBuf()
+farland_prepared_hit = false
+
 farland_build = ():
     farland_prepared_hit = farland_asset_load()
     if not farland_prepared_hit: farland_generate()
@@ -291,16 +311,6 @@ farland_build = ():
         far_firs = []
         far_ruins = []
 
-far_vertices: FarV[]
-far_indices: u32[]
-far_tree: MeshB
-far_fir: MeshB
-far_ruin: MeshB
-far_rock: MeshB
-far_rocks: PropI[]
-far_trees: PropI[]
-far_firs: PropI[]
-far_ruins: PropI[]
 far_rng = __global_rng
 farland_generate = ():
     na = FAR_ANGLES
@@ -434,14 +444,6 @@ farland_draw = (u: FarU):
 # ---------------- Hyrule's woods and ruins, seen from the plateau ----------------
 # Forests where a broad noise says so (and none on the steep or snowy heights), scattered
 # lone trees, and the stumps of old walls and towers. Low-detail, instanced, drawn far away.
-far_tree_mesh: Mesh
-far_fir_mesh: Mesh
-far_firs_buf = InstBuf()
-far_rock_mesh: Mesh
-far_rocks_buf = InstBuf()
-far_ruin_mesh: Mesh
-far_trees_buf = InstBuf()
-far_ruins_buf = InstBuf()
 
 farland_scatter = ():
     b = MeshB()
@@ -699,7 +701,6 @@ farland_asset_load = () -> bool:
     if env("BOTW_LOADTIME") != none: eprint("prepared farland: hit")
     true
 
-farland_prepared_hit = false
 
 far_castle_built = false
 farland_castle_prepare = ():

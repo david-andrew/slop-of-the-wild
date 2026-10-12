@@ -1,3 +1,4 @@
+use 'spirv_helpers.jo'
 use 'gfx.jo'
 use 'asset_stream.jo'
 from 'gfx.jo' import __patch_glsl
@@ -54,6 +55,7 @@ __load_init = false
 shader_load_init = ():
     if __load_init: return
     __load_init = true
+    if game_vulkan_backend(): return
     when TARGET == "linux":
         if not lib_available("libGLESv2.so.2") or not lib_available("libEGL.so.1"): return
         ex = glGetString(0x1F03) # GL_EXTENSIONS; null on the software path
@@ -120,6 +122,9 @@ shader_load_canonical = (src: ShaderSource) -> ShaderSource:
 shader_load_submit = (src: ShaderSource) -> LoadingShader:
     shader_load_init()
     s = src
+    if game_vulkan_backend():
+        s.fs_spirv = game_spirv_derivatives(s.fs_spirv)
+        return LoadingShader(ready = make_shader(s))
     s.vs = __patch_glsl(s.vs)
     s.fs = __patch_glsl(s.fs)
     s = shader_load_canonical(s)

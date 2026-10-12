@@ -51,7 +51,7 @@ sloppy/bin/sloppy build "$out/puzzle-visual.jo" -o "$out/puzzle-visual"
 for scene in ${PUZZLE_SCENES:-thorns-before thorns-after cracks-before cracks-after}; do
  frames=300
  if [[ $scene == *after ]]; then frames=1200; fi
- env BOTW_SKIP=1 BOTW_HOUR=10 BOTW_WEATHER=clear BOTW_SCALE=1 BOTW_NOVSYNC=1 \
+ env BOTW_SKIP=1 BOTW_HOUR=10 BOTW_WEATHER=clear BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 \
   PUZZLE_VISUAL="$scene" SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
   SLOPPY_FRAMES="$frames" SLOPPY_SCREENSHOT="$out/$scene.png" \
   timeout 240 "$out/puzzle-visual" > "$out/$scene.log" 2>&1

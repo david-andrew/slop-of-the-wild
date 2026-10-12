@@ -1335,7 +1335,7 @@ cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     fade = smoothstep(u.fade_width, u.fade_width * 0.45, length(u.cam + cp * tt - w)) * smoothstep(0.8, 0.6, tt) * smoothstep(0.08, 0.25, tt)
     fade = max(fade, smoothstep(u.fade_width * 1.5, u.fade_width * 0.75, dist) * (u.fade_width - 1.0))
     if u.player.y < -500.0: fade = 0.0
-    glsl_discard(fade > glsl_occluder_dither(0.0))
+    glsl_discard(fade > glsl_occluder_dither(i.pos.xy))
     vec4(c, (if fade > 0.001: -8.0 else: 1.0))
 cliff_surface_sh: Shader
 cliff_shadow_sh: Shader

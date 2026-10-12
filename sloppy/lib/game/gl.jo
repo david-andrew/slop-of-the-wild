@@ -396,174 +396,259 @@ else:
 
     # the GL entry points: the driver, or the software renderer (softgl.jo) when there is none
     glClearColor = (r: f32, g: f32, b: f32, a: f32):
+        if __vk:
+            vgl_clear_color(r, g, b, a)
+            return
         if __soft:
             sgl_clear_color(r, g, b, a)
             return
         __glClearColor(r, g, b, a)
     glClear = (mask: u32):
+        if __vk:
+            vgl_clear(mask)
+            return
         if __soft:
             sgl_clear(mask)
             return
         __glClear(mask)
     glViewport = (x: i32, y: i32, w: i32, h: i32):
+        if __vk:
+            vgl_viewport(x, y, w, h)
+            return
         if __soft:
             sgl_viewport(x, y, w, h)
             return
         __glViewport(x, y, w, h)
     glScissor = (x: i32, y: i32, w: i32, h: i32):
+        if __vk:
+            vgl_scissor(x, y, w, h)
+            return
         if __soft:
             sgl_scissor(x, y, w, h)
             return
         __glScissor(x, y, w, h)
     glEnable = (cap: u32):
+        if __vk:
+            vgl_enable(cap, true)
+            return
         if __soft:
             sgl_enable(cap, true)
             return
         __glEnable(cap)
     glDisable = (cap: u32):
+        if __vk:
+            vgl_enable(cap, false)
+            return
         if __soft:
             sgl_enable(cap, false)
             return
         __glDisable(cap)
     glBlendFunc = (s: u32, d: u32):
+        if __vk:
+            vgl_blend_func(s, d, s, d)
+            return
         if __soft:
             sgl_blend_func(s, d, s, d)
             return
         __glBlendFunc(s, d)
     glBlendFuncSeparate = (s: u32, d: u32, sa: u32, da: u32):
+        if __vk:
+            vgl_blend_func(s, d, sa, da)
+            return
         if __soft:
             sgl_blend_func(s, d, sa, da)
             return
         __glBlendFuncSeparate(s, d, sa, da)
     glDepthFunc = (f: u32):
+        if __vk:
+            vgl_depth_func(f)
+            return
         if __soft:
             sgl_depth_func(f)
             return
         __glDepthFunc(f)
     glDepthMask = (flag: u32):
+        if __vk:
+            vgl_depth_mask(flag)
+            return
         if __soft:
             sgl_depth_mask(flag)
             return
         __glDepthMask(flag)
     glCullFace = (mode: u32):
+        if __vk:
+            vgl_cull_face(mode)
+            return
         if __soft:
             sgl_cull_face(mode)
             return
         __glCullFace(mode)
     glFrontFace = (mode: u32):
+        if __vk:
+            vgl_front_face(mode)
+            return
         if __soft: return
         __glFrontFace(mode)
     glColorMask = (r: u32, g: u32, b: u32, a: u32):
+        if __vk:
+            vgl_color_mask(r, g, b, a)
+            return
         if __soft:
             sgl_color_mask(r, g, b, a)
             return
         __glColorMask(r, g, b, a)
     glBindBuffer = (target: u32, b: u32):
+        if __vk:
+            vgl_bind_buffer(target, b)
+            return
         if __soft:
             sgl_bind_buffer(target, b)
             return
         __glBindBuffer(target, b)
     glBufferData = (target: u32, size: int, data: *u8, usage: u32):
+        if __vk:
+            vgl_buffer_data(target, size, data, usage)
+            return
         if __soft:
             sgl_buffer_data(target, size, data)
             return
         __glBufferData(target, size, data, usage)
     glBufferSubData = (target: u32, offset: int, size: int, data: *u8):
+        if __vk:
+            vgl_buffer_sub_data(target, offset, size, data)
+            return
         if __soft:
             sgl_buffer_sub_data(target, offset, size, data)
             return
         __glBufferSubData(target, offset, size, data)
     glBindVertexArray = (v: u32):
+        if __vk: return
         if __soft: return
         __glBindVertexArray(v)
     glEnableVertexAttribArray = (i: u32):
+        if __vk: return
         if __soft: return
         __glEnableVertexAttribArray(i)
     glDisableVertexAttribArray = (i: u32):
+        if __vk: return
         if __soft: return
         __glDisableVertexAttribArray(i)
     glVertexAttribPointer = (i: u32, size: i32, ty: u32, normalized: u8, stride: i32, offset: int):
+        if __vk: return
         if __soft: return
         __glVertexAttribPointer(i, size, ty, normalized, stride, offset)
     glVertexAttribDivisor = (i: u32, d: u32):
+        if __vk: return
         if __soft: return
         __glVertexAttribDivisor(i, d)
     glDrawArrays = (mode: u32, first: i32, count: i32):
+        if __vk: return
         if __soft: return
         __glDrawArrays(mode, first, count)
     glDrawElements = (mode: u32, count: i32, ty: u32, offset: int):
+        if __vk: return
         if __soft: return
         __glDrawElements(mode, count, ty, offset)
     glDrawArraysInstanced = (mode: u32, first: i32, count: i32, instances: i32):
+        if __vk: return
         if __soft: return
         __glDrawArraysInstanced(mode, first, count, instances)
     glDrawElementsInstanced = (mode: u32, count: i32, ty: u32, offset: int, instances: i32):
+        if __vk: return
         if __soft: return
         __glDrawElementsInstanced(mode, count, ty, offset, instances)
     glUseProgram = (p: u32):
+        if __vk: return
         if __soft: return
         __glUseProgram(p)
     glDeleteProgram = (p: u32):
+        if __vk: return
         if __soft: return
         __glDeleteProgram(p)
     glUniform1i = (loc: i32, v: i32):
+        if __vk: return
         if __soft: return
         __glUniform1i(loc, v)
     glUniform1f = (loc: i32, v: f32):
+        if __vk: return
         if __soft: return
         __glUniform1f(loc, v)
     glUniform2f = (loc: i32, x: f32, y: f32):
+        if __vk: return
         if __soft: return
         __glUniform2f(loc, x, y)
     glUniform3f = (loc: i32, x: f32, y: f32, z: f32):
+        if __vk: return
         if __soft: return
         __glUniform3f(loc, x, y, z)
     glUniform4f = (loc: i32, x: f32, y: f32, z: f32, w: f32):
+        if __vk: return
         if __soft: return
         __glUniform4f(loc, x, y, z, w)
     glUniformMatrix4fv = (loc: i32, count: i32, transpose: u8, v: *u8):
+        if __vk: return
         if __soft: return
         __glUniformMatrix4fv(loc, count, transpose, v)
     glUniform1fv = (loc: i32, count: i32, v: *u8):
+        if __vk: return
         if __soft: return
         __glUniform1fv(loc, count, v)
     glUniform2fv = (loc: i32, count: i32, v: *u8):
+        if __vk: return
         if __soft: return
         __glUniform2fv(loc, count, v)
     glUniform3fv = (loc: i32, count: i32, v: *u8):
+        if __vk: return
         if __soft: return
         __glUniform3fv(loc, count, v)
     glUniform1iv = (loc: i32, count: i32, v: *u8):
+        if __vk: return
         if __soft: return
         __glUniform1iv(loc, count, v)
     glUniform2iv = (loc: i32, count: i32, v: *u8):
+        if __vk: return
         if __soft: return
         __glUniform2iv(loc, count, v)
     glUniform4fv = (loc: i32, count: i32, v: *u8):
+        if __vk: return
         if __soft: return
         __glUniform4fv(loc, count, v)
     glBindTexture = (target: u32, t: u32):
+        if __vk:
+            vgl_bind_texture(t)
+            return
         if __soft:
             sgl_bind_texture(t)
             return
         __glBindTexture(target, t)
     glActiveTexture = (unit: u32):
+        if __vk:
+            vgl_active_texture(unit)
+            return
         if __soft:
             sgl_active_texture(unit)
             return
         __glActiveTexture(unit)
     glTexParameteri = (target: u32, pname: u32, v: i32):
+        if __vk:
+            vgl_tex_parameter(pname, v)
+            return
         if __soft:
             sgl_tex_parameter(pname, v)
             return
         __glTexParameteri(target, pname, v)
     glGenerateMipmap = (target: u32):
+        if __vk: return
         if __soft: return
         __glGenerateMipmap(target)
     glPixelStorei = (pname: u32, v: i32):
+        if __vk: return
         if __soft: return
         __glPixelStorei(pname, v)
     glBindFramebuffer = (target: u32, f: u32):
+        if __vk:
+            vgl_bind_framebuffer(f)
+            return
         if __soft:
             sgl_bind_framebuffer(f)
             return
@@ -580,6 +665,7 @@ else:
 
     # (re)size the offscreen stand-in for the window's framebuffer
     __gl_screen_resize = (w: int, h: int):
+        if __vk: return
         if __screen_fbo != 0 and __screen_w == w and __screen_h == h: return
         if __screen_fbo == 0:
             id: u32 = 0
@@ -599,6 +685,7 @@ else:
     # copy the offscreen framebuffer into 32-bit BGRX pixels, top row first
     __screen_tmp: u8[]
     __gl_screen_copy = (out: *u8, w: int, h: int):
+        if __vk: return
         if __screen_tmp.len() != w * h * 4: __screen_tmp = fill(u8(0), w * h * 4)
         __glBindFramebuffer(GL_FRAMEBUFFER, u32(__screen_fbo))
         __glReadPixels(0, 0, i32(w), i32(h), GL_RGBA, GL_UNSIGNED_BYTE, data(__screen_tmp))
@@ -613,30 +700,49 @@ else:
                 d[k * 4 + 3] = 255
         )
     glFramebufferTexture2D = (target: u32, attachment: u32, textarget: u32, tex: u32, level: i32):
+        if __vk:
+            vgl_framebuffer_texture(attachment, tex)
+            return
         if __soft:
             sgl_framebuffer_texture(attachment, tex)
             return
         __glFramebufferTexture2D(target, attachment, textarget, tex, level)
     glBindRenderbuffer = (target: u32, r: u32):
+        if __vk:
+            vgl_bind_renderbuffer(r)
+            return
         if __soft:
             sgl_bind_renderbuffer(r)
             return
         __glBindRenderbuffer(target, r)
     glRenderbufferStorage = (target: u32, format: u32, w: i32, h: i32):
+        if __vk:
+            vgl_renderbuffer_storage(format, w, h)
+            return
         if __soft:
             sgl_renderbuffer_storage(w, h)
             return
         __glRenderbufferStorage(target, format, w, h)
     glFramebufferRenderbuffer = (target: u32, attachment: u32, rbtarget: u32, rb: u32):
+        if __vk:
+            vgl_framebuffer_renderbuffer(attachment, rb)
+            return
         if __soft:
             sgl_framebuffer_renderbuffer(attachment, rb)
             return
         __glFramebufferRenderbuffer(target, attachment, rbtarget, rb)
     glCheckFramebufferStatus = (target: u32) -> u32:
+        if __vk: return GL_FRAMEBUFFER_COMPLETE
         if __soft: return GL_FRAMEBUFFER_COMPLETE
         __glCheckFramebufferStatus(target)
 
     __gl_gen = (kind: int) -> int:
+        if __vk:
+            if kind == 0: return vgl_create_buffer()
+            if kind == 1: return 1
+            if kind == 2: return vgl_create_texture()
+            if kind == 3: return vgl_create_framebuffer()
+            return vgl_create_renderbuffer()
         if __soft:
             if kind == 0: return sgl_create_buffer()
             if kind == 1: return 1
@@ -651,6 +757,10 @@ else:
         else: __glGenRenderbuffers(1, &id)
         int(id)
     __gl_del = (kind: int, x: int):
+        if __vk:
+            if kind == 2 or kind == 4: vgl_delete_texture(x)
+            else if kind == 3: vgl_delete_framebuffer(x)
+            return
         if __soft:
             if kind == 2: __st_alloc(x, 0, 0)
             return
@@ -672,6 +782,7 @@ else:
     gl_delete_renderbuffer = (r: int): __gl_del(4, r)
 
     __gl_shader = (kind: int, src: str) -> int:
+        if __vk: return 0
         s = __glCreateShader(u32(kind))
         p = data(src)
         n = i32(len(src))
@@ -688,6 +799,7 @@ else:
         int(s)
 
     gl_create_program = (vs: str, fs: str) -> int:
+        if __vk: return 0
         if __soft: return sgl_create_program()
         v = __gl_shader(GL_VERTEX_SHADER, vs)
         f = __gl_shader(GL_FRAGMENT_SHADER, fs)
@@ -708,32 +820,50 @@ else:
         int(p)
 
     gl_uniform_location = (p: int, name: str) -> int:
+        if __vk: return 0
         if __soft: return -1
         int(__glGetUniformLocation(u32(p), data(__zstr(name))))
     gl_tex_image = (w: int, h: int, internal: int, format: int, ty: int, pixels: *u8, size: int):
+        if __vk:
+            vgl_tex_image(w, h, internal, format, ty, pixels)
+            return
         if __soft:
             sgl_tex_image(w, h, format, ty, pixels)
             return
         __glTexImage2D(GL_TEXTURE_2D, 0, i32(internal), i32(w), i32(h), 0, u32(format), u32(ty), pixels)
     gl_tex_sub_image = (x: int, y: int, w: int, h: int, format: int, ty: int, pixels: *u8, size: int):
+        if __vk:
+            vgl_tex_sub_image(x, y, w, h, format, ty, pixels)
+            return
         if __soft:
             sgl_tex_sub_image(x, y, w, h, format, ty, pixels)
             return
         __glTexSubImage2D(GL_TEXTURE_2D, 0, i32(x), i32(y), i32(w), i32(h), u32(format), u32(ty), pixels)
     gl_read_pixels = (x: int, y: int, w: int, h: int, out: *u8):
+        if __vk:
+            vgl_read_pixels(x, y, w, h, out, 4)
+            return
         if __soft:
             sgl_read_pixels(x, y, w, h, out)
             return
         __glReadPixels(i32(x), i32(y), i32(w), i32(h), GL_RGBA, GL_UNSIGNED_BYTE, out)
     gl_read_pixels_f32 = (x: int, y: int, w: int, h: int, out: *u8):
+        if __vk:
+            vgl_read_pixels(x, y, w, h, out, 16)
+            return
         __glReadPixels(i32(x), i32(y), i32(w), i32(h), GL_RGBA, GL_FLOAT, out)
     gl_read_pixels_i32 = (x: int, y: int, w: int, h: int, out: *u8):
+        if __vk:
+            vgl_read_pixels(x, y, w, h, out, 16)
+            return
         __glReadPixels(i32(x), i32(y), i32(w), i32(h), 0x8D99, 0x1404, out)       # RGBA_INTEGER, INT
     @lib("libGLESv2.so.2")
     extern glGetIntegerv = (pname: u32, out: *i32)
     gl_max_texture_size = () -> int:
+        if __vk: return 16384
         v: i32 = 0
         glGetIntegerv(0x0D33, &v)                                                  # MAX_TEXTURE_SIZE
         int(v)
     gl_uniform4i = (loc: int, x: int, y: int, z: int, w: int):
+        if __vk: return
         if not __soft: __glUniform4i(i32(loc), i32(x), i32(y), i32(z), i32(w))

@@ -55,7 +55,7 @@ render_bytes = (sh: Shader) -> u8[]:
     glDisable(GL_BLEND)
     draw_fast(sh, fullscreen_mesh(), u)
     out = fill(u8(0), 32 * 32 * 4)
-    gl_read_pixels(0, 0, 32, 32, data(out))
+    game_read_pixels(0, 0, 32, 32, data(out))
     out
 expected = render_bytes(reference)
 # Independent nonzero/known-color check prevents a failed or software GL readback

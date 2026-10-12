@@ -54,7 +54,7 @@ stalkoblin_test_suite = ():
         body = enemies[0].pos
         hp = enemies[0].hp
         loop hit in [2..7):
-            __take_hit(enemies[0], 100.0, pl.pos, 2.0, false)
+            __take_hit(0, 100.0, pl.pos, 2.0, false)
         stalk_check(enemies[0].hp == hp and enemy_alive(enemies[0]), "headless body blows cannot kill at {hz}Hz")
         recovered = -1
         loop frame in [0..hz*10):
@@ -65,7 +65,7 @@ stalkoblin_test_suite = ():
         stalk_check(recovered >= 0 and length(enemies[0].pos - body) > 0.5, "body seeks and physically reassembles at {hz}Hz")
         print("Stalkbonk {hz}Hz recovery={(f64(recovered)/f64(hz)):.3}s body displacement={length(enemies[0].pos-body):.3}m roll={enemies[0].skull_roll:.3}")
         # Detach again, then direct the actual next blade into the skull sphere.
-        __take_hit(enemies[0], 10.0, pl.pos, 2.0, false)
+        __take_hit(0, 10.0, pl.pos, 2.0, false)
         skull = enemies[0].skull_pos
         player_hits = [PHit(skull, skull + vec3(0, 0, 1), vec3(0, 0, -1), 2.0, 2.0, false, 22, skull + vec3(-0.4, 0, 0), skull + vec3(0.4, 0, 0))]
         enemies_take_hits()
@@ -76,21 +76,21 @@ stalkoblin_test_suite = ():
     loop hz in [1, 30, 60, 120]:
         stalk_course()
         pl.pos = vec3(15, 0, 15)
-        __take_hit(enemies[0], 1.0, vec3(-2, 0, 0), 2.0, false)
+        __take_hit(0, 1.0, vec3(-2, 0, 0), 2.0, false)
         add_box(vec3(1, 0, 0), vec3(0.025, 3, 8), 0.0, false, .stone)
         loop frame in [0..hz*3): stalk_skull_step(enemies[0], 1.0 / f64(hz))
         stalk_check(enemies[0].skull_pos.x < 0.70 and enemies[0].skull_pos.y >= 0.28, "thin wall and floor stop rolling skull at {hz}Hz")
         print("Stalkbonk wall {hz}Hz skull={enemies[0].skull_pos}")
     stalk_course()
     pl.pos = vec3(15, 0, 15)
-    __take_hit(enemies[0], 20.0, vec3(-2, 0, 0), 2.0, false)
+    __take_hit(0, 20.0, vec3(-2, 0, 0), 2.0, false)
     enemies[0].skull_pos = vec3(4, 0.29, 0)
     enemies[0].skull_vel = vec3(0, 0, 0)
     add_box(vec3(2, 0, 0), vec3(0.05, 3, 6), 0.0, false, .stone)
     loop f in [0..900): enemies_update(1.0/60.0, true)
     stalk_check(enemies[0].skull_out and enemies[0].skull_reforms == 1 and enemy_alive(enemies[0]), "unreachable skull stays separate through body collapse/reform")
     stalk_course()
-    __take_hit(enemies[0], 20.0, pl.pos, 2.0, false)
+    __take_hit(0, 20.0, pl.pos, 2.0, false)
     enemies[0].skull_pos = vec3(4, 0.29, 0)
     body_arrow = Arrow(vec3(0, 0.9, -2), vec3(0, 0, -1), 20.0, prev = vec3(0, 0.9, 2))
     enemy_arrow_hit(body_arrow, 0)
@@ -105,7 +105,7 @@ stalkoblin_test_suite = ():
     enemy_arrow_hit(skull_arrow, 0)
     stalk_check(enemies[0].state == .dead, "arrow destroys detached skull")
     stalk_course()
-    __take_hit(enemies[0], 20.0, pl.pos, 2.0, false)
+    __take_hit(0, 20.0, pl.pos, 2.0, false)
     enemies[0].skull_pos = vec3(4, 0.29, 0)
     w = spawn_item("travelers_sword", vec3(4, 0.29, 2))
     witems[w].damage = 2
@@ -117,10 +117,10 @@ stalkoblin_test_suite = ():
     stalk_course()
     pl.pos = vec3(15, 0, 15)
     spawn_enemy(.stalkoblin, vec3(8, 0, 0))
-    loop mut e in enemies:
-        __take_hit(e, 20.0, pl.pos, 2.0, false)
-        e.skull_vel = vec3(0, 0, 0)
-        e.skull_age = 1.0
+    loop i in [0..enemies.len()):
+        __take_hit(i, 20.0, pl.pos, 2.0, false)
+        enemies[i].skull_vel = vec3(0, 0, 0)
+        enemies[i].skull_age = 1.0
     enemies[0].skull_pos = vec3(8, 0.29, 0)
     enemies[1].skull_pos = vec3(0, 0.29, 0)
     stalk_choose_skulls()

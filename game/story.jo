@@ -63,6 +63,8 @@ struct Story:
 
 story = Story()
 
+story_door_cols: int[]
+
 caption = (s: str, dur: f64 = 4.0):
     story.caption = s
     story.caption_t = dur
@@ -98,7 +100,6 @@ story_setup = ():
     story_door_cols = [door1_col, door2_col]
     story_setup_world()
 
-story_door_cols: int[]
 
 # where the old man waits on the Temple of Time's bell tower deck
 roof_spot = () -> vec3: lp(TEMPLE, TEMPLE_ROT, 4.0, 43.0, 32.0)

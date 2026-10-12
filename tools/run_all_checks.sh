@@ -10,7 +10,10 @@ for name in $(compgen -e); do
         BOTW_*|SLOPPY_*|ROUND*|TRAVERSAL_*|TALUS_*|SHRINE_VISUAL_*|COMBAT_*|FAUNA_*|TREE_*|PUZZLE_*|VISUAL_*|JOURNEY_*|OCCLUDER_BUILD_ONLY) unset "$name" ;;
     esac
 done
+# Fixed-frame regression captures request uncapped production rendering.
+# Vulkan reads its public option before window initialization; BOTW_NOVSYNC is GLES-only.
 export SLOPPY_PLATFORM=x11
+export SLOPPY_VSYNC=0
 # Imported tool modules must not leave __pycache__ beside tracked sources.
 export PYTHONDONTWRITEBYTECODE=1
 mkdir -p build/all-checks
@@ -194,7 +197,7 @@ check cpu listening_clips python3 tools/listen.py
 # Small GPU equivalence tests never self-lock. Compile while holding their sole
 # lock too, so even a compiler-run window cannot overlap another renderer.
 for name in draw_cache_check skin_row_check fir_surface_check hero_surface_check material_paint_check post_edge_check \
-    shader_load_check slot_check terrain_noise_check climb_occluder_check; do
+    shader_load_check shader_adapter_check slot_check terrain_noise_check climb_occluder_check; do
     # flock launches a fresh shell; export this function and its binary directory.
     export out
     export -f jo

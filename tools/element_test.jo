@@ -17,7 +17,7 @@ struct Run:
     at = -1.0
 
 run = (m: Matter, s: mut Elem, ex: Exposure, secs: f64) -> Run:
-    r = Run()
+    let r = Run()
     loop k in [0..int(secs / DT)):
         x = react(m, s, ex, DT)
         if x != .nothing and r.at < 0.0:

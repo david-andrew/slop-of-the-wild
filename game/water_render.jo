@@ -513,6 +513,11 @@ water_bed_levels = (vs: WVert[], idx: u32[], levels: f32[]) -> f32[]:
                 pixels[k]=max(pixels[k],f32(y))
     pixels
 
+water_vertices: WVert[]
+water_indices: u32[]
+water_levels: f32[]
+water_prepared_hit = false
+
 water_build = ():
     water_prepared_hit = water_asset_load()
     if not water_prepared_hit:
@@ -530,9 +535,6 @@ water_build = ():
         water_levels = []
     __water_ready = true
 
-water_vertices: WVert[]
-water_indices: u32[]
-water_levels: f32[]
 # Refine only the west crest, preserving collision/swimming grids and the sheet.
 west_canyon_lip = (vs: mut WVert[], idx: mut u32[]):
     refined: u32[]
@@ -879,5 +881,3 @@ water_asset_load = () -> bool:
     fall_shelves = shelves
     if env("BOTW_LOADTIME") != none: eprint("prepared water: hit")
     true
-
-water_prepared_hit = false

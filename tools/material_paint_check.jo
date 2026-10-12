@@ -11,7 +11,7 @@ fixture_vs = (v: FsVert, u: PaintFixtureU) -> PostO: PostO(vec4(v.pos, 0, 1), v.
 fixture_fs = (i: PostO, u: PaintFixtureU) -> vec4:
     if u.pattern < 0.0:
         # The production one-pixel dissolve, with bright sky exposed at the holes.
-        retained = glsl_occluder_dither(0.0) > -u.pattern
+        retained = glsl_occluder_dither(i.pos.xy) > -u.pattern
         return if retained: vec4(0.1, 0.1, 0.1, -8) else: vec4(0.7, 0.7, 0.7, 0)
     stripe = (step(0.5, fract(i.uv.x * 24.0)) - 0.5) * u.pattern
     vec4(u.value.xyz + vec3(stripe, stripe, stripe), u.value.w)
@@ -51,13 +51,13 @@ loop material in [0.0, 0.15, 0.33, 0.65, 0.85, 1.0, 1.0]:
     bind_target(painted)
     u.src = src.color
     draw_fast(paint_sh, fullscreen_mesh(), u)
-    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
     # Constant washes have no fine-structure bit; all material responses survive.
     assert(abs(f64(values[(64 * 192 + 96) * 4 + 3]) - material) < 0.002)
     bind_target(out)
     u.src = painted.color
     draw_fast(comp_sh, fullscreen_mesh(), u)
-    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
     rough = 0.0
     loop y in [4..124):
         loop x in [4..188):
@@ -76,7 +76,7 @@ bind_target(src)
 glEnable(GL_BLEND)
 glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA)
 draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.4, 0.5, 0.6, 0.75)))
-gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
 assert(abs(values[0] - (0.4 * 0.75 + 0.22 * 0.25)) < 0.002)
 assert(abs(values[3] - 0.25) < 0.002)
 glDisable(GL_BLEND)
@@ -88,7 +88,7 @@ draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.991, 0, 0, 1)))
 bind_target(painted)
 u.src = src.color
 draw_fast(paint_sh, fullscreen_mesh(), u)
-gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
 assert(values[(64 * 192 + 96) * 4 + 3] < -7.9)
 # Sky holes must participate in the same coverage resolve as retained foreground.
 # Exercise every nontrivial 4x4 coverage level, including sparse retained fragments.
@@ -105,7 +105,7 @@ loop level in [1..16):
     bind_target(painted)
     u.src = src.color
     draw_fast(paint_sh, fullscreen_mesh(), u)
-    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
     error = 0.0
     marked = 0
     loop y in [4..124):
@@ -128,14 +128,14 @@ bind_target(painted)
 u.near = 1.0
 u.far = 1000.0
 draw_fast(paint_sh, fullscreen_mesh(), u)
-gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
 assert(values[(64 * 192 + 96) * 4 + 3] > 1.05)
 # Crown detail keeps its material identity, so snow cutouts do not regain ink.
 bind_target(src)
 draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.22, 0.25, 0.19, 0.65), 0.3))
 bind_target(painted)
 draw_fast(paint_sh, fullscreen_mesh(), u)
-gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
 response=values[(64 * 192 + 96) * 4 + 3]
 assert(response>2.05 and response<=3.0,"distant foliage keeps its soft-rim material")
 assert(paint_foliage(response)==1.0,"foliage marker decodes at distant cutouts")
@@ -144,7 +144,7 @@ grain_sh = make_sh(shader(grain_fixture_vs, grain_fixture_fs))
 loop scale in [0.36, 0.57]:
     bind_target(out)
     draw_fast(grain_sh, fullscreen_mesh(), GrainFixtureU(post.grain.color, vec2(192.0 / f32(post.grain.w), 128.0 / f32(post.grain.h)) * f32(scale)))
-    gl_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
+    game_read_pixels_f32(0, 0, 192, 128, data(values) as *u8)
     flat = 0
     loop y in [4..124):
         loop x in [4..188):

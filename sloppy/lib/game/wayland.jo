@@ -91,9 +91,6 @@ __wl_configured = false
 __wl_pending_w = 0
 __wl_pending_h = 0
 __wl_frame_pending = false
-# Opt-in bounded mailbox presentation: released buffers still gate submission, while
-# wl_surface.frame callbacks no longer force the producer to wait for every refresh.
-__wl_mailbox = (env("SLOPPY_PRESENT") ?? "") == "mailbox"
 
 # client-side decorations (a title bar above the content) when the server draws none
 __wl_csd = true
@@ -1035,18 +1032,17 @@ __wl_present_gpu = () -> bool:
 # wait for the previous frame to be shown (pacing) and for a free buffer; its index, or -1
 __wl_wait_buffer = (gpu: bool) -> int:
     tries = 0
-    loop ((__wl_frame_pending and not __wl_mailbox) or __wl_free_buffer(gpu) < 0) and tries < 10 and not __win_close:
+    loop (__wl_frame_pending or __wl_free_buffer(gpu) < 0) and tries < 10 and not __win_close:
         __wl_read(8)
         tries += 1
     __wl_free_buffer(gpu)
 
 __wl_commit = (buffer: int):
-    if not __wl_mailbox:
-        cb = __wl_new(WLK_FRAME)
-        __wl_begin(__wl_surface, 3)                # frame
-        __wl_u(cb)
-        __wl_end()
-        __wl_frame_pending = true
+    cb = __wl_new(WLK_FRAME)
+    __wl_begin(__wl_surface, 3)                # frame
+    __wl_u(cb)
+    __wl_end()
+    __wl_frame_pending = true
     __wl_set_size()
     __wl_begin(__wl_surface, 1)                # attach
     __wl_u(buffer)

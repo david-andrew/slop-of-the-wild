@@ -4,7 +4,7 @@ Run commands from the repository root. Requirements: the pinned `sloppy/bin/slop
 
 ## Play
 
-`tools/play.sh` compiles and launches; `tools/play.sh build/game` launches an existing executable. Wayland defaults to `SLOPPY_PRESENT=mailbox`; use `SLOPPY_PRESENT=paced tools/play.sh` for callback pacing. Agent captures use `tools/play_locked.sh`, which owns `/tmp/botw-render.lock`.
+`tools/play.sh` compiles and launches; `tools/play.sh build/game` launches an existing executable. Sloppy 0.6.0 defaults to Vulkan FIFO; the launchers set `SLOPPY_VSYNC=0` for measured lower-p99 mailbox/immediate, with `SLOPPY_VSYNC=1` restoring FIFO; `SLOPPY_VULKAN=0` selects OpenGL. Agent captures use `tools/play_locked.sh`, which owns `/tmp/botw-render.lock`.
 
 Controls: WASD move, mouse/arrows camera, Alt walk, Shift sprint, Space jump/climb jump/glider, Ctrl/C crouch, left mouse/J attack (hold for spin), right mouse/K lock/shield, E action/perfect guard, R/L bow, G throw, 1–3 items, Tab/I inventory, M/Esc map. Space while locked hops/backflips; airborne shield + Space surfs. Inventory: E equip/eat, 1–3 bind, X drop, Q/C tabs. Gamepad: sticks move/camera, top face jump, bottom sprint, left attack, right action, left trigger shield, right trigger bow, right bumper throw, d-pad items, Start inventory, Back map. Options supports rebinding, camera settings and jump/sprint swap. [Full controls and save behavior](../README.md#controls).
 
@@ -38,13 +38,13 @@ Gameplay/test/debug starts and Sloppy capture/input/frame switches disable progr
 | `python3 tools/round71_startup.py` after warming | Three verified cold-local-file/warm executable pairs: load seconds, process seconds, major faults and `mincore` residency. Evicts only local prepared packs, shader binaries and executable; other caches remain warm. Owns one lock per launch; includes all nine packs and verifies cold residency inside the lock. |
 | `BOTW_NO_PREPARED_ASSETS=1 BOTW_LOADTIME=1 tools/play_locked.sh`; bench `--shader-cache disabled` | Generation fallback / shader-miss costs. These are separate from prepared warm startup. |
 
-Current prepared startup, warmup outliers and the qualified historical cold-local-file comparison are consolidated in [PERFORMANCE.md](PERFORMANCE.md#round-81-startup-and-warmup-audit). The Round 81 audit retains fresh-copy repeats, timer boundaries and exact source hashes.
+Current release startup measurements are in [PERFORMANCE.md](PERFORMANCE.md). The [historical Round 81 audit](rounds/PERFORMANCE_PRE_060.md#round-81-startup-and-warmup-audit) retains earlier fresh-copy repeats, warmup outliers, timer boundaries and source hashes.
 
 ```sh
 python3 tools/startup_copy_check.py --ref HEAD --repeats 6 --binary-repeats 6 --output build/startup-current
 ```
 
-The helper copies a clean revision plus ignored terrain and nature inputs into a fresh `build/` directory, runs `warm_assets.sh` there, then times standalone builds and individually locked source/executable launches. Preparation and lock wait are excluded from launch times. `loaded in` includes GPU warmup, first-frame callback CPU excludes it, and whole process includes capture/write/shutdown. Milestones from streamed logs mark callback completion before runtime submit and capture completion at frame index 1; neither measures display presentation. `python3 tools/prepared_frame_check.py --resume` retains completed captures only with a byte-identical rebuilt executable.
+The helper copies a clean revision, including tracked terrain, plus local nature inputs into a fresh `build/` directory, runs `warm_assets.sh` there, then times standalone builds and individually locked source/executable launches. Preparation and lock wait are excluded from launch times. `loaded in` includes GPU warmup, first-frame callback CPU excludes it, and whole process includes capture/write/shutdown. Milestones from streamed logs mark callback completion before runtime submit and capture completion at frame index 1; neither measures display presentation. `python3 tools/prepared_frame_check.py --resume` retains completed captures only with a byte-identical rebuilt executable.
 
 ## Whole regression suite
 
@@ -52,24 +52,26 @@ The helper copies a clean revision plus ignored terrain and nature inputs into a
 
 **Never wrap the runner in `flock`.** It calls self-locking tools directly and takes exactly one lock for each caller-lock tool; waits for shared render access have no timeout. Headless checks need no render lock. Helper-only `*_checks.jo` and fixture tools run through their entry points. Historical round capture/report workflows and before/after GPU comparisons require specific baselines and are indexed in [rounds/](rounds/); they are not standalone regression verdicts. Benchmarks measure performance separately.
 
-Current pre-critic-62 committed-source sweep atop `f8b48f3`, including the
-named-mesh ordering repair: **127 PASS, 0 FAIL, 127 groups**, 3,090 seconds.
-Evidence: [`build/all-checks/run-6k1r7chi/summary.txt`](../build/all-checks/run-6k1r7chi/summary.txt),
-[`results.tsv`](../build/all-checks/run-6k1r7chi/results.tsv) and per-group logs.
-The initial sweep completed **126 PASS, 1 FAIL** in 3,162 seconds:
-[`build/all-checks/run-JYvtijki/summary.txt`](../build/all-checks/run-JYvtijki/summary.txt).
-Its sole failure was a real prepared/generated shrine rendering mismatch: identical
-mesh contents reached the depth buffer in different named-mesh orders. Sorting once
-at upload restores exact pixels in all four prepared-frame views and preserves the
-original prepared appearance. CPU equivalence now also compares actual draw order
-across prepared, generated and architecture-miss paths. Explicit asset preparation
-and complete equivalence pass; no stale checks or pixel tolerances changed.
-Root-cause probes and targeted evidence remain under `build/regression-round62/`.
-Only this validation record and the commit message change after the final sweep;
-tested game, asset, compiler and tool sources are unchanged.
-The previous 113-group sweep recorded by `998e480` and earlier sweeps are superseded;
-their records remain in git history and `build/all-checks/`.
-Targeted round 80 changes have separate evidence under `build/round80/`.
+The final Sloppy 0.6.0 sweep records **136 PASS, 0 FAIL, 136 groups**, **2,892 s**.
+Evidence: [`summary.txt`](../build/all-checks/run-I1kSostA/summary.txt),
+[`results.tsv`](../build/all-checks/run-I1kSostA/results.tsv) and per-group logs.
+It starts at `d283589`; the analyzer-only correction `04bdf22` is committed before
+its group executes. Game, assets and compiler sources are unchanged throughout.
+All 129 standalone `.jo` tool entries compile without warnings; fixture/helper
+modules compile through their wrappers. Native and browser game builds compile.
+
+The earlier audit recorded **134 PASS, 2 FAIL**: a snow lighting probe was killed
+and moved its camera; a cue masking assertion included its legacy 20 ms ramp.
+Damage-guarded completed-frame capture passes the unchanged brightness limit on
+both renderers. The old patched mixer reproduces the cue onset result within
+0.00005 dB; raw onset data remains, and the unchanged 6 dB margin applies to the
+settled body. No game gains or lighting thresholds change. Menu captures also
+set the release's `SLOPPY_VSYNC=0` where they request uncapped rendering; the
+EGL-only `BOTW_NOVSYNC` flag cannot uncap Vulkan. These corrections and root-cause
+evidence are in [SLOPPY_NOTES](SLOPPY_NOTES.md) and [MUSIC](MUSIC.md).
+Earlier 127-group and other sweeps remain historical records in git and
+`build/all-checks/`; current timing and render limits are separate below.
+
 The [compact performance summary](PERFORMANCE.md) is the current timing entry point;
 its linked JSON retains repeats, flags, hashes and measurement limitations.
 
@@ -120,11 +122,11 @@ correctness; controlled original-game response agreement remains a gap.
 
 ## Listening clips
 
-`python3 tools/listen.py` renders eight 45 s stereo clips and four shrine stems, verifies stem reconstruction and balance, and writes `build/listen/index.html`, `LEVELS.md`, `levels.json` and WAVs. Open the HTML to listen. No render lock is needed. `python3 tools/live_audio_check.py` exercises the production event dispatcher; `python3 tools/analyze_live_audio.py build/live-audio --check` checks masking, repetition and headroom; `python3 tools/mix_loudness_check.py --check` measures full-mix loudness. [Listening protocol](LISTEN.md), [music and source credits](MUSIC.md).
+`python3 tools/listen.py` renders eight 45 s stereo clips and four shrine stems, verifies stem reconstruction and balance, and writes `build/listen/index.html`, `LEVELS.md`, `levels.json` and WAVs. Open the HTML to listen. The helper owns its render locks; do not wrap it. `python3 tools/live_audio_check.py` exercises the production event dispatcher; `python3 tools/analyze_live_audio.py build/live-audio --check` checks masking, repetition and headroom; `python3 tools/mix_loudness_check.py --check` measures full-mix loudness. [Listening protocol](LISTEN.md), [music and source credits](MUSIC.md).
 
 ## Performance
 
-`SLOPPY_STATS=log` reports frame p50/p95/p99/worst every 120 frames; `SLOPPY_FRAME_STATS=1` adds runtime stats. `BOTW_FRAME_LOG=1` retains raw intervals, callback wall/thread CPU time and upload samples. `BOTW_CPU=1 BOTW_CPU_TRACE_MS=6` attributes expensive CPU stages; `BOTW_GPU=1` reports pass timer queries; `BOTW_GPU_FRAME_LOG=1` retains per-frame GPU samples. For GPU execution costs use `BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11`; paced frame intervals and GPU/CPU execution are different measurements. Verify actual output pixels, scale, warmup exclusion, shared load and every repeat; mailbox producer intervals are not scanout timestamps.
+`SLOPPY_STATS=log` reports frame p50/p95/p99/worst every 120 frames; `SLOPPY_FRAME_STATS=1` adds runtime stats. `BOTW_FRAME_LOG=1` retains raw intervals, callback wall/thread CPU time and upload samples. `BOTW_CPU=1 BOTW_CPU_TRACE_MS=6` attributes expensive CPU stages; `BOTW_GPU=1` reports pass timer queries on OpenGL; Vulkan uses return/CPU counters; `BOTW_GPU_FRAME_LOG=1` retains per-frame GPU samples. For OpenGL GPU execution costs use `SLOPPY_VULKAN=0 BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11`; paced frame intervals and GPU/CPU execution are different measurements. Verify actual output pixels, scale, warmup exclusion, shared load and every repeat; mailbox producer intervals are not scanout timestamps.
 
 ```sh
 mkdir -p build/evaluate-performance

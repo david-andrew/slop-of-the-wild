@@ -1445,9 +1445,9 @@ combat_weight_tests = ():
         e = spawn_enemy(.blue_bokoblin, vec3(0, 0, 0))
         enemies[e].state = .chase
         enemies[e].alert = 1.0
-        __take_hit(enemies[e], 5.0, direction * -2.0, 4.0, false)
+        __take_hit(e, 5.0, direction * -2.0, 4.0, false)
         check("stagger_away_from_blow_{direction}", enemies[e].state == .stagger and dot(enemies[e].recoil, direction) > 0.999 and enemies[e].impact_t == 0.16)
-        __take_hit(enemies[e], 5.0, direction * -2.0, 4.0, false, heavy = true)
+        __take_hit(e, 5.0, direction * -2.0, 4.0, false, heavy = true)
         check("heavy_hit_knocks_down_{direction}", enemies[e].state == .knocked and dot(enemies[e].vel, direction) > 5.9 and enemies[e].vel.y > 0.0)
     loop side in [-1.0, 1.0]:
         reset_probe()

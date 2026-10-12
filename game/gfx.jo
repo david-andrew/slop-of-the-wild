@@ -1,34 +1,48 @@
+use 'pixel_readback.jo'
+use 'vulkan_textures.jo'
+use 'vulkan_shadow.jo'
 use 'shader_load.jo'
+game_vulkan_backend = () -> bool:
+    when TARGET == "wasm": false
+    else: __vk
+
 # Rendering core: shader patching, HDR render targets, full-screen passes, static instancing.
 
-# ---- GLSL features the shader translator lacks: marker functions whose bodies are swapped ----
-# (shader(vs, fs) gives GLSL text; these functions are rewritten in it before compiling)
-glsl_discard = (cond: bool) -> f32: 0.0
-glsl_fetch = (t: Texture, x: int, y: int) -> vec4: vec4(0, 0, 0, 0)
-glsl_texel_size = (t: Texture) -> vec2: vec2(0, 0)
-glsl_lod = (t: Texture, uv: vec2, lod: f32) -> vec4: vec4(0, 0, 0, 0)
-glsl_dither = (p: vec2) -> f32: 0.0
-glsl_pixel_dither = (unused: f32) -> f32: 0.0
-glsl_occluder_dither = (unused: f32) -> f32: 0.0
-glsl_instance = (z: f32) -> f32: 0.0
-glsl_facet = (p: vec3) -> vec3: vec3(0, 1, 0)
-glsl_vertex = (z: f32) -> f32: 0.0
-glsl_leaf_edge = (alpha: f32, cutoff: f32) -> f32: 0.0
+# Shader helpers use the release's portable texture/discard/ID operations. Fragment
+# functions receive window coordinates in their first varying field on both backends.
+glsl_discard = (cond: bool) -> f32:
+    if cond: discard()
+    0.0
+glsl_fetch = (t: Texture, x: int, y: int) -> vec4: texel(t, ivec2(i32(x), i32(y)))
+glsl_texel_size = (t: Texture) -> vec2: vec2(1, 1) / vec2(texture_size(t))
+glsl_lod = (t: Texture, uv: vec2, lod: f32) -> vec4: sample_lod(t, uv, lod)
+glsl_dither = (p: vec2) -> f32: fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))))
+glsl_pixel_dither = (p: vec2) -> f32: glsl_dither(floor(p))
+glsl_occluder_dither = (p: vec2) -> f32:
+    x = int(p.x) & 3
+    y = int(p.y) & 3
+    lo = ((x & 1) xor (y & 1)) * 2 + (y & 1)
+    hi = ((x >> 1) xor (y >> 1)) * 2 + (y >> 1)
+    (f32(lo * 4 + hi) + 0.5) / 16.0
+glsl_instance = (z: f32) -> f32: f32(instance_id()) + z
+glsl_vertex = (z: f32) -> f32: f32(vertex_id()) + z
+# 0.6 exposes fwidth but no signed derivatives. Tagged helper functions are
+# translated to OpDPdx/OpDPdy in game/spirv_helpers.jo, and dFdx/dFdy in GLSL.
+game_dfdx = (x: f32) -> f32: fwidth(x) + 1048576.0
+game_dfdy = (x: f32) -> f32: fwidth(x) + 2097152.0
+glsl_facet = (p: vec3) -> vec3:
+    dx = vec3(game_dfdx(p.x), game_dfdx(p.y), game_dfdx(p.z))
+    dy = vec3(game_dfdy(p.x), game_dfdy(p.y), game_dfdy(p.z))
+    normalize(cross(dx, dy))
+glsl_leaf_edge = (alpha: f32, cutoff: f32, p: vec2) -> f32:
+    w = clamp(fwidth(alpha) * 0.60, 0.015, 0.12)
+    coverage = smoothstep(cutoff - w, cutoff + w, alpha)
+    if coverage < glsl_pixel_dither(p): discard()
+    coverage
 
 __patch_bodies: {str: str} = {
-    "glsl_discard": "    if ($0) discard;\n    return 0.0;\n",
-    "glsl_leaf_edge": "    float w = clamp(fwidth($0) * 0.60, 0.015, 0.12);\n    float coverage = smoothstep($1 - w, $1 + w, $0);\n    float d = fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(0.06711056, 0.00583715))));\n    if (coverage < d) discard;\n    return coverage;\n",
-    "glsl_texel_size": "    return vec2(1.0) / vec2(textureSize($0, 0));\n",
-    "glsl_fetch": "    return texelFetch($0, ivec2($1, $2), 0);\n",
-    "glsl_lod": "    return textureLod($0, $1, $2);\n",
-    "glsl_instance": "    return float(gl_InstanceID) + $0;\n",
-    "glsl_vertex": "    return float(gl_VertexID) + $0;\n",
-    "glsl_facet": "    return normalize(cross(dFdx($0), dFdy($0)));\n",
-    # A balanced 4x4 threshold tile is integrated exactly by the occluder resolve.
-    # Leaf cutouts/LOD keep their existing pattern; only camera dissolves use this.
-    "glsl_occluder_dither": "    int x = int(gl_FragCoord.x) & 3;\n    int y = int(gl_FragCoord.y) & 3;\n    int lo = ((x & 1) ^ (y & 1)) * 2 + (y & 1);\n    int hi = ((x >> 1) ^ (y >> 1)) * 2 + (y >> 1);\n    return (float(lo * 4 + hi) + 0.5) / 16.0;\n",
-    "glsl_pixel_dither": "    return fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(0.06711056, 0.00583715))));\n",
-    "glsl_dither": "    return fract(52.9829189 * fract(dot($0, vec2(0.06711056, 0.00583715))));\n",
+    "game_dfdx": "    return dFdx($0);\n",
+    "game_dfdy": "    return dFdy($0);\n",
 }
 
 __patch_glsl = (src: str) -> str:
@@ -37,7 +51,6 @@ __patch_glsl = (src: str) -> str:
         key = " f_" + name + "_"
         at = find(out, key)
         loop at >= 0:
-            # only definitions: the line starts with the return type (calls are indented)
             ls = at
             loop ls > 0 and out[ls - 1] != '\n': ls -= 1
             if out[ls] == ' ':
@@ -63,6 +76,17 @@ make_sh = (src: ShaderSource) -> Shader:
     __gfx_init_gl_only()
     if env("BOTW_GPU_FRAME_LOG") != none: eprint("shader request: frame {frame_number()}")
     shader_load_finish(shader_load_submit(src))
+
+game_read_pixels = (x: int, y: int, w: int, h: int, out: *u8):
+    if not game_vulkan_backend():
+        gl_read_pixels(x, y, w, h, out)
+        return
+    game_pixel_readback(x, y, w, h, out, false)
+game_read_pixels_f32 = (x: int, y: int, w: int, h: int, out: *u8):
+    if not game_vulkan_backend():
+        gl_read_pixels_f32(x, y, w, h, out)
+        return
+    game_pixel_readback(x, y, w, h, out, true)
 
 # ---- extra GL entry points ----
 @lib("libGLESv2.so.2")
@@ -108,6 +132,7 @@ color_texture = (w: int, h: int, internal: int, format: int, ty: int, filter: in
     glBindTexture(GL_TEXTURE_2D, u32(id))
     gl_tex_image(w, h, internal, format, ty, null, 0)
     __tex_params(filter, GL_CLAMP_TO_EDGE)
+    game_upload_checkpoint()
     Texture(id, w, h)
 
 depth_texture = (w: int, h: int) -> Texture:
@@ -115,6 +140,7 @@ depth_texture = (w: int, h: int) -> Texture:
     glBindTexture(GL_TEXTURE_2D, u32(id))
     gl_tex_image(w, h, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, null, 0)
     __tex_params(GL_NEAREST, GL_CLAMP_TO_EDGE)
+    game_upload_checkpoint()
     Texture(id, w, h)
 
 # color (hdr: half floats) + a depth texture that later passes can read
@@ -160,11 +186,21 @@ bind_target = (t: Target):
 
 # textures from data
 float_texture = (w: int, h: int, values: f32[], filter: int = GL_NEAREST) -> Texture:
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            id = gl_create_texture()
+            __vg_tex_alloc(id, w, h, u32(100)) # VK_FORMAT_R32_SFLOAT
+            __vg_tex_upload(id, 0, 0, w, h, data(values) as *u8, 4)
+            glBindTexture(GL_TEXTURE_2D, u32(id))
+            __tex_params(filter, GL_CLAMP_TO_EDGE)
+            game_upload_checkpoint()
+            return Texture(id, w, h)
     id = gl_create_texture()
     glBindTexture(GL_TEXTURE_2D, u32(id))
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
     gl_tex_image(w, h, GL_R32F, GL_RED, GL_FLOAT, data(values) as *u8, values.len() * 4)
     __tex_params(filter, GL_CLAMP_TO_EDGE)
+    game_upload_checkpoint()
     Texture(id, w, h)
 
 rgba32f_texture = (w: int, h: int, values: f32[]) -> Texture:
@@ -172,6 +208,7 @@ rgba32f_texture = (w: int, h: int, values: f32[]) -> Texture:
     glBindTexture(GL_TEXTURE_2D, u32(id))
     gl_tex_image(w, h, GL_RGBA32F, GL_RGBA, GL_FLOAT, data(values) as *u8, values.len() * 4)
     __tex_params(GL_NEAREST, GL_CLAMP_TO_EDGE)
+    game_upload_checkpoint()
     Texture(id, w, h)
 
 update_rgba32f = (t: Texture, values: f32[]):
@@ -181,6 +218,10 @@ update_rgba32f = (t: Texture, values: f32[]):
 # RGBA8 bytes, optionally mipmapped and repeating
 bytes_texture = (w: int, h: int, px: u8[], mip: bool = true, repeat: bool = true) -> Texture:
     id = gl_create_texture()
+    if game_vulkan_backend() and mip:
+        game_mip_texture(id, w, h, px, repeat)
+        game_upload_checkpoint()
+        return Texture(id, w, h)
     glBindTexture(GL_TEXTURE_2D, u32(id))
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
     gl_tex_image(w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, data(px), px.len())
@@ -190,7 +231,8 @@ bytes_texture = (w: int, h: int, px: u8[], mip: bool = true, repeat: bool = true
     if mip:
         glGenerateMipmap(GL_TEXTURE_2D)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(GL_LINEAR_MIPMAP_LINEAR))
-        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0)
+        if not game_vulkan_backend(): glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0)
+    game_upload_checkpoint()
     Texture(id, w, h)
 
 # ---- full-screen passes ----
@@ -232,6 +274,10 @@ draw_static[U] = (sh: Shader, m: Mesh, b: InstBuf, params: U, first: int = 0, co
     if n < 0: n = b.count - first
     if n <= 0: return
     p = params
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            __vk_draw_mesh(game_draw_program(sh, m.mode), m.mode, m.vbo, m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, size_of(U), b.vbo, b.stride, n, first * b.stride)
+            return
     glUseProgram(u32(sh.prog))
     __draw_uniforms(sh, p)
     __bind_attribs(sh, m)
@@ -316,6 +362,10 @@ __draw_uniforms[U] = (sh: Shader, params: U):
 # a plain draw without the 2D batch flush (we flush once before the 3D pass)
 draw_fast[U] = (sh: Shader, m: Mesh, params: U):
     p = params
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            __vk_draw_at(game_draw_program(sh, m.mode), m.mode, __mesh_addr(m), m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, size_of(U), 0, 0, 0)
+            return
     glUseProgram(u32(sh.prog))
     __draw_uniforms(sh, p)
     key = m.vao * 4294967296 + sh.prog
@@ -368,7 +418,42 @@ smooth01 = (x: f64) -> f64:
 # CPU asset preparation uses the same production builders without opening GL.
 static_mesh[V] = (vertices: V[], indices: u32[] = []) -> Mesh:
     if env("BOTW_BAKE_ASSETS") != none or env("BOTW_ASSET_CHECK") != none: return Mesh()
-    mesh(vertices, indices)
+    m = mesh(vertices, indices)
+    game_upload_checkpoint()
+    m
 static_instances[I] = (items: I[]) -> InstBuf:
     if env("BOTW_BAKE_ASSETS") != none or env("BOTW_ASSET_CHECK") != none: return InstBuf()
     inst_buffer(items)
+
+# A snapshot of opaque color/depth for water and soft particles. 0.6's GL
+# compatibility layer has no blit; use the Vulkan transfer API for equal sizes.
+game_copy_target = (src: Target, dst: Target):
+    when TARGET != "wasm":
+        __vk_begin_frame()
+        __vg_end_pass()
+        cb = __vk_cb()
+        loop pair in [(src.color.id, dst.color.id), (src.depth.id, dst.depth.id)]:
+            a = __vgt[pair.0].img
+            b = __vgt[pair.1].img
+            __vk_barrier(cb, a, u32(VK_LAYOUT_TRANSFER_SRC), VK_STAGE_ALL, VK_ACCESS_MEMORY_WRITE, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ)
+            __vk_barrier(cb, b, u32(VK_LAYOUT_TRANSFER_DST), VK_STAGE_ALL, VK_ACCESS_MEMORY_READ, VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE)
+            region = VkImageBlit2(stype = 1000337008, src_aspect = a.aspect, src_layers = 1, dst_aspect = b.aspect, dst_layers = 1)
+            region.src1 = [i32(src.w), i32(src.h), i32(1)]
+            region.dst1 = [i32(dst.w), i32(dst.h), i32(1)]
+            info = VkBlitImageInfo2(stype = 1000337004, src = a.image, src_layout = u32(VK_LAYOUT_TRANSFER_SRC), dst = b.image, dst_layout = u32(VK_LAYOUT_TRANSFER_DST), nregions = 1, regions = (&region) as *u8, filter = 0)
+            vkCmdBlitImage2(cb, (&info) as *u8)
+            __vk_barrier(cb, a, u32(VK_LAYOUT_SHADER_READ), VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_READ, VK_STAGE_ALL, VK_ACCESS_SHADER_READ)
+            __vk_barrier(cb, b, u32(VK_LAYOUT_SHADER_READ), VK_STAGE_TRANSFER, VK_ACCESS_TRANSFER_WRITE, VK_STAGE_ALL, VK_ACCESS_SHADER_READ)
+
+# Large startup uploads exceed Pascal's host-visible device-memory aperture if
+# retained in one command buffer. Submit bounded batches before visible frames;
+# completed static resources stay on the GPU and upload memory can be reused.
+game_upload_checkpoint = ():
+    when TARGET != "wasm":
+        if not game_vulkan_backend() or frame_number() > 0 or not __vk_recording: return
+        f = __vk_frames[__vk_frame]
+        used = f.used
+        loop k in [0..f.block): used += __vk_blocks[f.arena[k]].size
+        if used < 32 * 1024 * 1024: return
+        __vg_end_pass()
+        __vk_submit_and_wait()

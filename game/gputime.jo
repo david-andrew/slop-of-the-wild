@@ -19,6 +19,7 @@ __novsync_done = false
 gpu_vsync_check = ():
     if __novsync_done: return
     __novsync_done = true
+    if game_vulkan_backend(): return
     if env("BOTW_NOVSYNC") != none and eglSwapInterval(eglGetCurrentDisplay(), 0) == 0: eprint("BOTW_NOVSYNC: the swap interval could not be changed")
 
 # (in a GLES context the timer is an extension: its entry points come from EGL)
@@ -58,6 +59,10 @@ __gq_slot = (f: int, p: int) -> int: (f % __GQ_FRAMES) * __GQ_PASSES + p
 gpu_mark = (name: str):
     cpu_mark(name)
     if not gpu_timing: return
+    if game_vulkan_backend():
+        eprint("gpu timing: use Vulkan frame intervals; GLES pass queries unavailable")
+        gpu_timing = false
+        return
     if __gq_ids.len() == 0:
         g = __q_proc("glGenQueriesEXT")
         b = __q_proc("glBeginQueryEXT")

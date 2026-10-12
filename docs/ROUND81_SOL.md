@@ -128,7 +128,7 @@ The tent capture uses `BOTW_TENTFIRE=5` at `-955,1964,0` with ordinary sword inp
 The older native tower/hop captures precede the later lock-shoulder changes;
 their occluder and shield paths are unchanged by those changes.
 
-[Performance report](PERFORMANCE.md#round-81-contention-audit) retains the complete
+[Performance report](rounds/PERFORMANCE_PRE_060.md#round-81-contention-audit) retains the complete
 CPU diagnosis and warmup audit. Matched-executable contention raises callback
 wall p99 from 11.54 to 28.84 ms; recovery thread CPU p99 is 6.51 ms. Most reported
 15–26 ms callbacks use less than 8 ms thread CPU. Real CPU bursts accumulate

@@ -59,6 +59,8 @@ use 'terrain_assets.jo'
 t0 = time()
 # (BOTW_LOADTIME=1: how long each part of the load takes)
 __lt = time()
+hitstop = 0.0
+
 __lap = (name: str):
     if env("BOTW_LOADTIME") != none: eprint("  {name} {time() - __lt:.2}s")
     __lt = time()
@@ -89,7 +91,8 @@ if not architecture_load():
 __lap("structures_build")
 # Queue the static uploads now; CPU placement/audio and later uploads run while
 # the driver consumes them. The existing warmup fence still guarantees readiness.
-glFlush()
+when TARGET != "wasm":
+    glFlush()
 vegetation_init()
 __lap("vegetation_init")
 items_init()
@@ -220,6 +223,8 @@ loop a in actors:
 eprint("field chests: {__ek} at camps, {__ik} in the open")
 
 # Cook exactly the materials selected with Hold; never silently choose a recipe.
+__cook_dish = ""
+__cook_t = 0.0
 cook_at_pot = ():
     if __cook_t > 0.0 or inv.held.len() == 0: return
     lit = false
@@ -242,8 +247,6 @@ cook_at_pot = ():
     play(sfx.fire, 0.5)
     fx_steam(pot_cook_pos + vec3(0, 0.65, 0), 20)
     cooking_jingle(dish == "dubious_food" or dish == "rock_hard_food")
-__cook_dish = ""
-__cook_t = 0.0
 __pot_us: int[]
 loop b in bonfires:
     if b.pot: __pot_us.push(add_usable(b.pos, 2.0, "Cook", cook_at_pot, false))
@@ -643,7 +646,6 @@ slot_views = () -> SlotView[]:
             out.push(SlotView(d.name, d.shape, d.color, n, "{i + 1}"))
     out
 
-hitstop = 0.0
 # the old man gets up when the grass burns near him, and sits again once it is out
 __om_alarm = 0.0
 old_man_fire = (dt: f64):
@@ -1321,10 +1323,12 @@ character_warmup = ():
         gl_opaque_state()
         glColorMask(0, 0, 0, 0)
         glDisable(GL_CULL_FACE)
+        game_shadow_offset = true
         glEnable(GL_POLYGON_OFFSET_FILL)
-        glPolygonOffset(1.5, 2.0)
+        if not game_vulkan_backend(): glPolygonOffset(1.5, 2.0)
         glClear(GL_DEPTH_BUFFER_BIT)
         draw_character_shadow(m, world, sk, vp)
+        game_shadow_offset = false
         glDisable(GL_POLYGON_OFFSET_FILL)
         glColorMask(1, 1, 1, 1)
         loop variant in [0..m.variants):
@@ -1387,7 +1391,8 @@ render_warmup = ():
     if not invui.open: story_draw_2d()
     flush()
     story.title_alpha = saved_alpha
-    glFinish()
+    when TARGET != "wasm":
+        glFinish()
     shader_load_cache_commit()
     sc = saved_sc
     cpu_timing = ct

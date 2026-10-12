@@ -18,7 +18,7 @@ from '../game/texture_assets.jo' import __texture_paths
 # bit hashes. This checks playback samples, alias graph, RNG and terrain physics.
 sample_hash = (s: Sound) -> u64:
     bits = data(s.samples) as *u32
-    h = u64(14695981039346656037)
+    let h = u64(14695981039346656037)
     loop i in [0..s.samples.len()): h = (h xor u64(bits[i])) * u64(1099511628211)
     h
 asset_report = (name: str, asset: AudioAsset):
@@ -77,7 +77,7 @@ texture_assets_init()
 images: {str: Image} = {}
 loop path in __texture_paths:
     img = startup_image(path)!
-    h = u64(14695981039346656037)
+    let h = u64(14695981039346656037)
     loop byte in img.pixels: h = (h xor u64(byte)) * u64(1099511628211)
     print("texture {path} {img.width}x{img.height} bytes {img.pixels.len()} hash {h}")
     images[path] = img

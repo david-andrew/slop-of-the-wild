@@ -9,7 +9,9 @@ Enemy notice plays its short rising piano cue immediately, with an eight-second
 retrigger cooldown. The field phrase stops scheduling new strikes and its
 sounding notes fade over **0.30 s**. Combat then enters at 55% score gain, reaching
 full gain over **0.113 s** (the 0.25 s full-range ramp). Every automated score gain
-uses a **20 ms sample ramp**; outgoing handles survive its final release. The
+uses a **20 ms sample ramp baked by game code into each voice's private unplayed
+samples**; interrupted ramps continue from their current gain, and outgoing handles
+survive their final release. Sloppy 0.6.0's live mixer is the unmodified release. The
 entry drum has a **4 ms attack / 25 ms terminal release**. Independent notice and
 story cues retain their natural tails. The interrupted field phrase does not
 finish its remaining melody; its already sounding notes receive the fade.
@@ -36,7 +38,36 @@ boundary error below **0.0001** full scale; the current clips measure zero for
 both. This isolates automation clicks from intentional note attacks and natural
 waveform motion; it is not a loudness-normalization rule for successive phrases.
 
-## Current evidence (2026-10-12)
+## Sloppy 0.6.0 verification (2026-10-12)
+
+The eight 45 s listening contexts retain the existing LUFS targets: day **-24.6**, night **-25.1**,
+rain **-26.0**, engaged **-22.0**, low health **-22.9**, shrine **-27.2**, title
+**-20.4**, cave exit **-20.9**. Their worst true peak is **-3.3 dBTP**; the longer repeat/texture audits peak
+at **-2.8 dBTP**. Sample ramps
+at 127/400/800/1600-sample mixer blocks have maximum step **0.0001500** full scale;
+the full transition captures retain zero automation-boundary discontinuity and
+the same musical handoff times. The 60 Hz volume targets therefore remain smoothed.
+
+The game-side soft-knee guard (knee 0.65, ceiling 0.84) remains on offline score
+exports. Live integration captures instead exercise the release mixer, which uses
+`tanh` only above full scale. They verify the reconstructed linear stem sum against
+that actual mixer to 0.000001. The 600 s field mix measures **-24.0 LUFS / -1.3 dBTP**;
+40 s engaged and low-health mixes measure **-21.2 / -3.6** and **-21.3 / -3.4**.
+The 180 s rain/fire/wildlife/combat/shelter scenario also passes. The worst live
+peak is **-1.3 dBTP**, below the **-1 dBTP** ceiling, without changing authored gains
+or adding a master trim. Results remain in `build/sloppy060/listen/` and
+`build/sloppy060/live-audio/`; reproduce with `tools/listen.py` and
+`tools/live_audio_check.py`, then `tools/mix_loudness_check.py --check`.
+
+The live cue analysis retains its raw onset metric and applies the unchanged
+**6 dB** margin to the settled 100 ms cue body, beginning at **33.3 ms** (two
+60 Hz rows, beyond the 20 ms ramp). At the engaged 13 s windup, the old patched
+mixer and game-side ramp give **-2.68671 / -2.68675 dB** over the immediate onset:
+a difference of only **0.000042 dB**. That older assertion also fails on master.
+The settled body clears music by **11.62 dB** and all background by **11.60 dB**;
+no cue or score gains change. Both windows remain in the CSV evidence.
+
+## Previous music and sound pass (2026-10-12)
 
 Field figures now occasionally add a quiet left-hand note or open fifth. Four
 bass colours rotate without consecutive reuse for the same figure; their gains

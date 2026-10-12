@@ -104,7 +104,7 @@ for scene in ${TREE_SCENES:-chop water burning}; do
   frames=360
   input="20:j+,22:j-,100:j+,102:j-,180:j+,182:j-,260:j+,262:j-"
  fi
- env BOTW_SKIP=1 BOTW_HOUR=10 BOTW_WEATHER=clear BOTW_SCALE=1 BOTW_NOVSYNC=1 \
+ env BOTW_SKIP=1 BOTW_HOUR=10 BOTW_WEATHER=clear BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 \
   TREE_VISUAL="$scene" BOTW_CAPTURE_DIR="$out/$scene" BOTW_CAPTURE_EVERY=10 \
   SLOPPY_INPUT="$input" SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
   SLOPPY_FRAMES="$frames" SLOPPY_SCREENSHOT="$out/$scene-final.png" \

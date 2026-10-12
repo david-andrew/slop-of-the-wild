@@ -17,7 +17,7 @@ import os, subprocess, sys
 from PIL import Image
 out, binary = Path(sys.argv[1]), sys.argv[2]
 env = {k:v for k,v in os.environ.items() if not k.startswith(('BOTW_','SLOPPY_'))}
-env.update(BOTW_HOUR='11',BOTW_WEATHER='clear',BOTW_SCALE='1',BOTW_NOVSYNC='1',
+env.update(BOTW_HOUR='11',BOTW_WEATHER='clear',BOTW_SCALE='1',BOTW_NOVSYNC='1', SLOPPY_VSYNC='0',
            SLOPPY_PLATFORM='x11',SLOPPY_WINDOW='1280x720',BOTW_CAMDBG='1',BOTW_CAPTURE_EVERY='30')
 for name, frames, settings in [
     ('title',850,dict(BOTW_TITLE='1',SLOPPY_INPUT='10:w+,300:w-',BOTW_OPENING_CAPTURE=str(out/'title'))),

@@ -36,10 +36,10 @@ reset_keys = ():
 
 reset_pad = ():
     reset_keys()
-    __pad_on = true
-    __pad_axes = fill(0.0, 6)
-    __pad_down = fill(false, 15)
-    __pad_prev = fill(false, 15)
+    __pad_on[0] = true
+    __pad_axes = fill(0.0, 48)
+    __pad_down = fill(false, 120)
+    __pad_prev = fill(false, 120)
     __nav_t = 0.0
     __nav_dir = vec2(0, 0)
     act = Actions()
@@ -177,7 +177,7 @@ controls_checks = ():
         input_controls_defaults()
         check("rebind_{input_action_ids[i]}_accepted", input_rebind(i, .f))
         reset_pad()
-        __pad_on = false
+        __pad_on[0] = false
         __key_pressed[int(Key.f)] = true
         __key_down[int(Key.f)] = true
         if i == 21: __key_down[int(Key.w)] = true
@@ -241,7 +241,7 @@ controls_checks = ():
         input_controls_defaults()
         input_rebind(0, k)
         reset_pad()
-        __pad_on = false
+        __pad_on[0] = false
         invui_open_hint = false
         __key_pressed[int(k)] = true
         __key_down[int(k)] = true
@@ -272,7 +272,7 @@ controls_checks = ():
     input_rebind(3, .f)
     reset_pad()
     inv.weapon = 1
-    __pad_on = false
+    __pad_on[0] = false
     __key_pressed[int(Key.f)] = true
     input_update(1.0 / 60.0, false)
     inventory_update(1.0 / 60.0)
@@ -360,7 +360,7 @@ controls_checks = ():
     input_rebind(3, .f)
     input_scripted = true
     reset_pad()
-    __pad_on = false
+    __pad_on[0] = false
     __key_pressed[int(Key.e)] = true
     input_update(1.0 / 60.0, false)
     check("scripted_keyboard_uses_default_action_and_glyph", act.interact and input_key_name(3) == "E" and invert_x)
@@ -454,8 +454,8 @@ inventory_transaction_checks = ():
         inventory_update(1.0 / 60.0)
         check("gear_{id}_unequip_wins_over_bind_and_drop", not inventory_cell_equipped(tab, 0) and inv_owns(id) and witems.len() == 0 and inv.slots[2] == "")
         reset_keys()
-        __pad_down = fill(false, 15)
-        __pad_prev = fill(false, 15)
+        __pad_down = fill(false, 120)
+        __pad_prev = fill(false, 120)
         __key_pressed[int(Key.e)] = true
         input_update(1.0 / 60.0, false)
         inventory_update(1.0 / 60.0)
@@ -548,9 +548,9 @@ main = ():
         __pad_axes[0] = 1.0
         input_update(dt, false)
         check("stick_release_repress_immediate_{hz}hz", act.nav.x == 1.0)
-        __pad_on = false
+        __pad_on[0] = false
         input_update(dt, false)
-        __pad_on = true
+        __pad_on[0] = true
         input_update(dt, false)
         check("stick_reconnect_immediate_{hz}hz", act.nav.x == 1.0)
     # A key after the pad: prompts go back to the keyboard's glyphs at once.
@@ -592,12 +592,12 @@ main = ():
         check("{source}_overrides_held_pad_glyphs", not act.using_pad)
     reset_pad()
     act.using_pad = true
-    __pad_on = false
+    __pad_on[0] = false
     input_update(1.0 / 60.0, false)
     check("pad_disconnect_restores_keys", not act.using_pad)
     # The map's cursor follows the free pointer while the menu is open (mouse-look is off then).
     reset_pad()
-    __pad_on = false
+    __pad_on[0] = false
     map_known = true
     map_cursor_on = false
     __map_box = vec4(100, 250, 400, 300)
@@ -636,7 +636,7 @@ main = ():
     inventory_update(1.0 / 60.0)
     check("map_click_outside_does_not_place", map_pins.len() == 0)
     __mouse_pressed[int(Mouse.left)] = false
-    __pad_on = true
+    __pad_on[0] = true
     __pad_axes[2] = 1.0
     input_update(1.0 / 60.0, false)
     inventory_update(1.0 / 60.0)
@@ -664,7 +664,7 @@ main = ():
     # Arrow/WASD navigation is handled by the map before the empty item grid.
     loop key in [Key.right, Key.left, Key.up, Key.down, Key.d, Key.a, Key.w, Key.s]:
         reset_pad()
-        __pad_on = false
+        __pad_on[0] = false
         invui.tab = MAP_TAB
         map_cursor = vec2(0.5, 0.5)
         map_cursor_on = false
@@ -733,8 +733,8 @@ main = ():
     inventory_update(1.0 / 60.0)
     check("map_held_bumper_does_not_repeat_zoom", abs(map_zoom - 1.4) < 0.001)
     reset_keys()
-    __pad_down = fill(false, 15)
-    __pad_prev = fill(false, 15)
+    __pad_down = fill(false, 120)
+    __pad_prev = fill(false, 120)
     __pad_down[int(PadButton.lb)] = true
     input_update(1.0 / 60.0, false)
     inventory_update(1.0 / 60.0)
@@ -752,7 +752,7 @@ main = ():
     inventory_update(1.0 / 60.0)
     check("map_dpad_left_still_reaches_key_items", invui.tab == MAP_TAB - 1 and map_zoom == 1.0)
     reset_pad()
-    __pad_on = false
+    __pad_on[0] = false
     invui.tab = MAP_TAB
     map_cursor_on = true
     input_controls_defaults()
@@ -952,7 +952,7 @@ pad_response_checks = ():
         invui.open = paused
         invui_open_hint = paused
         # Deliberately leave backend arrays stale; disconnected input must be inert.
-        __pad_on = false
+        __pad_on[0] = false
         input_update(1.0 / 60.0, false)
         check("disconnect_{mode}_clears_actions_and_glyphs", act.pad_lost and not act.using_pad and not act.attack_held and not act.bow and not act.bow_released and not act.lock and not act.sprint and not act.jump and not act.jump_held and not act.interact and not act.throw_ and not act.inventory and not act.pause and not act.confirm and not act.back and not act.drop and length(act.move) == 0.0 and length(act.look) == 0.0 and act.slot < 0 and act.tab == 0 and length(act.nav) == 0.0)
         if paused:
@@ -965,10 +965,10 @@ pad_response_checks = ():
         check("disconnect_{mode}_cancels_without_attack", fight.act == .idle and inv.arrows == arrow_count and not pl.events.contains("shoot") and not input_pad_lost)
         input_update(1.0 / 60.0, false)
         check("disconnect_{mode}_consumed_after_gameplay", not act.pad_lost)
-        __pad_axes = fill(0.0, 6)
-        __pad_down = fill(false, 15)
-        __pad_prev = fill(false, 15)
-        __pad_on = true
+        __pad_axes = fill(0.0, 48)
+        __pad_down = fill(false, 120)
+        __pad_prev = fill(false, 120)
+        __pad_on[0] = true
         input_update(1.0 / 60.0, false)
         check("reconnect_{mode}_restores_idle_pad_glyphs", act.using_pad and input_action_label(3) == "B" and length(act.move) == 0.0 and length(act.look) == 0.0 and not act.bow and not act.attack)
         __pad_axes[5] = 1.0
@@ -979,7 +979,7 @@ pad_response_checks = ():
         input_update(1.0 / 60.0, false)
         check("held_keyboard_camera_restores_keyboard_glyphs_{mode}", not act.using_pad and act.look.x < 0.0)
     reset_pad()
-    __pad_on = false
+    __pad_on[0] = false
     input_update(1.0 / 60.0, false)
 
 binding_recovery_checks = ():
@@ -1082,7 +1082,7 @@ equipment_copy_checks = ():
             inv = Inventory()
             loop i in [0..3): inv_add(id)
             invui = InvUI(open = true, tab = tab, sel = 0, t = 1.0)
-            if source != "pad": __pad_on = false
+            if source != "pad": __pad_on[0] = false
             if source == "keyboard": __key_typed[int(Key.right)] = true
             else if source == "pad": __pad_axes[0] = 1.0
             else:
@@ -1093,7 +1093,7 @@ equipment_copy_checks = ():
             inventory_update(1.0 / 60.0)
             check("copy_{id}_{source}_selects_second", invui.sel == 1 and inventory_copy_label(tab, 0) == "1/3" and inventory_copy_label(tab, 1) == "2/3" and inventory_copy_label(tab, 2) == "3/3")
             reset_keys()
-            __pad_axes = fill(0.0, 6)
+            __pad_axes = fill(0.0, 48)
             if source == "keyboard": __key_pressed[int(Key.enter)] = true
             else if source == "pad": __pad_down[int(PadButton.b)] = true
             else: __mouse_pressed[int(Mouse.left)] = true
@@ -1101,7 +1101,7 @@ equipment_copy_checks = ():
             inventory_update(1.0 / 60.0)
             check("copy_{id}_{source}_equips_only_second", inventory_cell_equipped(tab, 1) and not inventory_cell_equipped(tab, 0) and not inventory_cell_equipped(tab, 2))
             reset_keys()
-            __pad_down = fill(false, 15)
+            __pad_down = fill(false, 120)
             if source == "pad": __pad_down[int(PadButton.right)] = true
             else: __key_pressed[int(Key.n3)] = true
             input_update(1.0 / 60.0, false)

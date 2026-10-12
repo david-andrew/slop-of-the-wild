@@ -1,4 +1,4 @@
-# Round 71: combat UI, presentation and cold-file startup
+# Historical: Round 71: combat UI, presentation and cold-file startup
 
 Base `36f77b7`, branch `sol/work`, 2026-10-11. Work is confined to
 `botw-clone-sol`; vendored Sloppy sources and character/environment models are
@@ -151,3 +151,6 @@ requested as 1280×720. Its raw data remain under
 Initial downhill/occluded and shallow-water target captures were rejected; the final fixture uses verified dry grass.
 Raw logs, binaries, images and page-residency lists stay under ignored
 `build/round71/`. No `build/` files are force-added.
+
+Sloppy 0.6.0 supersedes this local callback-bypass option with upstream Vulkan
+swapchain presentation (`SLOPPY_VSYNC=0`); see current PERFORMANCE.md.

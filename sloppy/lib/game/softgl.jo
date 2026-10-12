@@ -578,7 +578,9 @@ __sw_raster = (sv: *f32, stride: int, idx: *i32, ntri: int, shade: (int, int, in
 # draw a mesh with a Sloppy shader (called by gpu.jo's draw / draw_instanced in software mode)
 __sw_warned_lines = false
 
-__sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo: int, nidx: int, uni: *u8, ibuf: int, istride: int, ninst: int, ioff: int):
+# (first: the first index, or vertex, drawn; ndraw: how many vertices, without indices (-1: all
+# from first); base_vertex: added to each index; ibase: added to instance_id(): see draw_indirect)
+__sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo: int, nidx: int, uni: *u8, ibuf: int, istride: int, ninst: int, ioff: int, first: int = 0, ndraw: int = -1, base_vertex: int = 0, ibase: int = 0):
     if mode != GL_TRIANGLES and mode != GL_TRIANGLE_STRIP and mode != GL_TRIANGLE_FAN:
         if not __sw_warned_lines:
             __sw_warned_lines = true
@@ -587,6 +589,8 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     if prog <= 0 or prog >= __sp_vs.len() or __sp_vs[prog] == null or nverts == 0: return
     nf = __sp_out[prog] / 4
     vargs = __sp_args[prog]
+    vsp = __sp_vs[prog]
+    fsp = __sp_fs[prog]
     vs2 = __sp_vs[prog] as cfn(*u8, *u8, *u8)
     vs3 = __sp_vs[prog] as cfn(*u8, *u8, *u8, *u8)
     fs = __sp_fs[prog] as cfn(*u8, *u8, *u8)
@@ -604,14 +608,16 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
     ib: *u32 = null
     count = nverts
     if nidx > 0:
-        if __s_buffers[ibo].len() < nidx * 4: return
-        ib = data(__s_buffers[ibo]) as *u32
+        if __s_buffers[ibo].len() < (first + nidx) * 4: return
+        ib = (data(__s_buffers[ibo]) as *u32) + first
         count = nidx
+    else if ndraw >= 0: count = ndraw
+    else: count = nverts - first
     ntri = count / 3
     if mode != GL_TRIANGLES: ntri = max(count - 2, 0)
     reps = max(ninst, 1)
     instb: *u8 = null
-    if ninst > 0:
+    if ninst > 0 and ibuf > 0:
         if __s_buffers[ibuf].len() < ioff + ninst * istride: return
         instb = data(__s_buffers[ibuf]) + ioff
     c, d = __sw_target()
@@ -646,9 +652,14 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             v = g % nverts
             if ids:
                 mine[0] = v
-                mine[1] = g / nverts
-            if vargs == 3: vs3(o as *u8, vb + v * stride, instb + (g / nverts) * istride, uni)
-            else: vs2(o as *u8, vb + v * stride, uni)
+                mine[1] = g / nverts + ibase
+            when TARGET == "windows":
+                # (cfn calls use Windows' convention there; the shader functions are Sloppy's)
+                if vargs == 3: __call_raw(vsp, o as *u8, vb + v * stride, instb + (g / nverts) * istride, uni)
+                else: __call_raw(vsp, o as *u8, vb + v * stride, uni)
+            else:
+                if vargs == 3: vs3(o as *u8, vb + v * stride, instb + (g / nverts) * istride, uni)
+                else: vs2(o as *u8, vb + v * stride, uni)
             __sw_project(o, pvp + g * pstride, nf, vx, vy, vw, vh, fp)
     )
     # triangles, clipped against the near plane z >= -w where needed
@@ -676,7 +687,14 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
                 i0 = int(ib[j0])
                 i1 = int(ib[j1])
                 i2 = int(ib[j2])
-            if i0 >= nverts or i1 >= nverts or i2 >= nverts: continue
+            else:
+                i0 += first
+                i1 += first
+                i2 += first
+            i0 += base_vertex
+            i1 += base_vertex
+            i2 += base_vertex
+            if i0 >= nverts or i1 >= nverts or i2 >= nverts or i0 < 0 or i1 < 0 or i2 < 0: continue
             i0 += base
             i1 += base
             i2 += base
@@ -746,7 +764,10 @@ __sw_draw_mesh = (prog: int, mode: int, vbo: int, stride: int, nverts: int, ibo:
             vin[2] = z
             vin[3] = iw
             if disc: mine[2] = 0
-            fs(col as *u8, vin as *u8, uni)
+            when TARGET == "windows":
+                __call_raw(fsp, col as *u8, vin as *u8, uni)
+            else:
+                fs(col as *u8, vin as *u8, uni)
             if disc:
                 if mine[2] != 0: continue
                 if dwrite: dp[pix * 4] = z

@@ -1,5 +1,6 @@
 use 'gfx.jo'
 use 'audio_assets.jo'
+use 'audio_mix.jo'
 use 'player.jo'
 use 'env.jo'
 use 'enemies.jo'
@@ -201,6 +202,10 @@ __shrine_glass = () -> Sound:
         out[i*2+1] = f32(v * 0.94)
     Sound(out)
 
+drum_lo = Sound()
+drum_hi = Sound()
+combat_entry = Sound()
+
 piano_init = ():
     if piano.ready: return
     saved = __global_rng
@@ -291,6 +296,11 @@ struct ScoreVoice:
     left: f64
     context = true
     retiring = false
+    source = Sound()
+    applied = 1.0
+    ramp_from = 1.0
+    ramp_at = 0.0
+    ramp_frames = 1.0
 score_voices: ScoreVoice[]
 music_hold = 0.0
 music_activity = 0.0
@@ -307,12 +317,40 @@ music_cue_duck = ():
     music_duck_floor = min(music_duck_floor, (if low: CUE_DUCK_LOW_HP else: CUE_DUCK_ENGAGED))
     music_duck_hold = max(music_duck_hold, 0.18)
     music_duck = min(music_duck, music_duck_floor)
-    loop v in score_voices: set_volume_ramped(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))
+    loop v in score_voices: score_set_volume(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))
 
 __score_play = (s: Sound, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
-    id = play(s, gain * (if score: seq.volume else: 1.0) * music_duck, pan, pitch)
-    score_voices.push(ScoreVoice(id, gain, duration(s) / pitch, context = score))
+    initial = gain * (if score: seq.volume else: 1.0) * music_duck
+    samples = [loop x in s.samples: x * f32(initial)]
+    id = play(Sound(samples), 1.0, pan, pitch)
+    score_voices.push(ScoreVoice(id, gain, duration(s) / pitch, context = score, source = s, applied = initial, ramp_from = initial))
     id
+
+# Each score handle owns its samples. Bake interrupted 20 ms gain envelopes into
+# its unplayed suffix, leaving the release's mixer and shared sample banks intact.
+# Only gain changes touch the suffix; source frames account for pitched playback.
+score_set_volume = (id: int, gain: f64):
+    si = -1
+    loop i in [0..score_voices.len()):
+        if score_voices[i].id == id: si = i
+    if si < 0: return
+    v = score_voices[si]
+    if abs(gain - v.applied) < 0.00000001: return
+    loop vi in [0..__voices.len()):
+        if __voices[vi].id != id: continue
+        pos = __voices[vi].pos
+        start = floor(pos)
+        from = mix(v.ramp_from, v.applied, clamp((start - v.ramp_at) / v.ramp_frames, 0.0, 1.0))
+        frames = max(1.0, 0.020 * f64(MIX_RATE) * __voices[vi].pitch)
+        loop frame in [int(start)..v.source.samples.len() / 2):
+            g = f32(mix(from, gain, clamp((f64(frame) - start) / frames, 0.0, 1.0)))
+            __voices[vi].sound.samples[frame * 2] = v.source.samples[frame * 2] * g
+            __voices[vi].sound.samples[frame * 2 + 1] = v.source.samples[frame * 2 + 1] * g
+        score_voices[si].ramp_from = from
+        score_voices[si].applied = gain
+        score_voices[si].ramp_at = start
+        score_voices[si].ramp_frames = frames
+        return
 
 piano_play = (midi: int, vel: f64 = 0.7, pan: f64 = 0.0, volume: f64 = 1.0, short: bool = false, score: bool = false, restrained: bool = false) -> int:
     if not piano.ready: return 0
@@ -588,7 +626,7 @@ music_update = (dt: f64):
             if v.retiring: stop(v.id)
             score_voices.remove(i)
         else:
-            set_volume_ramped(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))
+            score_set_volume(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))
             i += 1
     if fading:
         if seq.volume > 0.0: return   # no outgoing strikes during the hand-off
@@ -657,9 +695,6 @@ __combat_melody = [[69,69,72,68],[76,76,79,75],[69,69,72,68],[72,75],
 __combat_basses = [45,40,45,41,45,43,44,45]
 # a frame drum under the fight: a deep skin (a pitch falling as the head settles) and a dry
 # slap of the hand, built once
-drum_lo = Sound()
-drum_hi = Sound()
-combat_entry = Sound()
 __drum = (f0: f64, f1: f64, dur: f64, slap: f64) -> Sound:
     n = int(dur * f64(MIX_RATE))
     out: f32[]

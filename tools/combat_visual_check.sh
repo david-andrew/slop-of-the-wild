@@ -63,7 +63,7 @@ update = (dt: f64):
         enemies[visual_enemy].pos = pl.pos + vec3(0, 0, -2.1)
         if frame_number() == 30:
             dir = if visual_case == "stagger_front": vec3(0, 0, -1) else: (if visual_case == "stagger_rear": vec3(0, 0, 1) else: (if visual_case == "stagger_left": vec3(1, 0, 0) else: vec3(-1, 0, 0)))
-            __take_hit(enemies[visual_enemy], 5.0, enemies[visual_enemy].pos - dir * 2.0, 4.0, false)
+            __take_hit(visual_enemy, 5.0, enemies[visual_enemy].pos - dir * 2.0, 4.0, false)
             play_events()
         enemy_anim_update(0.0)
         if frame_number() == 40:
@@ -243,7 +243,7 @@ for scene in ${COMBAT_SCENES:-windup windup_heavy strike slam shove hit flurry f
     input=(BOTW_GIVE="$weapon,travelers_shield" SLOPPY_INPUT='1:k+,1:w+,170:j+,171:j-,180:w-,185:j+,186:j-,215:j+,216:j-,245:j+,246:j-')
   fi
   flock /tmp/botw-render.lock env BOTW_SKIP=1 BOTW_AT="$at" BOTW_HOUR=10 BOTW_WEATHER=clear \
-    "${input[@]}" COMBAT_VISUAL="$scene" BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
+    "${input[@]}" COMBAT_VISUAL="$scene" BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \
     BOTW_CAPTURE_DIR="$capture" BOTW_CAPTURE_EVERY=1 \
     SLOPPY_SCREENSHOT="$out/$label-$scene.png" SLOPPY_FRAMES="$frames" \
     timeout 180 "$out/combat-visual" > "$out/$label-$scene.log" 2>&1

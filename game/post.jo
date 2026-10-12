@@ -471,6 +471,9 @@ post_begin = () -> Target:
 # copy the scene's depth so far (before the transparent things) where shaders can read it
 post_copy_depth = ():
     if post.depth_copy.fbo == 0: return
+    if game_vulkan_backend():
+        game_copy_target(post.scene, post.depth_copy)
+        return
     glBindFramebuffer(GL_READ_FRAMEBUFFER, u32(post.scene.fbo))
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, u32(post.depth_copy.fbo))
     glBlitFramebuffer(0, 0, i32(post.w), i32(post.h), 0, 0, i32(post.w), i32(post.h), GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT, GL_NEAREST)

@@ -31,7 +31,7 @@ update = (dt: f64):
         print("stalkoblin model: body={stalko_m.parts[0].tris} skull={stalko_m.parts[1].tris} triangles; bones={stalko_m.bones.len()}")
     production_update(dt)
     if frame_number() == 30:
-        __take_hit(enemies[visual_enemy], 1.0, pl.pos, 2.0, false)
+        __take_hit(visual_enemy, 1.0, pl.pos, 2.0, false)
         enemy_anim_update(0.0)
     if frame_number() == 45:
         assert(enemies[visual_enemy].skull_out and enemies[visual_enemy].skull_age > 0.1, "hit detaches the skull through the impact")
@@ -46,7 +46,7 @@ update = (dt: f64):
     if frame_number() == 380:
         assert(not enemies[visual_enemy].skull_out, "body reaches and picks up its skull")
         print("PASS skull reattached through gameplay recovery")
-        __take_hit(enemies[visual_enemy], 20.0, pl.pos, 2.0, false)
+        __take_hit(visual_enemy, 20.0, pl.pos, 2.0, false)
     if frame_number() == 405:
         q = enemies[visual_enemy].skull_pos
         player_hits = [PHit(q, q + vec3(0, 0, 1), vec3(0, 0, -1), 2.0, 2.0, false, 900, q + vec3(-0.4, 0, 0), q + vec3(0.4, 0, 0))]
@@ -60,7 +60,7 @@ PY
 sloppy/bin/sloppy build "$out/fixture.jo" -o "$out/fixture"
 if [[ ${VISUAL_PREPARE:-0} == 1 ]]; then exit 0; fi
 env BOTW_SKIP=1 BOTW_AT=-672,1535,0.8 BOTW_HOUR=23 BOTW_WEATHER=clear \
- BOTW_NOVSYNC=1 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=435 \
+ BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=435 \
  BOTW_CAPTURE_DIR="$out" BOTW_CAPTURE_EVERY=5 SLOPPY_SCREENSHOT="$out/final.png" \
  timeout 180 "$out/fixture" > "$out/run.log" 2>&1
 grep -E 'stalkoblin model|PASS skull' "$out/run.log"

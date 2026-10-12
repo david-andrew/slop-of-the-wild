@@ -62,7 +62,7 @@ def capture(a):
     # process separately: its cache-miss cost never silently replaces a measured run.
     if a.shader_cache == 'warm' and a.exact_output and a.mode == 'gpu':
         e = {k: v for k, v in os.environ.items() if not k.startswith(('BOTW_', 'SLOPPY_')) and k != '__GL_SHADER_DISK_CACHE'}
-        e.update(BOTW_SKIP='1', BOTW_LOADTIME='1', BOTW_SCALE=str(a.scale), BOTW_NOVSYNC='1',
+        e.update(BOTW_SKIP='1', BOTW_LOADTIME='1', BOTW_SCALE=str(a.scale), BOTW_NOVSYNC='1', SLOPPY_VSYNC='0',
                  SLOPPY_PLATFORM='x11', SLOPPY_WINDOW=a.window, SLOPPY_FRAMES='1', SLOPPY_FRAME_STATS='1',
                  SLOPPY_SCREENSHOT=str((a.output/'prepare.png').resolve()))
         if a.window_loop == 'client': e['BOTW_BENCH_CLIENT_SIZE'] = '1'
@@ -87,13 +87,14 @@ def capture(a):
             # with_suffix treats the decimal in scale as an extension: append instead.
             png = Path(str(prefix)+'.png'); e['SLOPPY_SCREENSHOT'] = str(png.resolve())
             if a.mode == 'gpu':
-                e.update(BOTW_GPU='1', BOTW_NOVSYNC='1', SLOPPY_PLATFORM='x11', SLOPPY_WINDOW=a.window)
+                e.update(BOTW_GPU='1', BOTW_NOVSYNC='1', SLOPPY_VSYNC='0', SLOPPY_PLATFORM='x11', SLOPPY_WINDOW=a.window)
             else:
                 e.update(BOTW_CPU='1', SLOPPY_PLATFORM='wayland')
-                if a.mode == 'mailbox': e['SLOPPY_PRESENT'] = 'mailbox'
+                if a.mode == 'mailbox': e['SLOPPY_VSYNC'] = '0'
             if a.shader_cache == 'disabled':
                 e['__GL_SHADER_DISK_CACHE'] = '0'
                 e['BOTW_NO_SHADER_CACHE'] = '1'
+                e['SLOPPY_VK_PIPELINE_CACHE'] = '0'
             if a.window_loop == 'client': e['BOTW_BENCH_CLIENT_SIZE'] = '1'
             if a.prepared_assets == 'disabled': e['BOTW_NO_PREPARED_ASSETS'] = '1'
             e.update(CASES[name])
@@ -150,10 +151,10 @@ def read_run(p):
     expected_samples=int(meta['flags']['SLOPPY_FRAMES'])-240
     if len(steady)!=expected_samples: raise ValueError(f'{p}: expected {expected_samples} intervals, got {len(steady)}')
     if len({d for d,_ in dims[2:]})!=1: raise ValueError(f'{p}: resizing in steady state')
-    if '-gpu-' in p.name and ('egl window surface' not in s or 'BOTW_NOVSYNC:' in s): raise ValueError(f'{p}: X11 swap interval failed')
+    if '-gpu-' in p.name and ('vulkan (' not in s and ('egl window surface' not in s or 'BOTW_NOVSYNC:' in s)): raise ValueError(f'{p}: X11 swap interval failed')
     if meta['flags'].get('SLOPPY_PLATFORM')=='wayland':
-        if 'wayland' not in s or 'dma-buf' not in s: raise ValueError(f'{p}: GPU Wayland presentation was not confirmed')
-        if meta['flags'].get('SLOPPY_PRESENT')=='mailbox' and 'dma-buf, mailbox,' not in s: raise ValueError(f'{p}: mailbox runtime was not confirmed')
+        if 'wayland' not in s or ('vulkan (' not in s and 'dma-buf' not in s): raise ValueError(f'{p}: GPU Wayland presentation was not confirmed')
+        if meta['flags'].get('SLOPPY_VSYNC')=='0' and 'mailbox' not in s: raise ValueError(f'{p}: mailbox runtime was not confirmed')
     if meta.get('exact_output') and any(d != meta['exact_output'] for d, _ in dims):
         raise ValueError(f'{p}: actual size differs from required {meta["exact_output"]}')
     batches=[]

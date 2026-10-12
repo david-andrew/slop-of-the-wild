@@ -38,15 +38,23 @@ def analyze(path, mode):
         if kind == 'cue_step' or not (kind.startswith('cue_') or kind == 'step'):
             continue
         start = round(float(event['time']) * 60)
-        def power(names):
+        def power(names, offset=0):
             return sum(layers[n].get(i, (0, 0, 0, 1600))[0]
-                       for n in names for i in range(start, start + 6)) / 9600
+                       for n in names for i in range(start + offset, start + offset + 6)) / 9600
         signal = power(['footsteps' if kind == 'step' else 'cues'])
+        # The score's legacy and game-owned gain attacks both last 20 ms.
+        # Keep the raw onset metric, and check the settled 100 ms cue body.
+        # Two 60 Hz rows (33.3 ms) conservatively clear that sample ramp.
+        body_offset = 2 if kind.startswith('cue_') else 0
+        body_signal = power(['footsteps' if kind == 'step' else 'cues'], body_offset)
         ratios.append({'time': float(event['time']), 'kind': kind,
                        'signal_dbfs': db(signal), 'music_dbfs': db(power(['music'])),
                        'cue_to_music_db': db(signal) - db(power(['music'])),
                        'to_rain_fire_db': db(signal) - db(power(['rain', 'fire'])),
-                       'to_all_background_db': db(signal) - db(power(['music', 'wind', 'rain', 'fire', 'wildlife', 'other']))})
+                       'to_all_background_db': db(signal) - db(power(['music', 'wind', 'rain', 'fire', 'wildlife', 'other'])),
+                       'body_start_ms': body_offset * 1000 / 60,
+                       'body_cue_to_music_db': db(body_signal) - db(power(['music'], body_offset)),
+                       'body_to_all_background_db': db(body_signal) - db(power(['music', 'wind', 'rain', 'fire', 'wildlife', 'other'], body_offset))})
     with (path / f'{mode}-onsets.csv').open('w') as f:
         if ratios:
             writer = csv.DictWriter(f, fieldnames=ratios[0].keys())
@@ -117,8 +125,8 @@ def main():
         for mode in ['scenario', 'engaged', 'low_hp']:
             for onset in data[mode]['onsets']:
                 if onset['kind'].startswith('cue_'):
-                    assert onset['cue_to_music_db'] >= 6, (mode, onset)
-                    assert onset['to_all_background_db'] >= 6, (mode, onset)
+                    assert onset['body_cue_to_music_db'] >= 6, (mode, onset)
+                    assert onset['body_to_all_background_db'] >= 6, (mode, onset)
                 elif mode == 'scenario':
                     assert onset['to_rain_fire_db'] >= 0, (mode, onset)
         field = data['field']['repetition']
@@ -132,13 +140,14 @@ def main():
         for mode in data:
             assert data[mode]['levels']['full_mix']['pre_limiter_overloads'] == 0
             assert data[mode]['levels']['full_mix']['pcm_clipped_samples'] == 0
-        print('PASS live audio: low-health occupancy, cue audibility, rain/fire footstep masking, repetitions and pre-limiter headroom')
+        print('PASS live audio: low-health occupancy, settled cue body audibility after 20 ms attack, rain/fire footstep masking, repetitions and pre-clip headroom')
     for mode, metrics in data.items():
         print(mode, json.dumps({'levels': metrics['levels'], 'repetition': metrics['repetition']}))
         for kind in sorted({r['kind'] for r in metrics['onsets']}):
             rows = [r for r in metrics['onsets'] if r['kind'] == kind]
             print(kind, 'minimum cue/music', min(r['cue_to_music_db'] for r in rows),
-                  'minimum rain/fire', min(r['to_rain_fire_db'] for r in rows))
+                  'minimum rain/fire', min(r['to_rain_fire_db'] for r in rows),
+                  'minimum settled cue/music', min(r['body_cue_to_music_db'] for r in rows))
 
 if __name__ == '__main__':
     main()

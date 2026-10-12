@@ -107,7 +107,7 @@ def main():
     provenance = Path(str(exe)+'.sources.json')
     if not a.executable: provenance.write_text(json.dumps(sources, indent=2)+'\n')
     elif provenance.exists(): sources = json.loads(provenance.read_text())
-    summary = {'protocol': '2133x1200 Wayland dma-buf mailbox; 4s warmup; complete 2s monotonic windows; nearest rank; handoff proxy, not scanout',
+    summary = {'protocol': '2133x1200 Vulkan swapchain mailbox; 4s warmup; complete 2s monotonic windows; nearest rank; handoff proxy, not scanout',
                'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                'executable_sha256': hashlib.sha256(exe.read_bytes()).hexdigest(),
                'sources': sources,
@@ -118,7 +118,7 @@ def main():
         env = {k:v for k,v in os.environ.items() if not k.startswith(('BOTW_', 'SLOPPY_', 'PROBE_'))}
         env.update(BOTW_SKIP='1', BOTW_HOUR='11', BOTW_WEATHER='clear', BOTW_LOADTIME='1',
                    BOTW_FRAME_LOG='1', BOTW_SCENE_LOG='1', SLOPPY_PLATFORM='wayland',
-                   SLOPPY_PRESENT='mailbox', SLOPPY_WINDOW='1280x720', PROBE_SECONDS=str(seconds),
+                   SLOPPY_VSYNC='0', SLOPPY_WINDOW='1280x720', PROBE_SECONDS=str(seconds),
                    PROBE_ROUTE=view, PROBE_PNG=str(out/(view+'.png')))
         env.update(SCENES[view])
         if a.scale != 'dynamic': env['BOTW_SCALE'] = a.scale

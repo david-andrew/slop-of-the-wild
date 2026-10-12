@@ -19,7 +19,7 @@ def section(start, end):
     assert source.count(start) == 1 and source.count(end) == 1, start
     return source.split(start, 1)[1].split(end, 1)[0]
 
-cook = 'cook_at_pot =' + section('cook_at_pot =', '\n__pot_us: int[]')
+cook = section('# Cook exactly the materials selected with Hold; never silently choose a recipe.\n', '\n__pot_us: int[]')
 pickup = section('            else if wi >= 0:\n', '\n    if act.slot >= 0: use_slot(act.slot)')
 pickup = '\n'.join(line[16:] for line in pickup.splitlines())
 pickup = ('field_pickup = ():\n'
