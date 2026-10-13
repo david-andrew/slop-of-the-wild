@@ -1,3 +1,8 @@
+when TARGET == "wasm":
+    extern __web_restart = ()
+    @export("__web_save")
+    web_save = (): save_now()
+
 use 'interiors.jo'
 use 'gfx.jo'
 use 'player.jo'
@@ -58,6 +63,8 @@ struct PlateauSave:
     gust = 1.0
     wind = vec2(1.0, 0.35)
     lightning = 0.0
+    storm_time = 0.0
+    bolt_wait = -1.0
     weather_rng: Rng?
     defeated: DefeatedEncounter[]
     activated: bool[]
@@ -94,7 +101,7 @@ save_capture = () -> PlateauSave:
         stamina_max = pl.stamina_max, warm_t = warm_t, frozen = max(0.0, pl.frozen), invuln = pl.invuln,
         cold_t = cold_dmg_t, hour = env.hour, day = env.day, weather = int(env.weather),
         weather_t = env.weather_t, clouds = env.clouds, rain = env.rain, wet = env.wet,
-        storm_k = env.storm_k, gust = env.gust, wind = env.wind, lightning = env.lightning, weather_rng = weather_rng_capture())
+        storm_k = env.storm_k, gust = env.gust, wind = env.wind, lightning = env.lightning, storm_time = env.storm_time, bolt_wait = env.bolt_wait, weather_rng = weather_rng_capture())
     s.collected = collected_placements
     loop r in srec:
         active = r.entry >= 0 and shrines[r.entry].activated
@@ -162,6 +169,7 @@ save_encode = (s: PlateauSave) -> str:
     out += "warning={s.warning:.6},{s.warning_kind},{s.warning_index}\n"
     out += "story={__bit(s.awake)},{__bit(p.slate)},{__bit(p.door1_open)},{__bit(p.door2_open)},{__bit(p.title_done)},{__bit(p.tower_risen)},{p.orbs},{__bit(p.met_old_man)},{__bit(p.glider_given)}\n"
     out += "sky={s.hour:.9},{s.day},{s.weather},{s.weather_t:.9},{s.clouds:.9},{s.rain:.9},{s.wet:.9}\n"
+    out += "storm_clock={s.storm_time:.9},{s.bolt_wait:.9}\n"
     out += "weather_transition={s.storm_k:.9},{s.gust:.9},{s.wind.x:.9},{s.wind.y:.9},{s.lightning:.9}\n"
     if let r = s.weather_rng:
         out += "weather_rng={int(r.s0)},{int(r.s1)},{int(r.s2)},{int(r.s3)}\n"
@@ -407,6 +415,14 @@ save_decode = (text_: str) -> PlateauSave?:
                 s.wind = vec2(f32(a[2]), f32(a[3]))
                 s.lightning = a[4]
             else: return none
+        else if key == "storm_clock":
+            if seen.contains(key): return none
+            seen.push(key)
+            if let a = __numbers(value, 2):
+                if a[0] < 0.0 or a[0] > 6283.18530718 or (a[1] < 0.0 and a[1] != -1.0) or a[1] > 20.0: return none
+                s.storm_time = mod(a[0], 6283.185307179586)
+                s.bolt_wait = a[1]
+            else: return none
         else if key == "weather_rng":
             if seen.contains(key): return none
             seen.push(key)
@@ -524,6 +540,7 @@ save_decode = (text_: str) -> PlateauSave?:
 
 save_write = (path: str, s: PlateauSave) -> bool:
     text_ = save_encode(s)
+    when TARGET == "wasm": return save_data("plateau-progress", text_)
     if not write_file(path + ".tmp", text_): return false
     when TARGET == "linux":
         return syscall(82, data(path + ".tmp"), data(path)) == 0
@@ -563,6 +580,8 @@ save_apply = (s: PlateauSave):
     env.gust = s.gust
     env.wind = s.wind
     env.lightning = s.lightning
+    env.storm_time = s.storm_time
+    env.bolt_wait = s.bolt_wait
     env.bolt = false
     if let r = s.weather_rng: weather_rng_restore(r)
     # Resume outdoors (shrine saves use the exterior lift). Rebuild derived light
@@ -622,7 +641,10 @@ save_init = (path: str = ""):
     if not save_enabled: return
     __save_file = if path == "": save_path() else: path
     if (env("BOTW_NEWGAME") ?? "") != "1":
-        if let text_ = read_file(__save_file):
+        text_: str?
+        when TARGET == "wasm": text_ = load_data("plateau-progress")
+        else: text_ = read_file(__save_file)
+        if let text_ = text_:
             if let s = save_decode(text_):
                 save_apply(s)
                 eprint("Resumed plateau progress")
@@ -655,6 +677,13 @@ save_update = (dt: f64):
 
 save_start_over = ():
     if not save_enabled: return
+    when TARGET == "wasm":
+        if not save_data("plateau-progress", ""):
+            caption("Could not start a new journey.")
+            return
+        save_enabled = false
+        __web_restart()
+        return
     if file_exists(__save_file) and not delete_file(__save_file):
         caption("Could not start a new journey.")
         return

@@ -3,9 +3,11 @@
 use '../game/water_render.jo'
 use '../game/water.jo'
 use '../game/fx.jo'
+use '../game/terrain.jo'
 from '../game/water_render.jo' import __wader, __was_wading, __was_swimming, __wade_ring_t
 
 wading_check = ():
+    hf = Heightfield(n=8,cell=1.0,x0=-4.0,z0=-4.0,h=fill(f32(0),64))
     water_grid_set(fill(f32(1), 64), 8, -4.0, -4.0, 1.0)
     __was_wading = false
     __was_swimming = false
@@ -23,6 +25,13 @@ wading_check = ():
     assert(particles.len() == 12 and particles[0].kind == .ring and particles[1].kind == .ring)
     assert(particles[0].pos.y > 1.0 and particles[0].pos.y < 1.06 and particles[0].size < 0.8, "small rings sit at the queried surface")
     assert(abs(particles[0].pos.x - particles[1].pos.x) > 0.33 and abs(particles[0].pos.y - particles[1].pos.y) < 0.001, "entry rings start at separate leg contacts on one surface")
+    assert(particles[0].water_bound and particles[1].water_bound, "footfall rings carry shore rejection")
+    assert(wade_ring_wet(vec3(0,1.045,0),0.5), "ring fits entirely on the same water surface")
+    assert(not wade_ring_wet(vec3(3,1.045,0),1.4), "expanding ring cannot cross the dry grid edge")
+    assert(not wade_ring_wet(vec3(0,2.045,0),0.5), "ring cannot float above another surface")
+    hf.h=fill(f32(1.1),64)
+    assert(not wade_ring_wet(vec3(0,1.045,0),0.5), "stored water underneath dry grass is rejected")
+    hf.h=fill(f32(0),64)
     anchor = particles[0].pos
     loop p in particles:
         if p.kind == .splash: assert(p.vel.y >= 0.68 and p.vel.y <= 0.92 and p.grav == 6.0)

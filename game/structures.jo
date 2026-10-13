@@ -386,7 +386,48 @@ temple = ():
             arch(q2 + transform_dir(rotation_y(r), v3(0.0, 12.0, 0.0)), r - a2 + PI / 2.0, 3.0, 3.0, 0.6, 1.2, col, temple_block)
     # the nave front and its battered corner pinnacles
     loop side in [-1.0, 1.0]:
-        box(p(side * 8.0, 0.0, 30.5), v3(4.0, 24.0, 3.0), r, col, m)
+        # The surviving pier keeps its load-bearing core and climb surface.
+        # Broken outer courses expose deep stepped losses instead of one
+        # blank 24 m face. Unequal fractures point toward the fallen stones.
+        add_box(p(side*8.0,0.0,30.5),v3(2.0,12.0,1.5),r,true,.stone)
+        __old_block(p(side*8.0,0.0,30.25),v3(2.65,24.0,2.35),r,col,temple_ivy,false)
+        loop course in [0..8):
+            y = f64(course)*3.0
+            loss = if course == (if side < 0.0: 4 else: 5) or course == 7: 0.62 else: 0.0
+            width = 3.9-loss-hash2(y,side+88.0)*0.24
+            x = side*(8.0-loss*0.4)
+            # A deeper setback at the fault leaves the core visible beneath it.
+            depth = if loss > 0.0: 2.5 else: 3.25
+            __old_block(p(x,y+0.025,30.45),v3(width,2.92,depth),r,col,temple_ivy,false)
+            if course == 3 or course == 6:
+                sor_split_stone(p(side*9.45,y+0.45,31.75),v3(0.66,0.78,0.53),r+side*0.17,y+side*83.0,GREY_DARK,temple_ivy)
+        # Concentrated fallen courses leave the portal and stair clear.
+        loop k in [0..7):
+            h = hash2(f64(k)+61.0,side)
+            x = side*(8.0+h*3.0)
+            z = 34.0+hash2(side,f64(k)+19.0)*5.5
+            q = p(x,0.0,z)
+            q.y = f32(max(gy(f64(q.x),f64(q.z)),f64(o.y))+0.3)
+            sor_split_stone(q,v3(0.60+h*0.85,0.42+h*0.38,0.62+h*0.70),r+h*1.8,side*91.0+f64(k),GREY,temple_ivy)
+        # Rooted ivy sprays climb two fractured courses in irregular clusters.
+        # Leaves join the existing static chunk; no transparent foliage pass.
+        __begin(p(side*8.0,0.0,32.14))
+        loop stem in [0..5):
+            origin = side*(7.1+hash2(side,f64(stem))*1.9)
+            height = 2.0+hash2(f64(stem),side+73.0)*7.5
+            loop leaf in [0..14):
+                t = f64(leaf)/14.0
+                x = origin+sin(t*6.0+f64(stem))*0.31
+                y = 0.35+t*height
+                z = 32.12+hash2(f64(stem),f64(leaf))*0.10
+                spread = 0.13+hash2(y,x)*0.18
+                a = p(x-spread,y,z)
+                b = p(x,y+spread*0.70,z+0.045)
+                c = p(x+spread,y+spread*0.15,z)
+                d = p(x,y-spread*0.65,z+0.025)
+                n = transform_dir(rotation_y(r),vec3(0,0,1))
+                __quad(cur,a,d,c,b,n,stone(0.17,0.255,0.115),PLAIN)
+        __end()
         column(p(side * 11.5, 0.0, 31.0), 1.8, 1.3, (if side < 0.0: 28.0 else: 24.0), 8, col, m)
         if side < 0.0: spire(p(side * 11.5, 28.0, 31.0), 1.8, 7.0, 8, 0.0, ROOF_SLATE, PLAIN)
     # open portal and rose on the tower's front; solid side walls remain climbable
@@ -409,7 +450,20 @@ temple = ():
         __old_block(p(0.0, 32.0, 36.0 + side * 5.5), v3(0.5, 6.0, 1.5), r, col, temple_block)
     loop z in [30.5, 41.5]:
         box(p(0.0, 10.5, z), v3(6.8, 4.0, 1.5), r, col, m)
-        box(p(0.0, 21.5, z), v3(6.8, 10.5, 1.5), r, col, m)
+        # The upper facade has lost its outer ashlar along an oblique fracture.
+        # Keep the structural core and original collision behind deep missing
+        # facing stones; chipped proud courses make the blank wall read damaged.
+        add_box(p(0.0,21.5,z),v3(3.4,5.25,0.75),r,true,.stone)
+        box(p(0.0,21.5,z-0.12),v3(6.8,10.5,1.1),r,darken(GREY_DARK,0.26),temple_block,false)
+        loop row in [0..4):
+            loop cell in [0..4):
+                if (row == 1 and cell == 1) or (row == 2 and cell == 2) or (row == 3 and cell == 2): continue
+                x = -2.55+f64(cell)*1.70
+                y = 21.6+f64(row)*2.55
+                wear = hash2(x+z,y+37.0)
+                __old_block(p(x+(wear-0.5)*0.12,y,z+0.48),v3(1.61-wear*0.12,2.42-wear*0.18,0.62),r,col,temple_ivy,false)
+                if row == 1 or row == 2:
+                    sor_split_stone(p(x-0.68,y+2.05,z+0.80),v3(0.34,0.37,0.26),r+wear*0.3,53.0+x+y,GREY_DARK,temple_ivy)
         arch(p(0.0, 5.5, z), r, 6.8, 5.0, 0.65, 1.7, col, temple_block)
         oculus(p(0.0, 18.0, z), r, 2.7, 3.5, 1.5, col, temple_block)
         loop k in [0..12):
@@ -857,17 +911,16 @@ __cliff_skin = (stations: CliffStation[], step: int) -> Builder:
     loop i in [0..b.verts.len()):
         if length(b.verts[i].normal) > 0.00001: b.verts[i].normal = normalize(b.verts[i].normal)
         b.verts[i].mat = vec4(__cliff_surface_fields(b.verts[i].pos), 4)
-    # Split lighting normals across actual rock facets. Keeping part of the
-    # shared normal avoids a triangular mosaic while ledge edges stay legible.
+    # One light gradient spans each continuous rock mass. Splitting the shared
+    # normal per triangle turned the same shelf into alternating navy wedges.
+    # Keep the expanded layout used by collision/clearance inspection.
     faceted = Builder()
     loop tri in [0..b.idx.len()/3):
         a = b.verts[int(b.idx[tri*3])]
         c = b.verts[int(b.idx[tri*3+1])]
         d = b.verts[int(b.idx[tri*3+2])]
-        face = normalize(cross(c.pos-a.pos,d.pos-a.pos))
         loop v in [a,c,d]:
             q = v
-            q.normal = normalize(v.normal*0.45+face*0.55)
             faceted.idx.push(u32(faceted.verts.len()))
             faceted.verts.push(q)
     faceted
@@ -1142,17 +1195,15 @@ __cliff_gorge_skin = (side: int, step: int) -> Builder:
         if length(n) > 0.00001: b.verts[k].normal = normalize(n)
         b.verts[k].color.w = 0.92
         b.verts[k].mat = vec4(__cliff_surface_fields(b.verts[k].pos), 4)
-    # Shared normals averaged the narrow shelf returns into a smooth wash.
-    # Retain continuity, but let each actual bed face carry most of its light.
+    # The returned banks use the same continuous lighting as the outer skin.
+    # Their real shelves and concavity still carry the structural shade.
     finished = Builder()
     loop tri in [0..b.idx.len()/3):
         a = b.verts[int(b.idx[tri*3])]
         c = b.verts[int(b.idx[tri*3+1])]
         d = b.verts[int(b.idx[tri*3+2])]
-        face = normalize(cross(c.pos-a.pos,d.pos-a.pos))
         loop v in [a,c,d]:
             q = v
-            q.normal = normalize(v.normal*0.35+face*0.65)
             finished.idx.push(u32(finished.verts.len()))
             finished.verts.push(q)
     finished
@@ -1255,7 +1306,15 @@ __cliff_surface_fields = (p: vec3) -> vec3:
     across = f64(p.z) + f64(p.x) * 0.28
     bend = (noise(across * 0.016, f64(p.y) * 0.006) - 0.5) * 5.0
     gully = smooth01((noise((across + bend) * 0.079 + 7.0, f64(p.y) * 0.004) - 0.57) / 0.25)
-    v3(__cliff_bed(p), __cliff_bed_presence(p), 1.0 - gully * 0.9)
+    # Bedding pigment is baked once into the existing material channel. It
+    # follows the same dipping beds as the geometry, with soft shared-vertex
+    # interpolation instead of additional per-pixel noise/strata calculations.
+    bed = __cliff_bed(p)
+    presence = __cliff_bed_presence(p)
+    f = fract(bed)
+    seam = smoothstep(0.62,0.78,f)*(1.0-smoothstep(0.83,0.96,f))
+    pigment = 1.0+sin(bed*TAU)*0.055-seam*(0.035+presence*0.075)
+    v3(pigment, presence, 1.0 - gully * 0.9)
 
 # The cliff's grazing beds need a depth ramp, rather than a binary shadow
 # comparison that turns small receiver/caster differences into dark decals.
@@ -1304,7 +1363,7 @@ cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     dist = length(w - u.cam)
     # Shared granite pigment joins the skin to the exposed heightfield. Actual
     # buttresses, concavity AO and shadow maps carry the painted value masses.
-    alb = rock_color(w, n, dist)
+    alb = rock_color(w, n, dist) * i.mat.x
     # The displaced shelves own bedding edges. Triplanar minerals and local
     # fractures replace repeated horizontal ink bands on every exposed plane.
     n = canyon_rock_normal(w, n, dist)
@@ -1318,7 +1377,7 @@ cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     if dot(face, n) < 0.0: face = face * -1.0
     sh = cliff_shadow(w + face * 0.65, dot(face, l), u) * cloud_shade(w.xz, u.time, u.clouds)
     stone_sun = mix(u.sun_color, luma(u.sun_color) * vec3(1.02, 1.0, 0.96), 0.70)
-    stone_sky = mix(u.sky, luma(u.sky) * vec3(0.96, 1.0, 1.04), 0.65)
+    stone_sky = mix(u.sky, luma(u.sky) * vec3(1.0, 1.0, 1.01), 0.88)
     sh = 0.28 + sh * 0.72
     c = paint_light(alb, n, l, v, stone_sun, stone_sky, u.ground, sh, 0.25) * i.color.w
     c = c + alb * stone_sun * vec3(0.98, 1.0, 1.04) * 0.2 * clamp(1.0 - n.y * 1.4, 0.0, 1.0) * (1.0 - clamp(dot(n, l), 0.0, 1.0) * sh)
@@ -1883,6 +1942,7 @@ guardian_shell_panel = (o: vec3, frame: mat4, az: f64, el: f64, seed: f64):
 # Open annulus and a recessed, flat dead lens. Generic capped tubes would
 # put their conical end caps in front of the lens and fill the eye socket.
 guardian_dead_eye = (eye: vec3, axis: vec3, right: vec3):
+    let right = right * 0.80
     up = cross(axis,right)
     __begin(eye)
     depths = [-0.24,0.12,0.16,-0.055]
@@ -1944,12 +2004,12 @@ guardian_husks = ():
         # the head's rim: a heavy ring round the base of the dome, and a small crown on top
         tube(o + transform_dir(frame, v3(0.0, -0.05, 0.0)), o + transform_dir(frame, v3(0.0, 0.4, 0.0)), 3.45, 3.35, 20, darken(metal, 0.3), vec4(0.0, 0.5, 0.0, 0.0))
         tube(o + transform_dir(frame,v3(0.0,1.95,0.0)), o + transform_dir(frame,v3(0.0,2.4,0.0)),1.25,1.30,24,darken(metal,0.2),PLAIN)
-        dome(o + transform_dir(frame, v3(0.0, 2.28, 0.0)), 1.46, 1.08, 28, 8, stone(0.29,0.30,0.255), vec4(-1.0, 0.85, 0.0, 0.0), frame)
+        dome(o + transform_dir(frame, v3(0.0, 2.28, 0.0)), 1.46, 1.08, 28, 8, stone(0.29,0.30,0.255), PLAIN, frame)
         # the great eye: a deep round socket standing out of the shell, a heavy rim, the dead
         # lens dark with a dull ember of light deep in it
-        en = normalize(transform_dir(frame, v3(0.0, 0.16, 0.987)))
-        eye = o + transform_dir(frame, v3(0.0, 2.72, 1.25)) + en*0.28
-        guardian_dead_eye(eye,en,transform_dir(frame,vec3(1,0,0)))
+        en = normalize(transform_dir(frame, v3(0.0, 0.16, -0.987)))
+        eye = o + transform_dir(frame, v3(0.0, 2.66, -1.40)) + en*0.12
+        guardian_dead_eye(eye,en,transform_dir(frame,vec3(-1,0,0)))
         loop vine in [0..3):
             angle = f64(vine) * 2.1 + hash2(x, z) * 2.0
             point = (t: f64) -> vec3:
@@ -1966,8 +2026,8 @@ guardian_husks = ():
                     dome(leaf, 0.15, 0.065, 5, 2, stone(0.25, 0.36, 0.13), PLAIN, frame)
         loop k in [0..8):
             ang = TAU * f64(k) / 8.0
-            tangent = transform_dir(frame, v3(cos(ang), sin(ang) * 0.987, -sin(ang) * 0.16))
-            bolt = eye + en * 0.13 + tangent * 0.61
+            tangent = transform_dir(frame, v3(-cos(ang), sin(ang) * 0.987, sin(ang) * 0.16))
+            bolt = eye + en * 0.13 + tangent * 0.49
             tube(bolt, bolt + en * 0.035, 0.045, 0.035, 8, metal, PLAIN)
         # a darker band of plates round the dome's middle
         tube(o + transform_dir(frame, v3(0.0, 0.75, 0.0)), o + transform_dir(frame, v3(0.0, 1.1, 0.0)), 3.12, 2.95, 20, darken(metal, 0.2), vec4(0.0, 0.4, 0.0, 0.0))

@@ -35,6 +35,7 @@ struct Particle:
     grav = 0.0
     drag = 0.0
     rot = 0.0
+    water_bound = false
     visible_life = 1.0       # render-only envelope; retain simulation/RNG pool lifetime
 
 struct PInst:
@@ -500,7 +501,9 @@ fx_wade = (p: vec3, level: f64, vel: vec3, entry: bool):
     loop leg in [0..contacts):
         foot = if entry: leg else: __wade_foot % 2
         sign = if foot == 0: -1.0 else: 1.0
+        if particles.len() >= 6000: return
         fx_feedback(.ring, surface + side * f32(sign * 0.17), vec3(0, 0, 0), 0.85, if entry: 0.42 else: 0.35, rgba(0.82, 0.94, 0.92, 0.32))
+        particles[particles.len()-1].water_bound = true
     __wade_foot += 1
     if not entry: return
     loop k in [0..10):
@@ -509,6 +512,16 @@ fx_wade = (p: vec3, level: f64, vel: vec3, entry: bool):
         velocity = v3(cos(angle) * 1.25, 0.68 + f64(k % 3) * 0.12, sin(angle) * 1.25) + vel * 0.12
         fx_feedback(.splash, surface + v3(cos(angle) * 0.18, 0.05, sin(angle) * 0.18), velocity, 0.30, 0.028 + f64(k % 3) * 0.008, rgba(0.85, 0.96, 0.97, 0.82))
         particles[particles.len() - 1].grav = 6.0
+
+# Reject a footfall ring when its expanding footprint reaches dry ground or
+# another water level. World anchoring alone does not prevent shore spill.
+wade_ring_wet = (p: vec3, radius: f64) -> bool:
+    loop k in [0..9):
+        angle = TAU*f64(k)/8.0
+        q = if k==8:p else:p+v3(cos(angle)*radius,0,sin(angle)*radius)
+        wl = water_level(f64(q.x),f64(q.z)) ?? -10000.0
+        if abs(wl-f64(p.y)+0.045)>0.08 or height_at(f64(q.x),f64(q.z))>=wl-0.01: return false
+    true
 
 # Keep the bright core at least six pixels at 1080p through a 54-degree FOV.
 # Use each segment's 3D range: upper branches viewed from below are further
@@ -537,6 +550,34 @@ scripted_lightning_target = (eye: vec3, gaze: vec3, actor: vec3? = none) -> vec2
     # five metres beyond him, still inside the connected-water shock radius.
     if let p = actor: distance = max(distance, f64(dot(p-eye,ahead)) + 5.0)
     vec2(eye.x + ahead.x * f32(distance), eye.z + ahead.z * f32(distance))
+
+# Natural discharges stay near the player and within the actual camera cone.
+# Prefer a visible ground contact over a random point behind a tree or ridge.
+# Six bounded collision queries run once per strike, never per frame.
+natural_lightning_target = (eye: vec3, gaze: vec3, actor: vec3, phase: f64) -> vec2:
+    flat = vec3(gaze.x, 0, gaze.z)
+    ahead = if length(flat) > 0.001: normalize(flat) else: vec3(0, 0, -1)
+    right = vec3(-ahead.z, 0, ahead.x)
+    up = normalize(cross(right, gaze))
+    best = actor.xz + ahead.xz * 22.0
+    score = -10000.0
+    loop k in [0..6):
+        t = fract(phase + f64(k) * 0.618034)
+        distance = 18.0 + t * 28.0
+        side = (fract(phase * 3.7 + f64(k) * 0.414214) - 0.5) * 0.50
+        target = actor + (ahead + right * f32(side)) * f32(distance)
+        ground = max(height_at(f64(target.x), f64(target.z)), water_level(f64(target.x), f64(target.z)) ?? -10000.0)
+        target.y = f32(ground + 0.7)
+        delta = target - eye
+        depth = dot(delta, gaze)
+        if depth <= 1.0: continue
+        vertical = dot(delta, up) / depth
+        visible = not raycast(eye, delta, f64(length(delta)) - 0.8, true, true).hit
+        value = (if visible: 10.0 else: 0.0) - abs(f64(vertical) + 0.10) - f64(k) * 0.005
+        if value > score:
+            best = target.xz
+            score = value
+    best
 
 lightning_halfwidth = (pos: vec3, cam: vec3) -> f64:
     max(0.045, f64(length(pos - cam)) * 0.0075)
@@ -755,6 +796,18 @@ __rain_fill = ():
     # Redistribute the same 8200 streaks toward the lens, without increasing draw work.
     loop k in [0..2000): rain_streaks.push(v3(random(-9.0, 9.0), random(-2.0, 22.0), random(-9.0, 9.0)))
 
+# A falling parcel wraps below the lens/ground and respawns overhead. Wind
+# follows its current height, so the phase reset cannot teleport it sideways
+# halfway through a visible stroke. Keep both seed volumes and their scale.
+rain_drop_offset = (seed: vec3, index: int, seconds: f64, wind: vec2, gust: f64) -> vec3:
+    fall = fract(seconds * 1.1 + f64(index) * 0.37) * 28.0
+    y = mod(f64(seed.y) - fall + 6.0, 28.0) - 6.0
+    drift = (22.0 - y) * 0.22 * gust
+    span = if index < 6200: 30.0 else: 9.0
+    x = mod(f64(seed.x) + f64(wind.x) * drift + span, span * 2.0) - span
+    z = mod(f64(seed.z) + f64(wind.y) * drift + span, span * 2.0) - span
+    v3(x, y, z)
+
 far_plumes: vec4[]          # smoke columns far away (xyz base, scale)
 shafts: vec4[]              # soft columns of light from above (xyz foot, w strength; set each frame)
 contact_shadows: vec4[]     # soft dark pools under feet (xyz on the ground, w radius; set each frame)
@@ -924,6 +977,7 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
                 col.w = a
                 __pinst_alpha.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(s)), col, vec4(f32(f), 4, f32(p.rot), 0)))
             ring:
+                if p.water_bound and not wade_ring_wet(p.pos,p.size*(0.15+f*1.2)): continue
                 col.w = min(0.6, p.color.w * 1.65) * f32(smoothstep(0.0, 0.08, f) * pow(1.0 - f, 1.5))
                 __pinst_alpha.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(p.size * (0.15 + f * 1.2))), col, vec4(f32(f), 8, f32(p.rot), 0)))
             leaf:
@@ -1115,10 +1169,8 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
             else:
                 # (none right at the lens)
                 if f64(r.x) * f64(r.x) + f64(r.z) * f64(r.z) < 4.0: continue
-                fall = fract(tt * 1.1 + f64(k) * 0.37) * 24.0
-                y = f64(r.y) - fall
-                drift = fall * 0.22 * env.gust
-                p = vec3(cam.x + r.x + f32(f64(env.wind.x) * drift), f32(f64(cam.y) + y), cam.z + r.z + f32(f64(env.wind.y) * drift))
+                offset = rain_drop_offset(r, k, tt, env.wind, env.gust)
+                p = cam + offset
                 if rain_view_height(f64(p.x), f64(p.z)) > f64(p.y) - 0.6: continue
                 # (short and faint: the near ones, long on screen, fade most; the far edge of the box too)
                 # Measure after wind drift: the nearest projected streaks can
@@ -1126,13 +1178,16 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
                 rd = f64(length(p - cam))
                 # Sparse foreground drops; the distant volume supplies density.
                 depth = smoothstep(5.0, 20.0, rd)
-                keep = lerp(0.16, 1.0, depth)
+                keep = lerp(lerp(0.16, 0.40, env.storm_k), 1.0, depth)
                 if fract(f64(k) * 0.414213) > keep: continue
                 near_k = f32(smoothstep(2.0, 4.0, rd) * smoothstep(35.0, 24.0, rd))
+                # The denser near volume fades at its wrap boundary instead of
+                # popping a foreground streak across the lens.
+                if k >= 6200: near_k *= 1.0 - smoothstep(7.0, 9.0, max(abs(offset.x), abs(offset.z)))
                 variation = fract(f64(k) * 0.618034)
                 opacity = lerp(0.40, 0.26, depth) * (0.30 + variation * 1.15)
                 depth_length = lerp(0.24, 0.17, depth)
-                streak_length = depth_length * (0.40 + variation * 1.25)
+                streak_length = depth_length * (0.40 + variation * 1.25) * (1.0 + env.storm_k * 0.35)
                 __pinst_alpha.push(PInst(vec4(p.x, p.y, p.z, 1.2), vec4(col.xyz, col.w * near_k * f32(opacity)), vec4(0, 4, f32(fract(f64(k) * 0.317)), f32(streak_length))))
     if player_shock_t > 0.0: electric_player(pl.pos, cam)
     if player_burn_t > 0.0 and chars_ready:

@@ -983,7 +983,7 @@ hero_form_point = (p: vec3, shoulder: vec3, elbow: vec3, wrist: vec3, bare: bool
         # The source forearm was almost twice its thickness; do not inflate
         # small sections, and ease to the exact wrist/hand contact geometry.
         forearm=smoothstep(0.36,0.43,x)*(1.0-smoothstep(0.585,0.633,x))
-        forearm*=smoothstep(1.16,1.23,f64(p.y))*(1.0-smoothstep(1.37,1.43,f64(p.y)))
+        forearm*=smoothstep(1.12,1.18,f64(p.y))*(1.0-smoothstep(1.43,1.49,f64(p.y)))
         ft=clamp((x-f64(elbow.x))/f64(wrist.x-elbow.x),0.0,1.0)
         fc=mix(elbow,wrist,f32(ft))
         fy=f64(q.y-fc.y)
@@ -991,7 +991,7 @@ hero_form_point = (p: vec3, shoulder: vec3, elbow: vec3, wrist: vec3, bare: bool
         ry=lerp(0.036,0.022,ft)
         rz=lerp(0.033,0.025,ft)
         ellipse=sqrt(fy*fy/(ry*ry)+fz*fz/(rz*rz))
-        taper=lerp(1.0,clamp(1.0/max(ellipse,0.001),0.58,1.0),forearm)
+        taper=lerp(1.0,clamp(1.0/max(ellipse,0.001),0.40,1.0),forearm)
         if forearm>0.0:
             q.y=fc.y+f32(fy*taper)
             q.z=fc.z+f32(fz*taper)
@@ -1253,6 +1253,24 @@ hero_deltoid_attachment = (v: ChVert, sk: Skel) -> ChVert:
     anchored.jnt=vec4(js[0],js[1],js[2],js[3])
     hero_blend_vertex(v,anchored,f32(attachment),sk.names.len())
 
+# Blend the elbow across several refined loops instead of inheriting the source's
+# abrupt upper/lower-arm boundary. Hands and the contact rig remain unchanged.
+hero_elbow_weights = (v: ChVert, sk: Skel) -> ChVert:
+    x=abs(f64(v.pos.x))
+    band=smoothstep(0.33,0.37,x)*(1.0-smoothstep(0.47,0.52,x))
+    band*=smoothstep(1.17,1.23,f64(v.pos.y))*(1.0-smoothstep(1.37,1.43,f64(v.pos.y)))
+    if band<=0.0: return v
+    side=if v.pos.x>0:"l" else:"r"
+    upper=skel_find(sk,"upperarm_"+side)
+    lower=skel_find(sk,"lowerarm_"+side)
+    if upper<0 or lower<0: return v
+    center=abs(f64(sk.gm[lower][3].x))
+    blend=f32(smoothstep(center-0.065,center+0.065,x))
+    rounded=v
+    rounded.jnt=vec4(f32(upper),f32(lower),0,0)
+    rounded.wgt=vec4(1.0-blend,blend,0,0)
+    hero_blend_vertex(v,rounded,f32(band*0.75),sk.names.len())
+
 # Fair the finished surface, after the anatomical envelope has been applied.
 # Work on welded positions only: the existing topology, UVs and every influence
 # are retained, including the already solved shoulder attachment and contacts.
@@ -1439,6 +1457,7 @@ hero_form = (bm: mut BModel, sk: Skel, bare: bool):
             hero_surface_fair(part)
             hero_finished_normals(part)
             hero_limb_loops(part,sk.names.len())
+            loop mut v in part.verts: v=hero_elbow_weights(v,sk)
 
 # Bake-only silhouette and painted form. Original contacts and influences stay
 # fixed; curved detail loops interpolate the source rig without moving grips.

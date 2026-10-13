@@ -23,7 +23,7 @@ __audio_state = 2                 # offline mixer; never open a playback device
 master_volume(0.8)
 bytes = 0
 loop bank in [piano.soft, piano.notes, piano.forte, piano.short_soft, piano.short_notes, piano.short_forte]:
-    loop s in bank: bytes += s.samples.len() * 4
+    loop s in bank: bytes += s.samples.len() * 2
 print("piano bank {time() - t_init:.3}s, {piano.notes.len()} mf + {piano.soft.len()} pp + {piano.forte.len()} ff notes, {bytes} bytes resident samples")
 sr = MIX_RATE
 
@@ -80,11 +80,11 @@ __put = (mixb: mut f32[], midi: int, at: f64, vel: f64, volume: f64 = 0.8, pan: 
     if b.mf > 0.000001: __put_s(mixb, notes, midi, at, vel, volume, pan, b.mf)
     if b.ff > 0.000001: __put_s(mixb, forte, midi, at, vel, volume, pan, b.ff)
 
-__put_s = (mixb: mut f32[], bank: Sound[], midi: int, at: f64, vel: f64, volume: f64, pan: f64, layer: f64):
+__put_s = (mixb: mut f32[], bank: PianoSample[], midi: int, at: f64, vel: f64, volume: f64, pan: f64, layer: f64):
     k = clamp((midi - PIANO_LO + PIANO_STEP / 2) / PIANO_STEP, 0, bank.len() - 1)
     base = PIANO_LO + k * PIANO_STEP
     pitch = pow(2.0, f64(midi - base) / 12.0)
-    s = bank[k].samples
+    s = piano_expand(bank[k]).samples
     __put_sample(mixb, s, at, pitch, piano_gain(vel, volume) * layer * 0.8, pan)
 
 __put_sample = (mixb: mut f32[], s: f32[], at: f64, pitch: f64, gain: f64, pan: f64):
@@ -271,7 +271,7 @@ render_reset = ():
     seed_random(7)
     # (the process's first play() starts the audio, ~20 ms once; the game does it at load with the
     # ambient loops, so warm it here too rather than time it as a music update)
-    stop(play(piano.notes[0], 0.0))
+    stop(play(piano_expand(piano.notes[0]), 0.0))
 
 # Ten minutes of score/ambience state, not a physical traversal validation.
 # Each landmark is left beyond its hysteresis radius before its repeat visit.

@@ -59,10 +59,13 @@ options_encode = () -> str:
     b = (x: bool) -> int: if x: 1 else: 0
     "mouse={opts.mouse:.2}\nstick={opts.stick:.2}\ninvert_y={b(opts.invert_y)}\ninvert_x={b(opts.invert_x)}\nvolume={opts.volume:.2}\nmusic={opts.music:.2}\nswap_jump_sprint={b(opts.swap_jump_sprint)}\n" + input_bindings_encode()
 options_load = (path: str = ""):
-    options_decode(read_file((if len(path) > 0: path else: __opt_path())) ?? "")
+    when TARGET == "wasm": options_decode(load_data("plateau-options") ?? "")
+    else: options_decode(read_file((if len(path) > 0: path else: __opt_path())) ?? "")
 options_save = (path: str = ""):
     # Scripted checks always use default controls and never rewrite personal preferences.
-    if not input_scripted: write_file((if len(path) > 0: path else: __opt_path()), options_encode())
+    if not input_scripted:
+        when TARGET == "wasm": save_data("plateau-options", options_encode())
+        else: write_file((if len(path) > 0: path else: __opt_path()), options_encode())
 options_controls_defaults = ():
     input_controls_defaults()
     opts.swap_jump_sprint = false

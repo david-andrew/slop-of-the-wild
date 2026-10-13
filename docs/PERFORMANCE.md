@@ -1,9 +1,73 @@
-# Performance — Sloppy 0.6.0, 2026-10-12
+# Performance — Sloppy 0.6.0, 2026-10-13
 
 Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland,
 **2133×1200 physical pixels**, production dynamic scene scale. All outliers are
 retained. These are **producer/present-return intervals, not scanout timestamps**;
 the shared desktop is not an isolated hardware guarantee.
+
+## Round 67: game-only pacing, piano storage and final head lanes
+
+Five-minute forest routes retain all raw intervals, real production dt and the
+existing complete two-second window protocol. Initial options at 2133×1200:
+
+| Option | Return p50 / p99 / worst, ms | Windows p99 >20 ms | >17.5 ms |
+|---|---|---|---|
+| Mailbox, dynamic scale, uncapped | 10.15 / 15.43 / 60.44 | 6/147 | 23/147 |
+| Mailbox, fixed 80% scale | 10.69 / 18.33 / 195.25 | 24/147 | 41/147 |
+| Mailbox, dynamic scale, 60 cap | 16.77 / 26.67 / 198.04 | 71/147 | 144/147 |
+| FIFO, dynamic scale, 60 cap | 16.72 / 27.93 / 198.57 | 103/147 | 145/147 |
+
+**Retain uncapped Vulkan mailbox and dynamic scale.** Linux `BOTW_FPS` adds an
+optional cap before polling/dt/render, without catch-up bursts; default **0**.
+`render_evidence.py` accepts `--fps`, `--scale` and a pinned `--executable`.
+The two 60-cap runs share an executable. The first two precede the audio/combat
+edits; a later default repeat records **10.23 / 15.41 / 196.65 ms**, **11/143**
+windows over 20 ms and **19/143** over 17.5 ms. Startup changes the window count.
+These shared-desktop samples establish no removal of the strict tail failures.
+
+The hitch is a **10.00-second wall-clock cadence**, at the same absolute
+monotonic-clock phase across launches, rather than a fixed ~840-frame count.
+Fixed scale and both caps retain it. Native traces show **three swapchain images,
+two frames in flight**, with slow acquires on **all three image indices**.
+There are no in-play swapchain/image/pipeline creations or pipeline-cache flushes;
+poll/resize and audio refill/write calls do not account for the periodic waits.
+Both scene resolutions are warmed and retained. Acquisition already happens
+late, after game recording and before native blit/submission, with infinite
+runtime timeout. The evidence points to driver/compositor servicing; it cannot
+identify which external component owns that cadence.
+
+A traced **192.11 ms** outlier contains **182.20 ms present**, almost entirely
+`vkAcquireNextImageKHR`, versus **9.83 ms callback wall / 5.24 ms thread CPU**.
+The next callback spends **18.69 ms CPU** catching up. The historical **231 ms
+(46 CPU +185 present)** frame has no raw trace in this checkout: its exact CPU
+stage remains unproven. No runtime files were changed; the acquire stall remains.
+
+Piano samples now use **per-note scaled PCM16**, retaining 48 kHz stereo reverb.
+The six banks fall **211.92 → 105.96 MB**; including restrained strikes costs
+**106.53 MB (101.59 MiB)**. Only active voice windows expand to floats. Prepared
+packs load directly into i16 arrays; cues stay lossless f32. Prepared/generated
+sample hashes agree, quantization stays within half a note's quantum, and packed
+versus expanded rings agree within **0.000000001** across pitch/wrap/fade cases.
+Live field/engaged/low-HP levels are **−24.0 / −21.2 / −21.3 LUFS**, worst measured
+true peak **−1.3 dBTP**, with zero pre-limiter overloads. Transition, harmony,
+recurrence, note-density and music-export checks pass.
+
+Waiting chase idles change every **1.2 s**, avoid crouch, and face Jo within 45°;
+a guard at its lane now decelerates instead of walking in place. Root lanes also
+recognize low-alert combat states and let committed attackers yield. Final posed
+head separation reuses the body solve, includes visible death poses and preserves
+body/blade/world constraints. Selected unarmed windups get extra head room;
+the late camp tell remains **94%** visible. The README camp inputs remain exact; frame 300
+improves **39.15 → 279.21 px** separation against a **183.86 px** head width,
+while retaining real posed sword contacts and readable impact pauses. The framing
+trace excludes actors once the renderer removes them. A separate regression
+covers simultaneous low-alert windup/attack without cancelling either attack.
+
+Combat, reach, camera, spacing, input, music and all six final 960-frame framing
+courses pass. Raw intervals, attribution, source/executable hashes, poses and
+audio meters are in **`build/round67/`**; final framing is in `final5/framing/`.
+Full optional texture rebaking is unavailable without `assets/src/nature/Textures`;
+the compact audio pack's generated/prepared equivalence is verified independently.
 
 ## Default and ten-minute route
 

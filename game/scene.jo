@@ -48,6 +48,7 @@ struct PropU:
     lp = vec4(0, 0, 0, 0)
     lc = vec3(0, 0, 0)
     creature = 0.0
+    opacity = 1.0
 
 struct PropO:
     pos: vec4
@@ -62,7 +63,10 @@ prop_vs = (v: Vertex3D, u: PropU) -> PropO:
     PropO(u.vp * w, w.xyz, n, v.uv, v.color * u.color)
 
 prop_fs = (i: PropO, u: PropU) -> vec4:
-    if u.shadow_pass > 0.5: return vec4(1, 1, 1, 1)
+    if u.shadow_pass > 0.5:
+        if u.opacity < 1.0:
+            glsl_discard(hash13(vec3(floor(i.world.x*180.0),floor(i.world.y*180.0),floor(i.world.z*180.0))) >= u.opacity)
+        return vec4(1,1,1,1)
     alb = i.color.xyz
     if u.use_tex > 0.5:
         t = sample(u.tex, i.uv)
@@ -78,7 +82,7 @@ prop_fs = (i: PropO, u: PropU) -> vec4:
     c = c + alb * u.emissive
     c = c + (u.sky + u.sun_color * 0.3) * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0) * u.rim
     c = atmos(c, i.world, u.cam, l, u.haze, u.sun_color, u.density, 0.004)
-    vec4(c, i.color.w)
+    vec4(c, i.color.w * f32(u.opacity))
 
 prop_sh: Shader
 __prop_ready = false
@@ -89,11 +93,13 @@ prop_u = (model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64 = 0.2, creatur
         cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), f32(emissive), f32(rim),
         Texture(0, 1, 1), 0.0, f32(int(sc.shadow)), sc_lp, sc_lc, f32(creature * env.wet))
 
-draw_prop = (m: Mesh, model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64 = 0.2, creature: f64 = 0.0):
+draw_prop = (m: Mesh, model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64 = 0.2, creature: f64 = 0.0, opacity: f64 = 1.0):
     if not __prop_ready:
         __prop_ready = true
         prop_sh = make_sh(shader(prop_vs, prop_fs))
-    draw_fast(prop_sh, m, prop_u(model, color, emissive, rim, creature))
+    u = prop_u(model, color, emissive, rim, creature)
+    u.opacity = f32(opacity)
+    draw_fast(prop_sh, m, u)
 
 draw_prop_tex = (m: Mesh, model: mat4, color: vec4, tex: Texture):
     if not __prop_ready:

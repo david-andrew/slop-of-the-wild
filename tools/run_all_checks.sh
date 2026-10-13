@@ -115,6 +115,7 @@ cpu_checks=(
     combat_music_check
     music_transition_check
     combat_reach_check
+    committed_lane_check
     contact_check
     cooking_check
     element_check
@@ -135,6 +136,7 @@ cpu_checks=(
     opening_test
     passage_mesh_check
     piano_test
+    piano_storage_check
     music_harmony_check
     presentation_check
     save_test
@@ -159,6 +161,7 @@ cpu_checks=(
     round91_fire_check
     round82_scorch_check
     round91_weather_check
+    round96_weather_check
     round92_lightning_check
     title_panorama_check
     tree_test

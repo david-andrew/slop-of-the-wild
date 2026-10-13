@@ -155,12 +155,12 @@ check_combat_music = ():
     last_midi = melody(0,.engaged)[3]
     sample_index = (last_midi - PIANO_LO + PIANO_STEP / 2) / PIANO_STEP
     sample_midi = PIANO_LO + sample_index * PIANO_STEP
-    tail = duration(piano.short_notes[sample_index]) / pow(2.0, f64(last_midi - sample_midi) / 12.0)
+    tail = piano_duration(piano.short_notes[sample_index]) / pow(2.0, f64(last_midi - sample_midi) / 12.0)
     sounding = motif_span + tail
     assert(sounding > 2.24 and sounding < 2.26 and sounding < bar_seconds, "motif including pitched release stays 2.249s inside its bar")
     print("PASS combat motif sounding length: {sounding:.3}s including {tail:.3}s pitched final-note release")
     assert(piano.restrained_soft.len() == 21)
-    loop s in piano.restrained_soft: assert(abs(duration(s) - 0.14) < 0.00001)
+    loop s in piano.restrained_soft: assert(abs(piano_duration(s) - 0.14) < 0.00001)
     # Actual direct and filtered handles must duck existing score tails before mixing.
     loop low in [false, true]:
         loop cue in [sfx.hit, sfx.parry, sfx.grunt[0], sfx.windup_heavy, sfx.notice]:

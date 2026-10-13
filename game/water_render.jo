@@ -147,10 +147,14 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         margin = smoothstep(0.0, 1.5, edge + (broad - 0.5) * 3.6 + (fleck-0.5)*1.2)
         core = smoothstep(1.8, 6.0, edge)
         aeration = smoothstep(9.0, 27.0, drop)
-        # Wide tapered washes carry finer, unequal rivulets. All advect at
-        # 22 m/s; varying lengths break up the paint without dashed marks.
+        # Slow width variation divides the sheet into unequal thick channels
+        # and translucent splits. The moving fields break those channels along
+        # the descent; the upper roll remains connected before aeration.
+        channel = 0.5 + 0.5*sin(across*0.79 + sin(across*0.31)*1.7 + drop*0.012)
+        thick = smoothstep(0.26,0.72,channel*0.70+broad*0.30)
+        split = smoothstep(0.56,0.86,strand*0.55+fleck*0.45) * (1.0-thick) * aeration
         white = smoothstep(0.28, 0.72, broad * 0.44 + strand * 0.31 + fleck * 0.25)
-        white = (0.16 + white * 0.80) * aeration * (0.42 + core * 0.58)
+        white = (0.07 + white * (0.50+thick*0.48)) * aeration * (0.42 + core * 0.58) * (1.0-split*0.70)
         ledge_d = min(abs(w.y - 144.0), abs(w.y - 194.0))
         splash = (1.0 - smoothstep(1.0, 5.0, ledge_d + (broad - 0.5) * 4.0)) * smoothstep(0.30, 0.66, strand)
         white = max(white, splash * 0.90)
@@ -170,7 +174,8 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         c = atmos(c, w, u.cam, normalize(u.sun_dir), u.haze, u.sun_color, u.density, u.falloff)
         # No alpha notch at a ledge: translucent fringes surround a continuous
         # aerated core, including the shallow faces between vertical drops.
-        return vec4(c, margin * (0.56 + core * 0.26 + white * 0.16))
+        thickness = mix(0.72,0.30+thick*0.46,aeration)
+        return vec4(c, margin * clamp((thickness + core * 0.10 + white * 0.18) * (1.0-split*0.65),0.12,0.94))
     # The benches slope through 141..144 m and 192..194 m, rather than
     # lying exactly at their upper lip. Keep whitewater over their full width.
     bench_height = (w.y > 140.6 and w.y < 144.6) or (w.y > 191.6 and w.y < 194.6)

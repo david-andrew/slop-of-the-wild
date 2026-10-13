@@ -115,7 +115,7 @@ def verify(root):
     assert not failures, f"unreadable silhouettes: {', '.join(failures)}"
 
 
-def capture_view(binary, output, view):
+def capture_view(binary, output, view, locked=False):
     clean = {k: v for k, v in os.environ.items() if not k.startswith(("BOTW_", "SLOPPY_"))}
     at = VIEWS[view]
     for weather in WEATHERS:
@@ -131,7 +131,8 @@ def capture_view(binary, output, view):
             SLOPPY_WINDOW="960x540", SLOPPY_FRAMES="300",
             SLOPPY_SCREENSHOT=str(final.resolve()))
         with (output / f"{name}.log").open("w") as log:
-            subprocess.run(["flock", "/tmp/botw-render.lock", "timeout", "300",
+            lock_prefix = [] if locked else ["flock", "/tmp/botw-render.lock"]
+            subprocess.run(lock_prefix + ["timeout", "300",
                             str(binary.resolve())], env=settings, stdout=log,
                             stderr=subprocess.STDOUT, check=True)
         assert all(Path(f"{prefix}-{mode}.png").is_file()
@@ -144,6 +145,7 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("build/weather-silhouette"))
     parser.add_argument("--binary", type=Path, help="immutable prebuilt capture executable; otherwise rebuild current sources")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--locked", action="store_true", help="caller owns the render flock for the batch; never nest")
     a = parser.parse_args()
     a.output.mkdir(parents=True, exist_ok=True)
     if not a.verify:
@@ -153,7 +155,7 @@ def main():
             subprocess.run(["sloppy/bin/sloppy", "build", "tools/weather_silhouette_capture.jo", "-o", str(binary)], check=True)
         assert binary.is_file(), f"game binary missing: {binary}"
         for view in VIEWS:
-            capture_view(binary, a.output, view)
+            capture_view(binary, a.output, view, a.locked)
     verify(a.output)
 
 

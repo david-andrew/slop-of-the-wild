@@ -1,0 +1,736 @@
+{
+  "base_revision": "500126f",
+  "selected_default": "Vulkan mailbox, dynamic scale, BOTW_FPS=0",
+  "limitations": [
+    "producer/present-return timestamps, not scanout",
+    "shared desktop",
+    "initial two rows predate audio/combat changes; capped rows share an executable",
+    "periodic acquire stall persists",
+    "historical 231 ms CPU stage lacks its raw trace"
+  ],
+  "pacing": {
+    "baseline": {
+      "frames": 28829,
+      "elapsed_s": 300.013558,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 10.153751,
+          "p99": 15.428952,
+          "worst": 60.444847
+        },
+        "present_call": {
+          "p50": 0.162885,
+          "p99": 1.401081,
+          "worst": 49.616715
+        },
+        "callback_wall": {
+          "p50": 9.891844,
+          "p99": 14.379846,
+          "worst": 21.068869
+        },
+        "callback_thread": {
+          "p50": 4.758593,
+          "p99": 9.673262,
+          "worst": 19.32887
+        }
+      },
+      "window_count": 147,
+      "windows_over_20ms": 6,
+      "windows_over_17_5ms": 23,
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/round67/baseline/soak-mailbox.png",
+        "PROBE_FRAMES": "2400",
+        "SLOPPY_VULKAN": "1",
+        "BOTW_AT": "-1140,1500,3.14",
+        "PROBE_ROUTE": "forest",
+        "SLOPPY_VSYNC": "0",
+        "PROBE_SECONDS": "300"
+      },
+      "log_sha256": "8da0b3e64daa060a937ef50d53c9f18a296de2b1f95d9f596ad2e3c3da0a4ce0",
+      "executable_sha256": "78b2124bbeb5fab59a1cac537f287cab3b021abcda5bedcec40499d74e42d0bc"
+    },
+    "fixed-scale": {
+      "frames": 27146,
+      "elapsed_s": 300.001861,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 10.689257,
+          "p99": 18.334613,
+          "worst": 195.248935
+        },
+        "present_call": {
+          "p50": 0.17814,
+          "p99": 2.027018,
+          "worst": 184.966472
+        },
+        "callback_wall": {
+          "p50": 10.395122,
+          "p99": 16.785593,
+          "worst": 50.12314
+        },
+        "callback_thread": {
+          "p50": 5.008316,
+          "p99": 7.875335,
+          "worst": 21.807144
+        }
+      },
+      "window_count": 147,
+      "windows_over_20ms": 24,
+      "windows_over_17_5ms": 41,
+      "scene_scales": [
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/round67/fixed-scale/soak-mailbox.png",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FPS": "0",
+        "BOTW_SCALE": "0.8",
+        "SLOPPY_VULKAN": "1",
+        "BOTW_AT": "-1140,1500,3.14",
+        "PROBE_ROUTE": "forest",
+        "SLOPPY_VSYNC": "0",
+        "PROBE_SECONDS": "300"
+      },
+      "log_sha256": "0e55ca56baa7f8cca9b088c865c722e91a9ca53b74787430c9be4ae30ce838e4",
+      "executable_sha256": "932b0ae8ca10a483b1c6d0d6404b8748c1f18bfcd72882f129c3ba9f1260ecfe"
+    },
+    "mailbox60": {
+      "frames": 17829,
+      "elapsed_s": 300.016564,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.773184,
+          "p99": 26.672739,
+          "worst": 198.04346
+        },
+        "present_call": {
+          "p50": 0.214655,
+          "p99": 0.657987,
+          "worst": 182.778627
+        },
+        "callback_wall": {
+          "p50": 5.782402,
+          "p99": 14.230922,
+          "worst": 21.633025
+        },
+        "callback_thread": {
+          "p50": 5.725765,
+          "p99": 13.669805,
+          "worst": 21.160164
+        }
+      },
+      "window_count": 147,
+      "windows_over_20ms": 71,
+      "windows_over_17_5ms": 144,
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/round67/mailbox60/soak-mailbox.png",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FPS": "60.0",
+        "SLOPPY_VULKAN": "1",
+        "BOTW_AT": "-1140,1500,3.14",
+        "PROBE_ROUTE": "forest",
+        "SLOPPY_VSYNC": "0",
+        "PROBE_SECONDS": "300"
+      },
+      "log_sha256": "046aa61c05feaa97f763abfbb7dadb5630806166d5712ed6a2ee27124d177fd9",
+      "executable_sha256": "9d18f07825e032224c49464bb2ac257575aae33e30e3e7849f12a51cc4c0f955"
+    },
+    "fifo60": {
+      "frames": 17749,
+      "elapsed_s": 300.001323,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 16.718089,
+          "p99": 27.932425,
+          "worst": 198.569879
+        },
+        "present_call": {
+          "p50": 0.259427,
+          "p99": 10.849698,
+          "worst": 182.308657
+        },
+        "callback_wall": {
+          "p50": 5.815594,
+          "p99": 15.148761,
+          "worst": 22.155946
+        },
+        "callback_thread": {
+          "p50": 5.762159,
+          "p99": 14.692009,
+          "worst": 21.757174
+        }
+      },
+      "window_count": 147,
+      "windows_over_20ms": 103,
+      "windows_over_17_5ms": 145,
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/round67/fifo60/soak-default.png",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FPS": "60.0",
+        "SLOPPY_VULKAN": "1",
+        "BOTW_AT": "-1140,1500,3.14",
+        "PROBE_ROUTE": "forest",
+        "PROBE_SECONDS": "300"
+      },
+      "log_sha256": "90cba9b22c3216677c82b9eed78044b331efa5a0a794bbce782f31310cc8b5a2",
+      "executable_sha256": "9d18f07825e032224c49464bb2ac257575aae33e30e3e7849f12a51cc4c0f955"
+    },
+    "final-default": {
+      "frames": 27840,
+      "elapsed_s": 300.00335,
+      "timing_ms": {
+        "present_return_interval": {
+          "p50": 10.228826,
+          "p99": 15.408577,
+          "worst": 196.654934
+        },
+        "present_call": {
+          "p50": 0.159236,
+          "p99": 1.51419,
+          "worst": 186.848736
+        },
+        "callback_wall": {
+          "p50": 9.967171,
+          "p99": 14.505068,
+          "worst": 22.420572
+        },
+        "callback_thread": {
+          "p50": 4.64699,
+          "p99": 8.900005,
+          "worst": 18.788416
+        }
+      },
+      "window_count": 143,
+      "windows_over_20ms": 11,
+      "windows_over_17_5ms": 19,
+      "scene_scales": [
+        "0.72",
+        "0.80"
+      ],
+      "flags": {
+        "BOTW_SKIP": "1",
+        "BOTW_HOUR": "11",
+        "BOTW_WEATHER": "clear",
+        "BOTW_LOADTIME": "1",
+        "BOTW_FRAME_LOG": "1",
+        "BOTW_SCENE_LOG": "1",
+        "SLOPPY_PLATFORM": "wayland",
+        "SLOPPY_WINDOW": "1280x720",
+        "PROBE_PNG": "/var/home/david/dev/botw-clone-sol/build/round67/final-default/soak-mailbox.png",
+        "PROBE_FRAMES": "2400",
+        "BOTW_FPS": "0",
+        "SLOPPY_VULKAN": "1",
+        "BOTW_AT": "-1140,1500,3.14",
+        "PROBE_ROUTE": "forest",
+        "SLOPPY_VSYNC": "0",
+        "PROBE_SECONDS": "300"
+      },
+      "log_sha256": "a22cb5bfc497c99c1736a3da7b8650d5f1f89aefc5b6a91c9ee59d611978b1f4",
+      "executable_sha256": "dd32662976b2ce500906cb09e1b9df7661b4b3821d19cc1debf2b30644f27ec3"
+    }
+  },
+  "native": {
+    "trace-attribution": {
+      "native_calls_in_play": {
+        "vkCreateBuffer": 9,
+        "vkAllocateMemory": 1,
+        "vkWaitForFences": 26139,
+        "vkAcquireNextImageKHR": 77,
+        "vkQueueSubmit2": 38,
+        "vkQueuePresentKHR": 7,
+        "snd_pcm_recover": 2
+      },
+      "attribution_counts": {
+        "native wait: vkAcquireNextImageKHR": 44,
+        "CPU callback: terrain_select": 26,
+        "callback wait: terrain_select": 9,
+        "callback wait: elements_items": 2,
+        "callback wait: wildlife_update": 4,
+        "callback wait: shadow_matrices": 1,
+        "callback wait: hero_animate": 1,
+        "callback wait: grass_draw": 2,
+        "callback wait: shrines_update": 2,
+        "callback wait: sh-chars0": 1,
+        "callback wait: hero_wet_update": 1,
+        "callback wait: wildlife_draw": 5,
+        "callback wait: shadow2": 2,
+        "callback wait: electric": 2,
+        "callback wait: hero_draw": 1,
+        "callback wait: veg_draw_view": 6,
+        "callback wait: terrain_depth": 1,
+        "callback wait: critters_update": 1,
+        "callback wait: veg_upload0": 1,
+        "callback wait: veg_upload2": 1,
+        "callback wait: elements_felled_trees": 3,
+        "callback wait: elements_grass": 1,
+        "callback wait: buildings": 1,
+        "callback wait: enemies_update": 2,
+        "CPU callback: wildlife_draw": 1,
+        "CPU callback: elements_items": 1,
+        "CPU callback: enemies_update": 2,
+        "native submission: vkQueueSubmit2": 2,
+        "callback wait: monsters_draw": 3,
+        "callback wait: veg_draw_sh1": 1,
+        "callback wait: play_events": 1,
+        "callback wait: fx_list_build": 1,
+        "callback wait: shadow1": 1
+      },
+      "stage_coverage": "133/133",
+      "worst": {
+        "frame": 25086,
+        "elapsed_s": 271.145964,
+        "interval_ms": 192.11312,
+        "present_ms": 182.196431,
+        "callback_wall_ms": 9.834426,
+        "callback_thread_ms": 5.239429,
+        "attribution": "native wait: vkAcquireNextImageKHR",
+        "native_calls": [
+          {
+            "call": "vkWaitForFences",
+            "start_s": 270.95529329695273,
+            "end_s": 270.9598768109572,
+            "wall_ms": 4.583514,
+            "result": 0
+          },
+          {
+            "call": "vkAcquireNextImageKHR",
+            "start_s": 270.9637704609777,
+            "end_s": 271.1457938509993,
+            "wall_ms": 182.02339,
+            "result": 0
+          }
+        ]
+      }
+    },
+    "image-attribution": {
+      "native_calls_in_play": {
+        "vkCreateBuffer": 9,
+        "vkAllocateMemory": 1,
+        "vkWaitForFences": 26037,
+        "vkAcquireNextImageKHR": 71,
+        "snd_pcm_recover": 2,
+        "vkQueueSubmit2": 32
+      },
+      "attribution_counts": {
+        "native wait: vkAcquireNextImageKHR": 36,
+        "native wait: vkWaitForFences": 4,
+        "CPU callback: terrain_select": 30,
+        "native submission: vkQueueSubmit2": 2,
+        "CPU callback: enemies_update": 4,
+        "callback wait: terrain_select": 9
+      },
+      "stage_coverage": "85/85",
+      "worst": {
+        "frame": 2053,
+        "elapsed_s": 32.705181,
+        "interval_ms": 61.9808,
+        "present_ms": 50.989242,
+        "callback_wall_ms": 10.889713,
+        "callback_thread_ms": 6.190268,
+        "attribution": "native wait: vkAcquireNextImageKHR",
+        "native_calls": [
+          {
+            "call": "vkWaitForFences",
+            "start_s": 32.64489141397644,
+            "end_s": 32.64935574796982,
+            "wall_ms": 4.464334,
+            "result": 0
+          },
+          {
+            "call": "vkAcquireNextImageKHR",
+            "start_s": 32.65419564000331,
+            "end_s": 32.705027617979795,
+            "wall_ms": 50.831978,
+            "result": 0
+          }
+        ]
+      }
+    }
+  },
+  "piano_sample_bytes": 106525404,
+  "loudness": {
+    "scenario": {
+      "integrated_lufs": -23.1,
+      "true_peak_dbtp": -2.7,
+      "loudness_range_lu": 12.4,
+      "pre_limiter_overloads": 0
+    },
+    "field": {
+      "integrated_lufs": -24.0,
+      "true_peak_dbtp": -1.3,
+      "loudness_range_lu": 19.6,
+      "pre_limiter_overloads": 0
+    },
+    "engaged": {
+      "integrated_lufs": -21.2,
+      "true_peak_dbtp": -3.6,
+      "loudness_range_lu": 3.6,
+      "pre_limiter_overloads": 0
+    },
+    "low_hp": {
+      "integrated_lufs": -21.3,
+      "true_peak_dbtp": -3.4,
+      "loudness_range_lu": 4.1,
+      "pre_limiter_overloads": 0
+    },
+    "scenario_rain_walk": {
+      "integrated_lufs": -27.0,
+      "true_peak_dbtp": -7.7,
+      "loudness_range_lu": 10.1
+    },
+    "scenario_rain_fire": {
+      "integrated_lufs": -24.1,
+      "true_peak_dbtp": -2.7,
+      "loudness_range_lu": 14.5
+    },
+    "scenario_wildlife": {
+      "integrated_lufs": -23.2,
+      "true_peak_dbtp": -4.8,
+      "loudness_range_lu": 16.9
+    },
+    "scenario_engaged": {
+      "integrated_lufs": -21.0,
+      "true_peak_dbtp": -4.7,
+      "loudness_range_lu": 3.2
+    },
+    "scenario_low_hp": {
+      "integrated_lufs": -21.7,
+      "true_peak_dbtp": -3.6,
+      "loudness_range_lu": 3.2
+    },
+    "scenario_shelter": {
+      "integrated_lufs": -52.5,
+      "true_peak_dbtp": -40.0,
+      "loudness_range_lu": 1.3
+    }
+  },
+  "framing": {
+    "flat": {
+      "passed": true,
+      "measurements": {
+        "paired_lock_samples": 383,
+        "paired_middle_third_failures": 0,
+        "min_head_gap_px": 44.97461870977089,
+        "frames": 960,
+        "samples": 4800,
+        "mask_size": [
+          320,
+          180
+        ],
+        "max_screen_fraction": 0.030260416666666668,
+        "max_foreground_overlap_pixels": 0,
+        "max_projected_overlap_pixels": 241,
+        "min_capsule_gap_m": 0.5299555356900718,
+        "min_enemy_capsule_gap_m": 1.6295223002066839,
+        "min_support_plane_gap_m": 0.024885723987836172,
+        "min_posed_mesh_gap_m": 0.06780574837718001,
+        "method": "CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.",
+        "enemy_head_pair_samples": 2728,
+        "min_enemy_head_horizontal_clearance_widths": 1.3001234845718466,
+        "enemy_head_overlap_frames": 0,
+        "enemy_count": 5,
+        "weapon_contact_count": 4,
+        "max_equipped_enemy_screen_fraction": 0.032274305555555556,
+        "hit_count": 4,
+        "min_hit_pause_frames": 4,
+        "blade_intersection_frames": 0,
+        "body_intersection_frames": 0,
+        "blade_intersections": [],
+        "selected_windup_frames": 100,
+        "selected_windup_body_clipped_frames": 0,
+        "selected_windup_weapon_clipped_frames": 0,
+        "min_selected_windup_body_visible": 0.9795021961932651,
+        "min_selected_windup_weapon_visible": 1.0,
+        "max_foreground_equipment_hero_fraction": 0.09151785714285714,
+        "max_bystander_equipment_hero_fraction": 0.0,
+        "min_shield_visible": 0.11801242236024845,
+        "waiting_frames": 2597,
+        "max_waiting_facing_degrees": 45.00000125223908,
+        "max_waiting_single_clip_frames": 1,
+        "both_committed_head_pairs": 0
+      }
+    },
+    "slope": {
+      "passed": true,
+      "measurements": {
+        "paired_lock_samples": 403,
+        "paired_middle_third_failures": 0,
+        "min_head_gap_px": 44.96649950851245,
+        "frames": 960,
+        "samples": 2880,
+        "mask_size": [
+          320,
+          180
+        ],
+        "max_screen_fraction": 0.03128472222222222,
+        "max_foreground_overlap_pixels": 0,
+        "max_projected_overlap_pixels": 220,
+        "min_capsule_gap_m": 0.529943643396591,
+        "min_enemy_capsule_gap_m": 1.698808153486208,
+        "min_support_plane_gap_m": 0.024876812774436985,
+        "min_posed_mesh_gap_m": 0.1697541579849424,
+        "method": "CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.",
+        "enemy_head_pair_samples": 1355,
+        "min_enemy_head_horizontal_clearance_widths": 1.3611725088958455,
+        "enemy_head_overlap_frames": 0,
+        "enemy_count": 3,
+        "weapon_contact_count": 4,
+        "max_equipped_enemy_screen_fraction": 0.04244791666666667,
+        "hit_count": 4,
+        "min_hit_pause_frames": 4,
+        "blade_intersection_frames": 0,
+        "body_intersection_frames": 0,
+        "blade_intersections": [],
+        "selected_windup_frames": 88,
+        "selected_windup_body_clipped_frames": 0,
+        "selected_windup_weapon_clipped_frames": 0,
+        "min_selected_windup_body_visible": 0.9907550077041603,
+        "min_selected_windup_weapon_visible": 1.0,
+        "max_foreground_equipment_hero_fraction": 0.09843400447427293,
+        "max_bystander_equipment_hero_fraction": 0.0,
+        "min_shield_visible": 0.10471204188481675,
+        "waiting_frames": 649,
+        "max_waiting_facing_degrees": 39.83480729620034,
+        "max_waiting_single_clip_frames": 2,
+        "both_committed_head_pairs": 0
+      }
+    },
+    "doorway": {
+      "passed": true,
+      "measurements": {
+        "paired_lock_samples": 501,
+        "paired_middle_third_failures": 0,
+        "min_head_gap_px": 44.91005996813619,
+        "frames": 960,
+        "samples": 960,
+        "mask_size": [
+          320,
+          180
+        ],
+        "max_screen_fraction": 0.030677083333333334,
+        "max_foreground_overlap_pixels": 0,
+        "max_projected_overlap_pixels": 672,
+        "min_capsule_gap_m": 0.5314551761958655,
+        "min_enemy_capsule_gap_m": 100.0,
+        "min_support_plane_gap_m": 0.024923996397092196,
+        "min_posed_mesh_gap_m": 0.05875225045111705,
+        "method": "CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.",
+        "enemy_head_pair_samples": 0,
+        "min_enemy_head_horizontal_clearance_widths": null,
+        "enemy_head_overlap_frames": 0,
+        "enemy_count": 1,
+        "weapon_contact_count": 2,
+        "max_equipped_enemy_screen_fraction": 0.039288194444444445,
+        "hit_count": 2,
+        "min_hit_pause_frames": 4,
+        "blade_intersection_frames": 0,
+        "body_intersection_frames": 0,
+        "blade_intersections": [],
+        "selected_windup_frames": 128,
+        "selected_windup_body_clipped_frames": 0,
+        "selected_windup_weapon_clipped_frames": 0,
+        "min_selected_windup_body_visible": 0.8366906474820144,
+        "min_selected_windup_weapon_visible": 1.0,
+        "max_foreground_equipment_hero_fraction": 0.002663115845539281,
+        "max_bystander_equipment_hero_fraction": 0.0,
+        "min_shield_visible": 0.13595166163141995,
+        "waiting_frames": 1,
+        "max_waiting_facing_degrees": 9.34889485098853,
+        "max_waiting_single_clip_frames": 1,
+        "both_committed_head_pairs": 0
+      }
+    },
+    "tree": {
+      "passed": true,
+      "measurements": {
+        "paired_lock_samples": 501,
+        "paired_middle_third_failures": 0,
+        "min_head_gap_px": 44.975472934713196,
+        "frames": 960,
+        "samples": 2880,
+        "mask_size": [
+          320,
+          180
+        ],
+        "max_screen_fraction": 0.028177083333333332,
+        "max_foreground_overlap_pixels": 0,
+        "max_projected_overlap_pixels": 630,
+        "min_capsule_gap_m": 0.529974255787224,
+        "min_enemy_capsule_gap_m": 1.6215550403588377,
+        "min_support_plane_gap_m": 0.024941585731312443,
+        "min_posed_mesh_gap_m": 0.3099653529355056,
+        "method": "CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.",
+        "enemy_head_pair_samples": 1384,
+        "min_enemy_head_horizontal_clearance_widths": 1.3297533512991973,
+        "enemy_head_overlap_frames": 0,
+        "enemy_count": 3,
+        "weapon_contact_count": 5,
+        "max_equipped_enemy_screen_fraction": 0.03361111111111111,
+        "hit_count": 5,
+        "min_hit_pause_frames": 4,
+        "blade_intersection_frames": 0,
+        "body_intersection_frames": 0,
+        "blade_intersections": [],
+        "selected_windup_frames": 121,
+        "selected_windup_body_clipped_frames": 0,
+        "selected_windup_weapon_clipped_frames": 0,
+        "min_selected_windup_body_visible": 0.9815668202764977,
+        "min_selected_windup_weapon_visible": 1.0,
+        "max_foreground_equipment_hero_fraction": 0.03333333333333333,
+        "max_bystander_equipment_hero_fraction": 0.0,
+        "min_shield_visible": 0.13875598086124402,
+        "waiting_frames": 664,
+        "max_waiting_facing_degrees": 40.35523356000946,
+        "max_waiting_single_clip_frames": 3,
+        "both_committed_head_pairs": 0
+      }
+    },
+    "tentfire": {
+      "passed": true,
+      "measurements": {
+        "paired_lock_samples": 0,
+        "paired_middle_third_failures": 0,
+        "min_head_gap_px": 44.98434306331734,
+        "frames": 960,
+        "samples": 2880,
+        "mask_size": [
+          320,
+          180
+        ],
+        "max_screen_fraction": 0.031180555555555555,
+        "max_foreground_overlap_pixels": 0,
+        "max_projected_overlap_pixels": 157,
+        "min_capsule_gap_m": 0.599966711278503,
+        "min_enemy_capsule_gap_m": 1.8211409131055107,
+        "min_support_plane_gap_m": 0.02484259122184085,
+        "min_posed_mesh_gap_m": 0.35054800320358676,
+        "method": "CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.",
+        "enemy_head_pair_samples": 1256,
+        "min_enemy_head_horizontal_clearance_widths": 1.3303823680102875,
+        "enemy_head_overlap_frames": 0,
+        "enemy_count": 3,
+        "weapon_contact_count": 0,
+        "max_equipped_enemy_screen_fraction": 0.031180555555555555,
+        "hit_count": 0,
+        "min_hit_pause_frames": 0,
+        "blade_intersection_frames": 0,
+        "body_intersection_frames": 0,
+        "blade_intersections": [],
+        "selected_windup_frames": 0,
+        "selected_windup_body_clipped_frames": 0,
+        "selected_windup_weapon_clipped_frames": 0,
+        "min_selected_windup_body_visible": 0,
+        "min_selected_windup_weapon_visible": 0,
+        "max_foreground_equipment_hero_fraction": 0.0,
+        "max_bystander_equipment_hero_fraction": 0.0,
+        "min_shield_visible": 0.5950413223140496,
+        "waiting_frames": 308,
+        "max_waiting_facing_degrees": 45.00000125223908,
+        "max_waiting_single_clip_frames": 2,
+        "both_committed_head_pairs": 0
+      }
+    },
+    "camp": {
+      "passed": true,
+      "measurements": {
+        "paired_lock_samples": 565,
+        "paired_middle_third_failures": 0,
+        "min_head_gap_px": 44.96897282779413,
+        "frames": 960,
+        "samples": 2616,
+        "mask_size": [
+          320,
+          180
+        ],
+        "max_screen_fraction": 0.03243055555555555,
+        "max_foreground_overlap_pixels": 0,
+        "max_projected_overlap_pixels": 257,
+        "min_capsule_gap_m": 0.5499093108914344,
+        "min_enemy_capsule_gap_m": 1.841555636248217,
+        "min_support_plane_gap_m": 0.02487558872860518,
+        "min_posed_mesh_gap_m": 0.10462114483077341,
+        "method": "CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.",
+        "enemy_head_pair_samples": 972,
+        "min_enemy_head_horizontal_clearance_widths": 1.0568930859694838,
+        "enemy_head_overlap_frames": 0,
+        "enemy_count": 4,
+        "weapon_contact_count": 3,
+        "max_equipped_enemy_screen_fraction": 0.03647569444444444,
+        "hit_count": 3,
+        "min_hit_pause_frames": 4,
+        "blade_intersection_frames": 0,
+        "body_intersection_frames": 0,
+        "blade_intersections": [],
+        "selected_windup_frames": 226,
+        "selected_windup_body_clipped_frames": 0,
+        "selected_windup_weapon_clipped_frames": 0,
+        "min_selected_windup_body_visible": 0.9432314410480349,
+        "min_selected_windup_weapon_visible": 1.0,
+        "max_foreground_equipment_hero_fraction": 0.0,
+        "max_bystander_equipment_hero_fraction": 0.0,
+        "min_shield_visible": 0.1111111111111111,
+        "waiting_frames": 91,
+        "max_waiting_facing_degrees": 0.007125617363225616,
+        "max_waiting_single_clip_frames": 1,
+        "both_committed_head_pairs": 0,
+        "critic_frame_300": [
+          {
+            "frame": 300,
+            "a": 1,
+            "b": 2,
+            "both_committed": false,
+            "horizontal_gap_px": 279.2097426683376,
+            "head_width_px": 183.86277275213587,
+            "vertical_gap_px": 12.759554631641208,
+            "clearance_widths": 1.5185768086111608
+          }
+        ]
+      }
+    }
+  },
+  "final_game_source_digest": "467e643fc40f84098788bf72a0f277558229be2ac558d34991b34ce23313b395"
+}

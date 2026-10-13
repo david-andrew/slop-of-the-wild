@@ -35,7 +35,7 @@ skyp_vs = (v: FsVert, u: SkyU) -> SkyO: SkyO(vec4(v.pos, 0.99999, 1), v.pos)
 # One bank has a flat condensation base and an unequal cauliflower crown.
 # The contour joins the lobes first; pigment belongs to the whole bank, rather
 # than lighting every overlapping oval as a separate bubble.
-cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f32) -> vec2:
+cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f32, clearing: vec4) -> vec2:
     az = atan2(dir.z, dir.x)
     p = vec2(az * 2.54648, dir.y * 4.8) + wind * time * vec2(0.0008, 0.00012)
     cell = floor(p)
@@ -56,6 +56,13 @@ cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f3
             # trail their torn edge downwind while keeping unequal seeded crowns.
             mirror = if wind.x >= 0.0: -1.0 else: 1.0
             size = 0.38 + seed * 0.30 + cover * 0.12
+            # Fade a whole bank at the castle clearing. Cutting a circular hole
+            # through an otherwise rounded bank leaves banana-shaped crescents.
+            offset = center - (clearing.xy + wind*time*vec2(0.0008,0.00012))
+            offset.x -= floor((offset.x+8.0)/16.0)*16.0
+            envelope = clearing.zw + vec2(size*1.12,size*0.77)
+            visibility = smoothstep(1.0,1.28,length(offset/envelope))
+            if visibility < 0.001: continue
             q = (p - center) * vec2(mirror, 1) / size
             if abs(q.x) > 1.12 or q.y < -0.28 or q.y > 0.77: continue
             # Broad unequal volumes overlap before the silhouette is extracted.
@@ -101,7 +108,7 @@ cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f3
             edge = edge - tail * smoothstep(-0.07, -0.20, q.y) * max(bites, 0.0) * 0.045
             # Analytic edge antialiasing only; no image blur or softened crowns.
             aa = 0.006 + softness * 0.025
-            bank = smoothstep(-aa, aa, edge)
+            bank = smoothstep(-aa, aa, edge) * visibility
             height = clamp((q.y - base) / max(crown - base, 0.08), 0.0, 1.0)
             lit_side = sun_side * mirror
             flank = smoothstep(-0.62, 0.65, -q.x * lit_side + q.y * 0.75)
@@ -154,7 +161,11 @@ skyp_fs = (i: SkyO, u: SkyU) -> vec4:
     # sun disc (soft painted edge)
     sd = dot(dir, l)
     disc = smoothstep(0.99955, 0.99975, sd)
-    c = c + u.sun_color * disc * 3.0 * (1.0 - u.dark)
+    # Low atmospheric path warms the disk without bleaching it to white in
+    # the tone mapper. Keep noon's bright disk and the existing sky palette.
+    low_disk = (1.0 - smoothstep(0.03, 0.20, l.y)) * smoothstep(0.0, 0.3, l.x)
+    disk_color = mix(u.sun_color * 3.0, vec3(2.8, 0.95, 0.25), low_disk)
+    c = c + disk_color * disc * (1.0 - u.dark) * smoothstep(-0.04, 0.0, l.y)
     # the moon
     md = dot(dir, normalize(u.moon_dir))
     # (big and pale, its seas faintly darker)
@@ -201,7 +212,8 @@ skyp_fs = (i: SkyO, u: SkyU) -> vec4:
         castle_uv = vec2(dot(dir, side), dot(dir, up)) * distance / vec2(380, 255)
         castle_clear = if dot(dir, toward) > 0.0: smoothstep(1.0, 1.24, length(castle_uv)) else: 1.0
         softness = 0.06 + u.night * 0.24 + smoothstep(0.55, 0.8, u.clouds) * 0.16
-        cloud = cumulus(dir, l, u.time, u.wind, u.clouds, softness)
+        clearing = vec4(atan2(toward.z,toward.x)*2.54648,toward.y*4.8,380.0/distance*2.54648,255.0/distance*4.8)
+        cloud = cumulus(dir, l, u.time, u.wind, u.clouds, softness, clearing)
         if cloud.x > 0.001:
             day_shade = u.horizon * 0.35 + vec3(0.24, 0.23, 0.28)
             night_shade = u.horizon * 0.65 + vec3(0.015, 0.024, 0.05)
@@ -211,7 +223,7 @@ skyp_fs = (i: SkyO, u: SkyU) -> vec4:
             bright = mix(day_bright, night_bright, u.night)
             cc = mix(shade, bright, cloud.y * (1.0 - u.dark * 0.55))
             fade = clamp(dir.y * 5.0, 0.0, 1.0)
-            c = mix(c, cc, cloud.x * fade * 0.98 * (1.0 - reserve) * castle_clear)
+            c = mix(c, cc, cloud.x * fade * 0.98 * (1.0 - reserve))
         # overcast: the clouds close into one grey deck, the breaks between only faintly paler
         ov = smoothstep(0.6, 0.72, u.clouds) * clamp(dir.y * 6.0, 0.0, 1.0)
         if ov > 0.0:

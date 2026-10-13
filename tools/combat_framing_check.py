@@ -115,7 +115,8 @@ framing_contacts = 0
 framing_lock_frames = 0
 framing_scene = env("FRAMING_SCENE") ?? "flat"
 framing_frames = to_int(env("FRAMING_FRAMES") ?? "960") ?? 960
-framing_count = if framing_scene == "flat": 5 else: (if framing_scene == "doorway": 1 else: 3)
+framing_count = if framing_scene == "camp": 0 else: (if framing_scene == "flat": 5 else: (if framing_scene == "doorway": 1 else: 3))
+framing_ids: int[]
 framing_update = (dt: f64):
     if not framing_ready:
         if framing_scene == "slope":
@@ -149,37 +150,46 @@ framing_update = (dt: f64):
             pl.pos = places[selected].pos - vec3(0,0,3)
             cam.yaw = 0.0
             print("framing tree: collider={places[selected].col} trunk={places[selected].pos} player={pl.pos}")
-        if framing_scene != "flat":
+        if framing_scene != "flat" and framing_scene != "camp":
             pl.ground = ground_at(f64(pl.pos.x),f64(pl.pos.z),f64(pl.pos.y)+5.0,0.5,RADIUS)
             pl.pos.y = pl.ground.y
             pl.last_safe = pl.pos
             camera_snap()
             cam.pos = cam.target + transform_dir(rotation_y(cam.yaw),vec3(0,1.2,5.3))
             camera_update(0.0)
-        enemies.clear()
-        # The course replaces world actors, so it must also replace their pose
-        # histories. Animation LOD reads the previous render lens; seed the new
-        # location before the first production tick after this fixture teleport.
-        eanims.clear()
-        sc.cam = view_pos()
-        inv_add("travelers_sword")
-        inv_add("travelers_shield")
-        loop j in [0..framing_count):
-            # The front club bearer is both the natural first lock target and
-            # an engaging melee attacker; flankers still use production slots.
-            d = (if framing_count == 5: [vec3(0,0,-3.8),vec3(3,0,-4),vec3(0,0,3),vec3(-4,0,1),vec3(4,0,1)] else: [vec3(0,0,-3.8),vec3(3,0,-4),vec3(-3,0,-4)])[j]
-            if framing_scene == "doorway": d = [vec3(0,0,-2.8),vec3(1.25,0,-4.5)][j]
-            p = pl.pos + transform_dir(rotation_y(cam.yaw),d)
-            if framing_scene != "flat":
-                g = ground_at(f64(p.x),f64(p.z),f64(pl.pos.y)+5.0,0.5,RADIUS)
-                p.y = g.y
-            k = spawn_enemy(.blue_bokoblin, p, if j == 0: "boko_club" else: "boko_spear")
-            enemies[k].state = .chase
-            enemies[k].alert = 1.0
-            enemies[k].hp = 10000.0
-            enemies[k].hp_max = 10000.0
-        pl.hp_max = 40
-        pl.hp = 40
+        if framing_scene != "camp":
+            enemies.clear()
+            # The course replaces world actors, so it must also replace their pose
+            # histories. Animation LOD reads the previous render lens; seed the new
+            # location before the first production tick after this fixture teleport.
+            eanims.clear()
+            sc.cam = view_pos()
+            inv_add("travelers_sword")
+            inv_add("travelers_shield")
+            loop j in [0..framing_count):
+                # The front club bearer is both the natural first lock target and
+                # an engaging melee attacker; flankers still use production slots.
+                d = (if framing_count == 5: [vec3(0,0,-3.8),vec3(3,0,-4),vec3(0,0,3),vec3(-4,0,1),vec3(4,0,1)] else: [vec3(0,0,-3.8),vec3(3,0,-4),vec3(-3,0,-4)])[j]
+                if framing_scene == "doorway": d = [vec3(0,0,-2.8),vec3(1.25,0,-4.5)][j]
+                p = pl.pos + transform_dir(rotation_y(cam.yaw),d)
+                if framing_scene != "flat" and framing_scene != "camp":
+                    g = ground_at(f64(p.x),f64(p.z),f64(pl.pos.y)+5.0,0.5,RADIUS)
+                    p.y = g.y
+                k = spawn_enemy(.blue_bokoblin, p, if j == 0: "boko_club" else: "boko_spear")
+                enemies[k].state = .chase
+                enemies[k].alert = 1.0
+                enemies[k].hp = 10000.0
+                enemies[k].hp_max = 10000.0
+            pl.hp_max = 40
+            pl.hp = 40
+        else:
+            inv_add("travelers_sword")
+            inv_add("travelers_shield")
+            loop i in 0.. and e in enemies:
+                if enemy_melee_body(e) and e.state != .buried and e.state != .gone and length(e.pos-pl.pos) < 35.0: framing_ids.push(i)
+            framing_count = framing_ids.len()
+            assert(framing_count >= 3, "README camp keeps its actual three or more actors")
+        if framing_scene != "camp": framing_ids = [loop i in [0..framing_count): i]
         framing_ready = true
     update(dt)
     if frame_number() % 60 == 0: print("framing camera: scene={framing_scene} frame={frame_number()} boom={length(view_pos()-view_target()):.3}m pos={view_pos()} player={pl.pos}")
@@ -187,7 +197,7 @@ framing_update = (dt: f64):
     framing_contacts = enemy_contact_serial
     vp = perspective(view_fov()*PI/180.0, 16.0/9.0, 0.1, 1000.0) * look_at(view_pos(),view_target(),vec3(0,1,0))
     if frame_number() == 0:
-        w_u32(framing_trace,0x46524D33)
+        w_u32(framing_trace,0x46524D36)
         w_u32(framing_trace,framing_count)
     w_u32(framing_trace,frame_number())
     w_m4(framing_trace,vp)
@@ -201,15 +211,29 @@ framing_update = (dt: f64):
     damage = 0.0
     loop e in enemies: damage += e.hp_max-e.hp
     w_f32(framing_trace,f64(framing_contacts))
-    w_u32(framing_trace, fight.target + 1)
+    selected = -1
+    loop i in [0..framing_count):
+        if framing_ids[i] == fight.target: selected = i
+    w_u32(framing_trace, selected + 1)
     w_u32(framing_trace, framing_lock_frames)
     w_m4(framing_trace, hero_shield_matrix())
     sword = socket_world(hero_m, hero_world, hero_skin, if fight.weapon_out or fight.act != .idle: SOCKET_HAND_R else: SOCKET_BACK)
     if not fight.weapon_out and fight.act == .idle: sword = sword_back_transform(sword, .sword)
     w_m4(framing_trace, sword)
-    loop i in [0..framing_count):
+    loop fi in [0..framing_count):
+        i = framing_ids[fi]
         e = enemies[i]
         w_u32(framing_trace, if e.state == .windup: 1 else: 0)
+        w_u32(framing_trace, if len(e.weapon) > 0 and item(e.weapon).spear: 1 else: 0)
+        w_u32(framing_trace, if e.state == .windup or e.state == .attack: 1 else: 0)
+        waiting = e.state == .chase and not e.may_engage and not e.archer
+        tp = pl.pos - e.pos
+        bearing = yaw_of(vec3(tp.x,0,tp.z))
+        error = abs(atan2(sin(e.face-bearing),cos(e.face-bearing)))
+        w_f32(framing_trace, if waiting: error else: -1.0)
+        w_u32(framing_trace, if waiting and e.speed <= 0.35: eanims[i].a.clip + 1 else: 0)
+        drawn = e.state != .gone and e.state != .buried and eanims[i].skin.mats.len()>0
+        w_u32(framing_trace, (if drawn: 1 else: 0) + (if drawn and e.state != .dead and len(e.weapon)>0: 2 else: 0) + (if enemy_alive(e): 4 else: 0))
         w_m4(framing_trace, boko_weapon_draw_transform(i))
         w_v3(framing_trace,e.pos)
         w_f32(framing_trace,enemy_attack_ring(e))
@@ -222,9 +246,14 @@ framing_update = (dt: f64):
         print("framing production fight: damage={damage:.1} contacts={framing_contacts}")
         # Preserve the full pose evidence even if the encounter minimum fails.
         assert(write_bytes(env("FRAMING_TRACE") ?? "", framing_trace.b))
-        assert(framing_scene == "tentfire" or framing_contacts >= min(3,framing_count),"scripted encounter must land real weapon contacts for its actor count")
+        assert(framing_scene == "tentfire" or framing_scene == "camp" or framing_contacts >= min(3,framing_count),"scripted encounter must land real weapon contacts for its actor count")
         assert(framing_scene == "tentfire" or damage > 0.0, "scripted fight must land real posed sword contacts")
-main = (): performance_output_run(framing_update,draw)
+framing_draw = ():
+    draw()
+    if framing_scene == "camp" and frame_number() == 300:
+        flush()
+        assert(save_png(screenshot(),env("FRAMING_CRITIC_PNG") ?? "build/combat-frame300.png"))
+main = (): performance_output_run(framing_update,framing_draw)
 '''
 
 def equipment_geometry(game, out):
@@ -257,18 +286,22 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--game',type=Path,default=ROOT/'game')
     parser.add_argument('--output',type=Path,default=ROOT/'build/combat-framing')
+    parser.add_argument('--locked', action='store_true', help='caller holds the render lock; never acquire a nested lock')
+    parser.add_argument('--capture-only', action='store_true', help='capture now; run --analyze-only after releasing the lock')
     parser.add_argument('--baseline',action='store_true')
     parser.add_argument('--analyze-only',action='store_true')
-    parser.add_argument('--scene', choices=['all','flat','slope','doorway','tree','tentfire'], default='all')
-    parser.add_argument('--frames', type=int, default=960, help='at least 720; default allows four more seconds after the camera orbit')
+    parser.add_argument('--scene', choices=['all','flat','slope','doorway','tree','tentfire','camp'], default='all')
+    parser.add_argument('--frames', type=int, default=960, help='at least 720 (301 for the README camp); default continues four seconds after the orbit')
     args=parser.parse_args(); os.chdir(ROOT)
-    assert 720 <= args.frames <= 3600
+    assert (301 if args.scene == "camp" else 720) <= args.frames <= 3600
     out=args.output.resolve(); out.mkdir(parents=True,exist_ok=True)
     assert out.is_relative_to(ROOT/'build'), 'evidence must stay under build/'
     if args.scene == 'all':
         results = {}
-        for scene in ('flat','slope','doorway','tree','tentfire'):
+        for scene in ('flat','slope','doorway','tree','tentfire','camp'):
             command = [sys.executable, str(Path(__file__).resolve()), '--game', str(args.game.resolve()), '--output', str(out/scene), '--scene', scene, '--frames', str(args.frames)]
+            if args.locked: command.append('--locked')
+            if args.capture_only: command.append('--capture-only')
             if args.baseline: command.append('--baseline')
             if args.analyze_only: command.append('--analyze-only')
             status = subprocess.run(command).returncode
@@ -277,7 +310,7 @@ def main():
             if measurements.exists(): results[scene]['measurements'] = json.loads(measurements.read_text())
             (out/'summary.json').write_text(json.dumps(results,indent=2)+'\n')
         assert all(r['passed'] for r in results.values()), 'combat scenario failed; see per-scene evidence'
-        print('PASS combat framing: flat, slope, confined ruin doorway, tree-obstructed camera, converging tent-fire crowd')
+        print(('PASS captures: ' if args.capture_only else 'PASS combat framing: ') + 'flat, slope, confined ruin doorway, tree-obstructed camera, converging tent-fire crowd, README placed camp (frame 300)')
         return
     render_status = 0
     if not args.analyze_only:
@@ -294,6 +327,8 @@ def main():
         # the course's durable foes retain their production AI and contacts.
         env.update(BOTW_SKIP='1',BOTW_AT='-1439,1614,0',BOTW_HOUR='10',BOTW_WEATHER='clear',BOTW_SCALE='1',BOTW_NOVSYNC='1',SLOPPY_PLATFORM='x11',SLOPPY_WINDOW='1280x720',SLOPPY_FRAMES='720',SLOPPY_SCREENSHOT=str(out/'fight720.png'),BOTW_CAPTURE_DIR=str(out/'frames'),BOTW_CAPTURE_EVERY='60',FRAMING_TRACE=str(out/'trace.bin'),FRAMING_SCENE=args.scene,SLOPPY_INPUT='1:k+,200:k-,205:d+,245:d-,260:left+,340:left-,400:right+,510:right-,540:k+,'+attacks)
         env.update(SLOPPY_FRAMES=str(args.frames),FRAMING_FRAMES=str(args.frames),SLOPPY_SCREENSHOT=str(out/f'fight{args.frames}.png'))
+        if args.scene == 'camp':
+            env.update(BOTW_LANE_TRACE='1', FRAMING_CRITIC_PNG=str(out/'frame300.png'), BOTW_AT='-1439,1606,0', BOTW_GIVE='travelers_sword,travelers_shield', SLOPPY_INPUT='1:k+,1:w+,150:j+,151:j-,165:j+,166:j-,195:j+,196:j-,200:w-,225:j+,226:j-,255:j+,256:j-')
         if args.scene == 'tentfire':
             env.update(BOTW_AT='-955,1964,0', BOTW_TENTFIRE='5', SLOPPY_INPUT='')
         if args.scene == 'doorway':
@@ -303,14 +338,20 @@ def main():
             # The confined course pans across each jamb instead of making the
             # outdoor course's full circles through solid masonry behind Link.
             env['SLOPPY_INPUT'] = env['SLOPPY_INPUT'].replace('260:left+,340:left-','260:left+,280:left-').replace('400:right+,510:right-','400:right+,420:right-')
+        command = ['python3','tools/performance_window.py','1280x720','timeout','180',str(out/'framing')]
+        if not args.locked: command = ['flock','/tmp/botw-render.lock',*command]
         with (out/'render.log').open('w') as log:
-            render_status = subprocess.run(['flock','/tmp/botw-render.lock','python3','tools/performance_window.py','1280x720','timeout','180',str(out/'framing')],env=env,stdout=log,stderr=subprocess.STDOUT).returncode
+            render_status = subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT).returncode
         (out/'render-status.json').write_text(json.dumps({'status':render_status,'frames':args.frames})+'\n')
         assert (out/'trace.bin').is_file(), f'no complete trace; render status {render_status}: {out/"render.log"}'
     elif (out/'render-status.json').exists():
         recorded = json.loads((out/'render-status.json').read_text())
         render_status = recorded['status']
         args.frames = recorded['frames']
+    if args.capture_only:
+        assert render_status == 0, 'capture failed; render log and trace retained'
+        print('PASS capture', args.scene, flush=True)
+        return
     subprocess.run(['cc','-O2','-shared','-fPIC',str(ROOT/'tools/combat_framing_raster.c'),'-o',str(out/'raster.so'),'-lm'],check=True)
     raster=ctypes.CDLL(str(out/'raster.so')).framing_raster
     raster.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_void_p,ctypes.c_int,ctypes.c_int]
@@ -338,9 +379,10 @@ def main():
     foe,foe_bones,foe_bind=model(ROOT/'assets/models/bokoblin.mdl')
     shield,sword,club,spear = equipment_geometry(args.game.resolve(),out)
     trace=Reader(out/'trace.bin'); magic, enemy_count = trace.unpack('II')
-    assert magic in (0x46524D32,0x46524D33) and 1 <= enemy_count <= 5
+    assert magic in (0x46524D32,0x46524D33,0x46524D34,0x46524D35,0x46524D36) and 1 <= enemy_count <= 128
     hit_frames=[]; pause_rows=[]; blade_intersections=[]; body_intersections=[]; previous_damage=0.; visibility=[]; equipment_front=[]; waiting_equipment_front=[]; rows=[]; peak=0.; foreground=0; min_gap=100.; all_overlap=0; min_mesh_gap=100.; min_surface_gap=100.; min_crowd_gap=100.
     head_pairs = []
+    waiting_rows = []
     while trace.at < len(trace.data):
         frame,=trace.unpack('I'); vp=trace.matrix(); hp=trace.array(3); hw=trace.matrix(); n,=trace.unpack('I'); hm=trace.array(n)
         hero_head=head_centre(hero,hero_bones,hm,hw,vp)
@@ -353,25 +395,39 @@ def main():
         previous_damage=damage
         pause_rows.append(dict(frame=frame,pause=pause,phase=phase,damage=damage))
         target, = trace.unpack('I'); target -= 1
-        lock_frames = trace.unpack('I')[0] if magic == 0x46524D33 else (frame if frame < 200 else max(0,frame-540))
+        lock_frames = trace.unpack('I')[0] if magic >= 0x46524D33 else (frame if frame < 200 else max(0,frame-540))
         shield_z = depth_mask(rigid(shield,trace.matrix(),vp),raster)
         sword_mesh = rigid(sword,trace.matrix(),vp)
         sword_z = depth_mask(sword_mesh,raster)
         blade_points = np.ascontiguousarray(sword_mesh[0][0])
         blade_indices = np.ascontiguousarray(sword[1][(sword[0][sword[1],1].min(axis=1) >= .11*.88-1e-5)],dtype=np.int64)
+        committed_states=[]
+        collidable=[]
+        weapon_present=[]
         heads=[]; roots=[]; bodies=[]; weapons=[]; windups=[]; framed=[]; weapon_framed=[]; combined_fraction=[]
         for enemy in range(enemy_count):
             windup, = trace.unpack('I'); windups.append(windup)
-            weapon_mesh = rigid(club if enemy == 0 else spear,trace.matrix(),vp)
+            spear_weapon = trace.unpack('I')[0] if magic >= 0x46524D34 else enemy != 0
+            committed = trace.unpack('I')[0] if magic >= 0x46524D34 else windup
+            waiting_angle = trace.unpack('f')[0] if magic >= 0x46524D34 else -1.
+            idle_clip = trace.unpack('I')[0] if magic >= 0x46524D34 else 0
+            drawn = trace.unpack('I')[0] if magic >= 0x46524D35 else 3
+            collidable.append(bool(drawn & 4) if magic >= 0x46524D36 else bool(drawn & 1))
+            weapon_present.append(bool(drawn & 2))
+            waiting_rows.append(dict(frame=frame,enemy=enemy,angle_rad=waiting_angle,clip=idle_clip))
+            committed_states.append(committed)
+            weapon_world = trace.matrix()
+            weapon_mesh = rigid(spear if spear_weapon else club,weapon_world,vp) if drawn & 2 else []
             weapon_z = depth_mask(weapon_mesh,raster); weapons.append(weapon_z)
-            weapon_uv = np.vstack([uv for _,uv,_,_ in weapon_mesh])
+            weapon_uv = np.vstack([uv for _,uv,_,_ in weapon_mesh]) if weapon_mesh else np.array([[-1,-1]])
             weapon_framed.append(bool((weapon_uv.min(axis=0)>[4,4]).all() and (weapon_uv.max(axis=0)<[316,176]).all()))
             pos=trace.array(3); roots.append(pos); ring,=trace.unpack('f'); world=trace.matrix(); n,=trace.unpack('I'); palette=trace.array(n)
-            head = head_projection(foe,foe_bones,palette,world,vp)
+            head = head_projection(foe,foe_bones,palette,world,vp) if drawn & 1 else None
             enemy_head = head[0] if head is not None else None
-            heads.append(head)
+            heads.append(head if float(np.linalg.norm(pos-hp)) < 14.0 else None)
             head_gap=float(np.linalg.norm(enemy_head-hero_head)) if enemy_head is not None and hero_head is not None else None
-            mesh=posed(foe,palette,world,vp); enemy_z=depth_mask(mesh,raster); body=np.isfinite(enemy_z)
+            mesh=posed(foe,palette,world,vp) if drawn & 1 else []; enemy_z=depth_mask(mesh,raster); body=np.isfinite(enemy_z)
+            nearby = float(np.linalg.norm(pos-hp)) < 14.0
             bodies.append(enemy_z)
             combined_fraction.append(float(np.isfinite(np.minimum(enemy_z,weapon_z)).sum()/body.size))
             uv = np.vstack([uv for _,uv,_,_ in mesh]) if mesh else np.array([[-1,-1]])
@@ -410,7 +466,8 @@ def main():
                     if blade_gap<=.000001: blade_intersections.append(dict(frame=frame,enemy=enemy))
             front=int((body & hero_mask & (enemy_z<hero_z-0.001)).sum())
             gap=float(np.linalg.norm((pos-hp)[[0,2]])-0.75)
-            peak=max(peak,fraction);foreground=max(foreground,front);all_overlap=max(all_overlap,overlap);min_gap=min(min_gap,gap)
+            peak=max(peak,fraction);foreground=max(foreground,front);all_overlap=max(all_overlap,overlap);min_gap=min(min_gap,gap) if collidable[-1] else min_gap
+            if args.scene == "camp" and not nearby: continue
             rows.append(dict(frame=frame,enemy=enemy,screen_fraction=fraction,projected_overlap_pixels=overlap,foreground_overlap_pixels=front,capsule_gap_m=gap,head_gap_px=head_gap,hero_head_px=hero_head.tolist() if hero_head is not None else None,enemy_head_px=enemy_head.tolist() if enemy_head is not None else None,selected=enemy==target,lock_frames=lock_frames,support_plane_gap_m=mesh_gap,exact_surface_gap_m=surface_gap,blade_surface_gap_m=blade_gap))
         for i, a in enumerate(heads):
             for j in range(i+1,len(heads)):
@@ -421,10 +478,11 @@ def main():
                 if not (0 <= a[0][0] <= 1280 and 0 <= b[0][0] <= 1280 and 0 <= a[0][1] <= 720 and 0 <= b[0][1] <= 720): continue
                 gap = abs(float(a[0][0]-b[0][0]))
                 width = max(a[1],b[1])
-                head_pairs.append(dict(frame=frame,a=i,b=j,horizontal_gap_px=gap,head_width_px=width,vertical_gap_px=abs(float(a[0][1]-b[0][1])),clearance_widths=gap/max(width,.001)))
+                head_pairs.append(dict(frame=frame,a=i,b=j,both_committed=bool(committed_states[i] and committed_states[j]),horizontal_gap_px=gap,head_width_px=width,vertical_gap_px=abs(float(a[0][1]-b[0][1])),clearance_widths=gap/max(width,.001)))
         for i, a in enumerate(roots):
-            for b in roots[i+1:]:
-                if abs(a[1]-b[1]) < 1.46:
+            for j, b in enumerate(roots[i+1:],i+1):
+                if not collidable[i] or not collidable[j]: continue
+                if np.linalg.norm(a-hp) < 14 and np.linalg.norm(b-hp) < 14 and abs(a[1]-b[1]) < 1.46:
                     min_crowd_gap=min(min_crowd_gap,float(np.linalg.norm((a-b)[[0,2]])-.8))
         scene = np.minimum.reduce([hero_z,shield_z,sword_z]+bodies+weapons)
         foreground_equipment = np.minimum.reduce(weapons)
@@ -436,9 +494,9 @@ def main():
         waiting_equipment_front.append(waiting_obscured/max(1,int(hero_mask.sum())))
         for enemy in range(enemy_count):
             blockers=np.minimum.reduce([hero_z,shield_z,sword_z]+[z for i,z in enumerate(bodies) if i!=enemy]+[z for i,z in enumerate(weapons) if i!=enemy])
-            visibility.append(dict(frame=frame,enemy=enemy,selected=enemy==target,windup=bool(windups[enemy]),equipment_screen_fraction=combined_fraction[enemy],body_in_frame=framed[enemy],weapon_in_frame=weapon_framed[enemy],body_pixels=int(np.isfinite(bodies[enemy]).sum()),weapon_pixels=int(np.isfinite(weapons[enemy]).sum()),body_visible=visible_fraction(bodies[enemy],blockers),weapon_visible=visible_fraction(np.where(weapons[enemy]<=bodies[enemy]+.001,weapons[enemy],np.inf),blockers),weapon_self_visible=visible_fraction(weapons[enemy],bodies[enemy]),exposed_weapon_pixels=int((np.isfinite(weapons[enemy]) & (weapons[enemy]<=bodies[enemy]+.001)).sum()),shield_visible=visible_fraction(shield_z,np.minimum.reduce([hero_z,sword_z]+bodies+weapons)),foreground_weapon_hero_pixels=obscured,bystander_weapon_hero_pixels=waiting_obscured))
+            visibility.append(dict(frame=frame,enemy=enemy,selected=enemy==target,windup=bool(windups[enemy]),weapon_present=weapon_present[enemy],equipment_screen_fraction=combined_fraction[enemy],body_in_frame=framed[enemy],weapon_in_frame=weapon_framed[enemy],body_pixels=int(np.isfinite(bodies[enemy]).sum()),weapon_pixels=int(np.isfinite(weapons[enemy]).sum()),body_visible=visible_fraction(bodies[enemy],blockers),weapon_visible=visible_fraction(np.where(weapons[enemy]<=bodies[enemy]+.001,weapons[enemy],np.inf),blockers),weapon_self_visible=visible_fraction(weapons[enemy],bodies[enemy]),exposed_weapon_pixels=int((np.isfinite(weapons[enemy]) & (weapons[enemy]<=bodies[enemy]+.001)).sum()),shield_visible=visible_fraction(shield_z,np.minimum.reduce([hero_z,sword_z]+bodies+weapons)),foreground_weapon_hero_pixels=obscured,bystander_weapon_hero_pixels=waiting_obscured))
     paired = [r for r in rows if r['selected'] and r['lock_frames'] >= 60 and args.scene != 'tentfire']
-    result=dict(paired_lock_samples=len(paired),paired_middle_third_failures=sum(not (1280/3 <= r['hero_head_px'][0] <= 1280*2/3 and 1280/3 <= r['enemy_head_px'][0] <= 1280*2/3) for r in paired),min_head_gap_px=min(r['head_gap_px'] for r in rows if r['head_gap_px'] is not None),frames=len(rows)//enemy_count,samples=len(rows),mask_size=[320,180],max_screen_fraction=peak,max_foreground_overlap_pixels=foreground,max_projected_overlap_pixels=all_overlap,min_capsule_gap_m=min_gap,min_enemy_capsule_gap_m=min_crowd_gap,min_support_plane_gap_m=min_mesh_gap,min_posed_mesh_gap_m=min_surface_gap,method='CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.')
+    result=dict(paired_lock_samples=len(paired),paired_middle_third_failures=sum(not (1280/3 <= r['hero_head_px'][0] <= 1280*2/3 and 1280/3 <= r['enemy_head_px'][0] <= 1280*2/3) for r in paired),min_head_gap_px=min(r['head_gap_px'] for r in rows if r['head_gap_px'] is not None),frames=frame+1,samples=len(rows),mask_size=[320,180],max_screen_fraction=peak,max_foreground_overlap_pixels=foreground,max_projected_overlap_pixels=all_overlap,min_capsule_gap_m=min_gap,min_enemy_capsule_gap_m=min_crowd_gap,min_support_plane_gap_m=min_mesh_gap,min_posed_mesh_gap_m=min_surface_gap,method='CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.')
     result.update(enemy_head_pair_samples=len(head_pairs),min_enemy_head_horizontal_clearance_widths=min((r['clearance_widths'] for r in head_pairs),default=None),enemy_head_overlap_frames=len({r['frame'] for r in head_pairs if r['clearance_widths'] < 1.0}))
     (out/'head-pairs.json').write_text(json.dumps(head_pairs)+'\n')
     pauses=[]
@@ -452,15 +510,35 @@ def main():
     (out/'hit-pauses.json').write_text(json.dumps(pauses,indent=2)+'\n')
     result.update(enemy_count=enemy_count,weapon_contact_count=int(previous_damage),max_equipped_enemy_screen_fraction=max(r["equipment_screen_fraction"] for r in visibility),hit_count=len(hit_frames),min_hit_pause_frames=min((p['held_frames'] for p in pauses),default=0),blade_intersection_frames=len({r['frame'] for r in blade_intersections}),body_intersection_frames=len({r['frame'] for r in body_intersections}),blade_intersections=blade_intersections)
     selected=[r for r in visibility if r['selected'] and r['windup'] ]
-    result.update(selected_windup_frames=len(selected),selected_windup_body_clipped_frames=sum(not r['body_in_frame'] for r in selected),selected_windup_weapon_clipped_frames=sum(not r['weapon_in_frame'] for r in selected),min_selected_windup_body_visible=min((r['body_visible'] for r in selected),default=0),min_selected_windup_weapon_visible=min((r['weapon_visible'] for r in selected if r['exposed_weapon_pixels']>=8),default=0),max_foreground_equipment_hero_fraction=max(equipment_front),max_bystander_equipment_hero_fraction=max(waiting_equipment_front),min_shield_visible=min(r['shield_visible'] for r in visibility if r['body_pixels']>0))
+    result.update(selected_windup_frames=len(selected),selected_windup_body_clipped_frames=sum(not r['body_in_frame'] for r in selected),selected_windup_weapon_clipped_frames=sum(r['weapon_present'] and not r['weapon_in_frame'] for r in selected),min_selected_windup_body_visible=min((r['body_visible'] for r in selected),default=0),min_selected_windup_weapon_visible=min((r['weapon_visible'] for r in selected if r['exposed_weapon_pixels']>=8),default=0),max_foreground_equipment_hero_fraction=max(equipment_front),max_bystander_equipment_hero_fraction=max(waiting_equipment_front),min_shield_visible=min(r['shield_visible'] for r in visibility if r['body_pixels']>0))
+    waiting = [r for r in waiting_rows if r['angle_rad'] >= 0]
+    longest = 0
+    for enemy in range(enemy_count):
+        previous, run = None, 0
+        for r in [r for r in waiting_rows if r['enemy'] == enemy]:
+            key = r['clip'] if r['angle_rad'] >= 0 and r['clip'] > 0 else None
+            run = run + 1 if key is not None and key == previous else (1 if key is not None else 0)
+            previous = key
+            longest = max(longest, run)
+    result.update(waiting_frames=len(waiting),max_waiting_facing_degrees=max((r['angle_rad']*180/np.pi for r in waiting),default=0),max_waiting_single_clip_frames=longest,both_committed_head_pairs=sum(r['both_committed'] for r in head_pairs))
+    (out/'waiting.json').write_text(json.dumps(waiting_rows)+'\n')
+    if args.scene == 'camp':
+        critic = [r for r in head_pairs if r['frame'] == 300]
+        result['critic_frame_300'] = critic
     (out/'visibility.json').write_text(json.dumps(visibility)+'\n')
     (out/'measurements.json').write_text(json.dumps(result,indent=2)+'\n')
     (out/'frames.json').write_text(json.dumps(rows)+'\n')
     print(json.dumps(result,indent=2),flush=True)
+    if args.scene == 'camp':
+        assert result['critic_frame_300'], 'README camp frame 300 must include posed nearby enemy heads'
     assert result['frames']==args.frames
     assert render_status == 0, f'production encounter minimum failed ({render_status}); all measurements retained'
     assert selected or args.scene == 'tentfire', 'fixture must capture selected enemy windups'
     if not args.baseline:
+        assert result['max_waiting_facing_degrees'] <= 45.001, 'waiting enemy turns its back to Jo'
+        assert longest <= 90, 'waiting pose persists longer than 1.5 seconds'
+        if args.scene == 'camp':
+            assert all(r['clearance_widths'] >= 1 for r in result['critic_frame_300']), 'README camp frame 300 overlaps enemy faces'
         landed=re.search(r'framing production fight: damage=([0-9.]+)',(out/'render.log').read_text())
         assert args.scene == 'tentfire' or (landed and float(landed[1])>0), 'trace must include real posed sword hits'
         assert result['max_equipped_enemy_screen_fraction']<=.06, 'body plus equipment fills more than 6% of screen'

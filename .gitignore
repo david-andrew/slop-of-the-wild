@@ -1,5 +1,10 @@
 # large source downloads (see docs/ASSETS.md for where they come from)
-assets/src/
+assets/src/*
+# the referenced Stylized Nature MegaKit textures (Quaternius, CC0) are committed so CI can build
+!assets/src/nature/
+assets/src/nature/*
+!assets/src/nature/Textures/
+!assets/src/nature/License_Standard.txt
 build/
 *.png.tmp
 # Optional CPU assets generated from production code by tools/prepare_assets.sh
@@ -13,3 +18,5 @@ assets/prepared/
 !/docs/ref/movement-response-audit.json
 !/docs/ref/movement-sources.json
 !/docs/ref/verify_movement_response_sources.py
+/docs/ref/footage/raw/
+__pycache__/

@@ -1,5 +1,7 @@
 # The Legend of Jo: Slop of the Wild
 
+**[Play in the browser](https://david-andrew.github.io/slop-of-the-wild/)** (desktop browser with WebGL 2; about 95 MB to load).
+
 [Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **136 PASS / 0 FAIL**
 ([evidence](docs/EVALUATE.md#whole-regression-suite)).
 [Compact performance summary](docs/PERFORMANCE.md), [current listening evidence](docs/MUSIC.md),
@@ -69,6 +71,27 @@ compiler or library patches. Rendering adapters, score gain envelopes and
 export peak guards belong to the game. See [SLOPPY_NOTES](docs/SLOPPY_NOTES.md)
 for the migration and remaining game-owned adapters.
 
+## Browser build
+
+```sh
+tools/build_web.sh                         # Linux x86-64; bundled Sloppy, Node 22+, Python 3
+python3 -m http.server 8000 --directory build/site
+```
+
+Open `http://localhost:8000/`. Click the game to enable audio and mouse capture;
+use the **Fullscreen** button to fill the screen. Progress and options persist in
+browser storage. A desktop browser with WebGL 2, float color attachments and gzip
+`DecompressionStream` is required.
+
+CI runs **`tools/build_web.sh`** and publishes **`build/site/`** with the existing
+Pages workflow. The builder uses CPU-only preparation and wasm tracing; it needs
+no GPU, browser, npm packages, external asset downloads or sibling checkouts.
+The current site is about **95 MB**: `index.html`, five compressed data archives,
+and a matching manifest. Its largest archive is below 35 MB.
+It is deployed to https://david-andrew.github.io/slop-of-the-wild/ on every push to `main`.
+
+[Browser measurements, pack choices and optional smoke tests](docs/WEB.md).
+
 ## Performance
 
 The current [performance summary](docs/PERFORMANCE.md) covers complete-input startup,
@@ -90,6 +113,11 @@ recovery requires sustained headroom. The watercolor pass follows. Trees past 45
 instance buffers per pass; the middle and far shadow cascades take turns. The middle vegetation shadow map uses fewer interior leaf cards beyond 25 m, retaining
 the crown envelope and full near-caster geometry. Separate depth shaders
 resolve leaf coverage before shading, with the same wind/time uniforms for both view passes.
+Linux `BOTW_FPS=60` optionally caps the producer before input polling and rendering;
+`0` is uncapped. The five-minute Round 67 comparisons retain uncapped Vulkan mailbox
+and dynamic scene scale as the default; neither fixed scale nor 60 Hz pacing removes
+the periodic acquire stall (see `docs/PERFORMANCE.md`).
+
 Textures, spatial cells, the shrine chime and representative render paths warm during load.
 
 ## What it shows about Sloppy
@@ -303,7 +331,7 @@ enemy HP loss and impact pause. The old 170/185-frame opening stopped movement a
 180, fell short of the posed bodies and lost its follow-up to the enemy's attack.
 `tools/round57_visual_check.sh` likewise releases the lock between renders.
 
-The offline framing check skins every body triangle over four 960-frame fights plus a tent-fire crowd:
+The offline framing check skins every body triangle over four 960-frame fights, a tent-fire crowd, and the exact README camp sequence (including frame 300):
 five enemies on flat ground, three on a walkable terrain slope, one inside the
 Temple's ruin doorway, and three beside a collidable forest tree. Each uses attacks,
 lateral movement, lock/unlock and camera pans; the doorway uses shorter moves

@@ -1,0 +1,41 @@
+# Production reveal timing and camera staging; no render or progress rewards forced.
+use '../game/story.jo'
+use '../game/chars.jo'
+use '../game/player.jo'
+use '../game/camera.jo'
+use '../game/gfx.jo'
+use '../game/structures.jo'
+use '../game/worldgen.jo'
+use '../game/physics.jo'
+from '../game/story.jo' import __ending
+worldgen_load()
+structures_pads()
+worldgen_finish()
+temple()
+old_man.pos=roof_spot()
+old_man.face=0.0
+old_man.visible=true
+story.beat=.ending
+story.glider_given=true
+pl.pos=lp(TEMPLE,TEMPLE_ROT,4,43.05,34.5)
+pl.state=.cutscene
+shots: vec3[]
+loop t in [1.0,5.0,8.5]:
+    story.t=t
+    __ending(1.0/60.0)
+    assert(cam.override and old_man.visible and pl.state==.cutscene,"reveal holds actor and control")
+    hp=pl.hp
+    damage_player(4,pl.pos+vec3(1,0,0))
+    assert(pl.hp==hp and pl.state==.cutscene,"nearby enemies cannot interrupt the reveal")
+    shots.push(cam.o_pos)
+    ray=cam.o_target-cam.o_pos
+    assert(not raycast(cam.o_pos,normalize(ray),f64(length(ray))-0.15,true,false).hit,"roof shot clears spire and parapet")
+    if t==5.0: assert(old_man.opacity>0.4 and old_man.opacity<0.6 and old_man.spirit==1.0,"translucent held spirit")
+assert(length(shots[0]-shots[1])>2.0 and length(shots[1]-shots[2])>3.0,"three distinct camera compositions")
+story.t=10.5
+__ending(1.0/60.0)
+assert(old_man.opacity<0.25 and old_man.visible,"fade happens after held reveal")
+story.t=12.0
+__ending(1.0/60.0)
+assert(not old_man.visible and not cam.override and pl.state==.ground and story.beat==.explore,"complete farewell restores play")
+print("PASS roof reveal: three shots, held translucency, late fade and restored camera/control")

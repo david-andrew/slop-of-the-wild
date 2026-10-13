@@ -1,6 +1,13 @@
 # Linux asset I/O directly into final arrays. The runtime's read_bytes/write_bytes
 # converts through strings, temporarily holding a second complete copy.
 # Unsupported targets use the ordinary generation path instead of this optimization.
+when TARGET == "wasm":
+    extern __web_asset_open = (path: *u8, n: int) -> int
+    extern __web_asset_size = (id: int) -> int
+    extern __web_asset_read = (id: int, p: *u8, n: int) -> int
+    extern __web_asset_close = (id: int)
+    extern __web_asset_stamp = (path: *u8, n: int, out: *u8, cap: int) -> int
+
 struct AssetStream:
     fd = -1
     left = 0
@@ -13,6 +20,10 @@ asset_open = (path: str) -> AssetStream:
         size = syscall(8, fd, 0, 2)
         syscall(8, fd, 0, 0)
         return AssetStream(fd, size, size >= 0 and size <= 512 * 1024 * 1024)
+    else when TARGET == "wasm":
+        fd = __web_asset_open(data(path), len(path))
+        size = if fd >= 0: __web_asset_size(fd) else: -1
+        return AssetStream(fd, size, size >= 0 and size <= 512 * 1024 * 1024)
     else: return AssetStream(ok = false)
 
 asset_create = (path: str) -> AssetStream:
@@ -24,6 +35,8 @@ asset_create = (path: str) -> AssetStream:
 asset_close = (s: mut AssetStream):
     when TARGET == "linux":
         if s.fd >= 0: syscall(3, s.fd)
+    else when TARGET == "wasm":
+        if s.fd >= 0: __web_asset_close(s.fd)
     s.fd = -1
 
 asset_read = (s: mut AssetStream, p: *u8, n: int):
@@ -38,6 +51,11 @@ asset_read = (s: mut AssetStream, p: *u8, n: int):
                 s.ok = false
                 return
             at += got
+        s.left -= n
+    else when TARGET == "wasm":
+        if not s.ok or n < 0 or n > s.left or __web_asset_read(s.fd, p, n) != n:
+            s.ok = false
+            return
         s.left -= n
     else: s.ok = false
 
@@ -76,6 +94,11 @@ asset_key = (paths: str[]) -> int:
             if syscall(4, data(path + "\0"), data(st)) == 0:
                 key += "|{path}:{st[6]}:{st[11]}:{st[12]}"
             else: key += "|{path}:missing"
+        else when TARGET == "wasm":
+            # Build manifest carries the exact stamps used by freshly baked packs.
+            # Archive hashes tie those stamps and payloads to this wasm build.
+            stamp = __wasm_bytes((p: *u8, cap: int): __web_asset_stamp(data(path), len(path), p, cap))
+            key += "|{path}:{str_from_bytes(stamp)}"
         else: key += "|{path}:unsupported"
     value = int(__str_hash(key))
     __asset_keys[name] = value

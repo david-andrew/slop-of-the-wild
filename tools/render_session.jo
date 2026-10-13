@@ -4,6 +4,7 @@ use '../game/main.jo'
 use '../game/gfx.jo'
 use '../game/post.jo'
 use '../game/frametime.jo'
+use '../game/frame_pacing.jo'
 use '../game/cputime.jo'
 use '../game/player.jo'
 use '../game/camera.jo'
@@ -190,6 +191,7 @@ probe_resources = (phase: str):
     state = (images, buffers, pipes, __vk_blocks.len(), __vk_slot_next, __vk_swapchain)
     if state == probe_resource_last: return
     probe_resource_last = state
+    eprint("probe surface: frame {frame_number()} output {__win_w}x{__win_h} swapchain_images {__vk_sc_images.len()} frames_in_flight {__VK_FRAMES} scene_scale {post.scale:.2}")
     eprint("resource trace: frame {frame_number()} phase {phase} images {images} buffers {buffers} pipelines {pipes} blocks {__vk_blocks.len()} slots {__vk_slot_next} swapchain {__vk_swapchain} scale {post.scale:.2}")
 
 main = ():
@@ -204,6 +206,7 @@ main = ():
     minute = 0
     lines = ""
     loop not __win_close:
+        frame_pacing_wait()
         loop_start = if probe_stages: time() else: 0.0
         loop_thread = if probe_stages: frame_thread_time() else: 0.0
         __platform_poll()

@@ -1,5 +1,6 @@
 use 'gfx.jo'
 use 'audio_assets.jo'
+use 'asset_stream.jo'
 use 'audio_mix.jo'
 use 'player.jo'
 use 'env.jo'
@@ -13,14 +14,34 @@ const PIANO_STEP = 3                  # semitones between sampled notes (the res
 const PIANO_LO = 36                   # midi C2
 const PIANO_HI = 96                   # midi C7
 
+# Per-note scaled PCM16 keeps the stereo room response and original 48 kHz
+# timing. Only active voice rings expand to f32; quiet layers retain full precision
+# relative to their own peak (rather than a single bank-wide quantizer).
+struct PianoSample:
+    samples: i16[]
+    scale: f32
+
+piano_pack = (sound: Sound) -> PianoSample:
+    peak = f32(0)
+    loop v in sound.samples: peak = max(peak, abs(v))
+    scale = max(peak, f32(0.00000001)) / 32767.0
+    PianoSample([loop v in sound.samples: i16(clamp(round(f64(v / scale)), -32767.0, 32767.0))], scale)
+
+piano_expand = (s: PianoSample) -> Sound:
+    Sound([loop v in s.samples: f32(v) * s.scale])
+
+piano_duration = (s: PianoSample) -> f64: f64(s.samples.len()) / (2.0 * f64(MIX_RATE))
+
+piano_sample = (s: PianoSample, i: int) -> f32: f32(s.samples[i]) * s.scale
+
 struct PianoBank:
-    notes: Sound[]
-    soft: Sound[]                     # quieter, darker strikes
-    forte: Sound[]
-    short_soft: Sound[]
-    short_notes: Sound[]
-    short_forte: Sound[]
-    restrained_soft: Sound[]          # low-health bass: 45 ms body, 95 ms damper release
+    notes: PianoSample[]
+    soft: PianoSample[]                     # quieter, darker strikes
+    forte: PianoSample[]
+    short_soft: PianoSample[]
+    short_notes: PianoSample[]
+    short_forte: PianoSample[]
+    restrained_soft: PianoSample[]          # low-health bass: 45 ms body, 95 ms damper release
     ready = false
 
 piano = PianoBank()
@@ -179,14 +200,14 @@ __piano_sample = (midi: int, dynamic: str, vel: f64) -> f32[]:
     __piano_mono(midi, vel, __piano_seconds(midi))
 
 # Damper closes after 100 ms, with a smooth 160 ms release; prebuilt, never sliced on a frame.
-__piano_short = (s: Sound, close: f64 = 0.10, end: f64 = 0.26) -> Sound:
+__piano_short = (s: PianoSample, close: f64 = 0.10, end: f64 = 0.26) -> PianoSample:
     n = int(end * f64(MIX_RATE))
     out = fill(f32(0), n * 2)
     loop i in [0..n):
         g = f32(1.0 - smoothstep(close, end, f64(i) / f64(MIX_RATE)))
-        out[i * 2] = s.samples[i * 2] * g
-        out[i * 2 + 1] = s.samples[i * 2 + 1] * g
-    Sound(out)
+        out[i * 2] = piano_sample(s, i * 2) * g
+        out[i * 2 + 1] = piano_sample(s, i * 2 + 1) * g
+    piano_pack(Sound(out))
 
 # A single prebuilt glass strike; the sequencer pitches it, never loops it.
 shrine_glass = Sound()
@@ -211,22 +232,9 @@ piano_init = ():
     saved = __global_rng
     defer __global_rng = saved
     seed_random(12345)
-    if let asset = audio_asset_read("assets/prepared/piano.bin", audio_asset_key(["game/music.jo"])):
-        if asset.groups.len() == 10 and asset.flags.len() == 0:
-            piano.notes = asset.groups[0]
-            piano.soft = asset.groups[1]
-            piano.forte = asset.groups[2]
-            piano.short_notes = asset.groups[3]
-            piano.short_soft = asset.groups[4]
-            piano.short_forte = asset.groups[5]
-            if piano.notes.len() == 21 and piano.soft.len() == 21 and piano.forte.len() == 21 and piano.short_notes.len() == 21 and piano.short_soft.len() == 21 and piano.short_forte.len() == 21 and asset.groups[6].len() == 1 and asset.groups[7].len() == 1 and asset.groups[8].len() == 1 and asset.groups[9].len() == 1:
-                drum_lo = asset.groups[6][0]
-                drum_hi = asset.groups[7][0]
-                combat_entry = asset.groups[8][0]
-                shrine_glass = asset.groups[9][0]
-                piano.restrained_soft = parallel_map(piano.soft, (s: Sound): __piano_short(s, 0.045, 0.14))
-                piano.ready = true
-                return
+    if piano_asset_read():
+        piano.ready = true
+        return
     piano.ready = true
     keys: int[]
     m = PIANO_LO
@@ -234,21 +242,21 @@ piano_init = ():
         keys.push(m)
         m += PIANO_STEP
     loud = parallel_map(keys, (k: int):
-        Sound(reverb_stereo(__piano_sample(k, "mf", 0.75), 0.55, 0.86, 0.35))
+        piano_pack(Sound(reverb_stereo(__piano_sample(k, "mf", 0.75), 0.55, 0.86, 0.35)))
     )
     quiet = parallel_map(keys, (k: int):
-        Sound(reverb_stereo(__piano_sample(k, "pp", 0.35), 0.65, 0.88, 0.45))
+        piano_pack(Sound(reverb_stereo(__piano_sample(k, "pp", 0.35), 0.65, 0.88, 0.45)))
     )
     forte = parallel_map(keys, (k: int):
-        Sound(reverb_stereo(__piano_sample(k, "ff", 1.0), 0.55, 0.86, 0.35))
+        piano_pack(Sound(reverb_stereo(__piano_sample(k, "ff", 1.0), 0.55, 0.86, 0.35)))
     )
     piano.notes = loud
     piano.soft = quiet
     piano.forte = forte
-    piano.short_notes = parallel_map(loud, (s: Sound): __piano_short(s))
-    piano.short_soft = parallel_map(quiet, (s: Sound): __piano_short(s))
-    piano.short_forte = parallel_map(forte, (s: Sound): __piano_short(s))
-    piano.restrained_soft = parallel_map(quiet, (s: Sound): __piano_short(s, 0.045, 0.14))
+    piano.short_notes = parallel_map(loud, (s: PianoSample): __piano_short(s))
+    piano.short_soft = parallel_map(quiet, (s: PianoSample): __piano_short(s))
+    piano.short_forte = parallel_map(forte, (s: PianoSample): __piano_short(s))
+    piano.restrained_soft = parallel_map(quiet, (s: PianoSample): __piano_short(s, 0.045, 0.14))
     combat_drums()
     shrine_glass = __shrine_glass()
 
@@ -297,6 +305,7 @@ struct ScoreVoice:
     context = true
     retiring = false
     source = Sound()
+    packed = PianoSample()
     applied = 1.0
     ramp_from = 1.0
     ramp_at = 0.0
@@ -330,6 +339,14 @@ __score_play = (s: Sound, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
     window = int(ceil(8192.0 * pitch)) + 3
     id = play(Sound(fill(f32(0), window * 2)), 1.0, pan, pitch, true)
     score_voices.push(ScoreVoice(id, gain, duration(s) / pitch, context = score, source = s, applied = initial, ramp_from = initial))
+    score_set_volume(id, initial)
+    id
+
+__score_piano_play = (s: PianoSample, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
+    initial = clamp(gain * (if score: seq.volume else: 1.0) * music_duck, 0.0, 8.0)
+    window = int(ceil(8192.0 * pitch)) + 3
+    id = play(Sound(fill(f32(0), window * 2)), 1.0, pan, pitch, true)
+    score_voices.push(ScoreVoice(id, gain, f64(s.samples.len()) / (2.0 * f64(MIX_RATE) * pitch), context = score, packed = s, applied = initial, ramp_from = initial))
     score_set_volume(id, initial)
     id
 
@@ -367,7 +384,9 @@ score_set_volume = (id: int, gain: f64):
         ramp_end = int(ceil(v.ramp_at + v.ramp_frames))
         source = data(v.source.samples)
         dest = data(__voices[vi].sound.samples)
-        total = v.source.samples.len() / 2
+        packed = v.packed.samples.len() > 0
+        compact = data(v.packed.samples)
+        total = (if packed: v.packed.samples.len() else: v.source.samples.len()) / 2
         first = if changed: start else: max(start, v.prepared_until)
         slope = (v.applied - v.ramp_from) / v.ramp_frames
         ring = (int(floor(pos)) + first - start) % window
@@ -383,12 +402,16 @@ score_set_volume = (id: int, gain: f64):
             else if frame >= ramp_end:
                 g = f32(v.applied)
                 offset = (frame - ring) * 2
-                loop sample in [ring * 2..(ring + last - frame) * 2): dest[sample] = source[sample + offset] * g
+                if packed:
+                    g *= v.packed.scale
+                    loop sample in [ring * 2..(ring + last - frame) * 2): dest[sample] = f32(compact[sample + offset]) * g
+                else:
+                    loop sample in [ring * 2..(ring + last - frame) * 2): dest[sample] = source[sample + offset] * g
             else:
                 loop k in [frame..last):
                     g = f32(v.ramp_from + (f64(k) - v.ramp_at) * slope)
-                    dest[ring * 2] = source[k * 2] * g
-                    dest[ring * 2 + 1] = source[k * 2 + 1] * g
+                    dest[ring * 2] = (if packed: f32(compact[k * 2]) * v.packed.scale else: source[k * 2]) * g
+                    dest[ring * 2 + 1] = (if packed: f32(compact[k * 2 + 1]) * v.packed.scale else: source[k * 2 + 1]) * g
                     ring += 1
                 ring -= last - frame
             ring = (ring + last - frame) % window
@@ -412,9 +435,9 @@ piano_play = (midi: int, vel: f64 = 0.7, pan: f64 = 0.0, volume: f64 = 1.0, shor
     notes = if short: piano.short_notes else: piano.notes
     forte = if short: piano.short_forte else: piano.forte
     id = 0
-    if b.pp > 0.000001: id = __score_play(soft[k], g * b.pp, pan, pitch, score)
-    if b.mf > 0.000001: id = __score_play(notes[k], g * b.mf, pan, pitch, score)
-    if b.ff > 0.000001: id = __score_play(forte[k], g * b.ff, pan, pitch, score)
+    if b.pp > 0.000001: id = __score_piano_play(soft[k], g * b.pp, pan, pitch, score)
+    if b.mf > 0.000001: id = __score_piano_play(notes[k], g * b.mf, pan, pitch, score)
+    if b.ff > 0.000001: id = __score_piano_play(forte[k], g * b.ff, pan, pitch, score)
     id
 
 # ---------------- the sequencer ----------------
@@ -1005,7 +1028,70 @@ jingles_update = (dt: f64):
             laters.remove(i)
         else: i += 1
 
-# Build tool uses the same synthesis/reverb/damper implementation as the fallback.
+# Float export exists only for offline equivalence tools. Play never expands a bank.
 piano_asset = () -> AudioAsset:
-    AudioAsset([piano.notes, piano.soft, piano.forte, piano.short_notes, piano.short_soft,
-        piano.short_forte, [drum_lo], [drum_hi], [combat_entry], [shrine_glass]], [])
+    AudioAsset([loop bank in [piano.notes, piano.soft, piano.forte, piano.short_notes, piano.short_soft, piano.short_forte]: [loop s in bank: piano_expand(s)]] + [[drum_lo], [drum_hi], [combat_entry], [shrine_glass]], [])
+
+const PIANO_ASSET_MAGIC = 0x42575049414E4F32
+piano_asset_read = () -> bool:
+    if env("BOTW_BAKE_ASSETS") != none or env("BOTW_NO_PREPARED_ASSETS") != none: return false
+    s = asset_open("assets/prepared/piano-compact.bin")
+    defer asset_close(s)
+    if not s.ok or asset_int(s) != PIANO_ASSET_MAGIC or asset_int(s) != audio_asset_key(["game/music.jo"]): return false
+    banks: PianoSample[][]
+    loop group in [0..7):
+        count = asset_int(s)
+        if not s.ok or count != 21: return false
+        bank: PianoSample[]
+        loop j in [0..count):
+            n = asset_int(s)
+            scale = f32(0)
+            asset_read(s, (&scale) as *u8, 4)
+            if not s.ok or n < 2 or n > MIX_RATE * 24 or n % 2 != 0 or n * 2 > s.left or not (scale > 0.0 and scale < 1.0): return false
+            samples = fill(i16(0), n)
+            asset_read(s, data(samples) as *u8, n * 2)
+            if not s.ok: return false
+            bank.push(PianoSample(samples, scale))
+        banks.push(bank)
+    cues: Sound[]
+    loop i in [0..4):
+        n = asset_int(s)
+        if not s.ok or n < 2 or n > MIX_RATE * 24 or n % 2 != 0 or n * 4 > s.left: return false
+        samples = fill(f32(0), n)
+        asset_read(s, data(samples) as *u8, n * 4)
+        if not s.ok: return false
+        cues.push(Sound(samples))
+    if s.left != 0: return false
+    piano.notes = banks[0]
+    piano.soft = banks[1]
+    piano.forte = banks[2]
+    piano.short_notes = banks[3]
+    piano.short_soft = banks[4]
+    piano.short_forte = banks[5]
+    piano.restrained_soft = banks[6]
+    drum_lo = cues[0]
+    drum_hi = cues[1]
+    combat_entry = cues[2]
+    shrine_glass = cues[3]
+    true
+
+piano_asset_write = () -> bool:
+    path = "assets/prepared/piano-compact.bin"
+    temp = path + ".tmp"
+    s = asset_create(temp)
+    asset_put_int(s, PIANO_ASSET_MAGIC)
+    asset_put_int(s, audio_asset_key(["game/music.jo"]))
+    loop bank in [piano.notes, piano.soft, piano.forte, piano.short_notes, piano.short_soft, piano.short_forte, piano.restrained_soft]:
+        asset_put_int(s, bank.len())
+        loop note in bank:
+            asset_put_int(s, note.samples.len())
+            scale = note.scale
+            asset_write(s, (&scale) as *u8, 4)
+            asset_write(s, data(note.samples) as *u8, note.samples.len() * 2)
+    loop cue in [drum_lo, drum_hi, combat_entry, shrine_glass]:
+        asset_put_int(s, cue.samples.len())
+        asset_write(s, data(cue.samples) as *u8, cue.samples.len() * 4)
+    asset_close(s)
+    if not s.ok: return false
+    when TARGET == "linux": return syscall(82, data(temp + "\0"), data(path + "\0")) == 0
+    else: return false

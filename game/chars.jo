@@ -11,6 +11,7 @@ use 'input.jo'
 use 'combat.jo'
 use 'camera.jo'
 from 'camera.jo' import __camera_record_view
+from 'enemies.jo' import __ground_enemy
 use 'physics.jo'
 use 'structures.jo'
 from 'structures.jo' import __cliff_inside, __cliff_segment_gap
@@ -72,6 +73,8 @@ struct Npc:
     anim: Animator
     skin: Skin
     glide = false
+    opacity = 1.0
+    spirit = 0.0
 
 old_man = Npc(vec3(0, 0, 0), anim = Animator(), skin = Skin())
 
@@ -792,20 +795,32 @@ old_man_update = (dt: f64):
             vec3(0,-1,-0.3))
     old_man.skin = skin(ranger_m, pose)
 
-old_man_draw = ():
+# Every piece shares opacity; the transparent pass blends the spirit after
+# the sky, while shadow coverage fades without leaving a solid hood or staff.
+old_man_prop = (m: Mesh, model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64 = 0.2):
+    tint = mix(color.xyz,vec3(0.34,0.95,1.75),f32(old_man.spirit))
+    draw_prop(m,model,vec4(tint,color.w),emissive+old_man.spirit*0.7,rim,opacity=old_man.opacity)
+
+old_man_draw = (transparent: bool = false):
     if not chars_ready or not old_man.visible: return
+    if sc.shadow and transparent: return
+    if not sc.shadow and (old_man.opacity < 1.0) != transparent: return
+    if transparent:
+        glEnable(GL_BLEND)
+        glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ZERO,GL_ONE)
+        glDepthMask(0)
     sitting = old_man.clip == "sit"
     # the sit clip seats him 0.45 m up, his hips 0.3 m behind his feet: on the log
     world = facing_mat(old_man.pos, old_man.face)
     if sitting and not sc.shadow:
         # the log he sits on
-        draw_prop(__old_props(3), facing_mat(old_man.pos, old_man.face) * translation(v3(0.0, 0.03, -0.3)) * rotation_y(PI / 2.0), vec4(1, 1, 1, 1), 0.0, 0.15)
+        old_man_prop(__old_props(3), facing_mat(old_man.pos, old_man.face) * translation(v3(0.0, 0.03, -0.3)) * rotation_y(PI / 2.0), vec4(1, 1, 1, 1), 0.0, 0.15)
     # The ranger supplies the animation skeleton only. Its sleeves, gauntlets
     # and bent trousers intersect a closed cloak, particularly when seated.
     # The opaque robe and its cached boots provide the visible body instead.
     # These props cast the same readable hood/staff silhouette as the visible mesh.
     hm = world * bone_world(ranger_m, old_man.skin, "Head")
-    draw_prop(__old_props(5), hm, vec4(1, 1, 1, 1), 0.0, 0.05)
+    old_man_prop(__old_props(5), hm, vec4(1, 1, 1, 1), 0.0, 0.05)
     # Cache the replacement in the old man's own prop bank. All construction
     # stays here so shared hero/Bokoblin meshes and shading remain independent.
     if __old_meshes.len() == 6:
@@ -831,24 +846,25 @@ old_man_draw = ():
         # uncovered. Separate fill retains grey in the hood's deep self-shadow.
         hair = old_man_beard_mesh()
         __old_meshes.push(mesh(hair.vs, hair.idx))
-    draw_prop(__old_meshes[6], hm, vec4(1, 1, 1, 1), 0.50, 0.0)
-    draw_prop(__old_meshes[7], hm, vec4(1, 1, 1, 1), 0.35, 0.0)
+    old_man_prop(__old_meshes[6], hm, vec4(1, 1, 1, 1), 0.50, 0.0)
+    old_man_prop(__old_meshes[7], hm, vec4(1, 1, 1, 1), 0.35, 0.0)
     if not sc.shadow:
         # a lantern at his hip
         hip = world * bone_world(ranger_m, old_man.skin, "pelvis")
-        draw_prop(__old_props(2), hip * translation(v3(0.22, -0.05, 0.05)), vec4(1, 1, 1, 1), 0.0, 0.2)
+        old_man_prop(__old_props(2), hip * translation(v3(0.22, -0.05, 0.05)), vec4(1, 1, 1, 1), 0.0, 0.2)
     # Staff rests beside the cloak; both hands stay warm inside it.
     rh = world * translation(v3(0.48, 1.1, 0.08)) * rotation_z(-0.07)
-    draw_prop(__old_props(1), rh, vec4(1, 1, 1, 1), 0.0, 0.2)
+    old_man_prop(__old_props(1), rh, vec4(1, 1, 1, 1), 0.0, 0.2)
     # the cloak: a heavy bell of cloth from his shoulders to the ground, wherever his hips are
     pv = transform_point(bone_world(ranger_m, old_man.skin, "pelvis"), vec3(0, 0, 0))
     ch = transform_point(bone_world(ranger_m, old_man.skin, "spine_03"), vec3(0, 0, 0))
     top = f64(ch.y) + 0.14
-    draw_prop(__old_props(4), world * translation(v3(f64(pv.x), 0.04, f64(pv.z) + (if sitting: 0.12 else: 0.0))) * scaling(v3((if sitting: 1.15 else: 1.0), top - 0.04, (if sitting: 1.3 else: 1.0))), vec4(1, 1, 1, 1), 0.0, 0.25)
+    old_man_prop(__old_props(4), world * translation(v3(f64(pv.x), 0.04, f64(pv.z) + (if sitting: 0.12 else: 0.0))) * scaling(v3((if sitting: 1.15 else: 1.0), top - 0.04, (if sitting: 1.3 else: 1.0))), vec4(1, 1, 1, 1), 0.0, 0.25)
     if old_man.glide and not sc.shadow:
         canopy = translation(old_man.pos + vec3(0, 2.4, 0)) * rotation_y(PI - old_man.face)
-        draw_prop(__glider(), canopy, vec4(1, 1, 1, 1), 0.0, 0.3)
+        old_man_prop(__glider(), canopy, vec4(1, 1, 1, 1), 0.0, 0.3)
         __glider_rig(canopy,transform_point(canopy,v3(-0.22,-1.0,0.1)),transform_point(canopy,v3(0.22,-1.0,0.1)))
+    if transparent: gl_opaque_state()
 
 # Build once in the prop cache; exposed as CPU geometry for the seam/index check.
 # Unit-height robe, scaled by the animated chest. The hands remain concealed
@@ -1090,6 +1106,7 @@ enemy_anim_update = (dt: f64):
     if not chars_ready: return
     loop eanims.len() < enemies.len(): eanims.push(EAnim(Animator(), Skin(), mat4()))
     loop i in [0..enemies.len()):
+        enemy_waiting_face(enemies[i])
         e = enemies[i]
         if e.kind != .bokoblin and e.kind != .blue_bokoblin and e.kind != .stalkoblin: continue
         if e.state == .gone or e.state == .buried: continue
@@ -1132,8 +1149,9 @@ enemy_anim_update = (dt: f64):
                     sp = e.speed / (if clip == "strafe_l": 0.854 else: 1.029)
                 else if e.speed > 0.35: clip = "walk"
                 else:
-                    clip = if stance == 0: "crouch" else: (if stance == 1: "sword_idle" else: "fight_idle")
-                    if e.taunt > 0.5: clip = "taunt"
+                    # Upright weight shifts change every 1.2 s, independent
+                    # of chase-state time (waiting resets e.t every tick).
+                    clip = enemy_chase_idle_clip(e, stance)
                     sp = 0.78 + personality * 0.38
             windup:
                 clip = if e.move == 1: "heavy" else: "attack"
@@ -1191,7 +1209,7 @@ enemy_anim_update = (dt: f64):
         # Waiting, threatening and recovering silhouettes remain different in a group.
         # Upper-body-only adjustments leave locomotion and planted feet to the footing pass.
         if e.state == .chase and not e.may_engage and e.speed < 2.5 and e.burning <= 0.0:
-            top = if e.taunt > 0.5 or stance == 1: "taunt" else: (if stance == 0: "sword_idle" else: "fight_idle")
+            top = enemy_waiting_clip(e.anim_t, stance)
             layer_into(pose, sample_clip(human, ci(top), eanims[i].a.t * (0.78 + personality * 0.3) + personality * 2.0, true), upper_mask, 0.8)
         if e.state == .chase or e.state == .idle or e.state == .recover:
             rotate_bone(human, pose, lib_bone(human, "spine_01"), vec3(0, 0, 1), (personality - 0.5) * 0.16)
@@ -1495,7 +1513,107 @@ __combat_head_centre = (points: vec3[], indices: int[]) -> vec3:
         hi = max(hi,points[index])
     (lo+hi)*0.5
 
-combat_presentation_clear = (reframe: bool = true):
+# Final posed head lanes must survive camera centring and blade/body recoil.
+# Root lanes alone can be undone by those later corrections. Cache only the
+# head vertices from the existing body solve, retaining capacities. Include
+# death poses until their bodies disappear; simultaneous attacks also yield.
+struct CombatHeadLane:
+    index: int
+    points: vec3[]
+    centre: vec3
+    x: f64
+    width: f64
+    depth: f64
+    visible = false
+__combat_head_lanes: CombatHeadLane[]
+__combat_lane_ids: int[]
+__combat_head_lane_update = (lane: mut CombatHeadLane, vp: mat4):
+    lo = vec3(1e9,1e9,1e9)
+    hi = vec3(-1e9,-1e9,-1e9)
+    left = 1e9
+    right = -1e9
+    loop p in lane.points:
+        lo = min(lo,p)
+        hi = max(hi,p)
+        c = vp*vec4(p,1)
+        if c.w <= 0.1: continue
+        left = min(left,f64(c.x/c.w))
+        right = max(right,f64(c.x/c.w))
+    lane.centre = (lo+hi)*0.5
+    c = vp*vec4(lane.centre,1)
+    lane.x = f64(c.x/c.w)
+    lane.width = right-left
+    lane.depth = f64(c.w)
+    lane.visible = lane.points.len()>0 and c.w>0.1 and abs(c.x/c.w)<1.0 and abs(c.y/c.w)<1.0
+
+__combat_enemy_lanes = () -> bool:
+    vp = perspective(view_fov()*PI/180.0,aspect_ratio(),0.1,1000.0)*look_at(view_pos(),view_target(),vec3(0,1,0))
+    right = normalize(cross(view_target()-view_pos(),vec3(0,1,0)))
+    per_depth = tan(view_fov()*PI/360.0)*aspect_ratio()
+    __combat_lane_ids.clear()
+    loop i in [0..min(enemies.len(),__combat_head_lanes.len())):
+        e = enemies[i]
+        if not enemy_melee_body(e) or e.state == .gone or e.state == .buried or e.skull_out or length(e.pos-pl.pos)>=14.0 or __combat_head_lanes[i].points.len()==0: continue
+        __combat_head_lane_update(__combat_head_lanes[i],vp)
+        __combat_lane_ids.push(i)
+    ids = __combat_lane_ids
+    count = ids.len()
+    if env("BOTW_LANE_TRACE") != none and frame_number() == 300:
+        eprint("head lane trace: count {count} camera {view_pos()} target {view_target()} fov {view_fov():.2}")
+        loop i in [0..count):
+            h = __combat_head_lanes[ids[i]]
+            eprint("head lane actor: {h.index} visible {h.visible} x {h.x:.6} width {h.width:.6} depth {h.depth:.3} points {h.points.len()} centre {h.centre} state {enemies[h.index].state} lookout {enemies[h.index].lookout}")
+    moved = false
+    loop pass_ in [0..12):
+        corrected = false
+        loop a in [0..count):
+            loop b in [a+1..count):
+                la = __combat_head_lanes[ids[a]]
+                lb = __combat_head_lanes[ids[b]]
+                if not la.visible or not lb.visible: continue
+                gap = abs(lb.x-la.x)
+                need = max(la.width,lb.width)+0.012
+                if gap>=need: continue
+                am = if la.index==fight.target or enemies[la.index].lookout: 0.0 else: 1.0
+                bm = if lb.index==fight.target or enemies[lb.index].lookout: 0.0 else: 1.0
+                if am+bm==0.0:
+                    # A fixed lookout can share the selected target's ray.
+                    # Yield the movable target in that case, then repair lock
+                    # centring; two zero weights must never waive clearance.
+                    am = if enemies[la.index].lookout: 0.0 else: 1.0
+                    bm = if enemies[lb.index].lookout: 0.0 else: 1.0
+                    if am+bm==0.0: continue
+                sign = if lb.x>=la.x: 1.0 else: -1.0
+                loop pair in [(ids[a],-sign,am),(ids[b],sign,bm)]:
+                    if pair.2==0.0: continue
+                    slot = pair.0
+                    lane = __combat_head_lanes[slot]
+                    i = lane.index
+                    start = enemies[i].pos
+                    delta = right*f32(pair.1*(need-gap)*lane.depth*per_depth/(am+bm))
+                    candidate = start+delta
+                    away = candidate-pl.pos
+                    ring = enemy_attack_ring(enemies[i])
+                    radius = f64(length(away.xz))
+                    if radius<ring: candidate += normalize(vec3(away.x,0,away.z)+vec3(0.0001,0,0))*f32(ring-radius)
+                    candidate = enemy_camera_clear(candidate,pair.1)
+                    push_out(candidate,enemy_body_radius(enemies[i]),enemy_body_height(enemies[i]))
+                    enemies[i].pos = candidate
+                    if enemies[i].state != .knocked: __ground_enemy(enemies[i])
+                    delta = enemies[i].pos-start
+                    if length(delta)<0.00001: continue
+                    eanims[i].world = translation(delta)*eanims[i].world
+                    loop mut p in lane.points: p += delta
+                    __combat_head_lane_update(lane,vp)
+                    __combat_head_lanes[slot] = lane
+                    corrected = true
+                    moved = true
+        if not corrected: break
+    moved
+
+combat_presentation_clear = (reframe: bool = true, lanes: bool = true):
+    if env("BOTW_LANE_TRACE") != none and frame_number() == 300:
+        eprint("combat clear entry: ready {chars_ready} override {cam.override} hero_delta {length(hero_world[3].xyz-pl.pos):.3} hero_palette {hero_skin.mats.len()}")
     if not chars_ready or cam.override: return
     count = 0
     loop e in enemies:
@@ -1516,10 +1634,12 @@ combat_presentation_clear = (reframe: bool = true):
     tip = transform_point(hand,v3(0.0,weapon_length(item(weapon)),0.0))
     blade_out = weapon != "" and (fight.weapon_out or fight.act != .idle) and fight.act != .aim and pl.state != .climb and pl.state != .swim and pl.state != .glide
     vp = perspective(view_fov()*PI/180.0,aspect_ratio(),0.1,1000.0)*look_at(view_pos(),view_target(),vec3(0,1,0))
+    loop __combat_head_lanes.len()<enemies.len(): __combat_head_lanes.push(CombatHeadLane())
     if reframe: __combat_selected_points.clear()
     selected_head = vec3(0,0,0)
     selected_ready = false
     loop i in [0..min(enemies.len(),eanims.len())):
+        __combat_head_lanes[i].points.clear()
         e = enemies[i]
         if not enemy_melee_body(e) or e.state == .gone or e.state == .buried or e.skull_out or length(e.pos-pl.pos) >= 15.0: continue
         if length(eanims[i].world[3].xyz-(e.pos+vec3(0,f32(e.lift),0))) > 2.0: continue
@@ -1542,9 +1662,12 @@ combat_presentation_clear = (reframe: bool = true):
             ec = vp*vec4(enemy_head+shift,1)
             if hc.w > 0.1 and ec.w > 0.1:
                 delta_head = (ec.xy/ec.w-hc.xy/hc.w)*vec2(640,360)
-                if length(delta_head) < 45.0:
+                # An unarmed tell has no raised weapon to distinguish its body
+                # from Jo. Keep extra head room during that selected windup.
+                head_gap = if i == fight.target and e.state == .windup and e.weapon == "": 120.0 else: 45.0
+                if length(delta_head) < head_gap:
                     sign = if abs(delta_head.x) > 1.0: (if delta_head.x > 0.0: 1.0 else: -1.0) else: (if i%2==0: 1.0 else: -1.0)
-                    want_x = f32(sign*sqrt(max(0.0,2025.0-f64(delta_head.y*delta_head.y))))
+                    want_x = f32(sign*sqrt(max(0.0,head_gap*head_gap-f64(delta_head.y*delta_head.y))))
                     right = normalize(cross(view_target()-view_pos(),vec3(0,1,0)))
                     per_pixel = f64(ec.w)*tan(view_fov()*PI/360.0)*aspect_ratio()/640.0
                     next = enemies[i].pos+right*f32(f64(want_x-delta_head.x)*per_pixel)
@@ -1623,6 +1746,8 @@ combat_presentation_clear = (reframe: bool = true):
         # Preserve the final animation/recoil palette; only its world placement changes.
         delta = enemies[i].pos-start
         eanims[i].world = translation(delta)*eanims[i].world
+        __combat_head_lanes[i].index = i
+        loop index in __combat_enemy_head: __combat_head_lanes[i].points.push(__combat_enemy_points[index]+shift)
         if i == fight.target:
             selected_head = enemy_head+shift
             selected_ready = true
@@ -1668,4 +1793,10 @@ combat_presentation_clear = (reframe: bool = true):
                 needed = max(needed,abs(f64(dot(d,up)))/(depth*0.93))
             aim_fov = max(aim_fov,min(100.0,atan(needed)*360.0/PI))
             __camera_record_view()
-            combat_presentation_clear(false)
+            combat_presentation_clear(false,false)
+
+    if lanes:
+        loop pass_ in [0..4):
+            if not __combat_enemy_lanes(): break
+            # Preserve the body/blade/lens constraints after lateral movement.
+            combat_presentation_clear(true,false)

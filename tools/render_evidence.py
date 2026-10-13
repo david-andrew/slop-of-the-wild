@@ -166,11 +166,14 @@ def run(exe, out, name, flags, seconds=None, frames=2400):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode', choices=['pacing', 'soak'])
+    p.add_argument('--executable', type=Path, help='reuse a pinned probe; prevents recompilation between options')
     p.add_argument('--output', type=Path, default=Path('build/render-evidence'))
     p.add_argument('--repeats', type=int, default=3)
     p.add_argument('--views', nargs='+', choices=['forest', 'fire', 'overlook'], default=['forest', 'fire', 'overlook'])
     p.add_argument('--backend', choices=['vulkan', 'opengl'], default='vulkan')
     p.add_argument('--route', choices=['forest', 'mixed', 'combat'], default='mixed')
+    p.add_argument('--scale', type=float, help='fixed production scene scale (0.5–1); omit for dynamic')
+    p.add_argument('--fps', type=float, default=0, help='game-side frame cap; zero is uncapped')
     p.add_argument('--stage-trace', action='store_true', help='attribute return tails to poll/resize/runtime and existing game CPU/GPU stages')
     p.add_argument('--frames', type=int, default=2400)
     p.add_argument('--present-modes', nargs='+', choices=['default','mailbox'], default=None)
@@ -185,14 +188,19 @@ def main():
     assert 1 <= a.repeats <= 10 and 360 <= a.frames <= 12000
     assert 60 <= a.seconds <= 600 and a.seconds % 60 == 0
     out.mkdir(parents=True, exist_ok=True)
-    exe = out/'game'
+    exe = a.executable.resolve() if a.executable else out/'game'
     started = time.monotonic()
-    subprocess.run(['sloppy/bin/sloppy', 'build', 'tools/render_session.jo', '-o', str(exe)], check=True)
+    if not a.executable:
+        subprocess.run(['sloppy/bin/sloppy', 'build', 'tools/render_session.jo', '-o', str(exe)], check=True)
     compile_s = time.monotonic()-started
+    provenance = Path(str(exe)+'.sources.json')
+    if not a.executable:
+        provenance.write_text(json.dumps({str(p): digest(p) for p in sorted(Path('game').glob('*.jo'))}, indent=2)+'\n')
+    sources = json.loads(provenance.read_text()) if provenance.exists() else None
     result = {'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'host': list(os.uname()),
               'compile_s': compile_s, 'executable_sha256': digest(exe),
-              'sources': {str(p): digest(p) for p in sorted(Path('game').glob('*.jo'))},
+              'sources': sources,
               'tools': {str(p): digest(p) for p in [Path('tools/render_session.jo'), Path(__file__)]},
               'runtime': {str(p): digest(p) for p in sorted(Path('sloppy/lib').rglob('*.jo'))},
               'protocol': 'Wayland backend comparison; 2133x1200 physical pixels; default dynamic scene scale; '
@@ -202,9 +210,15 @@ def main():
               'runs': {}}
     trace = {'PROBE_STAGES': '1', 'BOTW_CPU': '1', 'BOTW_CPU_TRACE_MS': '8',
              'BOTW_CPU_RETURN_TRACE': '1', 'BOTW_DRAW_TRACE': '1', 'BOTW_GPU_FRAME_LOG': '1'} if a.stage_trace else {}
+    assert a.scale is None or .5 <= a.scale <= 1
+    assert 0 <= a.fps <= 240
+    trace['BOTW_FPS'] = str(a.fps)
+    if a.scale is not None: trace['BOTW_SCALE'] = str(a.scale)
     trace['SLOPPY_VULKAN'] = '0' if a.backend == 'opengl' else '1'
     if a.backend == 'opengl': trace['SLOPPY_VSYNC'] = '0'
     result['backend'] = a.backend
+    result['fixed_scale'] = a.scale
+    result['fps_cap'] = a.fps
     result['stage_tracing'] = a.stage_trace
     if a.mode == 'soak':
         for mode in a.present_modes:

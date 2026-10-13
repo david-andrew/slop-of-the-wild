@@ -1,0 +1,109 @@
+# Cadence, clock-independent cloud lighting, low dawn disk, and visible local targets.
+use '../game/env.jo'
+use '../game/fx.jo'
+use '../game/physics.jo'
+use '../game/terrain.jo'
+use '../game/gfx.jo'
+use '../game/shade.jo'
+
+loop hz in [30, 60, 120]:
+    env = Env(hour=11, time_scale=0, weather=.storm, weather_t=1e9, clouds=0.95, rain=1, wet=1, storm_k=1)
+    weather_rng_restore(rng(31))
+    strikes = 0
+    last = 0.0
+    darkest = 10.0
+    brightest = 0.0
+    previous = 0.0
+    loop frame in [1..hz*60+1):
+        env_update(1.0/f64(hz),false)
+        now = f64(frame)/f64(hz)
+        if env.bolt:
+            gap = now-last
+            assert(gap >= 10.0-1.0/f64(hz) and gap <= 20.0+1.0/f64(hz), "each natural strike is 10–20 seconds apart")
+            print("strike {hz}Hz t={now:.3} gap={gap:.3}")
+            last=now
+            strikes+=1
+            env.bolt=false
+        if env.lightning <= 0.0:
+            brightness=f64(luma(env.sky_amb))
+            darkest=min(darkest,brightness)
+            brightest=max(brightest,brightness)
+        # Evaluate the flash-free sky at this same simulation time.
+        flash=env.lightning
+        env.lightning=0
+        env_update(0,false)
+        light=f64(luma(env.sky_amb))
+        if frame>1: assert(abs(light-previous)<0.002,"cloud modulation changes continuously")
+        previous=light
+        env.lightning=flash
+    assert(strikes>=3 and strikes<=6)
+    assert(brightest/darkest>1.20,"a fixed-hour minute has visible light/dark cloud-bank variation")
+    print("PASS {hz}Hz: {strikes} strikes, quiet sky {darkest:.4}–{brightest:.4}")
+env=Env(hour=6.4,time_scale=0)
+env_update(0,false)
+assert(env.sun_dir.y>0.02 and env.sun_dir.y<0.05,"6:24 sun is 1–3 degrees above the horizon")
+print("PASS dawn elevation: {asin(f64(env.sun_dir.y))*180.0/PI:.3} degrees")
+hf.n=128
+hf.cell=2
+hf.x0=-128
+hf.z0=-128
+hf.h=fill(f32(0),128*128)
+use_terrain=true
+colliders.clear()
+loop yaw in [-1.1,0.0,1.57,3.14]:
+    ahead=v3(sin(yaw),0,-cos(yaw))
+    eye=-ahead*5+vec3(0,3,0)
+    gaze=normalize(ahead*5+vec3(0,-1.5,0))
+    loop k in [0..20):
+        target=natural_lightning_target(eye,gaze,vec3(0,0,0),f64(k)/20.0)
+        distance=length(target)
+        assert(distance>=18 and distance<48,"natural strike is local and outside Jo's water-shock radius")
+        delta=vec3(target.x,0.7,target.y)-eye
+        assert(dot(delta,gaze)>0)
+        assert(not raycast(eye,delta,f64(length(delta))-0.8,true,true).hit)
+print("PASS natural strike contacts: 80 camera/phase combinations, visible ground 18–48 m away")
+
+# An opaque trunk blocks the center of the view; a natural strike must choose
+# a clear neighboring contact rather than land behind it.
+add_box(vec3(0,5,-24),vec3(2,5,1),0,false,.wood)
+eye=vec3(0,3,5)
+gaze=normalize(vec3(0,-1.5,-5))
+loop k in [0..50):
+    target=natural_lightning_target(eye,gaze,vec3(0,0,0),f64(k)/50.0)
+    delta=vec3(target.x,0.7,target.y)-eye
+    assert(not raycast(eye,delta,f64(length(delta))-0.8,true,true).hit,"select visible ground around an opaque trunk")
+print("PASS natural strike occlusion: 50 phases avoid the blocking trunk")
+
+# Track actual production rain positions through multiple wraps. Displacement
+# must follow the visible wind angle between boundary respawns, including when
+# the underlying phase crosses an integer.
+checked=0
+loop index in [17, 823, 6201, 7357]:
+    last=rain_drop_offset(vec3(3,13,-5),index,0,vec2(1,0.35),2.8)
+    span=if index<6200: 30.0 else: 9.0
+    loop frame in [1..1201):
+        next=rain_drop_offset(vec3(3,13,-5),index,f64(frame)/120.0,vec2(1,0.35),2.8)
+        assert(next.y>=-6 and next.y<=22 and abs(next.x)<=f32(span) and abs(next.z)<=f32(span))
+        delta=next-last
+        if delta.y<0 and abs(delta.x)<1 and abs(delta.z)<1:
+            assert(abs(delta.x+delta.y*0.22*2.8)<0.00001,"no sideways jump at a phase reset")
+            assert(abs(delta.z+delta.y*0.22*2.8*0.35)<0.00001)
+            checked+=1
+        else:
+            assert(next.y>21 or abs(next.x)>f32(span-1) or abs(next.z)>f32(span-1),"only hidden volume boundaries may respawn")
+        last=next
+assert(checked>4500)
+print("PASS rain: {checked} continuous angled steps, bounded near/far volumes and hidden boundary respawns")
+
+loop forest in [0.0,0.5,1.0]:
+    previous=0.0
+    loop k in [0..101):
+        pigment=vec3(1,1,1)*f32(k)/100.0
+        absorb=forest_wet_absorption(pigment,f32(forest),0)
+        assert(absorb>=0.24 and absorb<=0.43)
+        wet=pigment*(1.0-absorb)
+        assert(luma(wet)>=previous,"wet pigment preserves value order")
+        previous=luma(wet)
+        assert(forest_wet_absorption(pigment,f32(forest),1)==0.28,"stone response unchanged")
+        if forest==0: assert(absorb==0.43,"open turf response unchanged")
+print("PASS wet forest: bounded absorption, ordered pigment values, unchanged turf/stone")

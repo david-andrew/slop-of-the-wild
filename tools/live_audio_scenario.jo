@@ -69,11 +69,6 @@ capture = ():
         loop sample in sfx.step_wood:
             if data(sample.samples) == data(s.samples): return true
         false
-    is_piano = (s: Sound) -> bool:
-        loop bank in [piano.soft, piano.notes, piano.forte, piano.short_soft, piano.short_notes, piano.short_forte]:
-            loop note in bank:
-                if data(note.samples) == data(s.samples): return true
-        false
     is_bird = (s: Sound) -> bool:
         loop sample in sfx.birds:
             if data(sample.samples) == data(s.samples): return true
@@ -174,6 +169,7 @@ capture = ():
         ambient_update(dt, env.indoor, 235.0, fire_close, 0.0, shelter)
         phase_rng = __global_rng
         __global_rng = score_rng
+        # Score-owned rings identify piano/cue voices independently of bank storage.
         loop v in score_voices: tags[v.id] = 0
         tags[amb.wind] = 1
         tags[amb.wind_gust] = 1
@@ -182,7 +178,6 @@ capture = ():
         tags[amb.fire] = 3
         loop voice in __voices:
             source = source_of(voice.sound)
-            if is_piano(source): tags[voice.id] = 0
             if is_step(source): tags[voice.id] = 4
             if not tags.has(voice.id): tags[voice.id] = if is_bird(source): 6 else: 7
             wrapped = voice.looping and previous_positions.has(voice.id) and voice.pos < previous_positions[voice.id]

@@ -11,9 +11,13 @@ verify=false
 only_dusk=false
 if [[ ${1:-} == --verify || ${2:-} == --verify ]]; then verify=true; fi
 if [[ ${1:-} == --dusk || ${2:-} == --dusk ]]; then only_dusk=true; fi
-if [[ ${1:-} != --locked ]] && ! $verify; then
-    exec flock /tmp/botw-render.lock "$PWD/tools/daylight_check.sh" --locked "$@"
-fi
+# Each game process acquires and releases its own render lock.
+for arg in "$@"; do
+    if [[ $arg == --locked ]]; then
+        echo "Run daylight_check.sh directly: --locked is no longer supported." >&2
+        exit 2
+    fi
+done
 if ! $verify; then
     root=${BOTW_DAYLIGHT_OUTPUT:-build/daylight-check}
     mkdir -p "$root"
@@ -52,7 +56,7 @@ for run in "dawn:4.4:-1030,1805,1.57" "dusk:17.6:-1030,1805,1.57" \
         if ! env "${flags[@]}" BOTW_SKIP=1 BOTW_AT="$at" BOTW_HOUR=$hour BOTW_TIMESCALE=12 BOTW_WEATHER=clear \
             BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 BOTW_WEATHER_LOG=1 BOTW_CAPTURE_DIR=$dir BOTW_CAPTURE_EVERY=20 SLOPPY_WINDOW=640x360 \
             SLOPPY_SCREENSHOT=$dir/final.png SLOPPY_FRAMES=960 \
-            timeout 900 "$root/game" 2>&1 | tee "$dir/run.log" | grep "^wx " > "$dir/log.txt"; then
+            flock /tmp/botw-render.lock timeout 900 "$root/game" 2>&1 | tee "$dir/run.log" | grep "^wx " > "$dir/log.txt"; then
             echo "FAIL $name: render did not complete"
             fail=1
             continue

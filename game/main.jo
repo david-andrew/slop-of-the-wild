@@ -14,6 +14,7 @@ use 'cputime.jo'
 use 'gputime.jo'
 use 'gpuqueue.jo'
 use 'frametime.jo'
+use 'frame_pacing.jo'
 use 'shade.jo'
 use 'env.jo'
 use 'post.jo'
@@ -419,6 +420,7 @@ hooks.opaque = ():
     draw_uniform_end()
 
 hooks.transparent = ():
+    old_man_draw(true)
     monsters_fire_draw()
     fire_glows.clear()
     loop b in bonfires:
@@ -711,11 +713,11 @@ storm_bolt = (dt: f64):
     env.bolt = false
     if env.indoor > 0.5: return
     eye = if free_cam: fc_pos else: view_pos()
-    # (most in view; some behind, seen only as the land lighting up)
-    ang = cam.yaw + (if random() < 0.7 or __bolt_at > 0: random(-0.8, 0.8) else: random(1.6, 4.7))
-    d = random(120.0, 600.0)
-    x = f64(pl.pos.x) + sin(ang) * d
-    z = f64(pl.pos.z) - cos(ang) * d
+    gaze = if free_cam: v3(sin(fc_yaw) * cos(fc_pitch), sin(fc_pitch), -cos(fc_yaw) * cos(fc_pitch)) else: normalize(view_target() - eye)
+    target = natural_lightning_target(eye, gaze, (if free_cam: eye else: pl.pos), random())
+    x = f64(target.x)
+    z = f64(target.y)
+    d = 0.0
     # (test: BOTW_BOLT_AT="x,z" puts the forced strike there)
     if __bolt_at > 0 and frame_number() == __bolt_at:
         # A scripted strike uses the actual view, including free/title cameras.
@@ -836,7 +838,13 @@ update = (dt0: f64):
     terrain_upload_finish()
     # The first callback has the compositor's configured pixel size and initialized 2D batch.
     if not __warmup_done:
-        if env("BOTW_NO_WARMUP") == none: render_warmup()
+        when TARGET == "wasm":
+            # Warm the opening as it is drawn. The native full scene sweep
+            # keeps browser input blocked for too long.
+            story_assets_init()
+            ui_assets_init()
+        else:
+            if env("BOTW_NO_WARMUP") == none: render_warmup()
         __warmup_done = true
         eprint("loaded in {time() - t0:.2}s")
     frame_stats_begin(post.scale)
@@ -978,7 +986,7 @@ simulation_step = (dt: f64):
         elements_update(dt, fc_pos)
         fx_update(dt)
         hero_animate(dt, 0.0)
-        if __bolt_at > 0: storm_bolt(dt)
+        storm_bolt(dt)
         old_man_update(dt)
         # Inspection skips enemy AI, but ambient gestures still need their clock.
         loop mut e in enemies: e.anim_t += dt
@@ -1269,8 +1277,9 @@ simulation_step = (dt: f64):
 draw = ():
     gpu_queue_wait()
     # big windows: the 3D scene renders at 80% (the paint filter hides it), stepping down to 72%
-    # for a while when frames keep running late (two steps only: each change reallocates targets)
+    # for a while when frames keep running late (both warmed target sets are retained)
     post.scale = if pixel_size().x > 1700.0: (if __low_res: 0.72 else: 0.8) else: (if __low_res: 0.9 else: 1.0)
+    when TARGET == "wasm": post.scale = if __low_res: 0.65 else: 0.8
     if let scale = env("BOTW_SCALE"): post.scale = clamp(to_float(scale) ?? post.scale, 0.5, 1.0)
     # (things between the camera and the player dissolve, but not in cutscenes)
     veg_player = if free_cam or cam.override or cam.blend > 0.05: v3(0.0, -1000.0, 0.0) else: pl.pos
@@ -1362,6 +1371,7 @@ render_warmup = ():
     saved_shrine = shr_cur
     saved_alpha = story.title_alpha
     post.scale = if pixel_size().x > 1700.0: 0.8 else: 1.0
+    when TARGET == "wasm": post.scale = if __low_res: 0.65 else: 0.8
     if let scale = env("BOTW_SCALE"): post.scale = clamp(to_float(scale) ?? post.scale, 0.5, 1.0)
     story_assets_init()
     ui_assets_init()
@@ -1483,3 +1493,5 @@ render_warmup = ():
     cpu_timing = ct
     gpu_timing = gt
     if env("BOTW_LOADTIME") != none: eprint("  render_warmup {time() - started:.3}s")
+
+main = (): game_run(update, draw)

@@ -14,7 +14,9 @@ assert(audio_asset_write("assets/prepared/sfx.bin", audio_asset_key(["game/sfx.j
 print("baked SFX {time() - t:.3}s")
 t = time()
 piano_init()
-assert(audio_asset_write("assets/prepared/piano.bin", audio_asset_key(["game/music.jo"]), piano_asset()))
+assert(piano_asset_write())
+# Retire the obsolete expanded pack so packages cannot carry both banks.
+if file_exists("assets/prepared/piano.bin"): assert(delete_file("assets/prepared/piano.bin"))
 print("baked piano {time() - t:.3}s")
 audio_cache_init()
 assert(audio_asset_write("assets/prepared/chime.bin", audio_asset_key(["game/audio_cache.jo"]), chime_asset()))

@@ -1,0 +1,39 @@
+use 'gfx.jo'
+
+# Sleep before poll/dt/render, so the cap includes acquisition and presentation.
+# Do not catch up after a late frame: that would refill the compositor queue.
+frame_cap = clamp(to_float(env("BOTW_FPS") ?? "0") ?? 0.0, 0.0, 240.0)
+frame_deadline = 0.0
+frame_pacing_wait = ():
+    if frame_cap <= 0.0 or __fixed_step: return
+    now = time()
+    left = frame_deadline - now
+    if left > 0.0: sleep(left)
+    frame_deadline = max(now, time()) + 1.0 / frame_cap
+
+game_run = (update: (f64) -> void, draw: () -> void):
+    when TARGET != "linux": __game_run(update, draw)
+    else:
+        if frame_cap <= 0.0 or env("SLOPPY_SCREENSHOT") != none:
+            __game_run(update, draw)
+            return
+        window(__win_title, __win_w, __win_h)
+        __fixed_step = false
+        when WATCH: __watch_init()
+        last = time()
+        loop not __win_close:
+            when WATCH: __watch_frame()
+            frame_pacing_wait()
+            __platform_poll()
+            now = time()
+            dt = clamp(now - last, 0.0, 0.1)
+            last = now
+            when TARGET == "linux":
+                if __soft: __sw_init_window(__win_w, __win_h)
+                else if __wayland and not __vk: __gl_screen_resize(__win_w, __win_h)
+            __run_frame(dt, update, draw)
+            started = time()
+            __platform_present()
+            __last_present = time() - started
+            __frame_present += __last_present
+        exit(0)

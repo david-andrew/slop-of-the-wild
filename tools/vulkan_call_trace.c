@@ -33,7 +33,24 @@ CREATE(vkCreateDescriptorPool)
 CALL(vkCreateGraphicsPipelines, (void *d,uint64_t c,uint32_t n,const void *i,const void *a,uint64_t *o), (d,c,n,i,a,o), 1)
 CALL(vkGetPipelineCacheData, (void *d,uint64_t c,size_t *n,void *p), (d,c,n,p), 1)
 CALL(vkWaitForFences, (void *d,uint32_t n,const uint64_t *f,uint32_t all,uint64_t timeout), (d,n,f,all,timeout), 0)
-CALL(vkAcquireNextImageKHR, (void *d,uint64_t s,uint64_t t,uint64_t sem,uint64_t f,uint32_t *i), (d,s,t,sem,f,i), 0)
+static int (*real_vkAcquireNextImageKHR)(void *,uint64_t,uint64_t,uint64_t,uint64_t,uint32_t *);
+static int trace_vkAcquireNextImageKHR(void *d,uint64_t s,uint64_t timeout,uint64_t sem,uint64_t f,uint32_t *i) {
+    double start=now(); int r=real_vkAcquireNextImageKHR(d,s,timeout,sem,f,i);
+    report("vkAcquireNextImageKHR",start,r,0);
+    if ((now()-start)*1000>2 && (r==0 || r==1000001003)) {
+        char b[128]; int n=snprintf(b,sizeof b,"vk acquire image: %u timeout %lu frame %lu\n",*i,(unsigned long)timeout,(unsigned long)present_serial);
+        if (n>0 && n<(int)sizeof b) write(2,b,n);
+    }
+    return r;
+}
+static int (*real_vkGetSwapchainImagesKHR)(void *,uint64_t,uint32_t *,uint64_t *);
+static int trace_vkGetSwapchainImagesKHR(void *d,uint64_t s,uint32_t *n,uint64_t *images) {
+    double start=now(); int r=real_vkGetSwapchainImagesKHR(d,s,n,images);
+    report("vkGetSwapchainImagesKHR",start,r,1);
+    char b[128]; int count=snprintf(b,sizeof b,"vk swapchain images: %u frame %lu\n",*n,(unsigned long)present_serial);
+    if(count>0 && count<(int)sizeof b) write(2,b,count);
+    return r;
+}
 CALL(vkQueuePresentKHR, (void *q,const void *i), (q,i), 0)
 CALL(vkQueueSubmit2, (void *q,uint32_t n,const void *i,uint64_t f), (q,n,i,f), 0)
 CALL(vkDeviceWaitIdle, (void *d), (d), 0)
@@ -56,6 +73,6 @@ uintptr_t la_symbind64(Elf64_Sym *sym,unsigned int ndx,uintptr_t *ref,uintptr_t 
     BIND(vkCreateBuffer) BIND(vkCreateImage) BIND(vkAllocateMemory)
     BIND(vkCreateSwapchainKHR) BIND(vkCreateDescriptorPool) BIND(vkCreateGraphicsPipelines)
     BIND(vkWaitForFences) BIND(vkAcquireNextImageKHR) BIND(vkQueuePresentKHR)
-    BIND(vkGetPipelineCacheData) BIND(vkQueueSubmit2) BIND(vkDeviceWaitIdle) BIND(vkMapMemory) BIND(vkUpdateDescriptorSets)
+    BIND(vkGetPipelineCacheData) BIND(vkGetSwapchainImagesKHR) BIND(vkQueueSubmit2) BIND(vkDeviceWaitIdle) BIND(vkMapMemory) BIND(vkUpdateDescriptorSets)
     return sym->st_value;
 }

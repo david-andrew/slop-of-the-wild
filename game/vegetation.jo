@@ -1350,6 +1350,36 @@ vegetation_place = ():
             place("CommonTree_4", v3(x, height_at(x, z) - 0.25, z), a, 4.5 + hash2(z, x) * 3.0, vec4(0.82, 0.94, 0.82, 0), false)
             grove_count += 1
     eprint("meadow grove companions: {grove_count}")
+    # Unequal young-tree and shrub groups feather the open plain into the woods.
+    # Hash-only placement leaves the established RNG stream and all colliders
+    # intact. Small crowns occupy existing batches and preserve clear routes.
+    edge_count = 0
+    loop bed in [vec2(-978,1770),vec2(-917,1742),vec2(-1044,1870),vec2(-946,1918),vec2(-939,2050),vec2(-895,2130)]:
+        loop k in [0..10):
+            a = hash2(f64(bed.x)+f64(k)*17.0,f64(bed.y)+51.0)*TAU
+            d = 5.0+hash2(f64(bed.y),f64(bed.x)+f64(k))*16.0
+            x = f64(bed.x)+cos(a)*d
+            z = f64(bed.y)+sin(a)*d*0.70
+            mt = material_at(x,z)
+            if mt.w > 0.12 or mt.y > 0.2 or mt.z > 0.1 or route_clearing(x,z) > 0.20: continue
+            if normal_at(x,z).y < 0.86 or water_depth(x,z) > 0.0: continue
+            h = hash2(x+21.0,z)
+            q = v3(x,height_at(x,z)-0.12,z)
+            tint = vec4(0.82,0.90,0.78,0)
+            if k % 3 == 0:
+                place("Bush_Common",q,a,1.1+h*1.5,tint,false)
+            else:
+                # Broad off-centre lower boughs break the young trees' round
+                # head-on-a-stick silhouette without another tree/shadow pass.
+                parent = places.len()
+                tall = 4.2+h*3.6
+                place("CommonTree_{1+k%6}",q,a,tall,tint,false)
+                size = tall*(0.34+hash2(z,x)*0.08)/max(bmv.height,0.1)
+                crown = q+v3(cos(a)*tall*0.16,tall*0.43,sin(a)*tall*0.16)
+                matrix = translation(crown)*rotation_y(a)*scaling(v3(size*1.25,size*0.72,size))
+                places.push(VPlace(bush_i,matrix,tint,crown,bmv.radius*size,tall,false,owner=parent))
+            edge_count += 1
+    eprint("round85 forest-edge groups: {edge_count}")
     # Round 58: composed roadside gaps, with fallen timber at the outer edge and
     # uneven fern/litter clusters. Placement data only; no culling/draw changes.
     route_props = places.len()

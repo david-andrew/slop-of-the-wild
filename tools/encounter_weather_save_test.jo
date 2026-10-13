@@ -9,7 +9,7 @@ use '../game/worldgen.jo'
 use '../game/enemies.jo'
 
 weather_signature = () -> str:
-    "{env.hour:.9}|{env.day}|{env.weather}|{env.weather_t:.9}|{env.clouds:.9}|{env.rain:.9}|{env.wet:.9}|{env.storm_k:.9}|{env.gust:.9}|{env.wind}|{env.lightning:.9}|{env.dark:.9}|{env.zenith}|{env.horizon}|{env.sun_color}|{env.sky_amb}|{env.ground_amb}|{env.haze}|{env.density:.9}|{env.sun_dir}|{env.moon_dir}|{env.light_dir}|{env.night:.9}|{env.valley_mist:.9}"
+    "{env.hour:.9}|{env.day}|{env.weather}|{env.weather_t:.9}|{env.clouds:.9}|{env.rain:.9}|{env.wet:.9}|{env.storm_k:.9}|{env.gust:.9}|{env.wind}|{env.lightning:.9}|{env.storm_time:.9}|{env.bolt_wait:.9}|{env.dark:.9}|{env.zenith}|{env.horizon}|{env.sun_color}|{env.sky_amb}|{env.ground_amb}|{env.haze}|{env.density:.9}|{env.sun_dir}|{env.moon_dir}|{env.light_dir}|{env.night:.9}|{env.valley_mist:.9}"
 
 run = ():
     if args().len() != 3:
@@ -81,7 +81,7 @@ run = ():
         if writing:
             env = Env(hour = 11.25, day = 4, weather = (if phase == 2: Weather.clear else: Weather.storm), weather_t = (if phase == 4: 0.0 else: 73.5),
                 clouds = 0.9375, rain = 0.875, wet = 0.75, storm_k = (if phase == 0: 1.0 else: 0.625),
-                gust = 2.8, wind = vec2(0.75, 0.25), lightning = (if phase == 3: 0.25 else: 0.0))
+                storm_time = 17.375, bolt_wait = (if phase == 1: 0.005 else: 13.25), gust = 2.8, wind = vec2(0.75, 0.25), lightning = (if phase == 3: 0.25 else: 0.0))
             env_update(0.0, false)
             s = save_capture()
             s.activated = fill(false, 4)
@@ -113,6 +113,12 @@ run = ():
             assert(save_decode(replace(raw, record, "")) != none, "legacy weather saves migrate")
             loop bad in ["nan,1,1,1,0", "1.1,1,1,1,0", "0,4.1,1,1,0", "0,1,1,1,1.1", "0,1,1,1"]:
                 assert(save_decode(replace(raw, record, "weather_transition=" + bad + "\n")) == none)
+            clock = "storm_clock={s.storm_time:.9},{s.bolt_wait:.9}\n"
+            assert(save_decode(replace(raw, clock, "")) != none, "legacy saves initialize the storm clock")
+            assert(save_decode(replace(raw, clock, clock + clock)) == none)
+            assert(save_decode(replace(raw, clock, "storm_clock=6283.185307180,12\n")) != none,"rounded end-of-cycle saves wrap continuously")
+            loop bad in ["nan,12", "0,21", "-1,12", "6284,12", "0,-2", "0,-0.5", "0", "0,0,0"]:
+                assert(save_decode(replace(raw, clock, "storm_clock=" + bad + "\n")) == none)
             env = Env()
     mode = if writing: "writer" else: "reader"
     print("{mode}: encounter defeat/remaining respawn and five exact weather/first-frame resumes PASS")

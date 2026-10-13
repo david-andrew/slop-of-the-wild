@@ -65,6 +65,7 @@ class Model:
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--baseline', type=Path)
+parser.add_argument('--refined-limbs', action='store_true', help='compare unchanged contact surfaces as multisets when arm refinement retessellates')
 parser.add_argument('--models', type=Path, default=Path('assets/models'))
 args = parser.parse_args()
 for name in ('hero', 'hero_bare'):
@@ -133,6 +134,19 @@ for name in ('hero', 'hero_bare'):
         before = Model(args.baseline / f'{name}.mdl')
         assert before.bones == model.bones, 'skeleton/socket transforms changed'
         assert len(before.parts) == len(model.parts), 'draw count changed'
+        if args.refined_limbs and name == 'hero_bare':
+            # A narrower envelope changes which arm edges need another loop.
+            # Compare all unaffected surface/influence tuples independently of
+            # generated vertex order, including every hand and sole vertex.
+            def unchanged(vertices):
+                return Counter(tuple(v[:3]) + tuple(v[12:20]) for v in vertices
+                               if not (.26 < abs(v[0]) < .64 and 1.05 < v[1] < 1.49))
+            for (part, vertices), (old_part, old_vertices) in zip(model.parts, before.parts):
+                assert part == old_part
+                assert unchanged(vertices) == unchanged(old_vertices), 'surface or skin weights changed outside bare arms'
+            assert sum(len(vs) for _, vs in model.parts) <= sum(len(vs) for _, vs in before.parts), 'arm refinement grew geometry budget'
+            print(f'PASS {name}: retessellated arms; exact skeleton and all surfaces/influences outside arms, including hands and soles; no geometry growth')
+            continue
         worst = 0.0
         finger_before = finger_after = 0.0
         palm_contacts = 0
@@ -143,8 +157,16 @@ for name in ('hero', 'hero_bare'):
             assert len(vertices) >= len(old_vertices), 'original vertex order must be retained'
             for a, b in zip(vertices, old_vertices):
                 shoulder = name == 'hero_bare' and 0.96 < b[1] < 1.43 and abs(b[0]) < 0.44
-                if not shoulder:
-                    assert a[12:20] == b[12:20], 'influences changed outside shoulder girdle'
+                elbow = name == 'hero_bare' and 1.16 < b[1] < 1.44 and .32 < abs(b[0]) < .53
+                if not shoulder and not elbow:
+                    assert a[12:20] == b[12:20], 'influences changed outside shoulder/elbow'
+                if elbow and a[12:20] != b[12:20]:
+                    assert math.dist(a[:3], b[:3]) < 1e-6, 'elbow reweighting moved the bind surface'
+                    prior = defaultdict(float)
+                    for joint, weight in zip(b[12:16], b[16:20]): prior[int(joint)] += weight
+                    for joint, weight in zip(a[12:16], a[16:20]):
+                        if not model.bone_names[int(joint)].startswith(('upperarm_', 'lowerarm_')):
+                            assert weight <= prior[int(joint)] + 1e-5, 'elbow gains an unrelated influence'
                 delta = math.dist(a[:3], b[:3])
                 worst = max(worst, delta)
                 if b[1] < 0.08:
@@ -177,5 +199,5 @@ for name in ('hero', 'hero_bare'):
             assert palm_contacts > 0, 'missing supporting palm surface'
         print(f'PASS {name} hands: finger radius {finger_after/finger_before:.1%} of baseline; '
               f'{palm_contacts} bare supporting palm vertices within 1 mm')
-        detail = f'; unchanged skeleton/socket transforms, soles and non-shoulder influences; hand shaping <14 mm; max adjustment {worst:.6f} m'
+        detail = f'; unchanged skeleton/socket transforms, soles and influences outside shoulder/elbow; hand shaping <14 mm; max adjustment {worst:.6f} m'
     print(f'PASS {name}: {count} vertices, finite unit normals and valid skin weights{detail}')

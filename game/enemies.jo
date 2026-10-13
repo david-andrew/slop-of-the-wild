@@ -954,6 +954,29 @@ enemy_camera_clear = (p: vec3, side_choice: f64) -> vec3:
     sign = if abs(across) > 0.02: (if across > 0.0: 1.0 else: -1.0) else: side_choice
     p + side * f32(sign * width - across)
 
+# Keep waiting silhouettes shifting without dropping into a static low crouch.
+enemy_waiting_clip = (age: f64, stance: int) -> str:
+    ["sword_idle", "fight_idle", "idle_alt", "taunt"][(int(age / 1.2) + stance) % 4]
+
+# A short active approach retains its planted attack setup. Slot waiters and
+# blocked approaches still shift idles, rather than crouching indefinitely.
+enemy_chase_idle_clip = (e: Enemy, stance: int) -> str:
+    if e.may_engage and not __blow_coming and e.t < 1.15:
+        return if stance == 0: "crouch" else: (if stance == 1: "sword_idle" else: "fight_idle")
+    enemy_waiting_clip(e.anim_t,stance)
+
+# Crowd/scenery pushes can change bearing after the AI's turn. Bound the final
+# waiting orientation too, including guards whose path to their lane is blocked.
+enemy_waiting_face = (e: mut Enemy):
+    if e.state != .chase or e.may_engage or e.archer or not enemy_melee_body(e): return
+    d = pl.pos - e.pos
+    want = yaw_of(vec3(d.x, 0, d.z))
+    offset = atan2(sin(e.face - want), cos(e.face - want))
+    e.face = want + clamp(offset, -PI / 4.0, PI / 4.0)
+
+enemy_lane_active = (e: Enemy) -> bool:
+    e.alert > 0.5 or e.state == .chase or e.state == .windup or e.state == .attack or e.state == .recover or e.state == .stagger or e.state == .knocked
+
 # World and crowd constraints share the solve. A final scenery-only push used
 # to undo all five crowd passes, folding a guard back into Link beside a wall.
 __crowd: int[]
@@ -1016,8 +1039,9 @@ enemies_separate = ():
                 # A radial body gap still permits a two-headed totem when
                 # guards share a camera ray. Separate their projected head lanes
                 # without testing vertical proximity. Only nearby combat actors
-                # participate; the committed attacker/lock target keeps its pose.
-                if cam.shown and enemy_melee_body(a) and enemy_melee_body(b) and a.alert > 0.5 and b.alert > 0.5 and length(a.pos - pl.pos) < 14.0 and length(b.pos - pl.pos) < 14.0:
+                # participate; preserve the selected target, but committed attacks
+                # still yield sideways when both guards occupy the same lane.
+                if cam.shown and enemy_melee_body(a) and enemy_melee_body(b) and enemy_lane_active(a) and enemy_lane_active(b) and length(a.pos - pl.pos) < 14.0 and length(b.pos - pl.pos) < 14.0:
                     f = lens_forward
                     right = lens_right
                     da = a.pos + vec3(0,1.3,0) - lens
@@ -1030,8 +1054,11 @@ enemies_separate = ():
                         gap = abs(xb - xa)
                         width = 2.7 / min(za,zb)
                         if gap < width:
-                            am = if a.lookout or i == fight.target or a.state == .windup or a.state == .attack: 0.0 else: 1.0
-                            bm = if b.lookout or j == fight.target or b.state == .windup or b.state == .attack: 0.0 else: 1.0
+                            am = if a.lookout or i == fight.target: 0.0 else: 1.0
+                            bm = if b.lookout or j == fight.target: 0.0 else: 1.0
+                            if am + bm == 0.0:
+                                am = if a.lookout: 0.0 else: 1.0
+                                bm = if b.lookout: 0.0 else: 1.0
                             if am + bm > 0.0:
                                 sign = if xb >= xa: 1.0 else: -1.0
                                 amount = (width - gap) / (am + bm)
@@ -1193,7 +1220,7 @@ __bokoblin = (e: mut Enemy, dt: f64, dist: f64, night: bool, alarm: mut bool):
                     else:
                         step = want - e.pos
                         step.y = 0
-                        e.speed = approach(e.speed, 1.5 + e.rhythm * 0.6, 6.0, dt)
+                        e.speed = approach(e.speed, (if length(step) <= 0.10: 0.0 else: 1.5 + e.rhythm * 0.6), 6.0, dt)
                         if length(step) > 0.05: e.pos += normalize(step) * f32(min(f64(length(step)), e.speed * dt))
                         push_out(e.pos, 0.4, 1.5)
                     tp = pl.pos - e.pos

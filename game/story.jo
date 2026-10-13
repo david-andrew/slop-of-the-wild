@@ -313,23 +313,60 @@ __roof = (dt: f64):
     d = pl.pos - old_man.pos
     old_man.face = turn_toward(old_man.face, yaw_of(vec3(d.x, 0, d.z)), 2.0 * dt)
     if f64(length(d)) < 4.0 and act.interact and not story.glider_given:
-        story.glider_given = true
         story.t = 0.0
         story.beat = .ending
-        pl.has_glider = true
-        inv_add("paraglider")
-        ui_pickup("Paraglider")
-        item_jingle()
+        pl.state = .cutscene
+        pl.speed = 0.0
+        pl.vel = vec3(0,0,0)
+        old_man.face = yaw_of(vec3(d.x,0,d.z))
+        cam.override = true
+        cam.handoff_duration = 0.8
+        __ending(0.0) # initialize the first shot on the interaction frame
 
 __ending = (dt: f64):
-    # he fades into light; then the plateau is the player's to leave
-    if story.t < 4.0:
-        old_man.clip = "nod"
-        if random() < dt * 30.0: emit(.glow, old_man.pos + v3(random(-0.4, 0.4), random(0.0, 1.8), random(-0.4, 0.4)), v3(0.0, 1.5, 0.0), 1.5, 0.08, rgba(0.6, 1.0, 0.7, 0.8))
+    # Three held shots: recognition, the translucent spirit, then a wider farewell.
+    # A real roof interaction starts this beat; award only after the held reveal.
+    t = story.t
+    # Nearby keese must not knock Jo out of the held roof sequence.
+    pl.invuln = max(pl.invuln, 0.1)
+    ui.hide = true
+    story.letterbox = min(1.0, story.letterbox + dt * 1.5)
+    cam.override = true
+    # All lenses stay in the east aisle, clear of the central spire and parapet.
+    focus = old_man.pos + vec3(0,1.15,0)
+    old_man.clip = if t < 3.0: "nod" else: "idle"
+    old_man.spirit = smoothstep(2.0,4.0,t)
+    old_man.opacity = (1.0 - old_man.spirit * 0.48) * (1.0-smoothstep(9.0,11.5,t))
+    if t < 3.0:
+        cam.o_pos = lp(TEMPLE,TEMPLE_ROT,5.5,44.55,36.1)
+        cam.o_target = focus
+        cam.o_fov = 37.0
+    else if t < 8.0:
+        cam.o_pos = lp(TEMPLE,TEMPLE_ROT,5.25,44.4,33.9)
+        cam.o_target = focus + vec3(0,0.12,0)
+        cam.o_fov = 34.0
     else:
+        cam.o_pos = lp(TEMPLE,TEMPLE_ROT,5.5,45.0,38.4)
+        cam.o_target = mix(focus,pl.pos+vec3(0,1,0),0.25)
+        cam.o_fov = 43.0
+    if t >= 8.0 and not story.glider_given:
+        story.glider_given = true
+        pl.has_glider = true
+        inv_add("paraglider")
+        item_jingle()
+    if t > 3.0 and t < 11.5 and random() < dt * 14.0:
+        emit(.glow, old_man.pos + v3(random(-0.4,0.4),random(0.1,1.8),random(-0.4,0.4)),v3(0,0.65,0),1.2,0.045,rgba(0.55,0.85,1.0,0.5))
+    if t >= 12.0:
         old_man.visible = false
+        old_man.opacity = 1.0
+        old_man.spirit = 0.0
         story.beat = .explore
         story.t = 0.0
+        cam.override = false
+        cam.handoff_duration = 1.2
+        cam.return_settle = true
+        pl.state = .ground
+        ui.hide = false
 
 # outside the plateau without a glider: back to safety; with it, the end of the journey here
 __bounds = (dt: f64):
@@ -630,7 +667,7 @@ story_update = (dt: f64):
         roof: __roof(dt)
         ending: __ending(dt)
         _: pass
-    if story.beat != .title and story.beat != .tower_rise: story.letterbox = max(0.0, story.letterbox - dt * 0.8)
+    if story.beat != .title and story.beat != .tower_rise and story.beat != .ending: story.letterbox = max(0.0, story.letterbox - dt * 0.8)
     # the HUD waits until the bars have opened
     if story.letterbox > 0.08:
         ui.hide = true

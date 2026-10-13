@@ -263,7 +263,7 @@ __canyon_plane = (p: vec2, dist: f32) -> vec3:
     # UV axis on steep or returning faces. Broad minerals survive at 200 m.
     mass = vnoise(p * vec2(0.033, 0.047) + vec2(7, 3))
     split = vnoise(vec2(p.x * 0.085 + p.y * 0.054, p.y * 0.097 - p.x * 0.038))
-    c = mix(vec3(0.20, 0.225, 0.24), vec3(0.31, 0.305, 0.27), smoothstep(0.22, 0.78, mass))
+    c = mix(vec3(0.255, 0.265, 0.26), vec3(0.35, 0.34, 0.305), smoothstep(0.22, 0.78, mass))
     c *= 0.88 + split * 0.22
     near = 1.0 - smoothstep(35.0, 120.0, dist)
     if near > 0.0:
@@ -287,8 +287,10 @@ __canyon_rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
     if weights.y > 0.001: c += __canyon_plane(w.xz, dist) * weights.y
     if weights.z > 0.001: c += __canyon_plane(w.xy, dist) * weights.z
     wash = vnoise(w.xz * 0.026)
-    moss = smoothstep(0.62, 0.88, n.y) * smoothstep(0.38, 0.73, wash)
-    c = mix(c, vec3(0.22, 0.295, 0.13), moss * 0.65)
+    # Continuous normals feather slope coverage; the existing world wash
+    # breaks up patch margins without adding work to the shared stone shader.
+    moss = smoothstep(0.35, 0.86, n.y) * smoothstep(0.32, 0.75, wash)
+    c = mix(c, vec3(0.245, 0.29, 0.19), moss * 0.62)
     if mouth > 0.0: c = mix(c, cave_weathered_stone(w), mouth)
     c
 
@@ -489,6 +491,10 @@ snow_normal = (w: vec3, n: vec3) -> vec3:
     hz = vnoise(qz * vec2(0.13, 1.7)) * 0.04 + vnoise(qz * vec2(0.025, 0.065)) * 0.6
     normalize(n + vec3(h0 - hx, 0.0, h0 - hz) * 2.0)
 
+forest_wet_absorption = (pigment: vec3, forest: f32, rock: f32) -> f32:
+    litter = mix(0.24, 0.43, smoothstep(0.10, 0.30, luma(pigment)))
+    mix(mix(0.43, litter, forest), 0.28, rock)
+
 terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
     if u.shadow_pass > 0.5: return vec4(1, 1, 1, 1)
     habitat = sample(u.normals, i.uv)
@@ -558,10 +564,12 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
         gust = vnoise(q * vec2(0.045, 0.009) - vec2(u.time * 0.13, 0.0))
         comb = sin(q.y * 0.85 + patch * 8.0 + gust * 2.5) * 0.5 + 0.5
         tus = vnoise(q * vec2(0.18, 0.55) + vec2(stroke * 2.0, 0.0))
-        alb = alb * (1.0 + farm * ((stroke - 0.5) * 0.14 + (gust - 0.5) * 0.12))
+        # Stronger existing pigment strokes carry the near plain at overview
+        # height without another camera-dependent shader calculation or read.
+        alb = alb * (1.0 + farm * ((stroke - 0.5) * 0.30 + (gust - 0.5) * 0.12))
         alb = mix(alb, alb * vec3(1.26, 1.12, 0.73), farm * smoothstep(0.50, 0.78, patch) * 0.20)
         alb = mix(alb, alb * vec3(0.78, 0.95, 1.08), farm * smoothstep(0.48, 0.22, patch) * 0.25)
-        alb = alb * (1.0 + farm * ((comb - 0.5) * 0.035 + (tus - 0.5) * 0.10))
+        alb = alb * (1.0 + farm * ((comb - 0.5) * 0.035 + (tus - 0.5) * 0.24))
     # Dry shoulders show sparse soil/stone islands between cooler turf gullies.
     # Reuse the baked moisture field and the near soil noise; no extra texture pass.
     shoulder = smoothstep(0.96,0.74,nsm.y) * (1.0-rockk) * (1.0-snk) * (1.0-mt.w)
@@ -681,9 +689,12 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
     puddle = f32(0.0)
     if wetness > 0.62: puddle = puddle_mask(w.xz, ng.y, wetness)
     alb = alb * (1.0 - puddle * 0.18)
-    # Organic litter and root soil absorb rain more strongly than open turf.
-    # Keep their value separation from a wet cloth silhouette under a storm deck.
-    alb = alb * (1.0 - wetness * mix(0.43 + fo * 0.12, 0.28, rockk))
+    # Dark moss/root pigments already absorb most of the incoming light. A
+    # further uniform 55% loss collapsed their broad patches into black under
+    # a storm deck. Brighter litter still wets strongly; dark pigment retains
+    # diffuse detail. Open turf, stone and dry forest keep their response.
+    absorb = forest_wet_absorption(alb, fo, rockk)
+    alb = alb * (1.0 - wetness * absorb)
     alb = mix(alb, vec3(1, 1, 1) * dot(alb, vec3(0.3, 0.55, 0.15)), wetness * 0.3)
     rk = clamp(mt.y + smoothstep(0.66, 0.5, n.y), 0.0, 1.0) * (1.0 - snk)
     rk = rk * (1.0 - smoothstep(60.0, 220.0, length(w - u.cam))) * (1.0 - west_rock_cover(w))

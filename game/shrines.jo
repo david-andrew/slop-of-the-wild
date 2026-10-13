@@ -458,7 +458,11 @@ __profile_roof = (o: vec3, x0: f64, x1: f64, z0: f64, z1: f64, top: f64, shaft: 
             add_box(at(o,(aa+bb)*0.5,underside,(zz0+zz1)*0.5),v3((bb-aa)*0.5,(top+1.0-underside)*0.5,(zz1-zz0)*0.5),0.0,false,.stone)
             __quad(cur,at(o,aa,ay,zz0),at(o,bb,by,zz0),at(o,bb,by,zz1),at(o,aa,ay,zz1),n,col,PLAIN)
             loop j in [cur.verts.len()-4..cur.verts.len()): cur.verts[j].light += vec3(0.10,0.13,0.18)
-            # Shallow transverse stone bands describe the profile in upward views.
+            # The blast chamber already has broad structural ribs. These thin
+            # overlay bands caught pink fixture light and streaked diagonally
+            # across its chamfered soffit and lift surround.
+            if id == JABAIJ: return
+            # Shallow transverse stone bands describe the other vault profiles.
             loop rib in [1..int((zz1-zz0)/3.5)+1):
                 z = zz0+f64(rib)*3.5
                 if z+0.16 >= zz1: continue
@@ -934,11 +938,9 @@ __entrance_lightwork = (r: SRec, id: int):
             loop x in [-1.0, 1.0]:
                 tube(at(o, x - 0.24, 4.7, -12.0), at(o, x + 0.24, 4.7, -12.0), 0.69, 0.69, 12, col, mat)
         JABAIJ:
-            # A red angular blast rib around the soot-black smoke hood.
-            loop z in [-3.0, -12.5, -18.5]:
-                loop side in [-1.0, 1.0]:
-                    box_m(translation(at(o, side * 7.1, 5.50, z + 0.74)) * rotation_z(side * 0.48) * scaling(v3(5.6, 0.10, 0.06)), col, mat, false)
-                box(at(o, 0.0, 6.58, z + 0.74), v3(9.8, 0.10, 0.06), 0.0, col, mat, false)
+            # The old floating inlays crossed the profiled roof as pale diagonal
+            # streaks. Real blast ribs and hanging lamps already define this hall.
+            pass
         OWA:
             # Front-facing brass wheel rim: readable even at the default pitch.
             loop k in [0..32):
