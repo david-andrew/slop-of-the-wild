@@ -83,15 +83,14 @@ loop released in [false, true]:
                       pl.pos + vec3(0, 1.6, 0), pl.pos]
             names = ["Castle", "Death Mountain", "Dueling north", "Dueling south", "Calamity smoke", "Volcano smoke", "Calamity smoke edge", "Link head", "Link feet"]
             toward = normalize(vec3(eye.x - CASTLE.x, 0, eye.z - CASTLE.z))
-            # Bound every advected phase, its radial eddy and the feathered cards.
-            # The extra 23m includes the full production radial displacement.
+            # Bound every bank parcel and its feathered card throughout the title.
             loop segment in [0..MALICE_SEGMENTS + 1):
                 tt = f32(f64(frame) * DT)
                 phase = f32(segment) / f32(MALICE_SEGMENTS)
-                local = malice_spine(phase, tt)
+                local = malice_parcel(phase, tt)
                 q = CASTLE + v3(0.0, castle_ground, 0.0) + local
                 outward = normalize(vec3(local.x, 0, local.z))
-                radius = malice_thickness(phase) + 23.0
+                radius = malice_thickness(phase)
                 loop sign in [vec2(-1, -1), vec2(-1, 1), vec2(1, -1), vec2(1, 1)]:
                     points.push(q + outward * sign.x * radius + vec3(0, sign.y * radius, 0))
                     names.push("Calamity smoke bank")

@@ -57,7 +57,7 @@ def posed(parts, palette, world, vp):
         output.append((p[:,:3],uv,clip[:,3],idx))
     return output
 
-def head_centre(parts, bones, palette, world, vp):
+def head_projection(parts, bones, palette, world, vp):
     # Pose the actual head-weighted vertices, then project their bounds centre.
     # This also follows guard, recoil and crouched windups instead of root height.
     if not len(palette): return None
@@ -72,7 +72,14 @@ def head_centre(parts, bones, palette, world, vp):
     points = np.vstack(selected)
     centre = (points.min(axis=0)+points.max(axis=0))/2
     clip = vp @ np.r_[centre,1]
-    return (clip[:2]/max(clip[3],.001)*[1,-1]+1)*[640,360]
+    projected = np.column_stack((points,np.ones(len(points)))) @ vp.T
+    head_x = (projected[:,0]/np.maximum(projected[:,3],.001)+1)*640
+    centre_px = (clip[:2]/max(clip[3],.001)*[1,-1]+1)*[640,360]
+    return centre_px, float(np.ptp(head_x))
+
+def head_centre(parts, bones, palette, world, vp):
+    projected = head_projection(parts, bones, palette, world, vp)
+    return projected[0] if projected is not None else None
 
 def depth_mask(mesh, raster):
     depth=np.full((180,320),np.inf,dtype=np.float64)
@@ -333,6 +340,7 @@ def main():
     trace=Reader(out/'trace.bin'); magic, enemy_count = trace.unpack('II')
     assert magic in (0x46524D32,0x46524D33) and 1 <= enemy_count <= 5
     hit_frames=[]; pause_rows=[]; blade_intersections=[]; body_intersections=[]; previous_damage=0.; visibility=[]; equipment_front=[]; waiting_equipment_front=[]; rows=[]; peak=0.; foreground=0; min_gap=100.; all_overlap=0; min_mesh_gap=100.; min_surface_gap=100.; min_crowd_gap=100.
+    head_pairs = []
     while trace.at < len(trace.data):
         frame,=trace.unpack('I'); vp=trace.matrix(); hp=trace.array(3); hw=trace.matrix(); n,=trace.unpack('I'); hm=trace.array(n)
         hero_head=head_centre(hero,hero_bones,hm,hw,vp)
@@ -351,7 +359,7 @@ def main():
         sword_z = depth_mask(sword_mesh,raster)
         blade_points = np.ascontiguousarray(sword_mesh[0][0])
         blade_indices = np.ascontiguousarray(sword[1][(sword[0][sword[1],1].min(axis=1) >= .11*.88-1e-5)],dtype=np.int64)
-        roots=[]; bodies=[]; weapons=[]; windups=[]; framed=[]; weapon_framed=[]; combined_fraction=[]
+        heads=[]; roots=[]; bodies=[]; weapons=[]; windups=[]; framed=[]; weapon_framed=[]; combined_fraction=[]
         for enemy in range(enemy_count):
             windup, = trace.unpack('I'); windups.append(windup)
             weapon_mesh = rigid(club if enemy == 0 else spear,trace.matrix(),vp)
@@ -359,7 +367,9 @@ def main():
             weapon_uv = np.vstack([uv for _,uv,_,_ in weapon_mesh])
             weapon_framed.append(bool((weapon_uv.min(axis=0)>[4,4]).all() and (weapon_uv.max(axis=0)<[316,176]).all()))
             pos=trace.array(3); roots.append(pos); ring,=trace.unpack('f'); world=trace.matrix(); n,=trace.unpack('I'); palette=trace.array(n)
-            enemy_head=head_centre(foe,foe_bones,palette,world,vp)
+            head = head_projection(foe,foe_bones,palette,world,vp)
+            enemy_head = head[0] if head is not None else None
+            heads.append(head)
             head_gap=float(np.linalg.norm(enemy_head-hero_head)) if enemy_head is not None and hero_head is not None else None
             mesh=posed(foe,palette,world,vp); enemy_z=depth_mask(mesh,raster); body=np.isfinite(enemy_z)
             bodies.append(enemy_z)
@@ -402,6 +412,16 @@ def main():
             gap=float(np.linalg.norm((pos-hp)[[0,2]])-0.75)
             peak=max(peak,fraction);foreground=max(foreground,front);all_overlap=max(all_overlap,overlap);min_gap=min(min_gap,gap)
             rows.append(dict(frame=frame,enemy=enemy,screen_fraction=fraction,projected_overlap_pixels=overlap,foreground_overlap_pixels=front,capsule_gap_m=gap,head_gap_px=head_gap,hero_head_px=hero_head.tolist() if hero_head is not None else None,enemy_head_px=enemy_head.tolist() if enemy_head is not None else None,selected=enemy==target,lock_frames=lock_frames,support_plane_gap_m=mesh_gap,exact_surface_gap_m=surface_gap,blade_surface_gap_m=blade_gap))
+        for i, a in enumerate(heads):
+            for j in range(i+1,len(heads)):
+                b = heads[j]
+                if a is None or b is None: continue
+                # Compare horizontal separation independently of vertical gap:
+                # vertically stacked heads still read as one two-headed body.
+                if not (0 <= a[0][0] <= 1280 and 0 <= b[0][0] <= 1280 and 0 <= a[0][1] <= 720 and 0 <= b[0][1] <= 720): continue
+                gap = abs(float(a[0][0]-b[0][0]))
+                width = max(a[1],b[1])
+                head_pairs.append(dict(frame=frame,a=i,b=j,horizontal_gap_px=gap,head_width_px=width,vertical_gap_px=abs(float(a[0][1]-b[0][1])),clearance_widths=gap/max(width,.001)))
         for i, a in enumerate(roots):
             for b in roots[i+1:]:
                 if abs(a[1]-b[1]) < 1.46:
@@ -419,6 +439,8 @@ def main():
             visibility.append(dict(frame=frame,enemy=enemy,selected=enemy==target,windup=bool(windups[enemy]),equipment_screen_fraction=combined_fraction[enemy],body_in_frame=framed[enemy],weapon_in_frame=weapon_framed[enemy],body_pixels=int(np.isfinite(bodies[enemy]).sum()),weapon_pixels=int(np.isfinite(weapons[enemy]).sum()),body_visible=visible_fraction(bodies[enemy],blockers),weapon_visible=visible_fraction(np.where(weapons[enemy]<=bodies[enemy]+.001,weapons[enemy],np.inf),blockers),weapon_self_visible=visible_fraction(weapons[enemy],bodies[enemy]),exposed_weapon_pixels=int((np.isfinite(weapons[enemy]) & (weapons[enemy]<=bodies[enemy]+.001)).sum()),shield_visible=visible_fraction(shield_z,np.minimum.reduce([hero_z,sword_z]+bodies+weapons)),foreground_weapon_hero_pixels=obscured,bystander_weapon_hero_pixels=waiting_obscured))
     paired = [r for r in rows if r['selected'] and r['lock_frames'] >= 60 and args.scene != 'tentfire']
     result=dict(paired_lock_samples=len(paired),paired_middle_third_failures=sum(not (1280/3 <= r['hero_head_px'][0] <= 1280*2/3 and 1280/3 <= r['enemy_head_px'][0] <= 1280*2/3) for r in paired),min_head_gap_px=min(r['head_gap_px'] for r in rows if r['head_gap_px'] is not None),frames=len(rows)//enemy_count,samples=len(rows),mask_size=[320,180],max_screen_fraction=peak,max_foreground_overlap_pixels=foreground,max_projected_overlap_pixels=all_overlap,min_capsule_gap_m=min_gap,min_enemy_capsule_gap_m=min_crowd_gap,min_support_plane_gap_m=min_mesh_gap,min_posed_mesh_gap_m=min_surface_gap,method='CPU skinning of every body triangle; two-sided raster at pixel centres with perspective-correct per-pixel depth. No terrain occlusion or dissolve. Body masks separate from real procedural shield/sword/club/spear triangles transformed by production draw sockets; target visibility includes all bodies and equipment. No terrain/dissolve/contact effects.')
+    result.update(enemy_head_pair_samples=len(head_pairs),min_enemy_head_horizontal_clearance_widths=min((r['clearance_widths'] for r in head_pairs),default=None),enemy_head_overlap_frames=len({r['frame'] for r in head_pairs if r['clearance_widths'] < 1.0}))
+    (out/'head-pairs.json').write_text(json.dumps(head_pairs)+'\n')
     pauses=[]
     for frame in hit_frames:
         held=0
@@ -448,6 +470,7 @@ def main():
         assert foreground==0, 'enemy body obscures Link'
         assert args.scene == 'tentfire' or len(paired) >= 100, 'fixture must retain steady locked framing samples'
         assert result['paired_middle_third_failures'] == 0, 'locked heads leave the middle third'
+        assert result['enemy_head_overlap_frames'] == 0, 'enemy heads overlap horizontally within one posed head width'
         assert result['min_head_gap_px'] >= 40, 'enemy head is within 40 px of Link at 1280x720'
         assert min_crowd_gap >= -0.001, 'enemy capsules interpenetrate'
         assert min_gap>=0.44, 'enemy capsule loses its minimum body gap'

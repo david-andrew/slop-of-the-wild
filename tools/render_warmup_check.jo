@@ -22,7 +22,15 @@ pipeline_inventory = () -> int:
     total
 check_draw = ():
     draw()
+    # Finish the production HUD batch before manually rebinding offscreen
+    # targets. The runtime does this at __gfx_end_frame; leaving it queued here
+    # invented a 2D pipeline on the grain target with blending disabled.
+    flush()
     before = pipeline_inventory()
+    existing: {int: int[]} = {}
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            loop i in 0.. and p in __vgp: existing[i] = p.pipelines.keys()
     saved_env = env
     saved_shrine = shr_cur
     high_scale = post.scale
@@ -51,6 +59,11 @@ check_draw = ():
     env = saved_env
     shr_cur = saved_shrine
     after = pipeline_inventory()
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            loop i in 0.. and p in __vgp:
+                loop key in p.pipelines.keys():
+                    if not existing.get(i, []).contains(key): eprint("warmup missing pipeline: program {i} key {key}")
     eprint("warmup coverage: before {before} after {after}")
     assert(before == after, "a transition created a pipeline after render_warmup")
     print("PASS warmup: combat trails/body fire/weather/night/fire/electric/shrines and cached scale transitions")

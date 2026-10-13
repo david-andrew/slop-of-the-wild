@@ -188,7 +188,10 @@ options_update = (ox: f64, oy: f64) -> bool:
 
 options_draw = (ox: f64, oy: f64):
     options_scroll_sync()
-    muted = rgba(0.75, 0.75, 0.7, 0.7)
+    # One local surface covers headings, rows, scroll hints and status messages.
+    # Opaque pigment keeps secondary text consistent over every landscape.
+    rect(ox - 18.0, oy - 12.0, OPT_KEY_X + 330.0, 492.0, rgba(0.075, 0.09, 0.085, 1.0))
+    muted = rgba(0.76, 0.79, 0.73, 1.0)
     text("Camera, sound & controls", vec2(f32(ox), f32(oy + 4.0)), 16, muted)
     text("Keyboard", vec2(f32(ox + OPT_KEY_X), f32(oy + 4.0)), 16, muted)
     loop i in [0..OPT_KEY_ROW + input_action_ids.len()):

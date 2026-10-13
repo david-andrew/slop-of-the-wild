@@ -139,10 +139,10 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         drop = crest_height - w.y
         # The upper drop pinches, the next opens over its bench, and unequal
         # fringes spread again at the plunge. This is one continuous flow mask.
-        width = 12.0 + sin(drop*0.068+0.4)*1.8 - exp(-pow((drop-35.0)/13.0,2.0))*2.8 + exp(-pow((drop-83.0)/16.0,2.0))*1.8
+        width = 12.0 + sin(drop*0.045+0.4)*0.45 - exp(-pow((drop-35.0)/18.0,2.0))*0.7
         bench = min(abs(w.y-194.0),abs(w.y-144.0))
-        width = mix(width,14.8,1.0-smoothstep(2.0,8.0,bench))
-        drift = sin(drop*0.043)*1.4 + sin(drop*0.11+across*0.27)*0.8
+        width = mix(width,12.6,exp(-pow(bench/8.0,2.0)))
+        drift = sin(drop*0.043)*0.6 + sin(drop*0.075+across*0.27)*0.35
         edge = width - abs(across-drift)
         margin = smoothstep(0.0, 1.5, edge + (broad - 0.5) * 3.6 + (fleck-0.5)*1.2)
         core = smoothstep(1.8, 6.0, edge)
@@ -620,12 +620,21 @@ west_canyon_lip = (vs: mut WVert[], idx: mut u32[]):
         if v.mist > 0.0 or p.x < -1450.0 or p.x > -1404.0 or p.z < 1807.0 or p.z > 1841.0 or p.y < 190.0 or p.y > 251.0: continue
         # Bow the entire roll forward, then ease back over thirty metres of
         # downstream run. The join stays monotonic to avoid folding the sheet.
-        bow = 1.0 - smoothstep(0.0, 15.0, abs(f64(p.z)-1823.0))
+        # Unequal lobes and shallow notches at the lip, feathered into the
+        # river. Smooth shared vertices keep the downstream sheet continuous.
+        across = f64(p.z)-1823.0
+        bow = 1.0 - smoothstep(0.0, 15.0, abs(across))
+        notch = exp(-((across+5.0)/1.6)^2.0)*1.4 + exp(-((across-3.5)/1.2)^2.0)*0.95
+        broken = (noise(f64(p.z)*0.54,7.0)-0.5)*1.1-notch
         join = smoothstep(-1458.0,-1428.0,f64(p.x)) * (1.0-smoothstep(-1412.0,-1404.0,f64(p.x)))
         shoulder = exp(-((f64(p.x)+1417.0)/9.0)^2.0)
         curl = exp(-((f64(p.x)+1426.0)/9.0)^2.0)
-        v.pos.x -= f32(bow*join*10.0)
-        v.pos.y += f32(bow*join*(shoulder*0.6-curl*2.7))
+        v.pos.x -= f32(bow*join*(8.0+broken*0.7))
+        v.pos.y += f32(bow*join*(shoulder*(0.6+broken)-curl*1.8))
+        # Crest relief also reaches the shallow upstream shoulder. Keeping
+        # it only on the rolled face left the visible sky edge ruler-flat.
+        crest = exp(-((f64(p.x)+1411.0)/9.0)^2.0)
+        v.pos.y += f32(bow*crest*broken*1.15)
     # Small vertical spray fans peel off unequal heights at the sheet edges.
     # Existing mist shading and its one water draw carry these 64 triangles.
     loop side in [-1.0,1.0]:
@@ -634,7 +643,7 @@ west_canyon_lip = (vs: mut WVert[], idx: mut u32[]):
             x = if y > 205.0:-1434.0 else if y > 160.0:-1451.0 else:-1471.0
             center = v3(x-4.0,y,1823.0+side*(11.0+f64(k%2)))
             base = u32(vs.len())
-            vs.push(WVert(center, mist=0.48))
+            vs.push(WVert(center, mist=0.20))
             loop j in [0..8):
                 a = f64(j)*TAU/8.0
                 vs.push(WVert(center+v3(-1.4*cos(a),sin(a)*6.0,side*cos(a)*1.7),mist=0.001))
@@ -827,6 +836,9 @@ water_generate = ():
     if env("BOTW_LOADTIME") != none: eprint("water ledge spray: {fall_shelves.len()} sites")
     loop foot in fall_feet:
         loop layer in [0..2):
+            # Mist belongs to the landing pool, not a broad horizontal card
+            # floating at a mid-height cell's inferred foot.
+            if foot.x > -1505.0 and foot.x < -1400.0 and foot.z > 1800.0 and foot.z < 1848.0 and foot.y >= 120.0: continue
             radius = 6.0 + f64(layer) * 3.0
             center = foot + vec3(0, f32(0.65 + f64(layer) * 0.8), 0)
             loop k in [0..12):
@@ -845,10 +857,9 @@ water_generate = ():
         if vs[k].mist > 0.0: continue
         if p.x > -1496.0 and p.x < -1414.0 and p.z > 1805.0 and p.z < 1844.0 and p.y > 108.0:
             edge = 1.0 - smoothstep(10.0, 15.0, abs(f64(p.z) - 1823.0))
-            shelf = max(1.0 - smoothstep(2.0, 12.0, abs(f64(p.y) - 144.0)),
-                1.0 - smoothstep(2.0, 12.0, abs(f64(p.y) - 194.0)))
+            shelf = max(exp(-((f64(p.y)-144.0)/8.0)^2.0), exp(-((f64(p.y)-194.0)/8.0)^2.0))
             release = smoothstep(108.0, 119.0, f64(p.y)) * (1.0 - smoothstep(240.0, 249.8, f64(p.y)))
-            vs[k].pos.x -= f32((1.5 + shelf * 5.0) * edge * release)
+            vs[k].pos.x -= f32((1.5 + shelf * 2.0) * edge * release)
     west_canyon_lip(vs, idx)
     water_vertices = vs
     water_indices = idx

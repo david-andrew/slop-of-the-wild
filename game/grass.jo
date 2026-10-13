@@ -141,9 +141,9 @@ grass_vs = (v: GrassV, p: GPatch, u: GrassU) -> GrassO:
     if max(bt.x, bt.z) > 0.01:
         scar = clamp(max(bt.x, bt.z) + (vnoise(base * 1.9) - 0.5) * 0.22, 0.0, 1.0)
         charred = smoothstep(0.12, 0.72, scar)
-        # Sparse standing black stems among shorter collapsed ash, using existing blades.
-        remnant = smoothstep(0.76, 0.94, v.rnd.x)
-        hgt = mix(hgt, (0.025 + v.rnd.y * 0.04 + remnant * 0.20) * (1.0 - p.offs.w), charred)
+        # The spent core is bare ash; only its fading edge keeps low fallen stubble.
+        hgt = mix(hgt, (0.012 + v.rnd.y * 0.018) * (1.0 - p.offs.w), charred)
+        if charred > 0.94: keep = false
         if charred > 0.15: fl = 0.0
     # Seed heads grow in small ripe drifts; the rest of the meadow keeps leafy blades.
     if fl > 4.5 and (tuft < 0.56 or patchn < 0.52 or blade.x < 0.55): fl = 0.0

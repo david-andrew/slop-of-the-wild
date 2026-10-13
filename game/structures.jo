@@ -664,7 +664,9 @@ __cliff_bed = (p: vec3) -> f64:
 # A continuous envelope never stamps individual bed/column cells onto the skin.
 __cliff_bed_presence = (p: vec3) -> f64:
     across = f64(p.z) + f64(p.x) * 0.28
-    smoothstep(0.32, 0.72, noise(across * 0.024 + 3.0, f64(p.y) * 0.009))
+    # Individual beds end against intersecting oblique joint bays. Changing
+    # the envelope with height avoids the same long fold on every tier.
+    smoothstep(0.30, 0.69, noise(across * 0.043 + f64(p.y) * 0.015 + 3.0, f64(p.y) * 0.029))
 
 __cliff_depth = (p: vec3) -> f64:
     across = f64(p.z) + f64(p.x) * 0.28
@@ -672,12 +674,13 @@ __cliff_depth = (p: vec3) -> f64:
     # Long vertical structures, 10--40 m across. Their axes drift with height,
     # rather than smearing every bed into parallel horizontal zigzags.
     bend = (noise(across * 0.016, y * 0.006) - 0.5) * 5.0
-    ribs = noise((across + bend) * 0.047, y * 0.006 + 13.0)
+    ribs = noise((across + bend) * 0.047, y * 0.014 + 13.0)
     columns = smooth01((ribs - 0.28) / 0.48) * 17.0
     # Selected shoulders expose flat joint planes and abrupt recessed returns.
     # Linear ramps keep the breaks angular instead of rounding every rib.
     angular = smoothstep(0.32,0.65,noise(across*0.026+3.0,17.0))
-    block = fract((across + y*0.11 + bend*0.25)/39.0)
+    tilt = (noise(across*0.024+17.0,y*0.019)-0.5)*0.58
+    block = fract((across + y*tilt + bend*0.25)/39.0)
     plane = clamp(min(block/0.24,(1.0-block)/0.13),0.0,1.0)
     columns = lerp(columns,3.0+plane*15.0,angular)
     gullies = smooth01((noise((across + bend) * 0.079 + 7.0, y * 0.004) - 0.57) / 0.25) * 12.0
@@ -701,7 +704,7 @@ __cliff_depth = (p: vec3) -> f64:
     split_mid = clamp((bed_height-185.0)/1.6,0.0,1.0)*(1.0-clamp((bed_height-196.0)/1.8,0.0,1.0))
     upper = lerp(upper,split_upper,angular)
     mid = lerp(mid,split_mid,angular)
-    shelf = (upper*10.0+lower*6.0+mid*9.0+high*5.0+toe*3.0*poolside)*max(presence,poolside*0.85)
+    shelf = (upper*10.0+lower*6.0+mid*9.0+high*5.0+toe*3.0*poolside)*max(presence,poolside*0.45)
     # Deliberate diagonal fault bays break the tall north buttress and the
     # south pool shoulder. Their broad returns are resolved by all three LODs.
     fault = 1.0 - smoothstep(1.8, 5.5, abs(across - 1339.0 + (y - 190.0) * 0.11))
@@ -1302,26 +1305,9 @@ cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     # Shared granite pigment joins the skin to the exposed heightfield. Actual
     # buttresses, concavity AO and shadow maps carry the painted value masses.
     alb = rock_color(w, n, dist)
-    # Unequal mineral beds cross the curved planes, with quiet thin
-    # seams and a broader lower wash. They continue around ribs and taper
-    # into gullies instead of restarting at each triangle or noise cell.
-    bend = vnoise(w.xz * 0.018 + vec2(7, 3))
-    h = w.y + (w.z + w.x * 0.28 - 1320.0) * 0.045 + (bend - 0.5) * 4.0
-    gap = min(abs(h - 167.0), min(abs(h - 228.0), abs(h - 238.0)))
-    width = 0.25 + bend * 0.50
-    edge = 1.0 - smoothstep(width * 0.25, width, gap)
-    presence = clamp(i.mat.z, 0.0, 1.0) * (0.45 + bend * 0.55)
-    # Unequal horizontal beds wrap every canyon plane in world space. Broad
-    # mineral washes and narrow dark contacts reveal the scale of the rock;
-    # vertical joint bays interrupt them rather than forming striped wallpaper.
-    bed = h * 0.12 + sin(h * 0.055) * 0.38
-    phase = fract(bed)
-    seam = (1.0 - smoothstep(0.015, 0.095, phase))
-    joint = smoothstep(0.10, 0.34, abs(sin((w.z + w.x * 0.28) * 0.083 + w.y * 0.013)))
-    beds = (0.62 + bend * 0.38) * (0.70 + joint * 0.30) * (1.0 - smoothstep(0.55, 0.90, n.y))
-    wash = smoothstep(0.12, 0.34, phase) * (1.0 - smoothstep(0.55, 0.87, phase))
-    alb = mix(alb, alb * vec3(0.77, 0.74, 0.69), wash * beds * 0.48)
-    alb = alb * (1.0 - seam * beds * 0.17 - edge * presence * 0.15)
+    # The displaced shelves own bedding edges. Triplanar minerals and local
+    # fractures replace repeated horizontal ink bands on every exposed plane.
+    n = canyon_rock_normal(w, n, dist)
     alb = alb * (1.0 - u.wet * 0.25)
     l = normalize(u.sun_dir)
     v = normalize(u.cam - w)
@@ -1345,7 +1331,8 @@ cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     fade = max(fade, smoothstep(u.fade_width * 1.5, u.fade_width * 0.75, dist) * (u.fade_width - 1.0))
     if u.player.y < -500.0: fade = 0.0
     glsl_discard(fade > glsl_occluder_dither(i.pos.xy))
-    vec4(c, (if fade > 0.001: -8.0 else: 1.0))
+    # Stone response reduces uniform paper grain, retaining recess pigment.
+    vec4(c, (if fade > 0.001: -8.0 else: 0.85))
 cliff_surface_sh: Shader
 cliff_shadow_sh: Shader
 cliff_shadow_fs = (i: BuildO, u: BuildU) -> vec4: vec4(1, 1, 1, 1)

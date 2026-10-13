@@ -6,6 +6,8 @@ previous = 0.0
 intervals: f64[]
 presents: f64[]
 limit = to_int(env("PROBE_FRAMES") ?? "240") ?? 240
+seconds = to_float(env("PROBE_SECONDS") ?? "0") ?? 0.0
+started = time()
 draw = ():
     now = time()
     if previous > 0:
@@ -14,7 +16,7 @@ draw = ():
     previous = now
     glClearColor(0.1, 0.2, 0.3, 1)
     glClear(GL_COLOR_BUFFER_BIT)
-    if intervals.len() >= limit:
+    if (seconds > 0.0 and now-started >= seconds) or (seconds <= 0.0 and intervals.len() >= limit):
         intervals.sort()
         presents.sort()
         n = intervals.len()

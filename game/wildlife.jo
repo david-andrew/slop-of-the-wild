@@ -891,6 +891,17 @@ wildlife_draw = ():
 __boar_m: Mesh[]
 const __BOAR_NECK = v3(0.0, 0.51, 0.40)
 const __BOAR_HIP_Y = 0.35
+# Mane locks follow the local back slope, rather than ending as raised fins.
+__boar_back_y = (sections: vec4[], x: f64, z: f64) -> f64:
+    loop j in [0..sections.len()-1):
+        a=sections[j]
+        c=sections[j+1]
+        if z<f64(a.x) or z>f64(c.x):continue
+        t=(z-f64(a.x))/f64(c.x-a.x)
+        width=lerp(f64(a.z),f64(c.z),t)
+        return lerp(f64(a.y),f64(c.y),t)+lerp(f64(a.w),f64(c.w),t)*sqrt(max(0.0,1.0-pow(x/width,2.0)))
+    0.0
+
 __boar_parts = () -> Mesh[]:
     if __boar_m.len() == 0:
         hide = rgb(0.19, 0.135, 0.090)
@@ -901,8 +912,8 @@ __boar_parts = () -> Mesh[]:
         b = MeshB()
         # z, centre height, half width, half height. Raised withers, tucked belly and slim rump.
         sections = [vec4(-0.72, 0.48, 0.06, 0.10), vec4(-0.57, 0.48, 0.20, 0.20),
-            vec4(-0.30, 0.50, 0.24, 0.25), vec4(0.08, 0.625, 0.32, 0.385),
-            vec4(0.32, 0.615, 0.315, 0.365), vec4(0.49, 0.51, 0.245, 0.26)]
+            vec4(-0.30, 0.52, 0.245, 0.26), vec4(-0.10, 0.59, 0.29, 0.33), vec4(0.08, 0.625, 0.32, 0.385),
+            vec4(0.32, 0.615, 0.315, 0.365), vec4(0.43, 0.57, 0.285, 0.32), vec4(0.54, 0.52, 0.23, 0.255)]
         loop j in [0..sections.len()):
             r = sections[j]
             loop k in [0..17):
@@ -938,34 +949,30 @@ __boar_parts = () -> Mesh[]:
                     loop v in [center, a, a + 1]: b.idx.push(v)
         # Overlapping swept locks: uneven roots, widths and tips break
         # the repeated triangular comb. Low side tufts nest into the coat.
-        loop k in [0..30):
+        loop k in [0..14):
             h=hash2(f64(k),7.0)
-            z=lerp(0.43,-0.62,(f64(k)+0.55*hash2(f64(k),11.0))/30.0)
-            sx=(hash2(f64(k),3.0)-0.5)*0.18
-            y=0.0
-            loop j in [0..sections.len()-1):
-                a=sections[j]
-                c=sections[j+1]
-                if z>=f64(a.x) and z<=f64(c.x):
-                    t=(z-f64(a.x))/f64(c.x-a.x)
-                    width=lerp(f64(a.z),f64(c.z),t)
-                    y=lerp(f64(a.y),f64(c.y),t)+lerp(f64(a.w),f64(c.w),t)*sqrt(max(0.0,1.0-pow(sx/width,2.0)))
-            height=(0.024+0.045*smoothstep(-0.65,0.25,z))*(0.55+0.75*h)
-            width=0.040+0.032*hash2(f64(k),19.0)
-            sweep=0.055+0.055*hash2(f64(k),23.0)
+            z=lerp(0.43,-0.62,(f64(k)+0.90*hash2(f64(k),11.0))/14.0)
+            sx=(hash2(f64(k),3.0)-0.5)*0.24
+            y=__boar_back_y(sections,sx,z)
+            height=(0.009+0.065*smoothstep(-0.65,0.25,z))*(0.12+1.40*h*h)
+            width=0.058+0.048*hash2(f64(k),19.0)
+            sweep=0.120+0.110*hash2(f64(k),23.0)
             root=v3(sx,y-0.026,z+0.035)
-            bend=v3(sx*1.08,y+height*0.60,z-sweep*0.37)
-            tip=v3(sx*1.2+(h-0.5)*0.026,y+height,z-sweep)
-            color=mix(hide,mane,f32(0.35+0.45*hash2(f64(k),29.0)))
+            bend_z=z-sweep*0.37
+            bend=v3(sx*1.08,__boar_back_y(sections,sx*1.08,bend_z)+height*0.60,bend_z)
+            tip_z=max(-0.67,z-sweep)
+            tip_x=sx*1.2+(h-0.5)*0.026
+            tip=v3(tip_x,__boar_back_y(sections,tip_x,tip_z)-0.012,tip_z)
+            color=mix(rgb(0.035,0.023,0.014),rgb(0.085,0.054,0.030),f32(hash2(f64(k),29.0)))
             # Flattened five-sided curved tuft, broad root hidden in its neighbour.
             base=u32(b.vs.len())
             loop ring in [0..3):
                 centre=if ring==0:root else:(if ring==1:bend else:tip)
-                radius=if ring==0:width else:(if ring==1:width*0.80 else:0.002)
+                radius=if ring==0:width else:(if ring==1:width*0.68 else:0.007)
                 loop v in [0..5):
                     angle=TAU*f64(v)/5.0
                     n=normalize(v3(cos(angle)*0.55,sin(angle),sin(angle)*0.24))
-                    pos=centre+v3(cos(angle)*radius,sin(angle)*radius*0.55,0.0)
+                    pos=centre+v3(cos(angle)*radius,sin(angle)*radius*0.36,0.0)
                     b.vs.push(Vertex3D(pos,n,vec2(0,0),color))
             loop ring in [0..2):
                 loop v in [0..5):
@@ -977,7 +984,7 @@ __boar_parts = () -> Mesh[]:
         h = MeshB()
         # The rear ring sits inside the shoulders throughout the graze arc. A deep
         # cheek tapers as one surface to the blunt snout, without a ball-shaped skull.
-        rings = [vec4(-0.14, 0.025, 0.245, 0.235), vec4(0.10, 0.010, 0.235, 0.210),
+        rings = [vec4(-0.20, 0.040, 0.258, 0.255), vec4(-0.035, 0.035, 0.252, 0.24), vec4(0.10, 0.010, 0.235, 0.210),
             vec4(0.30, -0.045, 0.190, 0.175), vec4(0.50, -0.125, 0.140, 0.115), vec4(0.68, -0.16, 0.135, 0.090)]
         base = u32(h.vs.len())
         loop j in [0..rings.len()):
@@ -1046,9 +1053,20 @@ __boar_parts = () -> Mesh[]:
                 z = 0.03 + f64(k) * 0.025
                 mb_cyl(h, v3(sx * 0.175, -0.03, z), v3(sx * 0.23, -0.09, z - 0.06), 0.015, 0.0, hide, 3)
         __boar_m.push(mesh(h.vs, h.idx))
-        # Articulated upper leg and hock; the same triangles, split at the knee.
+        # Articulated upper leg and hock retain their existing joint transforms.
         l = MeshB()
-        mb_cyl(l, v3(0.0, 0.065, 0.0), v3(0.0, -0.188, 0.0), 0.085, 0.043, hide, 8)
+        # A broad embedded thigh tapers through muscle into the same knee pivot.
+        leg_rows = [vec3(0.07,0.108,0.008),vec3(0.005,0.092,0.0),vec3(-0.08,0.061,-0.009),vec3(-0.188,0.043,0.0)]
+        loop j in [0..leg_rows.len()):
+            row=leg_rows[j]
+            loop k in [0..9):
+                angle=TAU*f64(k)/8.0
+                n=normalize(v3(cos(angle),0.22,sin(angle)))
+                l.vs.push(Vertex3D(v3(cos(angle)*f64(row.y),f64(row.x),sin(angle)*f64(row.y)*0.85+f64(row.z)),n,vec2(0,0),hide))
+        loop j in [0..leg_rows.len()-1):
+            loop k in [0..8):
+                a=u32(j*9+k)
+                loop index in [a,a+1,a+9,a+1,a+10,a+9]:l.idx.push(index)
         __boar_m.push(mesh(l.vs, l.idx))
         shin = MeshB()
         mb_sphere(shin, vec3(0, 0, 0), v3(0.044, 0.047, 0.044), hide, 6)

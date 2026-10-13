@@ -58,6 +58,7 @@ struct PartU:
     time = 0.0
     ground_heights = Texture(0, 1, 1)
     ground_grid = vec4(0, 0, 1, 0)
+    depth_texel = vec2(0, 0)
 
 struct PartO:
     pos: vec4
@@ -538,7 +539,7 @@ scripted_lightning_target = (eye: vec3, gaze: vec3, actor: vec3? = none) -> vec2
     vec2(eye.x + ahead.x * f32(distance), eye.z + ahead.z * f32(distance))
 
 lightning_halfwidth = (pos: vec3, cam: vec3) -> f64:
-    max(0.035, f64(length(pos - cam)) * 0.0065)
+    max(0.045, f64(length(pos - cam)) * 0.0075)
 
 # Lightning enters the glow envelope at full opacity on its strike frame.
 # Other glow motes retain their fade-in, and the shared pool cap still applies.
@@ -762,9 +763,9 @@ beams_from = -100.0         # when they lit (they fade over half a minute)
 fire_glows: vec3[]          # lit fires: a warm pool of light on the ground round each after dark (set each frame)
 malice_center = vec3(0, 0, 0)
 malice = 0.0                # the Calamity's cloud round the castle (strength; set by the renderer)
-# Density cards follow the same complete coil as the mesh, including its climbs.
+# Legacy density cache follows the shared volume; the renderer disables this overlay.
 calamity_coil = (k: int, tt: f64) -> vec3:
-    malice_spine(f32(k) / 89.0, f32(tt))
+    malice_parcel(f32(k) / 89.0, f32(tt))
 
 calamity_radius = (k: int) -> f64:
     f64(malice_thickness(f32(k) / 89.0)) * 0.95
@@ -886,7 +887,7 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
                 dist = f64(length(delta))
                 if dist < 0.001: continue
                 pulse = if p.drag < 0.0: lightning_pulse(max(0.0, 1.0 - p.age * 2.2)) else: (1.0 - smoothstep(0.45, 1.0, f)) * (0.78 + 0.22 * sin(f * 43.0 + p.rot))
-                electric_stroke(p.pos - delta * 0.5, p.pos + delta * 0.5, s, p.color.w * f32(pulse))
+                electric_stroke(p.pos - delta * 0.5, p.pos + delta * 0.5, s, p.color.w * f32(pulse), p.drag < 0.0)
             ember, spark, glow, slash:
                 ember = p.kind == .ember
                 if ember:
@@ -959,8 +960,8 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
                 lit = clamp(luma(env.sun_color) * 0.3 + luma(env.sky_amb), 0.12, 1.0)
                 c = mix(vec3(0.62, 0.3, 0.16), vec3(0.24, 0.21, 0.21) * f32(lit), f32(smoothstep(0.0, 0.25, t)))
                 __pinst_smoke.push(PInst(vec4(q.x, q.y, q.z, f32(160.0 + t * 380.0)), vec4(c.x, c.y, c.z, a), vec4(f32(t), 1, f32(f64(k) * 1.3), 0)))
-    # The continuous vortex carries translucent folds around a dim crimson core.
-    # Mesh and density cards share the spine projected by the title check.
+    # Legacy particle overlay, disabled by the production renderer.
+    # Keep its geometry consistent for isolated inspection tools.
     if malice > 0.0 and not indoor:
         tt = elapsed()
         # A dim inner glow sits behind the darker foreground density folds.
@@ -992,6 +993,9 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
     tt2 = elapsed()
     loop fi in 0.. and fp in fall_feet:
         if f64(length(fp - cam)) > 400.0: continue
+        # The west fall's shallow benches have contact droplets below. Large
+        # pool billows here became a floating card beside the mid-height sheet.
+        if fp.x > -1505.0 and fp.x < -1400.0 and fp.z > 1800.0 and fp.z < 1848.0 and fp.y >= 120.0: continue
         west = fp.x > -1505.0 and fp.x < -1450.0 and fp.z > 1800.0 and fp.z < 1848.0 and fp.y < 120.0
         loop k in [0..14):
             ph = fract(f64(k) / 14.0 + tt2 * 0.06 + f64(fi) * 0.37)
@@ -1040,6 +1044,7 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
             __pinst_alpha.push(PInst(vec4(fan + shelf.out * f32(ph * 1.5), f32(0.45 + ph * 0.65)), vec4(0.9, 0.96, 0.98, a), vec4(f32(ph), 4, f32(si + k), 0)))
     loop fi in 0.. and fp in fall_feet:
         if f64(length(fp - cam)) > 300.0: continue
+        if fp.x > -1505.0 and fp.x < -1400.0 and fp.z > 1800.0 and fp.z < 1848.0 and fp.y >= 120.0: continue
         # Three low broken rings spread from the impact, below the existing plume.
         # They share the ripple instance draw and fade before the next ring starts.
         loop ring in [0..3):
@@ -1214,18 +1219,26 @@ guardian_lasers_draw = ():
 # ink metadata or pigment taps; ordinary sparks/flames still use the painted scene.
 electric_fs = (o: PartO, u: PartU) -> vec4:
     uv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
-    z = sample(u.depth, uv).x * 2.0 - 1.0
+    # Conservative opaque coverage at the reduced scene resolution prevents
+    # an output-resolution halo leaking across a foreground leaf silhouette.
+    depth = sample(u.depth, uv).x
+    depth = min(depth, sample(u.depth, uv + vec2(u.depth_texel.x, 0)).x)
+    depth = min(depth, sample(u.depth, uv - vec2(u.depth_texel.x, 0)).x)
+    depth = min(depth, sample(u.depth, uv + vec2(0, u.depth_texel.y)).x)
+    depth = min(depth, sample(u.depth, uv - vec2(0, u.depth_texel.y)).x)
+    z = depth * 2.0 - 1.0
     sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
-    glsl_discard(o.clip.w > sd + 0.04)
+    glsl_discard(o.clip.w > sd + 0.015)
     # A capsule instead of a rectangular streak: soft rounded end caps keep
     # broad halos from producing hard triangular fans at each lightning bend.
     q = (o.uv - vec2(0.5, 0.5)) * 2.0
     width = max(o.data.x, 0.002)
     tip = max(abs(q.y) * (o.size + width) - o.size, 0.0) / width
     core = pow(smoothstep(1.0, 0.0, length(vec2(q.x, tip))), 1.3)
+    if o.data.y > 13.1: core = 1.0 - smoothstep(0.40, 1.0, length(vec2(q.x, tip)))
     vec4(o.color.xyz, o.color.w * core)
 
-electric_stroke = (a: vec3, b: vec3, width: f64, opacity: f32):
+electric_stroke = (a: vec3, b: vec3, width: f64, opacity: f32, storm: bool = false):
     delta = b - a
     dist = f64(length(delta))
     if dist < 0.001: return
@@ -1233,7 +1246,8 @@ electric_stroke = (a: vec3, b: vec3, width: f64, opacity: f32):
     data = vec4(f32(width), 13, f32(atan2(f64(delta.x), f64(delta.z))), f32(asin(f64(delta.y) / dist)))
     halo = data
     halo.x *= 5.0
-    __pinst_electric.push(PInst(pos, vec4(0.35, 0.60, 1.0, opacity * 0.08), halo))
+    __pinst_electric.push(PInst(pos, vec4(0.35, 0.60, 1.0, opacity * (if storm: 0.22 else: 0.08)), halo))
+    if storm: data.y = 13.2
     __pinst_electric.push(PInst(pos, vec4(0.88, 0.96, 1.0, opacity), data))
 
 electric_player = (p: vec3, cam: vec3):
@@ -1261,6 +1275,7 @@ fx_electric_draw = (cam: vec3, vp: mat4, view: mat4):
     up = vec3(view[0].y, view[1].y, view[2].y)
     cpu_mark("fx_submit")
     u = PartU(vp, right, up, cam, env.haze, f32(env.density), post.depth_copy.depth, f32(sc.near), f32(sc.far))
+    u.depth_texel = vec2(0.5 / f32(post.w), 0.5 / f32(post.h))
     glDisable(GL_DEPTH_TEST)
     glDepthMask(0)
     glDisable(GL_CULL_FACE)

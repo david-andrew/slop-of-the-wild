@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('out', nargs='?', default=ROOT / 'build/live-audio', type=Path)
-    parser.add_argument('--modes', nargs='+', default=['scenario', 'engaged', 'low_hp', 'field'])
+    parser.add_argument('--modes', nargs='+', default=['scenario', 'engaged', 'low_hp', 'field', 'biome'])
     parser.add_argument('--seconds', type=float)
     parser.add_argument('--game-dir', type=Path, default=ROOT / 'game', help='Source snapshot for baseline comparisons')
     parser.add_argument('--skip-build', action='store_true', help='Reuse the pinned capture binary')
@@ -46,7 +46,7 @@ def main():
     if not args.skip_build:
         subprocess.run([str(ROOT / 'sloppy/bin/sloppy'), 'build', str(fixture), '-o', str(binary)], cwd=ROOT, check=True)
     for mode in args.modes:
-        seconds = args.seconds or {'scenario': 180, 'engaged': 40, 'low_hp': 40, 'field': 600}[mode]
+        seconds = args.seconds or {'scenario': 180, 'engaged': 40, 'low_hp': 40, 'field': 600, 'biome': 120}[mode]
         print(f'Rendering {mode}: {seconds:g}s under /tmp/botw-render.lock', flush=True)
         # Release between captures; compilation and PCM conversion need no lock.
         subprocess.run(['flock', '/tmp/botw-render.lock', 'timeout', '180', str(binary), str(out), mode, str(seconds)], cwd=ROOT,

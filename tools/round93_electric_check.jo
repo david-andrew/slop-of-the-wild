@@ -1,0 +1,68 @@
+# Render the production electric shader against foreground cut-out coverage.
+# Caller owns the one render flock. 1080px output, 80% opaque depth resolution.
+use '../game/fx.jo'
+use '../game/gfx.jo'
+use '../game/env.jo'
+from '../game/fx.jo' import __pinst_electric
+struct BlockU:
+    z: f32
+struct BlockO:
+    pos: vec4
+    uv: vec2
+block_vs = (v: FsVert,u: BlockU) -> BlockO: BlockO(vec4(v.pos,u.z,1),v.pos)
+block_fs = (i: BlockO,u: BlockU) -> vec4:
+    # A foreground canopy stripe and its actual opening.
+    glsl_discard(abs(i.uv.y)>0.16 or (i.uv.x>0.015 and i.uv.x<0.028))
+    vec4(0,0,0,1)
+window("Round 93 electric depth",320,1080)
+opaque=make_target(256,864,false,true)
+output=make_target(320,1080,false,false)
+vp=perspective(radians(54.0),320.0/1080.0,0.1,1000.0)
+block=make_sh(shader(block_vs,block_fs))
+bind_target(opaque)
+glClearColor(0,0,0,0)
+glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
+glEnable(GL_DEPTH_TEST)
+glDepthMask(1)
+glDisable(GL_CULL_FACE)
+projected=vp*vec4(0,0,-4,1)
+draw_fast(block,fullscreen_mesh(),BlockU(projected.z/projected.w))
+sh=make_sh(shader(part_vs,electric_fs))
+part_quad = mesh([QuadV(vec2(-1,-1)),QuadV(vec2(1,-1)),QuadV(vec2(1,1)),QuadV(vec2(-1,-1)),QuadV(vec2(1,1)),QuadV(vec2(-1,1))])
+u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,opaque.depth,0.1,1000)
+u.depth_texel=vec2(0.5/256.0,0.5/864.0)
+loop frame in [0..3):
+    bind_target(output)
+    glDisable(GL_DEPTH_TEST)
+    glDepthMask(0)
+    glClearColor(0,0,0,0)
+    glClear(GL_COLOR_BUFFER_BIT)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE)
+    __pinst_electric.clear()
+    pulse=f32(lightning_pulse(1.0-f64(frame)/60.0*2.2))
+    electric_stroke(vec3(0,-2,-8),vec3(0,2,-8),lightning_halfwidth(vec3(0,0,-8),vec3()),pulse,true)
+    instances=inst_buffer(__pinst_electric)
+    draw_static(sh,part_quad,instances,u)
+    values=fill(u8(0),320*1080*4)
+    game_read_pixels(0,0,320,1080,data(values))
+    core=0
+    halo=0
+    covered=0
+    loop x in [0..320):
+        at=(750*320+x)*4
+        if values[at+1]>127: core+=1
+        if values[at+2]>10: halo+=1
+        at=(540*320+x)*4
+        if values[at+2]>0: covered+=1
+    assert(core>=6,"full-resolution trunk core at least six pixels for three frames")
+    assert(halo>core+10,"visible persistent soft blue halo beyond white core")
+    assert(covered>0,"lightning remains visible through the actual canopy opening")
+    # Gap at x=162..164 is allowed; all actual canopy pixels must reject glow.
+    loop y in [480..601):
+        loop x in [130..191):
+            if x>=161 and x<=165:continue
+            assert(values[(y*320+x)*4+2]==0,"foreground cut-out canopy rejects core and halo")
+    assert(save_png(Image(320,1080,values),"build/round93/electric-depth-{frame}.png"))
+    print("PASS electric frame {frame}: {core}px half-bright core, {halo}px halo; opaque canopy blocks both")
+glDepthMask(1)

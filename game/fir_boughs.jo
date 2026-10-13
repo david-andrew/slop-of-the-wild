@@ -64,13 +64,16 @@ fir_crown = (source: Vertex3D[], indices: u32[]) -> FirCrown:
         width = 0.0
         loop p in points: width = max(width, abs(f64(dot(p - base, side))))
         width = min(width * 0.82, reach * 0.40)
-        # Three overlapping tufts give each bough rounded, unequal lobes instead
-        # of one giant oval leaf. All stay inside the authored spray envelope.
-        __fir_spray(out, base, tip, width * 0.52, reach * 0.130)
-        loop sign in [-1.0, 1.0]:
-            child_base = mix(base, tip, 0.15)
-            child_tip = mix(base, tip, f32(0.74 + sign * 0.045)) + side * f32(sign * width * 0.65)
-            __fir_spray(out, child_base, child_tip, width * 0.48, reach * 0.115)
+        # Two full tapered fans keep a readable tier with one unequal lateral fork.
+        # Alternate the fork side per authored branch; avoid three overlapping
+        # interiors, keeping the green mass with a third fewer triangles.
+        seed = fract(sin(f64(base.x) * 17.3 + f64(base.y) * 7.1 + f64(tip.z) * 11.7) * 43758.5453)
+        __fir_spray(out, base, tip, width * (0.43 + seed * 0.07), reach * 0.090)
+        sign = if seed < 0.5: -1.0 else: 1.0
+        phase = fract(seed * 7.13 + (sign + 1.0) * 0.31)
+        child_base = mix(base, tip, f32(0.12 + phase * 0.27))
+        child_tip = mix(base, tip, f32(0.68 + phase * 0.22)) + side * f32(sign * width * (0.64 + phase * 0.22)) - up * f32(reach * phase * 0.035)
+        __fir_spray(out, child_base, child_tip, width * (0.46 + phase * 0.07), reach * (0.075 + phase * 0.020))
     out
 
 __fir_spray = (out: mut FirCrown, base: vec3, tip: vec3, width: f64, thickness: f64):
@@ -80,15 +83,16 @@ __fir_spray = (out: mut FirCrown, base: vec3, tip: vec3, width: f64, thickness: 
     side = if length(direction.xz) > 0.001: normalize(cross(direction, vec3(0, 1, 0))) else: vec3(1, 0, 0)
     up = normalize(cross(side, direction))
     first = out.vertices.len()
-    # Rounded terminal shoulders, an arched upper cushion and a descending
-    # spine keep the silhouette thick at oblique angles. No alpha-cut edge.
-    stations = [0.0, 0.18, 0.46, 0.74, 0.92, 1.0]
+    # Narrow tapered terminals and unequal edge widths retain solid coverage.
+    # Five rings keep the silhouette but avoid a redundant ring near thin tips.
+    # Eight sides preserve the upper/lower snow normals; draws stay unchanged.
+    stations = [0.0, 0.18, 0.46, 0.74, 1.0]
     loop u in stations:
-        bulge = sqrt(max(0.0, 4.0 * u * (1.0 - u)))
-        spine = mix(base, tip, f32(u)) + up * f32(reach * 0.07 * sin(PI * u))
+        bulge = pow(max(0.0, sin(PI * u)), 0.82) * (1.22 - u * 0.72)
+        spine = mix(base, tip, f32(u)) + up * f32(reach * 0.025 * sin(PI * u))
         loop k in [0..8):
             angle = TAU * f64(k) / 8.0
-            p = spine + side * f32(width * bulge * cos(angle)) + up * f32(thickness * bulge * sin(angle) * (if sin(angle) > 0.0: 1.15 else: 0.65))
+            p = spine + side * f32(width * bulge * cos(angle) * (1.0 + 0.18 * sin(u * 17.0 + f64(base.y) * 3.0 + cos(angle) * 2.0))) + up * f32(thickness * bulge * sin(angle) * (if sin(angle) > 0.0: 1.15 else: 0.65))
             n = normalize(side * f32(cos(angle) / max(width, 0.01)) + up * f32(sin(angle) / (thickness * (if sin(angle) > 0.0: 1.15 else: 0.65))) + direction * f32(-cos(PI * u) * 3.0 / reach))
             shade = f32(0.86 + 0.14 * sin(angle))
             out.vertices.push(Vertex3D(p, n, vec2(0.5, 0.5), vec4(shade, shade, shade, 1.0)))
@@ -102,7 +106,7 @@ __fir_spray = (out: mut FirCrown, base: vec3, tip: vec3, width: f64, thickness: 
             if station < stations.len() - 2: out.indices.extend([b, c, d])
     # Keep all exterior boughs in the distant shadow. Fewer longitudinal
     # rings suffice there; retain the same poles and widest cross sections.
-    rings = [0, 2, 4, 5]
+    rings = [0, 2, 3, 4]
     loop station in [0..rings.len() - 1):
         loop k in [0..8):
             a = u32(first + rings[station] * 8 + k)

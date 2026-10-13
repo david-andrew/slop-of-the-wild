@@ -157,6 +157,7 @@ cpu_checks=(
     tower_activation_check
     tower_base_climb_check
     round91_fire_check
+    round82_scorch_check
     round91_weather_check
     round92_lightning_check
     title_panorama_check
@@ -202,11 +203,12 @@ for name in defect_hunt_check enemy_model_check hero_model_check wildlife_mesh_c
 done
 check cpu movement_source_audit python3 docs/ref/verify_movement_response_sources.py
 check cpu performance_window_check python3 tools/performance_window_check.py
+check render music_render sloppy/bin/sloppy tools/music_render.jo "$out/music-render"
 check cpu listening_clips python3 tools/listen.py
 
 # Small GPU equivalence tests never self-lock. Compile while holding their sole
 # lock too, so even a compiler-run window cannot overlap another renderer.
-for name in combat_geometry_check draw_cache_check skin_row_check fir_surface_check hero_surface_check material_paint_check post_edge_check \
+for name in combat_geometry_check draw_cache_check skin_row_check fir_surface_check round82_plant_surface_check hero_surface_check material_paint_check post_edge_check \
     shader_load_check shader_adapter_check slot_check terrain_noise_check noise_seam_check climb_occluder_check; do
     # flock launches a fresh shell; export this function and its binary directory.
     export out

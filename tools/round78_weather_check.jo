@@ -7,44 +7,40 @@ use '../game/fx.jo'
 from '../game/fx.jo' import __calamity_points
 use '../game/env.jo'
 
-loop tt in [0.0, 12.0, 120.0, 900.0]:
-    previous = malice_spine(0.0, f32(tt))
-    min_y = previous.y
-    max_y = previous.y
-    loop k in [1..MALICE_SEGMENTS + 1):
-        phase = f32(k) / f32(MALICE_SEGMENTS)
-        q = malice_spine(phase, f32(tt))
-        assert(length(q - previous) < malice_thickness(phase) + malice_thickness(f32(k - 1) / f32(MALICE_SEGMENTS)), "neighbouring smoke banks overlap")
-        assert(length(q.xz) > 70.0 and length(q.xz) < 170.0, "vortex wraps outside the keep")
-        assert(q.y > 40.0 and q.y < 500.0, "spires remain exposed")
-        min_y = min(min_y, q.y)
-        max_y = max(max_y, q.y)
-        previous = q
-    assert(max_y - min_y > 330.0, "spiral rises continuously through the castle body")
-    loop yaw in [0.0, 0.6, 1.57, 2.7, 3.14, 5.8]:
-        toward = vec3(f32(cos(yaw)), 0, f32(sin(yaw)))
-        front = 0
-        back = 0
-        loop k in [0..MALICE_SEGMENTS + 1):
-            q = malice_spine(f32(k) / f32(MALICE_SEGMENTS), f32(tt))
-            if dot(q, toward) > 0.0: front += 1
-            else: back += 1
-        assert(front > 60 and back > 60, "all viewpoints retain foreground and background wraps")
-print("PASS continuous malice: adjacent sections join; irregular rising smoke circulation; front/back wraps at 24 time/view combinations")
+# A turbulent volume intentionally has neither a connected spine nor a
+# monotonic ascent. Validate spatial coverage and temporal continuity instead.
+loop tt in [0.0,12.0,120.0,900.0]:
+    min_y=f32(1000)
+    max_y=f32(-1000)
+    loop band in [0..3):
+        loop yaw in [0.0,0.6,1.57,2.7,3.14,5.8]:
+            toward=vec3(f32(cos(yaw)),0,f32(sin(yaw)))
+            front=0
+            back=0
+            loop k in [band*96..(band+1)*96):
+                phase=f32(k)/f32(MALICE_SEGMENTS)
+                q=malice_parcel(phase,f32(tt))
+                next=malice_parcel(phase,f32(tt+1.0/60.0))
+                assert(length(next-q)<0.65,"continuous advection without recycling jumps")
+                assert(length(q.xz)>55 and length(q.xz)<225,"bounded three-bank circulation")
+                assert(q.y>40 and q.y<470,"castle crown remains inside the smoke volume")
+                min_y=min(min_y,q.y)
+                max_y=max(max_y,q.y)
+                if dot(q,toward)>0:front+=1
+                else:back+=1
+            assert(front>32 and back>32,"each bank wraps on both sides at every azimuth")
+    assert(max_y-min_y>250,"overlapping banks fill the castle height")
+print("PASS malice: three turbulent banks; 72 time/band/view cases, bounded volume and continuous advection")
 
-# The alpha overlay must follow the mesh across the former arm boundaries.
-loop tt in [0.0, 12.0, 120.0]:
+loop tt in [0.0,12.0,120.0]:
     calamity_cache(tt)
-    assert(__calamity_points.len() == 90, "fixed density-point cache budget")
+    assert(__calamity_points.len()==90,"legacy disabled overlay keeps its bounded cache")
     loop k in [0..90):
-        phase = f32(k) / 89.0
-        q = calamity_coil(k, tt)
-        assert(q == __calamity_points[k] and calamity_tangent(k, tt) == calamity_cached_tangent(k), "cached points/tangents retain exact geometry")
-        assert(length(q - malice_spine(phase, f32(tt))) < 0.00001, "smoke density shares mesh spine")
-        assert(calamity_radius(k) <= f64(malice_thickness(phase)), "density remains inside vortex envelope")
-        if k > 0:
-            assert(length(q - calamity_coil(k - 1, tt)) < 47.0, "density climbs continuously across old arm boundaries")
-print("PASS malice overlay: 270 shared-spine samples; bounded density and continuous former arm joins")
+        phase=f32(k)/89.0
+        q=calamity_coil(k,tt)
+        assert(q==__calamity_points[k],"legacy cache follows shared parcel geometry")
+        assert(length(q-malice_parcel(phase,f32(tt)))<0.00001,"shared geometry")
+print("PASS malice cache: 270 shared volume samples")
 
 alb = vec3(0.20, 0.15, 0.11)
 sky = vec3(0.35, 0.38, 0.42)
@@ -111,7 +107,7 @@ loop p in particles:
     if p.color.w < 0.99: continue
     range = f64(length(p.pos - vec3(0, 2, 20)))
     pixels = p.size * 1080.0 / (tan(27.0 * PI / 180.0) * range) * lo
-    assert(pixels >= (if p.pos.y < 44.0: 3.0 else: 6.0), "visible near detail and distant trunk retain distinct readable cores")
+    assert(pixels >= 6.0, "visible near detail and distant trunk retain distinct readable cores")
     minimum = min(minimum, pixels)
 print("PASS actual lightning widths: minimum {minimum:.3} px near core at 1080p; distant trunk >=6 px")
 

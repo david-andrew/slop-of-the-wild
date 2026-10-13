@@ -1,0 +1,70 @@
+# Ground strike semantics and articulated flame trails without a graphics window.
+use '../game/elements.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/env.jo'
+use '../game/fx.jo'
+use '../game/gfx.jo'
+use '../game/body_fire.jo'
+use '../game/player.jo'
+use '../game/water.jo'
+
+hf.n=64
+hf.cell=2.0
+hf.x0=-64.0
+hf.z0=-64.0
+hf.h=fill(f32(0),hf.n*hf.n)
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+pl.pos=vec3(30,0,30)
+env.rain=0.0
+strike_at(vec3(-10,0.5,0))
+assert(burn_value(-10,0,0)>0.5,"dry ground strike leaves a scorch")
+assert(flames.len()==0,"scorch does not require a spreading grass fire")
+assert(burn_value(-4,0,0)==0,"strike scorch stays local")
+strike_at(vec3(10,8,0))
+assert(burn_value(10,0,0)==0,"elevated strike never scorches the ground beneath")
+env.rain=1.0
+strike_at(vec3(0,0.5,-10))
+assert(burn_value(0,-10,0)>0.5,"rain quenches flame but does not erase an impact scar")
+add_rain_face(vec3(20,5,18),vec3(24,5,18),vec3(20,5,22),"r82-roof")
+add_rain_face(vec3(24,5,18),vec3(24,5,22),vec3(20,5,22),"r82-roof")
+strike_at(vec3(21,0.5,20))
+assert(burn_value(21,20,0)==0,"roof-covered ground never receives a strike scar")
+water_grid_set(fill(f32(2),hf.n*hf.n),hf.n,hf.x0,hf.z0,hf.cell)
+strike_at(vec3(15,2.5,15))
+assert(strike_wet and burn_value(15,15,0)==0,"water impact leaves no land decal")
+print("PASS lightning scorch: local ground mark independent of ignition; dry/wet air; water, roofs and elevated impacts excluded")
+
+u=BodyFireU(mat4(),vec3(1,0,0),0)
+loop direction in [vec3(-0.42,-0.12,0.1),vec3(0.28,0.18,-0.2),vec3(0,0,0)]:
+    loop j in [0..6):
+        flame=PInst(vec4(2,3,4,0.14),vec4(direction,0.9),vec4(0,0,f32(j*7),0.34+f32(j)*0.055))
+        root=body_fire_vs(QuadV(vec2(0,-1)),flame,u)
+        top=body_fire_vs(QuadV(vec2(0,1)),flame,u)
+        neutral=flame
+        neutral.color=vec4(0,0,0,0.9)
+        upright=body_fire_vs(QuadV(vec2(0,1)),neutral,u)
+        assert(length(root.pos.xyz-flame.pos.xyz)<0.00001,"trail never detaches a flame root")
+        assert(length(top.pos.xyz-upright.pos.xyz-direction)<0.00001,"tip bends with the animated limb/locomotion wake")
+        assert(top.pos.y>root.pos.y,"bent limb fire retains buoyant rise")
+print("PASS body trails: 18 lengths/directions, fixed roots and moving upper tongues")
+
+# The broad phase may overinclude old scars, but must never omit a sampled tile.
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+burn_scorch_tiles=fill(false,BURN_TILE_N*BURN_TILE_N)
+assert(not burn_scorch_region(vec2(-64,-64),vec2(64,64)),"clean map retains the healthy plant shader")
+burn_mark(0,0,0.5,1,1.0)
+burn_mark(10,10,0.5,3,1.0)
+assert(not burn_scorch_region(vec2(-64,-64),vec2(64,64)),"trampling and suppression are not scorch")
+burn_mark(-10,-10,0.5,0,1.0)
+burn_mark(10,10,0.5,2,0.45)
+assert(burn_scorch_region(vec2(-10.5,-10.5),vec2(-9.5,-9.5)),"cold scorch selects the plant burn shader")
+assert(burn_scorch_region(vec2(9.5,9.5),vec2(10.5,10.5)),"ignition heat selects the plant burn shader")
+assert(not burn_scorch_region(vec2(30,30),vec2(32,32)),"unaffected batches retain their healthy shader")
+# Restore a prepared map with a scar immediately across a 32-pixel tile boundary.
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+burn_px[(1024*BURN_N+1024)*4]=255
+burn_reset_bounds()
+assert(burn_scorch_region(vec2(-0.02,0),vec2(-0.01,0.01)),"bilinear neighbour across tile boundary is included")
+assert(not burn_scorch_region(vec2(-10.5,-10.5),vec2(-9.5,-9.5)),"map restore removes old tile flags")
+print("PASS plant scorch broad phase: clean/trampled/suppressed regions, char/heat, locality, prepared restore and bilinear tile edge")

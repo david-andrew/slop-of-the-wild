@@ -14,7 +14,7 @@ loop k in [0..MALICE_SEGMENTS):
     later.time=0.016667
     next=malice_vs(v,later)
     if next.phase>previous.phase:
-        assert(next.pos.y>previous.pos.y,"every smoke parcel rises continuously")
+        # Turbulent banks circulate vertically in both directions.
         maximum_step=max(maximum_step,f64(length(next.pos.xyz-previous.pos.xyz)))
 print("smoke maximum 60 Hz step: {maximum_step:.4}m")
 assert(maximum_step<1.5,"world-scale smoke moves less than a panorama pixel per frame")
@@ -37,7 +37,7 @@ loop night in [0.0,1.0]:
         i.cross_section=vec2(0,0)
         assert(malice_fs(i,u).w==0.0,"recycled parcel fades invisibly at the source")
     assert(transparent>10 and visible>40,"broken density silhouette with both holes and smoky mass")
-print("PASS malice: 192 rising parcels; continuous advection, feathered edges, density holes and dim magenta night energy")
+print("PASS malice: 288 circulating parcels; continuous advection, feathered edges, density holes and dim magenta night energy")
 
 pigment=vec3(0.72,0.64,0.34)
 loop k in [0..101):

@@ -82,6 +82,63 @@ without imposing a hardware-independent timing threshold.
   rendering/acquire, expose paced queue depth and acquire/fence/submit telemetry;
   make the OpenGL Wayland path honor the public presentation setting too.
 
+### Round 66: the ten-second presentation stall
+
+`build/round66/forest-before.log` retains 18,000 present-return intervals over
+286.99 s. `tools/vulkan_call_trace.c` attributes 29 periodic waits to
+`vkAcquireNextImageKHR`: 26.73–79.70 ms, at 10 s intervals (successive calls
+within about 20 ms of that cadence). Main-thread game execution remains small;
+the original game wall-time column was inflated by a collision between
+`game/frametime.jo:__frame_cpu` and the runtime's identically named accumulator.
+The game counter now has a separate name. Thread CPU and native call timestamps
+were unaffected; do not use the old wall/gap columns for attribution.
+
+The corrected 7,200-frame pond capture spans 95.64 s and has nine acquire waits
+of 34.79–39.81 ms, again ten seconds apart. A **65 s clear-only standalone**
+`tools/upstream/presentation.jo` run, with audio disabled and no game imports,
+also has six post-startup acquire waits of 41.55–51.54 ms at the same cadence.
+That rules out game autosave, weather/environment work, actors, and game audio.
+Autosave polls once per simulated second and saves after 180 s or a milestone,
+not every 15 s. The forest trace has only two `vkGetPipelineCacheData` calls,
+both in loading; the clear-only trace has none. No periodic pipeline creation or
+cache save accompanies these waits. Native present/fence/submit are separately
+traced; the recurring ten-second spike is acquire, rather than queue-present or
+a frame fence. Other unrelated fence stalls remain visible in the raw logs.
+
+Reproduce the standalone observation on the NVIDIA/Wayland setup above:
+
+```sh
+cc -shared -fPIC -O2 tools/vulkan_call_trace.c -o build/round66/vulkan_call_trace.so
+flock /tmp/botw-render.lock env LD_AUDIT="$PWD/build/round66/vulkan_call_trace.so" SLOPPY_PLATFORM=wayland SLOPPY_VSYNC=0 SLOPPY_NO_AUDIO=1 PROBE_SECONDS=65 sloppy/bin/sloppy tools/upstream/presentation.jo
+```
+
+The observed block is inside the driver's WSI acquire call. These measurements
+cannot distinguish the driver from compositor scheduling or explain its internal
+ten-second timer. Sloppy's `__vk_present` waits with infinite timeout for an image
+**before submitting the recorded scene**, so it exposes that wait directly on the
+frame path. An upstream fix needs WSI/driver investigation and an acquire/submit
+policy that can overlap useful work. Moving game saves would not remove this
+measured stall. Game loading now primes both Vulkan presentation slots and the
+swapchain; steady-state acquire waits persist independently of that warmup.
+
+The separate early 90–96 ms hitch is **not a late graphics pipeline**. In the
+instrumented startup control, the third measured interval was 91.91 ms:
+`libdecor_dispatch` alone took 76.96 ms, outside update/draw and presentation.
+No long ALSA call accompanied it. It occurs after the first buffers map, when
+libdecor processes delayed decoration/activation work (the trace does not isolate
+its GTK/font internals). Priming only the swapchain and doing one roundtrip did
+not absorb that deferred work. `game/main.jo:render_warmup` now also services a
+bounded 120 ms Wayland decoration window during loading. In the first verified
+capture, the expensive dispatch takes 91.36 ms **before** the game timer starts;
+the first callback is 6.99 ms, and first-24-frame residual gap peaks at 0.45 ms.
+The second repeat moves a 95.07 ms dispatch into loading, with first CPU
+8.50 ms and first-24 residual gap at most 0.49 ms. Early native acquire/fence
+waits still occur; first-24 producer worst is 49.77 / 38.45 ms,
+so this is removal of the attributed decoration hitch, not a scanout guarantee.
+Raw controls and repeats are `build/round66/startup-v2.log` and
+`build/round66/startup-v3-{1,2}.log`. Upstream should complete client-decoration
+mapping/activation work in initialization, or expose an explicit preparation API.
+
 ## 5. Signed fragment derivatives are absent from the public shader API
 
 - **Repro:** [signed_derivatives.jo](../tools/upstream/signed_derivatives.jo)

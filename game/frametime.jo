@@ -10,8 +10,8 @@ use 'gfx.jo'
 frame_stats_on = (env("SLOPPY_STATS") ?? "") == "log" or env("BOTW_FRAME_LOG") != none or env("BOTW_CPU") != none
 __frame_raw = env("BOTW_FRAME_LOG") != none
 __frame_last = 0.0
-__frame_cpu_start = 0.0
-__frame_cpu = 0.0
+__game_frame_cpu_start = 0.0
+__game_frame_cpu = 0.0
 __frame_thread = 0.0
 __frame_thread_start = 0.0
 __frame_thread_end = 0.0
@@ -54,7 +54,7 @@ frame_stats_begin = (scale: f64):
         if __frame_samples.len() == 0: __frame_first = n
         __frame_samples.push(ms)
         if __frame_raw:
-            __frame_line = "{__frame_line}frame sample: {n} {ms:.3} {__frame_cpu * 1000.0:.3} {(now - __frame_last - __frame_cpu) * 1000.0:.3} {__frame_thread * 1000.0:.3} {inst_uploads} {inst_bytes} {__frame_switches.0} {__frame_switches.1} {__frame_switches.2 * 1000.0:.3} {__frame_switches.3 * 1000.0:.3} {__last_present * 1000.0:.3} {(now - __frame_last - __frame_cpu - __last_present) * 1000.0:.3} {(frame_thread_time() - __frame_thread_end) * 1000.0:.3} {gap_usage.0 - __frame_switch_end.0} {gap_usage.1 - __frame_switch_end.1} {(gap_usage.2 - __frame_switch_end.2) * 1000.0:.3} {(gap_usage.3 - __frame_switch_end.3) * 1000.0:.3}\n"
+            __frame_line = "{__frame_line}frame sample: {n} {ms:.3} {__game_frame_cpu * 1000.0:.3} {(now - __frame_last - __game_frame_cpu) * 1000.0:.3} {__frame_thread * 1000.0:.3} {inst_uploads} {inst_bytes} {__frame_switches.0} {__frame_switches.1} {__frame_switches.2 * 1000.0:.3} {__frame_switches.3 * 1000.0:.3} {__last_present * 1000.0:.3} {(now - __frame_last - __game_frame_cpu - __last_present) * 1000.0:.3} {(frame_thread_time() - __frame_thread_end) * 1000.0:.3} {gap_usage.0 - __frame_switch_end.0} {gap_usage.1 - __frame_switch_end.1} {(gap_usage.2 - __frame_switch_end.2) * 1000.0:.3} {(gap_usage.3 - __frame_switch_end.3) * 1000.0:.3}\n"
         if __frame_samples.len() == 120:
             __frame_samples.sort()
             px = pixel_size()
@@ -65,19 +65,19 @@ frame_stats_begin = (scale: f64):
     __frame_last = now
     inst_uploads = 0
     inst_bytes = 0
-    __frame_cpu_start = time()
+    __game_frame_cpu_start = time()
     __frame_thread_start = frame_thread_time()
     __frame_switch_start = frame_switch_counts()
 
 frame_stats_end = ():
     if not frame_stats_on: return
-    __frame_cpu = time() - __frame_cpu_start
+    __game_frame_cpu = time() - __game_frame_cpu_start
     __frame_thread_end = frame_thread_time()
     __frame_thread = __frame_thread_end - __frame_thread_start
     switches = frame_switch_counts()
     __frame_switch_end = switches
     __frame_switches = (switches.0 - __frame_switch_start.0, switches.1 - __frame_switch_start.1, switches.2 - __frame_switch_start.2, switches.3 - __frame_switch_start.3)
-    if __frame_cpu > 0.012:
-        eprint("cpu wall/thread: frame {frame_number()} {__frame_cpu * 1000.0:.3}/{__frame_thread * 1000.0:.3} ms; user/sys {__frame_switches.2 * 1000.0:.3}/{__frame_switches.3 * 1000.0:.3} ms; switches voluntary {__frame_switches.0} involuntary {__frame_switches.1}; uploads {inst_uploads} bytes {inst_bytes}")
+    if __game_frame_cpu > 0.012:
+        eprint("cpu wall/thread: frame {frame_number()} {__game_frame_cpu * 1000.0:.3}/{__frame_thread * 1000.0:.3} ms; user/sys {__frame_switches.2 * 1000.0:.3}/{__frame_switches.3 * 1000.0:.3} ms; switches voluntary {__frame_switches.0} involuntary {__frame_switches.1}; uploads {inst_uploads} bytes {inst_bytes}")
     if frame_number() == 0:
-        eprint("first frame: cpu {__frame_cpu * 1000.0:.3} thread {__frame_thread * 1000.0:.3} ms; uploads {inst_uploads} bytes {inst_bytes}")
+        eprint("first frame: cpu {__game_frame_cpu * 1000.0:.3} thread {__frame_thread * 1000.0:.3} ms; uploads {inst_uploads} bytes {inst_bytes}")

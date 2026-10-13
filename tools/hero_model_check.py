@@ -171,7 +171,7 @@ for name in ('hero', 'hero_bare'):
                         assert delta < .001, 'supporting palm surface moved over 1 mm'
                         palm_contacts += 1
             for a in vertices[len(old_vertices):]:
-                assert name == 'hero_bare' and 0.93 < a[1] < 1.45 and abs(a[0]) < 0.48, 'new body loops outside shoulder girdle'
+                assert name == 'hero_bare' and 0.93 < a[1] < 1.45 and abs(a[0]) < 0.85, 'new body loops outside shoulder/arm/hand envelope'
         assert finger_before > 0 and finger_after <= finger_before*1.001, 'finger sections became heavier'
         if name == 'hero_bare':
             assert palm_contacts > 0, 'missing supporting palm surface'

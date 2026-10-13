@@ -26,14 +26,13 @@ struct MaliceO:
 
 malice_vs = (v: MaliceV, u: MaliceU) -> MaliceO:
     phase = fract(v.phase + u.time * 0.018)
-    q = malice_spine(phase, u.time)
+    q = malice_parcel(v.phase, u.time)
     toward = normalize(vec3(u.cam.x - u.center.x, 0, u.cam.z - u.center.z))
     right = vec3(toward.z, 0, -toward.x)
     seed = v.phase * 731.0
-    # Unequal radial eddies break the spiral into overlapping rising banks.
+    # Each bank fills a noisy annular volume; parcels have independent lifetimes.
     outward = normalize(vec3(q.x, 0, q.z))
-    q += outward * (sin(seed * 1.7) * 23.0)
-    radius = malice_thickness(phase) * (0.80 + 0.20 * sin(seed * 2.3))
+    radius = malice_thickness(v.phase) * (0.80 + 0.20 * sin(seed * 2.3))
     world = u.center + q + (right * v.cross_section.x + vec3(0, v.cross_section.y, 0)) * radius
     MaliceO(u.vp * vec4(world, 1), phase, v.cross_section, dot(outward, toward), seed)
 
@@ -47,7 +46,8 @@ malice_fs = (i: MaliceO, u: MaliceU) -> vec4:
     density = broad * 0.68 + fine * 0.32
     # Soft lobes dissolve well inside the quad; noise erodes unequal holes.
     edge = 1.0 - smoothstep(0.18, 0.95, length(p) + (density - 0.5) * 0.48)
-    cloud = smoothstep(0.23, 0.73, density) * edge
+    bank = vnoise(vec2(i.surface * 0.071, u.time * 0.028))
+    cloud = smoothstep(0.23, 0.73, density) * edge * (0.35 + bank * 0.65)
     color = mix(vec3(0.042, 0.010, 0.039), vec3(0.13, 0.028, 0.084), density)
     night_color = mix(vec3(0.10, 0.014, 0.075), vec3(0.26, 0.04, 0.18), density)
     vec4(mix(color, night_color, u.night), u.amount * side * ends * cloud * 0.42)

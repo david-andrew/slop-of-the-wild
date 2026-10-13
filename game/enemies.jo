@@ -961,6 +961,11 @@ enemies_separate = ():
     __crowd.clear()
     loop i in 0.. and e in enemies:
         if __body(e): __crowd.push(i)
+    # One camera basis per solve; poses can widen the head/ear envelope during
+    # tells. A 2.7 m lane includes that motion and one camera-update of margin.
+    lens = cam.shown_pos
+    lens_forward = normalize(cam.shown_target - lens + vec3(0,0,0.00001))
+    lens_right = normalize(cross(lens_forward, vec3(0,1,0)) + vec3(0.00001,0,0))
     loop pass_ in [0..20):
         correction = 0.0
         loop i in __crowd:
@@ -1008,6 +1013,33 @@ enemies_separate = ():
                 j = __crowd[bi]
                 a = enemies[i]
                 b = enemies[j]
+                # A radial body gap still permits a two-headed totem when
+                # guards share a camera ray. Separate their projected head lanes
+                # without testing vertical proximity. Only nearby combat actors
+                # participate; the committed attacker/lock target keeps its pose.
+                if cam.shown and enemy_melee_body(a) and enemy_melee_body(b) and a.alert > 0.5 and b.alert > 0.5 and length(a.pos - pl.pos) < 14.0 and length(b.pos - pl.pos) < 14.0:
+                    f = lens_forward
+                    right = lens_right
+                    da = a.pos + vec3(0,1.3,0) - lens
+                    db = b.pos + vec3(0,1.3,0) - lens
+                    za = f64(dot(da,f))
+                    zb = f64(dot(db,f))
+                    if za > 1.0 and zb > 1.0:
+                        xa = f64(dot(da,right)) / za
+                        xb = f64(dot(db,right)) / zb
+                        gap = abs(xb - xa)
+                        width = 2.7 / min(za,zb)
+                        if gap < width:
+                            am = if a.lookout or i == fight.target or a.state == .windup or a.state == .attack: 0.0 else: 1.0
+                            bm = if b.lookout or j == fight.target or b.state == .windup or b.state == .attack: 0.0 else: 1.0
+                            if am + bm > 0.0:
+                                sign = if xb >= xa: 1.0 else: -1.0
+                                amount = (width - gap) / (am + bm)
+                                enemies[i].pos -= right * f32(sign * amount * za * am)
+                                enemies[j].pos += right * f32(sign * amount * zb * bm)
+                                correction = max(correction, amount * max(za,zb))
+                                a = enemies[i]
+                                b = enemies[j]
                 if not body_vertical_overlap(a.pos, enemy_body_height(a), b.pos, enemy_body_height(b)): continue
                 d = vec3(b.pos.x - a.pos.x, 0, b.pos.z - a.pos.z)
                 l = f64(length(d))
@@ -1147,7 +1179,16 @@ __bokoblin = (e: mut Enemy, dt: f64, dist: f64, night: bool, alarm: mut bool):
                     front = forward_of(cam_yaw_global)
                     side = vec3(-front.z, 0, front.x)
                     bearing = if dot(dv, side) >= 0.0: 1.0 else: -1.0
-                    want = pl.pos + front * 4.6 + side * f32(bearing * 4.0)
+                    rank = 0
+                    loop other in enemies:
+                        if other.state != .chase or other.may_engage or not enemy_melee_body(other): continue
+                        od = other.pos - pl.pos
+                        if length(od) > 14.0: continue
+                        ob = if dot(od, side) >= 0.0: 1.0 else: -1.0
+                        if ob == bearing and dot(od, side) * f32(bearing) < dot(dv, side) * f32(bearing) - 0.01: rank += 1
+                    # Distinct lateral waiting lanes, never a deeper queue on
+                    # the same camera ray. Near guards retain the inner lanes.
+                    want = pl.pos + front * 4.6 + side * f32(bearing * (4.0 + f64(rank) * 2.6))
                     if dist > 8.0: __step_toward(e, want, 4.5, dt)
                     else:
                         step = want - e.pos

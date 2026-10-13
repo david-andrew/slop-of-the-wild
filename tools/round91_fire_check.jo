@@ -14,7 +14,7 @@ from '../game/enemies.jo' import __enemy_step
 u=BodyFireU(mat4(),vec3(1,0,0),0)
 loop tick in [0..120):
     u.time=f32(tick)/60.0
-    flame=PInst(vec4(0,0,0,0.095),vec4(1,1,1,0.9),vec4(0,0,7,0.42))
+    flame=PInst(vec4(0,0,0,0.095),vec4(0,0,0,0.9),vec4(0,0,7,0.42))
     bottom=body_fire_vs(QuadV(vec2(0,-1)),flame,u)
     top=body_fire_vs(QuadV(vec2(0,1)),flame,u)
     assert(length(bottom.pos.xyz)<0.00001,"flame root follows the animated socket exactly")

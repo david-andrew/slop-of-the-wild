@@ -472,6 +472,12 @@ strike_at = (p: vec3, direct_metal: bool = false):
     strike_wet = false
     if let wl = water_level(f64(p.x), f64(p.z)): strike_wet = water_depth(f64(p.x), f64(p.z)) > 0.01 and f64(p.y) < wl + 1.6
     strike_water = if strike_wet: water_region(p, SHOCK_WATER_REACH) else: {}
+    # Ground strikes leave a cold scorch even when rain prevents ignition.
+    # Water and elevated roof/gear impacts never paint the ground beneath them.
+    if not strike_wet and burn_px.len() > 0:
+        ground = height_at(f64(p.x), f64(p.z))
+        if abs(f64(p.y) - ground) <= 1.6 and rain_cover_height(f64(p.x), f64(p.z)) < ground + 1.6:
+            burn_mark(f64(p.x), f64(p.z), 2.8, 0, 1.0)
     __shock_graph()
     __shock_arcs()
     # Resolve a warned hit on carried metal before secondary water conduction:

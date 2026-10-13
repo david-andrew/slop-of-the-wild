@@ -3,7 +3,7 @@ use 'shade.jo'
 use 'scene.jo'
 use 'fx.jo'
 
-# Pose-bound tongues use a broad root, tapered tip and source-over blending.
+# Pose-bound tongues use unequal heights and a world-space limb/motion trail.
 # Keeping their roots on the limbs preserves the body and the running gesture.
 struct BodyFireU:
     vp: mat4
@@ -18,17 +18,21 @@ struct BodyFireO:
 body_fire_vs = (v: QuadV, i: PInst, u: BodyFireU) -> BodyFireO:
     y = (v.corner.y + 1.0) * 0.5
     flicker = 0.82 + sin(u.time * 16.0 + i.data.z) * 0.18
-    point = i.pos.xyz + u.right * (v.corner.x * i.pos.w + sin(u.time * 9.0 + i.data.z) * y * y * 0.10) + vec3(0, y * i.data.w * flicker, 0)
+    # color.xyz carries the projected limb direction and locomotion wake. The
+    # root stays fixed; only the upper tongue curves away from the moving limb.
+    wake = i.color.xyz * (y * y)
+    point = i.pos.xyz + wake + u.right * (v.corner.x * i.pos.w * (1.0 + 0.13 * sin(i.data.z)) + sin(u.time * 9.0 + i.data.z) * y * y * 0.10) + vec3(0, y * i.data.w * flicker, 0)
     BodyFireO(u.vp * vec4(point,1),vec2(v.corner.x,y),i.data.z,i.color.w)
 
 body_fire_fs = (i: BodyFireO, u: BodyFireU) -> vec4:
     y = i.uv.y
     bend = sin(y * 8.0 - u.time * 12.0 + i.seed) * y * 0.20
     x = abs(i.uv.x + bend)
-    width = pow(max(1.0-y,0.0),0.85) * 0.78
+    width = pow(max(1.0-y,0.0),0.85) * (0.69 + sin(i.seed * 1.7) * 0.12)
+    width = width * (0.82 + 0.18 * sin(y * 17.0 - u.time * 14.0 + i.seed))
     edge = 1.0-smoothstep(width*0.25,width+0.08,x)
     holes = vnoise(vec2(i.uv.x*3.0+i.seed,y*6.0-u.time*3.0))
-    alpha = edge * smoothstep(0.0,0.12,y) * (1.0-smoothstep(0.65,1.0,y)) * (0.40+holes*0.60)
+    alpha = edge * smoothstep(0.0,0.12,y) * (1.0-smoothstep(0.65,1.0,y)) * (0.32+holes*0.68) * (1.0-smoothstep(0.42,0.72,y)*smoothstep(0.58,0.78,holes))
     core = (1.0-smoothstep(0.0,0.70,y)) * (1.0-smoothstep(0.0,0.32,x))
     color = mix(vec3(1.65,0.32,0.025),vec3(2.4,1.55,0.38),core)
     vec4(color,alpha*i.strength)
@@ -58,4 +62,4 @@ body_fire_draw = (instances: PInst[], time: f64):
 # Draw the exact combat fire state offscreen before a camp's first burning actor.
 # No actor/particle mutation or random sampling is needed for pipeline readiness.
 body_fire_warmup = ():
-    body_fire_draw([PInst(vec4(sc.cam + vec3(0,0,-4),0.25),vec4(1,1,1,0.5),vec4(0,0,0,1))],0.0)
+    body_fire_draw([PInst(vec4(sc.cam + vec3(0,0,-4),0.25),vec4(0,0,0,0.5),vec4(0,0,0,1))],0.0)

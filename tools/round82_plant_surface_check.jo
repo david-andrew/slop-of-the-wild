@@ -1,0 +1,73 @@
+# Probe the production plant vertex shader, including GPU burn-map sampling.
+# Caller owns flock /tmp/botw-render.lock.
+use '../game/vegetation.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+
+probe_vs=(v:Vertex3D,i:VInst,u:PlantU)->VegO:
+    o=plant_vs(v,i,u)
+    o.pos=vec4(v.uv*2.0-vec2(1,1),0,1)
+    o
+probe_fs=(o:VegO,u:PlantU)->vec4:vec4(o.world.y,max(-o.tint.w,0.0),0,1)
+window("Scorched plant surface",32,32)
+verts:Vertex3D[]
+loop uv in [vec2(0,0),vec2(2,0),vec2(0,2)]:
+    verts.push(Vertex3D(vec3(0,1,0),vec3(0,1,0),uv,vec4(1,1,1,1)))
+m=mesh(verts)
+b=inst_buffer([VInst(mat4(),vec4(1,1,1,1))])
+sh=make_sh(shader(probe_vs,probe_fs))
+t=make_target(32,32,false,false)
+u=plant_u(VegU(vp=mat4(),cam=vec3(0,0,100),height=1,leaves=1,low=1))
+u.burn_span=16
+loop mark in [vec4(0,0,0,0),vec4(1,0,0,0),vec4(0,0,1,0),vec4(0,0,0.45,0),vec4(0,1,0,0)]:
+    px=[u8(mark.x*255),u8(mark.y*255),u8(mark.z*255),u8(mark.w*255)]
+    u.burn=bytes_texture(1,1,px,false,false)
+    bind_target(t)
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    glDisable(GL_BLEND)
+    glClearColor(0,0,1,1)
+    glClear(GL_COLOR_BUFFER_BIT)
+    draw_static(sh,m,b,u)
+    pixels=fill(u8(0),32*32*4)
+    game_read_pixels(0,0,32,32,data(pixels))
+    burned=mark.x>0 or mark.z>0
+    loop k in [0..32*32):
+        if burned:
+            assert(pixels[k*4]<=12 and pixels[k*4+1]>=254,"char/heat fully collapse a one-metre plant and carry ash pigment")
+        else:
+            assert(pixels[k*4]>=254 and pixels[k*4+1]==0,"unburned and merely trampled plants retain their height/pigment")
+    print("PASS plant mask {mark}: 1024 GPU pixels; collapse and pigment use production root sample")
+
+# Healthy root at x=0; its metre-high frond reaches x=8 over scorched ground.
+loop mut v in verts:v.pos.x=8
+m=mesh(verts)
+u.burn=bytes_texture(2,1,[u8(0),0,0,0,255,0,0,0],false,false)
+bind_target(t)
+glClear(GL_COLOR_BUFFER_BIT)
+draw_static(sh,m,b,u)
+pixels=fill(u8(0),32*32*4)
+game_read_pixels(0,0,32,32,data(pixels))
+loop k in [0..32*32):
+    assert(pixels[k*4]<=12 and pixels[k*4+1]>=254,"frond reaching over scorch wilts even with a healthy root")
+print("PASS crossing frond: healthy root / charred tip, 1024 GPU pixels")
+
+# Batch selection includes the complete transformed frond, even when its root is safe.
+hf.n=64
+hf.cell=2.0
+hf.x0=-64.0
+hf.z0=-64.0
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+burn_scorch_tiles=fill(false,BURN_TILE_N*BURN_TILE_N)
+model_=translation(vec3(7,0,5))*rotation_z(0.4)*scaling(vec3(1,2,0.5))
+root=model_[3].xz
+tip=(model_*vec4(0,2,0,1)).xz
+burn_mark(f64(tip.x),f64(tip.y),0.2,0,1.0)
+assert(not burn_scorch_region(root,root),"fixture root is outside the scorched tile")
+vb=VBucket([VInst(model_,vec4(1,1,1,1))],inst_buffer([VInst()]))
+veg_upload(vb,f32(2))
+assert(burn_scorch_region(vb.plant_bounds.xy,vb.plant_bounds.zw),"tilted/scaled frond selects the burn shader beyond its root")
+old_bounds=vb.plant_bounds
+veg_upload(vb,f32(2))
+assert(vb.plant_bounds==old_bounds,"cached upload preserves conservative plant bounds")
+print("PASS plant batch: tilted/scaled frond crossing scorch and cached bounds")

@@ -1,10 +1,20 @@
-# Rising smoke parcels share one irregular circulation around the keep.
-const MALICE_SEGMENTS = 192
-malice_spine = (phase: f32, time: f32) -> vec3:
-    angle = phase * 10.8 + sin(phase * 17.0 + 0.8) * 0.52 + time * 0.045
-    radius = 134.0 - phase * 32.0 + sin(phase * 23.0 + 0.6) * 15.0
-    vec3(cos(angle) * radius, 75.0 + phase * 385.0, sin(angle) * radius * 0.85)
+# Three overlapping turbulent circulation banks. Height and azimuth are
+# independent: there is no rising centreline to project as a Z, 2 or 3.
+use 'shade.jo'
+const MALICE_SEGMENTS = 288
+malice_parcel = (phase: f32, time: f32) -> vec3:
+    id = phase * f32(MALICE_SEGMENTS)
+    band = floor(fract(phase) * 3.0)
+    seed = id * 2.399963
+    angle = seed + time * (0.045 + band * 0.012)
+    flow = vec2(cos(angle),sin(angle))
+    warp = vnoise(flow * 2.3 + vec2(band * 13.7,time * 0.022)) - 0.5
+    radius = 112.0 + band * 27.0 + warp * 62.0 + sin(seed * 3.7) * 24.0
+    # Unequal tilted banks overlap in height and depth; a second noise field
+    # fills their interiors, rather than tracing three thin rings.
+    height = 160.0 + band * 78.0 + sin(angle * 2.0 + band * 1.8) * 39.0
+    height += sin(seed * 5.3) * 53.0 + warp * 60.0
+    vec3(flow.x * radius, height, flow.y * radius * 0.86)
 
 malice_thickness = (phase: f32) -> f32:
-    # Wide banks overlap vertically; unequal eddies leave torn, thinning edges.
-    76.0 + sin(phase * 19.0 + 0.8) * 22.0 + sin(phase * 41.0) * 12.0
+    64.0 + sin(phase * 731.0) * 15.0 + cos(phase * 359.0) * 10.0

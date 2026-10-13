@@ -77,11 +77,60 @@ struct VegU:
     fade_width = 1.0
     low = 0.0            # 1 for ferns, plants and flowers (not bushes or trees)
     tree = 0.0
-    fir = 0.0            # solid rounded fir sprays, including their crown atlas
+    fir = 0.0            # solid tapered fir sprays, including their crown atlas
     impostor = 0.0
     lod_mode = 0.0
     crown_normal = Texture(0, 1, 1)
     wood = 0.0           # bark material, including bare/dead trees and bush stems
+
+# Flat uniform prefix matches VegU; only low plants bind the scorch sampler.
+struct PlantU:
+    vp: mat4
+    cam: vec3
+    sun_dir: vec3
+    sun_color: vec3
+    sky: vec3
+    ground: vec3
+    haze: vec3
+    density: f32
+    vp0: mat4
+    vp1: mat4
+    vp2: mat4
+    sm0: Texture
+    sm1: Texture
+    sm2: Texture
+    tex: Texture
+    time: f32
+    wind: vec2
+    leaves: f32          # 1 for leaf parts
+    center_y: f32        # canopy center height (model space)
+    height: f32
+    shadow_pass: f32
+    wet: f32
+    bark_tint: vec3
+    lp = vec4(0, 0, 0, 0)
+    lc = vec3(0, 0, 0)
+    clouds = 0.0
+    player = vec3(0, -1000, 0)
+    fade_width = 1.0
+    low = 0.0            # 1 for ferns, plants and flowers (not bushes or trees)
+    tree = 0.0
+    fir = 0.0            # solid tapered fir sprays, including their crown atlas
+    impostor = 0.0
+    lod_mode = 0.0
+    crown_normal = Texture(0, 1, 1)
+    wood = 0.0           # bark material, including bare/dead trees and bush stems
+    burn = Texture(0, 1, 1)
+    burn_origin = vec2(0, 0)
+    burn_span = 1.0
+
+plant_u = (u: VegU) -> PlantU:
+    p = PlantU()
+    mem_copy((&p) as *u8, (&u) as *u8, size_of(VegU))
+    p.burn = if burn_tex.id != 0: burn_tex else: white_tex
+    p.burn_origin = vec2(f32(hf.x0), f32(hf.z0))
+    p.burn_span = if burn_tex.id != 0: f32(max(hf.cell * f64(hf.n), 1.0)) else: f32(1)
+    p
 
 struct VegO:
     pos: vec4
@@ -94,7 +143,7 @@ struct VegO:
     openness: f32
     lod_distance: f32
 
-veg_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
+__veg_vertex[U] = (v: Vertex3D, inst: VInst, u: U, charred: f32) -> VegO:
     p = v.pos
     hn = clamp(p.y / u.height, 0.0, 1.0)
     base = inst.model[3].xyz
@@ -104,6 +153,9 @@ veg_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
         crown = smoothstep(0.32, 0.75, hn)
         spread = 1.0 + crown * (sin(p.y * 0.65 + shape * 19.0) * 0.16 + sin(p.x * 0.38 + p.z * 0.31 + shape * 31.0) * 0.14)
         p = vec3(p.x * (spread + crown * (shape - 0.5) * 0.3) + crown * u.height * (shape - 0.5) * 0.13, p.y, p.z * (1.0 + (spread - 1.0) * 0.7 - crown * (shape - 0.5) * 0.2))
+    if charred > 0.0:
+        wilt = vec2(sin(base.x * 2.1 + base.z), cos(base.z * 1.7 + base.x))
+        p = vec3(p.x + wilt.x * p.y * charred * 0.6, p.y * (1.0 - charred * 0.96), p.z + wilt.y * p.y * charred * 0.6)
     # sway: the whole crown bends with the wind, leaves flutter
     ph = u.time * 1.1 + base.x * 0.13 + base.z * 0.11
     gk = clamp(length(u.wind), 0.5, 3.5)
@@ -118,7 +170,7 @@ veg_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
         cc = (inst.model * vec4(0.0, u.center_y, 0.0, 1.0)).xyz
         grow = 1.0 + smoothstep(70.0, 280.0, length(cc - u.cam)) * 0.30 * (0.6 + 0.8 * hash12(base.xz))
         w = vec4(cc + (w.xyz - cc) * vec3(grow, 1.0, grow), 1.0)
-    w = w + vec4(wdir.x * sway + flutter, flutter * 0.5, wdir.y * sway, 0)
+    w = w + vec4((wdir.x * sway + flutter) * (1.0 - charred), flutter * 0.5 * (1.0 - charred), wdir.y * sway * (1.0 - charred), 0)
     n = (inst.model * vec4(v.normal, 0)).xyz
     if u.leaves > 0.5:
         c = (inst.model * vec4(0.0, u.center_y, 0.0, 1.0)).xyz
@@ -129,7 +181,24 @@ veg_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
     # (each tree its own green: some darker and bluer, some lighter and warmer)
     th = hash12(base.xz + vec2(3.1, 7.7))
     tv = if u.leaves > 0.5: vec4(0.73 + 0.43 * th, 0.79 + 0.34 * th, 0.88 - 0.08 * th, 1.0) else: vec4(1, 1, 1, 1)
-    VegO(u.vp * w, w.xyz, n, v.uv, v.color, inst.tint * tv, hn, (th - 0.45) * 0.20 * u.tree, length(base - u.cam))
+    tint = inst.tint * tv
+    # Negative snow is the low-plant char signal; healthy snow stays untouched.
+    if charred > 0.0: tint.w = -charred
+    VegO(u.vp * w, w.xyz, n, v.uv, v.color, tint, hn, (th - 0.45) * 0.20 * u.tree, length(base - u.cam))
+
+veg_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
+    __veg_vertex(v, inst, u, f32(0))
+
+plant_vs = (v: Vertex3D, inst: VInst, u: PlantU) -> VegO:
+    base = inst.model[3].xyz
+    charred = f32(0)
+    if u.burn_span > 1.0:
+        root_burn = glsl_lod(u.burn, (base.xz - u.burn_origin) / u.burn_span, 0.0)
+        tip_pos = (inst.model * vec4(v.pos, 1)).xyz
+        tip_burn = glsl_lod(u.burn, (tip_pos.xz - u.burn_origin) / u.burn_span, 0.0)
+        scorch = max(max(root_burn.x, root_burn.z), max(tip_burn.x, tip_burn.z))
+        charred = smoothstep(0.08, 0.38, scorch)
+    __veg_vertex(v, inst, u, charred)
 
 # Crown atlas: eight views of the original painted cards, baked once while loading.
 # Store unlit colour and view-space normals separately; sunlight, wetness, snow,
@@ -235,7 +304,7 @@ crown_bake = (vm: mut VModel):
     glViewport(0, 0, i32(px.x), i32(px.y))
     glEnable(GL_CULL_FACE)
 
-veg_shadow_fs = (i: VegO, u: VegU) -> vec4:
+__veg_shadow_fs[U] = (i: VegO, u: U) -> vec4:
     t = sample(u.tex, i.uv)
     # (mipmaps thin the leaves' alpha far away: a lower cutoff keeps crowns full)
     # the cutout from a sharp mip (the blurred small mips fill whole leaf cards into squares far
@@ -248,7 +317,7 @@ veg_shadow_fs = (i: VegO, u: VegU) -> vec4:
     if u.leaves > 0.5: glsl_discard(ta < cut)
     vec4(1, 1, 1, 1)
 
-veg_occluder_fade = (i: VegO, u: VegU) -> f32:
+veg_occluder_fade[U] = (i: VegO, u: U) -> f32:
     # Smooth coverage around the sight line and lens.
     cp = u.player + vec3(0, 1.0, 0) - u.cam
     ll = max(dot(cp, cp), 0.01)
@@ -261,7 +330,7 @@ veg_occluder_fade = (i: VegO, u: VegU) -> f32:
     fade = max(fade, smoothstep((if u.leaves > 0.5: 5.5 else: 1.5 * u.fade_width), (if u.leaves > 0.5: 2.2 else: 1.25 * u.fade_width), length(i.world - u.cam)))
     fade
 
-veg_depth_fs = (i: VegO, u: VegU) -> vec4:
+__veg_depth_fs[U] = (i: VegO, u: U) -> vec4:
     # Complementary coverage in both depth passes avoids a hard switch at 60 m.
     blend = smoothstep(55.0, 70.0, i.lod_distance)
     dither = glsl_pixel_dither(i.pos.xy)
@@ -285,25 +354,30 @@ veg_depth_fs = (i: VegO, u: VegU) -> vec4:
     glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_dither(i.pos.xy))
     vec4(1, 1, 1, 1)
 
-veg_fs = (i: VegO, u: VegU) -> vec4:
+__veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
+    # Constant facts specialize the solid-fir color pass without changing the
+    # ordinary vegetation program or the shared uniform/instance payload.
+    leaves = if solid_fir > 0.5: f32(1) else: u.leaves
+    low = if solid_fir > 0.5: f32(0) else: u.low
+    impostor = if solid_fir > 0.5: f32(0) else: u.impostor
     # Coverage was resolved by the depth pass. GL_EQUAL + no depth writes admits only it.
     t = sample(u.tex, i.uv)
     dcam = length(u.cam - i.world)
     n = normalize(i.normal)
-    if u.impostor > 0.5:
+    if impostor > 0.5:
         nn = normalize(sample(u.crown_normal, i.uv).xyz * 2.0 - vec3(1, 1, 1))
         right = normalize(cross(vec3(0, 1, 0), n))
         up = normalize(cross(n, right))
         n = normalize(right * nn.x + up * nn.y + n * nn.z)
     alb = t.xyz * i.color.xyz
     # (and their blossoms melt into the meadow's green with distance)
-    if u.low > 0.5:
+    if low > 0.5:
         lg = dot(alb, vec3(0.3, 0.55, 0.15))
         alb = mix(alb, vec3(lg * 0.8, lg * 1.15, lg * 0.6), smoothstep(12.0, 40.0, dcam) * 0.7)
-    if u.leaves > 0.5:
+    if leaves > 0.5:
         # Green low plants receive their floor pigment below. Skip crown washes
         # that would immediately be overwritten on those fronds.
-        if u.low < 0.5 or t.y <= max(t.x, t.z):
+        if low < 0.5 or t.y <= max(t.x, t.z):
             # Muted olive/sage pigment: the same range as the meadow's painted washes.
             alb = vec3(alb.x * 0.32 + 0.008, alb.y * 0.42, alb.z * 0.40 + 0.055) * i.tint.xyz
             pigment = dot(alb, vec3(0.30, 0.55, 0.15))
@@ -338,46 +412,44 @@ veg_fs = (i: VegO, u: VegU) -> vec4:
             mk = mossy * smoothstep(0.18, 0.68, n.y + (cushion - 0.5) * 0.72 + (fleck - 0.5) * 0.18)
             moss = mix(vec3(0.13, 0.19, 0.075), vec3(0.22, 0.28, 0.12), cushion)
             alb = mix(alb, moss * (0.92 + 0.16 * fleck), mk * 0.88)
-    # snow on top
-    # (broad, with a noisy edge: by each low-poly face's tilt alone it comes out in triangles)
+    if charred > 0.0:
+        alb = mix(alb, vec3(0.085, 0.063, 0.040), charred)
+    # The solid-fir program folds this lookup away; its unequal ridges carry
+    # the cap outline. Cards, bark and plants retain their existing drift wash.
     if i.tint.w > 0.0:
-        drift = vnoise(i.world.xz * 0.28 + vec2(i.world.y * 0.35, 0.0))
+        drift = if solid_fir > 0.5: f32(0.5) else: vnoise(i.world.xz * 0.28 + vec2(i.world.y * 0.35, 0.0))
         snow = i.tint.w * smoothstep(-0.15, 0.35, n.y + (drift - 0.5) * 0.4)
-        # Snow rests on bough shelves; dark needle texels and their undersides
-        # remain visible even in deep snow instead of becoming white cards.
-        if u.leaves > 0.5:
+        if leaves > 0.5:
             if u.fir > 0.5:
-                # The curved geometry carries the snow thickness. Keep the
-                # upper pillows continuous and the downward-facing needles dark.
-                snow = i.tint.w * smoothstep(0.10, 0.58, n.y) * (0.90 + drift * 0.10)
+                snow = i.tint.w * smoothstep(0.38, 0.76, n.y) * 0.95
             else: snow *= smoothstep(0.30, 0.62, drift) * (0.8 + 0.2 * smoothstep(0.15, 0.45, dot(t.xyz, vec3(0.3, 0.6, 0.1))))
         alb = mix(alb, vec3(0.82, 0.86, 0.93), snow)
     # Bark drinks rain; mineral faces darken less and retain a tighter film.
     # Snow caps stay pale. The model material separates trunks from boulders.
     material_wet = u.wet * (1.0 - i.tint.w * smoothstep(0.05, 0.6, n.y))
-    absorption = if u.leaves > 0.5: 0.2 else: (if u.wood > 0.5: 0.38 else: 0.27)
+    absorption = if leaves > 0.5: 0.2 else: (if u.wood > 0.5: 0.38 else: 0.27)
     alb = alb * (1.0 - material_wet * absorption)
     l = normalize(u.sun_dir)
     v = normalize(u.cam - i.world)
-    sh = (if u.leaves > 0.5: cascade_shadow_fast(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) else: cascade_shadow(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2)) * cloud_shade(i.world.xz, u.time, u.clouds)
-    if u.leaves > 0.5 and u.low > 0.5:
+    sh = (if leaves > 0.5: cascade_shadow_fast(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) else: cascade_shadow(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2)) * cloud_shade(i.world.xz, u.time, u.clouds)
+    if leaves > 0.5 and low > 0.5:
         # low plants: their fronds shade each other less than a crown does, and sit in the meadow's light
         sh = sh * 0.5 + 0.5
         lum = dot(t.xyz, vec3(0.3, 0.6, 0.1))
         # Moss/sage fronds share the floor's quieter value range; petals retain their pigment.
         if t.y > max(t.x, t.z): alb = vec3(0.12, 0.17, 0.105) * (0.85 + 0.35 * lum) * (0.86 + 0.14 * i.h) * i.tint.xyz * (1.0 - u.wet * 0.2)
-    c = paint_light(alb, n, l, v, u.sun_color, u.sky, u.ground, sh, 0.45 * u.leaves + 0.1)
+    c = paint_light(alb, n, l, v, u.sun_color, u.sky, u.ground, sh, 0.45 * leaves + 0.1)
     # Cool overcast fill follows crown openings instead of filling every face
     # equally. Wet bark ridges and upper leaves remain legible in canopy shade.
     storm_fill = smoothstep(0.84, 0.95, u.clouds) * material_wet
     gap = 0.35 + 0.65 * smoothstep(0.2, 0.85, vnoise(i.world.xz * 0.11))
     c = c + alb * u.sky * vec3(0.75, 0.95, 1.18) * storm_fill * gap * (0.30 + 0.18 * max(n.y, 0.0))
     c = c + point_light(alb, n, i.world, u.lp, u.lc)
-    if u.leaves < 0.5 and material_wet > 0.0:
+    if leaves < 0.5 and material_wet > 0.0:
         stone = 1.0 - u.wood
         # Porous bark keeps a faint broken sheen, stone a brighter rain film.
         c = c + wet_surface(n, l, v, u.sun_color, u.sky, sh, material_wet, stone) * (0.48 + stone * 0.52)
-    if u.leaves > 0.5:
+    if leaves > 0.5:
         back = pow(max(dot(v * -1.0, l), 0.0), 3.0)
         c = c + alb * u.sun_color * back * 0.34 * sh
         # a leaf seen from behind (from inside its crown) is lit through: sky and sun come through
@@ -388,10 +460,27 @@ veg_fs = (i: VegO, u: VegU) -> vec4:
         c = c + u.sky * material_wet * pow(1.0 - abs(dot(n, v)), 4.0) * (0.025 + 0.035 * gap)
     c = atmos(c, i.world, u.cam, l, u.haze, u.sun_color, u.density, 0.004)
     fade = veg_occluder_fade(i, u)
-    vec4(c, (if fade > 0.001: -8.0 else: (if u.leaves > 0.5: 0.65 else: (if u.wood > 0.5: 1.0 else: 0.85))))
+    vec4(c, (if fade > 0.001: -8.0 else: (if leaves > 0.5: 0.65 else: (if u.wood > 0.5: 1.0 else: 0.85))))
 
 # ---------------- loading ----------------
+
+veg_shadow_fs = (i: VegO, u: VegU) -> vec4: __veg_shadow_fs(i,u)
+plant_shadow_fs = (i: VegO, u: PlantU) -> vec4: __veg_shadow_fs(i,u)
+
+veg_depth_fs = (i: VegO, u: VegU) -> vec4: __veg_depth_fs(i,u)
+plant_depth_fs = (i: VegO, u: PlantU) -> vec4: __veg_depth_fs(i,u)
+
+# A constant zero eliminates char shading from tree/fir fragment programs.
+veg_fs = (i: VegO, u: VegU) -> vec4: __veg_fs(i,u,f32(0),f32(0))
+plant_fs = (i: VegO, u: PlantU) -> vec4: __veg_fs(i,u,max(-i.tint.w,f32(0)),f32(0))
+
+fir_fs = (i: VegO, u: VegU) -> vec4: __veg_fs(i,u,f32(0),f32(1))
+
 veg_sh: Shader
+fir_sh: Shader
+plant_sh: Shader
+plant_depth_sh: Shader
+plant_shadow_sh: Shader
 veg_depth_sh: Shader
 veg_shadow_sh: Shader
 veg_fade_width = 1.0
@@ -1308,18 +1397,28 @@ struct VBucket:
     items: VInst[]
     buf: InstBuf
     uploaded: VInst[]
+    plant_bounds = vec4(0, 0, 0, 0)
 
 # Exact bytes, including tint (burnt plants must invalidate the cache too).
 @lib("libc.so.6")
 extern memcmp = (a: *u8, b: *u8, n: int) -> i32
 
-veg_upload = (b: mut VBucket):
+veg_upload = (b: mut VBucket, plant_radius: f32 = -1):
     if b.items.len() == 0: return
     if b.items.len() == b.uploaded.len():
         if memcmp(data(b.items) as *u8, data(b.uploaded) as *u8, b.items.len() * size_of(VInst)) == 0: return
     if __veg_cpu_trace:
         __veg_upload_count += 1
         __veg_upload_bytes += b.items.len() * size_of(VInst)
+    if plant_radius >= 0:
+        lo = vec2(1e9, 1e9)
+        hi = vec2(-1e9, -1e9)
+        loop inst in b.items:
+            scale = max(length(inst.model[0].xyz), max(length(inst.model[1].xyz), length(inst.model[2].xyz)))
+            r = vec2(plant_radius * scale, plant_radius * scale)
+            lo = min(lo, inst.model[3].xz - r)
+            hi = max(hi, inst.model[3].xz + r)
+        b.plant_bounds = vec4(lo.x, lo.y, hi.x, hi.y)
     inst_update(b.buf, b.items)
     # An aliased snapshot makes the next clear/push detach a whole bucket.
     # Retain separate storage, so both lists can reuse their capacity.
@@ -1336,12 +1435,17 @@ far_buckets: VBucket[]
 shadow_buckets: VBucket[]
 crown_buckets: VBucket[]
 veg_ready = false
+__veg_warming_burn = false
 
 vegetation_init = ():
     crown_bake_sh = make_sh(shader(crown_bake_vs, crown_bake_fs))
     crown_view_sh = make_sh(shader(crown_view_vs, veg_fs))
     crown_depth_sh = make_sh(shader(crown_view_vs, veg_depth_fs))
+    plant_sh = make_sh(shader(plant_vs, plant_fs))
+    plant_depth_sh = make_sh(shader(plant_vs, plant_depth_fs))
+    plant_shadow_sh = make_sh(shader(plant_vs, plant_shadow_fs))
     veg_sh = make_sh(shader(veg_vs, veg_fs))
+    fir_sh = make_sh(shader(veg_vs, fir_fs))
     veg_depth_sh = make_sh(shader(veg_vs, veg_depth_fs))
     veg_shadow_sh = make_sh(shader(veg_vs, veg_shadow_fs))
     texture_assets_init()
@@ -1514,7 +1618,10 @@ vegetation_cull = (vp: mat4, cam: vec3, reach: f64, min_height: f64 = 0.0, vpass
     cpu_mark("veg_upload{vpass}")
     loop m in [0..vmodels.len()):
         k = __bk(vpass, m)
-        veg_upload(buckets[k])
+        vm = vmodels[m]
+        low = starts_with(vm.name, "Fern") or starts_with(vm.name, "Plant") or starts_with(vm.name, "Flower")
+        # Radius + height bounds even a tilted frond, not merely its root.
+        veg_upload(buckets[k], (if low: f32(vm.radius + vm.height) else: f32(-1)))
         veg_upload(far_buckets[k])
         veg_upload(shadow_buckets[k])
         veg_upload(crown_buckets[k])
@@ -1601,10 +1708,16 @@ __veg_upload_count = 0
 __veg_upload_bytes = 0
 __veg_profile_frames = 0
 
-__veg_draw = (sh: Shader, m: Mesh, b: InstBuf, params: VegU):
+__veg_draw = (sh0: Shader, m: Mesh, b: InstBuf, params: VegU):
     if b.count <= 0: return
+    # Fir sprays are closed, outward-wound solids. Their back faces cannot
+    # contribute to the exterior or its shadow; leaf cards and atlases can.
+    solid_fir = params.fir > 0.5 and params.leaves > 0.5 and params.impostor < 0.5
+    sh = if solid_fir and sh0.prog == veg_sh.prog: fir_sh else: sh0
+    if solid_fir: glEnable(GL_CULL_FACE)
     if game_vulkan_backend():
         draw_static(sh, m, b, params)
+        if solid_fir: glDisable(GL_CULL_FACE)
         return
     u = params
     same = __veg_bound_prog == sh.prog
@@ -1668,6 +1781,7 @@ __veg_draw = (sh: Shader, m: Mesh, b: InstBuf, params: VegU):
     else: glBindVertexArray(u32(vao))
     if m.index_count > 0: glDrawElementsInstanced(u32(m.mode), i32(m.index_count), GL_UNSIGNED_INT, 0, i32(b.count))
     else: glDrawArraysInstanced(u32(m.mode), 0, i32(m.count), i32(b.count))
+    if solid_fir: glDisable(GL_CULL_FACE)
 
 # triangles drawn per pass (BOTW_GPU)
 veg_tris = fill(0, 4)
@@ -1710,7 +1824,11 @@ __veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
             u.center_y = (pt.lo.y + pt.hi.y) * 0.5
             u.bark_tint = vec3(1, 1, 1)
             u.low = if starts_with(vm.name, "Fern") or starts_with(vm.name, "Plant") or starts_with(vm.name, "Flower"): 1.0 else: 0.0
-            __veg_draw(sh, pt.mesh, b.buf, u)
+            if u.low > 0.5 and (__veg_warming_burn or burn_scorch_region(b.plant_bounds.xy, b.plant_bounds.zw)):
+                # Preserve the old uniform/sampler payload for every tree/fir.
+                draw_static((if shadow: plant_shadow_sh else: (if prepass: plant_depth_sh else: plant_sh)), pt.mesh, b.buf, plant_u(u))
+                __veg_bound_prog = 0
+            else: __veg_draw(sh, pt.mesh, b.buf, u)
             if gpu_timing and not prepass:
                 veg_tris[vpass] += b.items.len() * max(pt.mesh.index_count, pt.mesh.count) / 3
     # Midrange trees retain original crowns and tapered trunks; crossfade past 60 m.
@@ -1819,6 +1937,7 @@ vegetation_draw = (vp: mat4, shadow: bool, vpass: int = 0):
 # instance buffers start with one identity instance; no placement/RNG is changed.
 vegetation_warmup = ():
     if not veg_ready: return
+    __veg_warming_burn = true
     shadow_setup()
     rt = make_target(64, 64)
     bind_target(rt)
@@ -1872,4 +1991,5 @@ vegetation_warmup = ():
     __veg_bound_prog = 0
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
     free_target(rt)
+    __veg_warming_burn = false
     gl_restore_2d()

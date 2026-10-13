@@ -53,9 +53,9 @@ loop variant in [1..6):
                 assert(dot(n, a.normal + b.normal + c.normal) > 0.0, "outward winding matches surface normals")
                 volume += f64(dot(a.pos, cross(b.pos, c.pos))) / 6.0
             assert(volume > 0.0, "closed bough volume")
-        # Each 48-vertex spray has upper and lower surfaces around its spine;
+        # Each 40-vertex spray has upper and lower surfaces around its spine;
         # the eight edge segments close all rings and cap both poles.
-        assert(crown.vertices.len() % 48 == 0)
-        assert(crown.indices.len() == crown.vertices.len() / 48 * 64 * 3)
-        assert(crown.shadow.len() == crown.vertices.len() / 48 * 32 * 3)
-        print("PASS Pine_{variant}: {crown.vertices.len() / 48} rounded tufts; {crown.indices.len() / 3} view / {crown.shadow.len() / 3} shadow triangles; stable RNG, bounds, normals and volume")
+        assert(crown.vertices.len() % 40 == 0)
+        assert(crown.indices.len() == crown.vertices.len() / 40 * 48 * 3)
+        assert(crown.shadow.len() == crown.vertices.len() / 40 * 32 * 3)
+        print("PASS Pine_{variant}: {crown.vertices.len() / 40} needle fans; {crown.indices.len() / 3} view / {crown.shadow.len() / 3} shadow triangles; stable RNG, bounds, normals and volume")

@@ -312,7 +312,9 @@ screen coverage, perspective-correct foreground overlap with Jo, and a separatin
 plane between the posed body meshes, followed by exact triangle separation where
 the conservative envelopes overlap. Each fight must land real sword damage. Equipment has
 separate masks, and selected windup visibility includes other bodies and equipment.
-Posed head centres must stay at least 40 px apart at 1280×720, and both the
+Posed hero/enemy head centres must stay at least 40 px apart at 1280×720.
+Every visible enemy pair must also have at least one posed head-width of horizontal
+separation, regardless of vertical distance, to exclude two-headed totems. Both the
 hero/enemy and enemy/enemy capsules must remain separate. After one second of
 lock acquisition, Jo and the selected foe's heads must stay in the middle third.
 The additional three-foe course converges beside tent 5 at `-955,1964,0`, with

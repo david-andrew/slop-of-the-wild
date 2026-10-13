@@ -115,7 +115,7 @@ def main():
     parser.add_argument('path', type=Path)
     parser.add_argument('--check', action='store_true', help='Require occupancy, audibility, repeat and headroom targets')
     args = parser.parse_args()
-    data = {mode: analyze(args.path, mode) for mode in ['scenario', 'engaged', 'low_hp', 'field']
+    data = {mode: analyze(args.path, mode) for mode in ['scenario', 'engaged', 'low_hp', 'field', 'biome']
             if (args.path / f'{mode}.wav').exists()}
     (args.path / 'metrics.json').write_text(json.dumps(data, indent=2) + '\n')
     if args.check:

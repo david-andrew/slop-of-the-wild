@@ -387,14 +387,11 @@ if let s = env("BOTW_AT"):
 hooks.opaque = ():
     draw_uniform_begin()
     if not sc.shadow: cpu_mark("hero_draw")
-    # Overcast fill belongs to the hero alone, preserving the dark canopy/ground values.
-    sky = env.sky_amb
-    if not sc.shadow and env.indoor < 0.5:
-        env.sky_amb = sky * f32(1.0 + env.storm_k * env.rain * 0.65)
+    # Characters and the land receive the same environment lights. Material
+    # response and bounded readability belong in the character shader.
     cooking_carry_draw()
     cooking_pot_draw()
     hero_draw()
-    env.sky_amb = sky
     # The first greeting's fire bounces onto the hood and face, without lifting the meadow.
     fire_color = sc_lc
     if not sc.shadow and old_man.visible and length(old_man.pos - vec3(sc_lp.x, sc_lp.y, sc_lp.z)) < 8.0:
@@ -1351,8 +1348,8 @@ character_warmup = ():
     free_target(rt)
     gl_restore_2d()
 
-# Submit representative shader/target/material paths during loading, without presenting
-# a frame or advancing story/simulation. The driver can specialize on the first draw.
+# Submit representative shader/target/material paths during loading without
+# advancing story/simulation. Vulkan also primes presentation with black loading frames.
 # Temporarily selecting a shrine warms its monk/dome; restore the selection afterwards.
 render_warmup = ():
     started = time()
@@ -1457,6 +1454,29 @@ render_warmup = ():
             __vg_end_pass()
             if __vk_recording: __vk_submit_and_wait()
             if __vk_pcache_dirty: __vk_save_pipeline_cache()
+            # Offscreen draws do not create the swapchain, prime acquire/present,
+            # or exercise both native frame slots. Do that behind a black loading
+            # surface, then wait for completion before timing the first game frame.
+            loop k in [0..__VK_FRAMES):
+                draw_to_screen()
+                glClearColor(0, 0, 0, 1)
+                glClear(GL_COLOR_BUFFER_BIT)
+                __platform_present()
+            __vk_check(vkDeviceWaitIdle(__vk_dev), "startup presentation warmup")
+            # Mapping the first buffers can enqueue client-decoration/configure
+            # work. Drain its compositor roundtrip during loading as well.
+            when TARGET == "linux":
+                if __wayland:
+                    __wl_roundtrip()
+                    if __ld_ctx != null:
+                        # libdecor/GTK can defer its activation/font work until
+                        # after the first buffer is mapped. Service that bounded
+                        # 120 ms loading window before starting the game timer.
+                        until = time() + 0.12
+                        loop time() < until:
+                            __wl_read(25)
+                            __platform_poll()
+            __platform_poll()
         else: glFinish()
     shader_load_cache_commit()
     sc = saved_sc

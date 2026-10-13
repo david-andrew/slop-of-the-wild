@@ -991,6 +991,15 @@ __cistern_caustics = (o: vec3):
 # Bake fixture irradiance into a separate channel. Stone, brass and soot retain
 # their pigment; the light adds only inside each pendant's bounded footprint.
 # Existing subdivided paving resolves the soft pools without a shader light loop.
+__shrine_fixture_colour = (id: int, lamp: vec4) -> vec3:
+    accent = __shrine_accent[id]
+    # The reward chamber receives pearl-white orb/pendant bounce. Keep a
+    # small trace of the trial temperature, without mixing red and blue into
+    # a lavender wash over its slate. Stone and floor pigments stay intact.
+    if length(lamp.xz-srec[id].monk.xz) < 0.5:
+        return mix(accent, vec3(1.03,1.02,0.97)*dot(accent,vec3(0.3,0.55,0.15)), 0.92)
+    accent
+
 __shrine_fixture_light = (b: mut Builder):
     loop mut v in b.verts:
         loop id in [0..4):
@@ -1007,7 +1016,7 @@ __shrine_fixture_light = (b: mut Builder):
                 ndl = max(0.0, f64(dot(v.normal, delta / f32(max(d, 0.01)))) * 0.6 + 0.4)
                 pool = (1.0 - smoothstep(0.6, 4.5, f64(length(delta.xz)))) * (1.0 - smoothstep(0.15, 1.2, abs(f64(q.y - lamp.w)))) * max(0.0, f64(v.normal.y))
                 direct = pow(max(0.0, 1.0 - d * d / 42.25), 3.0) * ndl
-                v.light += __shrine_accent[id] * f32(pool * 1.05 + direct * 1.35)
+                v.light += __shrine_fixture_colour(id, lamp) * f32(pool * 1.05 + direct * 1.35)
             break
 
 __shrine_details = (r: SRec, id: int):
@@ -1049,14 +1058,25 @@ __shrine_details = (r: SRec, id: int):
             loop x in [-2.2, 2.2]:
                 box(at(o, x, -5.6, -12.0), v3(0.55, 4.8, 1.5), 0.0, blue, SHEIKAH_M, false)
         1:
-            # Blast chamber: broad angled ribs and a smoke hood, rather than a vault.
+            # Blast chamber ribs follow the actual chamfered soffit. Their
+            # mitred ends meet the flat central span instead of crossing it.
             soot = stone(0.18, 0.16, 0.15)
             fired = stone(0.30, 0.33, 0.38)
             loop z in [-3.0, -12.5, -18.5]:
                 loop side in [-1.0, 1.0]:
-                    box(at(o, side * 9.4, 0.0, z), v3(1.0, 3.6, 1.45), 0.0, fired, SHR_TILE, false)
-                    box_m(translation(at(o, side * 7.1 - 2.0, 4.4, z)) * rotation_z(side * 0.48) * scaling(v3(5.6, 0.9, 1.45)), fired, PLAIN, false)
-                box(at(o, -2.0, 5.2, z), v3(13.8, 0.6, 1.45), 0.0, soot, PLAIN, false)
+                    x = if side < 0.0: -13.45 else: 9.45
+                    box(at(o, x, 0.0, z), v3(0.65, 4.65, 0.72), 0.0, fired, SHR_TILE, false)
+                __begin(o)
+                loop span in [(-14.0,-6.32),(-6.32,2.32),(2.32,10.0)]:
+                    xa=span.0
+                    xb=span.1
+                    ya=__shrine_roof_height(JABAIJ,SHR_ENTRY_TOP[JABAIJ],(xa+14.0)/24.0)-0.22
+                    yb=__shrine_roof_height(JABAIJ,SHR_ENTRY_TOP[JABAIJ],(xb+14.0)/24.0)-0.22
+                    n=normalize(v3(yb-ya,xa-xb,0))
+                    __quad(cur,at(o,xa,ya,z-0.36),at(o,xb,yb,z-0.36),at(o,xb,yb,z+0.36),at(o,xa,ya,z+0.36),n,fired,PLAIN)
+                    __quad(cur,at(o,xa,ya,z-0.36),at(o,xa,ya+0.22,z-0.36),at(o,xb,yb+0.22,z-0.36),at(o,xb,yb,z-0.36),vec3(0,0,-1),soot,PLAIN)
+                    __quad(cur,at(o,xa,ya,z+0.36),at(o,xb,yb,z+0.36),at(o,xb,yb+0.22,z+0.36),at(o,xa,ya+0.22,z+0.36),vec3(0,0,1),soot,PLAIN)
+                __end()
             loop x in [-3.0, 3.0]:
                 box(at(o, x, 0.0, -19.5), v3(1.1, 4.8, 1.0), 0.0, fired, SHR_TILE, false)
                 box(at(o, x, 0.6, -19.5), v3(1.5, 0.3, 1.3), 0.0, soot, PLAIN, false)
@@ -3816,7 +3836,7 @@ shrines_light = (lp: mut vec4, lc: mut vec3) -> bool:
     score = strength(lp, lc)
     loop lamp in __pendants[shr_cur]:
         candidate = vec4(o + lamp.xyz, 6.5)
-        col = __shrine_accent[shr_cur] * 1.35
+        col = __shrine_fixture_colour(shr_cur, lamp) * 1.35
         value = strength(candidate, col)
         if value > score:
             score = value

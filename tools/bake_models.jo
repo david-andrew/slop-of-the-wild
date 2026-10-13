@@ -979,6 +979,22 @@ hero_form_point = (p: vec3, shoulder: vec3, elbow: vec3, wrist: vec3, bare: bool
             rear=1.0-smoothstep(-0.02,0.015,dz)
             q.y=center.y+f32(dy*factor*(1.0-cap*0.40))
             q.z=center.z+f32(dz*factor*(1.0-cap*rear*0.10))
+        # Match the lower arm to the slender humerus with an elliptical taper.
+        # The source forearm was almost twice its thickness; do not inflate
+        # small sections, and ease to the exact wrist/hand contact geometry.
+        forearm=smoothstep(0.36,0.43,x)*(1.0-smoothstep(0.585,0.633,x))
+        forearm*=smoothstep(1.16,1.23,f64(p.y))*(1.0-smoothstep(1.37,1.43,f64(p.y)))
+        ft=clamp((x-f64(elbow.x))/f64(wrist.x-elbow.x),0.0,1.0)
+        fc=mix(elbow,wrist,f32(ft))
+        fy=f64(q.y-fc.y)
+        fz=f64(q.z-fc.z)
+        ry=lerp(0.036,0.022,ft)
+        rz=lerp(0.033,0.025,ft)
+        ellipse=sqrt(fy*fy/(ry*ry)+fz*fz/(rz*rz))
+        taper=lerp(1.0,clamp(1.0/max(ellipse,0.001),0.58,1.0),forearm)
+        if forearm>0.0:
+            q.y=fc.y+f32(fy*taper)
+            q.z=fc.z+f32(fz*taper)
         # Relax the superhero asset's carved scapula ridges into a broad back.
         back=(1.0-smoothstep(0.12,0.22,x))*smoothstep(1.04,1.19,f64(p.y))*(1.0-smoothstep(1.46,1.55,f64(p.y)))
         back*=1.0-smoothstep(-0.04,-0.015,f64(p.z))
@@ -1262,7 +1278,8 @@ hero_surface_fair = (part: mut BPart):
             # wrist, pelvis, toes or soles participate in this relaxation.
             upper=smoothstep(1.00,1.16,y)*(1.0-smoothstep(1.37,1.46,y))*(1.0-smoothstep(0.40,0.57,x))
             leg=smoothstep(0.10,0.24,y)*(1.0-smoothstep(0.62,0.77,y))
-            mask=max(upper,leg)
+            forearm=smoothstep(0.38,0.44,x)*(1.0-smoothstep(0.59,0.63,x))*smoothstep(1.18,1.24,y)*(1.0-smoothstep(1.35,1.40,y))
+            mask=max(max(upper,leg),forearm*0.70)
             if mask<=0.0: continue
             key=hero_vertex_key(old[i].pos)
             count=counts.get(key) ?? 0
@@ -1271,9 +1288,70 @@ hero_surface_fair = (part: mut BPart):
             delta=q-p
             # Bound cumulative movement; smoother knees retain their kneecap,
             # and the calf still tapers into the unchanged ankle/contact region.
-            limit=if leg>upper:0.014 else:0.010
+            limit=if forearm>max(upper,leg):0.004 else:(if leg>upper:0.014 else:0.010)
             delta*=f32(min(1.0,limit/max(0.000001,f64(length(delta)))))
             part.verts[i].pos=p+delta
+
+# Extra curved loops across the elbow, forearm, wrist and dorsal fingers.
+# Add these after the established shoulder correction: original vertex indices and
+# influences stay fixed, and the supporting palm underside is excluded.
+hero_limb_detail_mask = (p: vec3) -> f64:
+    x=abs(f64(p.x))
+    arm=smoothstep(0.33,0.41,x)*(1.0-smoothstep(0.61,0.65,x))
+    hand=smoothstep(0.61,0.65,x)*smoothstep(1.278,1.290,f64(p.y))
+    max(arm,hand)*smoothstep(1.16,1.23,f64(p.y))*(1.0-smoothstep(1.37,1.43,f64(p.y)))
+
+hero_limb_loops = (part: mut BPart, bones: int):
+    loop iteration in [0..2):
+        edges: {str: int} = {}
+        indices: u32[]
+        loop tri in [0..part.idx.len()/3):
+            ids = [int(part.idx[tri*3]),int(part.idx[tri*3+1]),int(part.idx[tri*3+2])]
+            mids = [-1,-1,-1]
+            count=0
+            loop k in [0..3):
+                ia=ids[k]
+                ib=ids[(k+1)%3]
+                a=part.verts[ia]
+                b=part.verts[ib]
+                if max(hero_limb_detail_mask(a.pos),hero_limb_detail_mask(b.pos))<0.001: continue
+                key="{min(ia,ib)},{max(ia,ib)}"
+                mid=edges.get(key) ?? -1
+                if mid<0:
+                    v=hero_blend_vertex(a,b,0.5,bones)
+                    edge=b.pos-a.pos
+                    # Curved midpoints round the arm and finger cross-sections
+                    # instead of merely adding coplanar triangles.
+                    bend = (b.nrm*dot(edge,b.nrm)-a.nrm*dot(edge,a.nrm))*f32(0.125*hero_limb_detail_mask(v.pos))
+                    # The fingers need sub-millimetre rounding, not inflated joints.
+                    limit = if abs(v.pos.x)>0.63: 0.0007 else: 0.0025
+                    bend *= f32(min(1.0,limit/max(f64(length(bend)),0.000001)))
+                    v.pos += bend
+                    mid=part.verts.len()
+                    part.verts.push(v)
+                    edges[key]=mid
+                mids[k]=mid
+                count+=1
+            out: int[]
+            if count==0: out=ids
+            else if count==3:
+                out=[ids[0],mids[0],mids[2],mids[0],ids[1],mids[1],mids[2],mids[1],ids[2],mids[0],mids[1],mids[2]]
+            else:
+                k=0
+                loop k<3:
+                    if (count==1 and mids[k]>=0) or (count==2 and mids[k]<0): break
+                    k+=1
+                a=ids[k]
+                b=ids[(k+1)%3]
+                c=ids[(k+2)%3]
+                if count==1: out=[a,mids[k],c,mids[k],b,c]
+                else:
+                    ab=mids[(k+1)%3]
+                    ac=mids[(k+2)%3]
+                    out=[a,b,ab,a,ab,ac,ac,ab,c]
+            loop i in out: indices.push(u32(i))
+        part.idx=indices
+    hero_finished_normals(part)
 
 # Slim each finger around its own bind-space phalanx, preserving joint lengths
 # and influences. The back of the palm loses bulk; its supporting surface stays
@@ -1360,9 +1438,10 @@ hero_form = (bm: mut BModel, sk: Skel, bare: bool):
         if skin_part and bare:
             hero_surface_fair(part)
             hero_finished_normals(part)
+            hero_limb_loops(part,sk.names.len())
 
-# Bake-only silhouette and painted form. Contacts, topology and influences remain
-# those of the source mesh; the hand/grip positions are deliberately untouched.
+# Bake-only silhouette and painted form. Original contacts and influences stay
+# fixed; curved detail loops interpolate the source rig without moving grips.
         bm.parts[pi] = part
 hero_cloth_point = (p: vec3, name: str) -> vec3:
     q = p

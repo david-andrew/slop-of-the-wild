@@ -47,6 +47,12 @@ capture = ():
     flames.clear()
     loop cell in [136, 137, 138, 139]: flames.push(Flame(cell, life = 1000.0))
 
+    if mode == "biome": worldgen_load()
+    boundary_count = 0
+    clipped_samples = 0
+    overloaded_samples = 0
+    previous_mood = Mood.silent
+
     # Identify the resolved take, not its source handle or pitch. Also unwrap spatial colours.
     source_of = (s: Sound) -> Sound:
         loop colour in sfx_spatial:
@@ -76,7 +82,8 @@ capture = ():
     loop frame in [0..int(seconds * 60.0)):
         dt = 1.0 / 60.0
         t = f64(frame) * dt
-        field = mode == "field"
+        biome = mode == "biome"
+        field = mode == "field" or biome
         isolated = mode == "engaged" or mode == "low_hp"
         combat = isolated or (not field and t >= 90.0 and t < 150.0)
         shelter = not field and not isolated and t >= 150.0
@@ -93,6 +100,32 @@ capture = ():
         pl.ground.surf = .grass
         pl.vel = if shelter or isolated: vec3(0, 0, 0) else: vec3(0, 0, 3)
         music_mood(if combat: Mood.combat else: (if field: Mood.forest else: (if shelter: Mood.ruins else: Mood.field_rain)))
+        if biome:
+            # Two continuous 3 m/s boundary walks, out and back. The fixture
+            # reset at 60 s joins distant courses; neither crossing teleports.
+            # Forest radius and area.u8 snow boundary match production data.
+            leg = if t < 60.0: t else: t - 60.0
+            offset = min(leg, 60.0 - leg) * 3.0
+            pl.pos = if t < 60.0: v3(-900.0 - offset, 235.0, 1640.0) else: v3(-935.0 - offset, 340.0, 2180.0)
+            sc.cam = pl.pos + vec3(0, 1.6, 2)
+            forest = hypot(f64(pl.pos.x) + 1050.0, f64(pl.pos.z) - 1640.0) < 130.0
+            snow = is_snow_area(f64(pl.pos.x), f64(pl.pos.z))
+            want = if snow: Mood.snow else: (if forest: Mood.forest else: Mood.field_day)
+            amb_biome = if snow: 2 else: (if forest: 1 else: 0)
+            pl.ground.surf = if snow: .snow else: .grass
+            # Long production piano tails ensure every crossing interrupts a
+            # sounding note, including the release/recovery ring at +0.9 s.
+            if frame % 120 == 0: piano_play(62, 0.48, 0.0, 1.0, false, true)
+            if want != previous_mood:
+                if previous_mood != .silent:
+                    sounding = false
+                    loop v in score_voices:
+                        if v.left > 0.0 and v.applied > 0.001: sounding = true
+                    assert(sounding, "biome boundary must change mood mid-note")
+                    boundary_count += 1
+                line(events, "{t:.6},boundary_{want},{pl.pos.x:.3}:{pl.pos.z:.3},1\n")
+                previous_mood = want
+            music_mood(want)
         old_phrase = phrase_n
         # Same order as main: music, gameplay event dispatch, ambient preparation, mixer.
         jingles_update(dt)
@@ -189,6 +222,7 @@ capture = ():
         loop v in sum:
             prepeak = max(prepeak, abs(f64(v)))
             if abs(v) >= 1.0: overload += 1
+        overloaded_samples += overload
         loop mut sample in sum:
             if abs(sample) > 1.0: sample = f32(tanh(f64(sample)))
         __voices.clear()
@@ -197,8 +231,13 @@ capture = ():
         error = 0.0
         loop i in [0..sum.len()): error = max(error, abs(f64(sum[i] - __mix_buf[i])))
         assert(error < 0.000001, "linear stems plus release soft clip reproduce the actual mixed samples")
+        loop sample in __mix_buf:
+            if abs(sample) >= 1.0: clipped_samples += 1
         line(csv, "{t:.6},preclip,0,{prepeak:.9},{overload},{__mix_buf.len()}\n")
         __write_fd(raw, data(__mix_buf) as *u8, __mix_buf.len() * 4)
+    assert(clipped_samples == 0 and overloaded_samples == 0, "live production mix must have zero clipped or pre-limiter overloaded samples")
+    if mode == "biome": assert(boundary_count >= 4, "both biome boundary walks must cross out and back mid-note")
+    print("PASS live headroom {mode}: clipped {clipped_samples}, pre-limiter overloads {overloaded_samples}, mid-note biome boundaries {boundary_count}")
     loop fd in [raw, csv, events]: syscall(3, fd)
     print("PASS {mode}: {seconds}s production full mix/stems; sample sum verified, {music_note_count} notes")
 

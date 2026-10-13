@@ -326,7 +326,7 @@ music_cue_duck = ():
 # ring retains that lookahead plus interpolation guards, independent of note length.
 # Shared piano banks stay immutable; only this small voice-owned window is baked.
 __score_play = (s: Sound, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
-    initial = gain * (if score: seq.volume else: 1.0) * music_duck
+    initial = clamp(gain * (if score: seq.volume else: 1.0) * music_duck, 0.0, 8.0)
     window = int(ceil(8192.0 * pitch)) + 3
     id = play(Sound(fill(f32(0), window * 2)), 1.0, pan, pitch, true)
     score_voices.push(ScoreVoice(id, gain, duration(s) / pitch, context = score, source = s, applied = initial, ramp_from = initial))
@@ -337,6 +337,7 @@ __score_play = (s: Sound, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
 # when interrupted. Unchanged targets only fill newly consumed ring frames.
 # Absolute source positions keep pitch/interpolation continuous across ring wraps.
 score_set_volume = (id: int, gain: f64):
+    let gain = clamp(gain, 0.0, 8.0)
     si = -1
     loop i in [0..score_voices.len()):
         if score_voices[i].id == id: si = i
@@ -351,37 +352,47 @@ score_set_volume = (id: int, gain: f64):
         absolute = v.source_pos + consumed
         start = int(floor(absolute))
         changed = abs(gain - v.applied) >= 0.00000001
-        was_silent = v.applied == 0.0
         if changed:
             v.ramp_from = mix(v.ramp_from, v.applied, clamp((f64(start) - v.ramp_at) / v.ramp_frames, 0.0, 1.0))
             v.applied = gain
             v.ramp_at = f64(start)
             v.ramp_frames = max(1.0, 0.020 * f64(MIX_RATE) * __voices[vi].pitch)
-        # Keep the constant tail at unity in the ring and apply its gain in the
-        # mixer. Retargeting then bakes only the 20 ms ramp, not the lookahead.
-        # Zero needs an actual silent suffix so a single large block can finish
-        # the release; entering/leaving silence rewrites the bounded window once.
-        scale_ = if gain > 0.0: gain else: max(v.ramp_from, 1.0)
-        __voices[vi].volume = f32(scale_)
-        end = start + window - 1
-        ramp_end = int(ceil(v.ramp_at + v.ramp_frames)) + 1
+        # Samples carry the complete bounded envelope; the mixer stays at unity.
+        # Never divide by a target gain: a near-zero fade must not amplify old
+        # ring data when the next mood raises its gain. Retarget the ENTIRE live
+        # window, including the final interpolation guard. Otherwise a constant
+        # suffix (or the last guard sample) retains the previous envelope.
+        __voices[vi].volume = 1.0
+        end = start + window
+        ramp_end = int(ceil(v.ramp_at + v.ramp_frames))
         source = data(v.source.samples)
         dest = data(__voices[vi].sound.samples)
         total = v.source.samples.len() / 2
-        # Refill consumed source frames, then repair the
-        # interrupted ramp. A silence transition uses one complete window span.
-        spans = if changed and (was_silent or gain == 0.0): [(start,end)] else: [(max(start,v.prepared_until),end), (start,if changed: min(end,ramp_end) else: start)]
-        slope = (v.applied-v.ramp_from)/v.ramp_frames
-        inverse = 1.0/scale_
-        target = f32(v.applied*inverse)
-        loop span in spans:
-            ring = (int(floor(pos)) + span.0 - start) % window
-            loop frame in [span.0..span.1):
-                g = if frame >= ramp_end-1: target else: f32((v.ramp_from + (f64(frame)-v.ramp_at)*slope)*inverse)
-                dest[ring * 2] = if frame < total: source[frame * 2] * g else: 0.0
-                dest[ring * 2 + 1] = if frame < total: source[frame * 2 + 1] * g else: 0.0
-                ring += 1
-                if ring == window: ring = 0
+        first = if changed: start else: max(start, v.prepared_until)
+        slope = (v.applied - v.ramp_from) / v.ramp_frames
+        ring = (int(floor(pos)) + first - start) % window
+        # Split at ring/source/ramp boundaries so the constant suffix is a
+        # contiguous multiply loop, rather than branching for every stereo frame.
+        frame = first
+        loop frame < end:
+            last = min(end, frame + window - ring)
+            if frame < total: last = min(last, total)
+            if frame < ramp_end: last = min(last, ramp_end)
+            if frame >= total:
+                loop sample in [ring * 2..(ring + last - frame) * 2): dest[sample] = 0.0
+            else if frame >= ramp_end:
+                g = f32(v.applied)
+                offset = (frame - ring) * 2
+                loop sample in [ring * 2..(ring + last - frame) * 2): dest[sample] = source[sample + offset] * g
+            else:
+                loop k in [frame..last):
+                    g = f32(v.ramp_from + (f64(k) - v.ramp_at) * slope)
+                    dest[ring * 2] = source[k * 2] * g
+                    dest[ring * 2 + 1] = source[k * 2 + 1] * g
+                    ring += 1
+                ring -= last - frame
+            ring = (ring + last - frame) % window
+            frame = last
         v.source_pos = absolute
         v.mixer_pos = pos
         v.prepared_until = end
