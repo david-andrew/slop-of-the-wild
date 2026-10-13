@@ -612,21 +612,13 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
     # the walking floor. Do not turn its vertical cliff into beige paving.
     pave = smoothstep(0.3, 0.9, bt.w) * 0.85 * (1.0-cave_cliff_cover(w)*rockk)
     if pave > 0.0: alb = mix(alb, mix(vec3(0.34, 0.29, 0.21), vec3(0.42, 0.39, 0.33), vnoise(w.xz * 1.7)), pave)
-    # Match grass stubble: the passing front chars it through the heat channel
-    # before the cell expires and stores its settled burn scar. Same soil as camp char.
+    # Spent fuel is a quiet charcoal wash with feathered irregular margins.
     charred = max(bt.x, bt.z)
     if charred > 0.01:
         drift = vnoise(w.xz * 0.65 + vec2(3.0, 1.0))
-        fleck = vnoise(w.xz * 7.0)
-        ragged = vnoise(w.xz * 1.9)
-        be = smoothstep(0.12, 0.58, charred + (ragged - 0.5) * 0.24)
-        chr = mix(vec3(0.035, 0.030, 0.025), vec3(0.12, 0.09, 0.06), drift)
-        hot = smoothstep(0.06, 0.3, bt.z)
-        ash = smoothstep(0.24, 0.64, drift) * (1.0 - hot)
-        chr = mix(chr, mix(vec3(0.19, 0.195, 0.185), vec3(0.30, 0.295, 0.27), fleck), ash)
-        # Broken stems and coal grains interrupt ash islands in the same opaque pass.
-        chr = mix(chr, vec3(0.060, 0.052, 0.040), smoothstep(0.62, 0.86, fleck) * 0.45)
-        alb = mix(alb, chr, be * 0.97)
+        be = smoothstep(0.12, 0.82, charred + (drift - 0.5) * 0.12)
+        chr = mix(vec3(0.040, 0.030, 0.024), vec3(0.090, 0.068, 0.048), smoothstep(0.20, 0.80, drift))
+        alb = mix(alb, chr, be)
     # under water: the bed darkens to silt and weed with depth
     if u.has_water > 0.5:
         wt = (w.xz - u.origin) / u.cell
@@ -976,6 +968,28 @@ terrain_upload = ():
     terrain_upload_finish()
 
 # scorch the ground (fire) or cut grass, in the burn map
+burn_cell_mark = (x: f64, z: f64, amount: f64):
+    if burn_px.len() == 0: return
+    scale = f64(BURN_N) / (hf.cell * f64(hf.n))
+    cx = (x - hf.x0) * scale
+    cz = (z - hf.z0) * scale
+    r = hf.cell * 0.5 * scale
+    # One full texel per cell in the production map. Bilinear sampling feathers
+    # the outside boundary; neighbouring spent cells join without pale seams.
+    loop iz in [int(ceil(cz-r))..int(ceil(cz+r))):
+        loop ix in [int(ceil(cx-r))..int(ceil(cx+r))):
+            if ix < 0 or iz < 0 or ix >= BURN_N or iz >= BURN_N: continue
+            k = (iz*BURN_N+ix)*4
+            next = u8(clamp(f64(burn_px[k]) + amount*255.0, 0.0, 255.0))
+            if next == burn_px[k]: continue
+            burn_px[k] = next
+            if next > 0: burn_scorch_tiles[(iz/32)*BURN_TILE_N+ix/32] = true
+            burn_dirty = true
+            __burn_xlo = min(__burn_xlo, ix)
+            __burn_xhi = max(__burn_xhi, ix)
+            __burn_lo = min(__burn_lo, iz)
+            __burn_hi = max(__burn_hi, iz)
+
 burn_mark = (x: f64, z: f64, radius: f64, channel: int, amount: f64):
     # (nothing to mark before the map exists: tools build structures without it)
     if burn_px.len() == 0: return

@@ -35,6 +35,9 @@ struct Flame:
     cell: int              # index in the burn grid
     t = 0.0
     life = 5.0
+    render_center = vec3(0, 0, 0)
+    render_seed = -1.0
+    render_offset = 0.0
 
 flames: Flame[]
 __burning: {int: bool} = {}
@@ -66,6 +69,7 @@ struct Barrel:
     fuse = 0.0
     col = -1
     el = Elem()
+    char = 0.0
 
 barrels: Barrel[]
 
@@ -224,9 +228,8 @@ ignite_at = (p: vec3) -> bool:
     __burning[c] = true
     __burn_first = min(__burn_first, c)
     __burn_last = max(__burn_last, c)
-    flames.push(Flame(c, life = random(4.0, 6.5)))
-    # its heat browns the grass round it before the flames get there
-    burn_mark(f64(q.x), f64(q.z), hf.cell * 2.2, 2, 0.45)
+    flames.push(Flame(c, life = random(4.0, 6.5), render_center = q, render_seed = hash2(f64(c),83.0), render_offset = hash2(f64(c),84.0)))
+    # Ignition is visible flame, not a scar in neighbouring unburned fuel.
     true
 
 # One bounded crackle bed for nearby fire. Grass fires used to be silent because
@@ -680,7 +683,10 @@ elements_update = (dt: f64, cam: vec3):
             angle = f64(clump) * TAU / 3.0 + hc * TAU
             q = p + v3(cos(angle) * 0.9, 0.0, sin(angle) * 0.9) + offset * 0.24
             q.y = f32(height_at(f64(q.x), f64(q.z)))
+            first = particles.len()
             fx_fire(q, str_, 0.12)
+            loop k in [first..particles.len()):
+                if particles[k].kind == .flame: particles[k].fuel_cell = f.cell
         # a grass fire smokes: grey-brown billows rising off the burning front
         if f64(length(p - cam)) < 150.0 and random() < dt * 0.45 * min(1.0, 80.0 / f64(max(flames.len(), 1))): emit(.smoke, p + v3(random(-1.0, 1.0), 0.8, random(-1.0, 1.0)), v3(random(-0.4, 0.4), random(1.5, 2.6), random(-0.4, 0.4)) + wind * 0.6, random(3.0, 5.0), random(1.2, 2.0), rgba(0.34, 0.31, 0.29, 0.28), -0.25, 0.2)
         # in the fire: the player, monsters, items
@@ -694,7 +700,7 @@ elements_update = (dt: f64, cam: vec3):
             elem_events.push(ElemEvent("douse", p))
             if length(p - cam) < 80.0: fx_steam(p + vec3(0, 0.15, 0), 8)
         if f.t >= f.life or rained:
-            burn_mark(f64(p.x), f64(p.z), hf.cell * 1.3, 0, 1.0)
+            burn_cell_mark(f64(p.x), f64(p.z), 1.0)
             __scars.push(vec4(p.x, p.z, f32(elapsed()), 0.0))
             if not rained and f64(length(p - cam)) < 90.0:
                 loop k in [0..3): emit(.glow, p + v3(random(-0.8, 0.8), 0.07, random(-0.8, 0.8)), vec3(0, 0, 0), random(1.0, 2.5), 0.04, rgba(0.75, 0.075, 0.01, 0.65))
@@ -726,12 +732,9 @@ elements_update = (dt: f64, cam: vec3):
         loop k < __scars.len():
             sc_ = __scars[k]
             age = now - f64(sc_.z)
-            # The front is orange, fresh coals are briefly red, cold char has no glow.
-            # Cooling is visual only; grass left behind the front is already safe to cross.
-            if age < 4.0: burn_mark(f64(sc_.x), f64(sc_.y), hf.cell * 1.3, 2, -0.35)
+            # Ember particles cool independently; the spent ground stays dark.
             if age > 120.0:
-                burn_mark(f64(sc_.x), f64(sc_.y), hf.cell * 1.3, 0, -0.04)
-                burn_mark(f64(sc_.x), f64(sc_.y), hf.cell * 2.2, 2, -0.04)
+                burn_cell_mark(f64(sc_.x), f64(sc_.y), -0.04)
                 if age > 160.0:
                     __scars.remove(k)
                     continue
@@ -939,7 +942,7 @@ elements_update = (dt: f64, cam: vec3):
             burn_dt = 0.0
             elem_events.push(ElemEvent("douse", a.pos))
         if burn_dt > 0.0: wildlife_damage(a, burn_dt * 2.0, a.scare, false, 0.0, false)
-        if burning(a.el): fx_fire(wildlife_hit_center(a), 0.4, dt)
+        if burning(a.el): wildlife_fire_feedback(a,dt)
     # ---- barrels ----
     loop mut b in barrels:
         if not b.alive: continue
@@ -956,7 +959,8 @@ elements_update = (dt: f64, cam: vec3):
         # a burning blade or a fire arrow is a lot of heat at once
         loop h in player_hits:
             if h.fire and blade_touches(h, b.pos + vec3(0, 0.5, 0), 0.5, b.col): ex.heat += 30.0
-        r = react((if b.explosive: POWDER else: WOOD), b.el, ex, dt)
+        r = react((if b.explosive: POWDER else: CAMP_WOOD), b.el, ex, dt)
+        if burning(b.el): b.char = max(b.char, 1.0 - b.el.burning / CAMP_WOOD.burn_time)
         match r:
             exploded: b.fuse = 0.15
             burnt_up:
@@ -965,6 +969,30 @@ elements_update = (dt: f64, cam: vec3):
                 fx_charcoal(b.pos + vec3(0, 0.5, 0))
             _: pass
         if burning(b.el) and f64(length(b.pos - cam)) < 80.0: fx_fire(b.pos + vec3(0, 0.9, 0), 0.6, dt)
+    # Crates only receive heat; this stage cannot ignite/move loose items or
+    # actors. Rebuild after barrel explosions, then share the exact live source
+    # list instead of rescanning every loose item for each wooden receiver.
+    __heat_items_begin()
+    loop mut w in camp_wood:
+        if not w.alive or length(w.pos - cam) > 150.0: continue
+        ex = __exposure(w.pos + vec3(0, 0.35, 0), __in_water(w.pos, 0.3), w.col)
+        loop h in player_hits:
+            if h.fire and blade_touches(h, w.pos + vec3(0, 0.35, 0), 0.6, w.col): ex.heat += 30.0
+        r = react(CAMP_WOOD, w.el, ex, dt)
+        if burning(w.el):
+            w.char = max(w.char, 1.0 - w.el.burning / CAMP_WOOD.burn_time)
+            fx_fire(w.pos + vec3(0, 0.35, 0), 0.6, dt)
+        if w.char != w.last_char:
+            hooks.named_char[w.key] = w.char
+            hooks.named_collapse[w.key] = vec4(w.pos, f32(smoothstep(0.25, 1.0, w.char)))
+            w.last_char = w.char
+        if r == .burnt_up:
+            w.alive = false
+            hooks.named_hidden[w.key] = true
+            if w.col >= 0: colliders[w.col].active = false
+            burn_mark(f64(w.pos.x), f64(w.pos.z), 0.9, 0, 1.0)
+            fx_charcoal(w.pos + vec3(0, 0.2, 0))
+    __heat_items_scope = false
     # ---- arrows through fire become fire arrows; where they land, they burn ----
     loop mut a in arrows:
         if not a.alive: continue
@@ -1338,7 +1366,12 @@ draw_barrels = (cam: vec3):
         if not b.alive or f64(length(b.pos - cam)) > 100.0: continue
         col = if b.explosive: rgba(0.8, 0.22, 0.12, 1) else: rgba(0.5, 0.36, 0.22, 1)
         glow = if b.fuse > 0.0: 1.5 else: 0.0
-        draw_prop(barrel_mesh, translation(b.pos), col, glow)
+        m = translation(b.pos)
+        if b.char > 0.0:
+            col = mix(col, rgba(0.055, 0.060, 0.065, 1), f32(b.char))
+            collapse = smoothstep(0.3, 1.0, b.char)
+            m = m * scaling(v3(1.0, 1.0 - collapse * 0.90, 1.0))
+        draw_prop(barrel_mesh, m, col, glow)
         if b.explosive: draw_prop(__powder_wick, translation(b.pos), rgb(1, 1, 1), glow)
 
 # An electrical hit uses the existing hurt/flinch animation and only adds a

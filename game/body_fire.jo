@@ -9,6 +9,7 @@ struct BodyFireU:
     vp: mat4
     right: vec3
     time: f32
+    cam = vec3(0, 0, 1000)
 struct BodyFireO:
     pos: vec4
     uv: vec2
@@ -22,19 +23,27 @@ body_fire_vs = (v: QuadV, i: PInst, u: BodyFireU) -> BodyFireO:
     # root stays fixed; only the upper tongue curves away from the moving limb.
     wake = i.color.xyz * (y * y)
     point = i.pos.xyz + wake + u.right * (v.corner.x * i.pos.w * (1.0 + 0.13 * sin(i.data.z)) + sin(u.time * 9.0 + i.data.z) * y * y * 0.10) + vec3(0, y * i.data.w * flicker, 0)
-    BodyFireO(u.vp * vec4(point,1),vec2(v.corner.x,y),i.data.z,i.color.w)
+    strength = i.color.w * smoothstep(3.0,4.5,length(i.pos.xyz-u.cam))
+    if length(vec3(u.vp[0].w,u.vp[1].w,u.vp[2].w)) > 0.1:
+        point = flame_card_bound(point,i.pos.xyz,u.vp)
+    BodyFireO(u.vp * vec4(point,1),vec2(v.corner.x,y),i.data.z,strength)
 
 body_fire_fs = (i: BodyFireO, u: BodyFireU) -> vec4:
     y = i.uv.y
-    bend = sin(y * 8.0 - u.time * 12.0 + i.seed) * y * 0.20
+    flow = y * 8.0 - u.time * 12.0
+    bend = sin(flow + i.seed * 0.23) * y * 0.20
     x = abs(i.uv.x + bend)
     width = pow(max(1.0-y,0.0),0.85) * (0.69 + sin(i.seed * 1.7) * 0.12)
     width = width * (0.82 + 0.18 * sin(y * 17.0 - u.time * 14.0 + i.seed))
     edge = 1.0-smoothstep(width*0.25,width+0.08,x)
     holes = vnoise(vec2(i.uv.x*3.0+i.seed,y*6.0-u.time*3.0))
-    alpha = edge * smoothstep(0.0,0.12,y) * (1.0-smoothstep(0.65,1.0,y)) * (0.32+holes*0.68) * (1.0-smoothstep(0.42,0.72,y)*smoothstep(0.58,0.78,holes))
+    # Dense connected roots feed the rising sheet. Gaps advect upward; a
+    # delayed narrow shoulder carries a short flow trail behind each tongue.
+    trail_x = abs(i.uv.x + sin(flow-0.8+i.seed*0.23)*y*0.20 + y*0.16)
+    trail = (1.0-smoothstep(width*0.15,width*0.65+0.04,trail_x))*0.36*smoothstep(0.15,0.45,y)
+    alpha = max(edge,trail) * smoothstep(0.0,0.08,y) * (1.0-smoothstep(0.72,1.0,y)) * (0.78+holes*0.22) * (1.0-smoothstep(0.38,0.80,y)*smoothstep(0.55,0.78,holes)*0.85)
     core = (1.0-smoothstep(0.0,0.70,y)) * (1.0-smoothstep(0.0,0.32,x))
-    color = mix(vec3(1.65,0.32,0.025),vec3(2.4,1.55,0.38),core)
+    color = mix(vec3(1.65,0.32,0.025),vec3(2.15,1.10,0.16),core*0.78)
     vec4(color,alpha*i.strength)
 
 __body_fire_ready = false
@@ -55,7 +64,7 @@ body_fire_draw = (instances: PInst[], time: f64):
     glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA)
     right = vec3(sc.view[0].x,sc.view[1].x,sc.view[2].x)
     inst_stream(__body_fire_buf,instances)
-    draw_static(__body_fire_sh,__body_fire_quad,__body_fire_buf,BodyFireU(sc.vp,right,f32(time)))
+    draw_static(__body_fire_sh,__body_fire_quad,__body_fire_buf,BodyFireU(sc.vp,right,f32(time),sc.cam))
     glDisable(GL_BLEND)
     glDepthMask(1)
 

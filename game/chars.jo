@@ -1,4 +1,5 @@
 use 'gfx.jo'
+use 'cputime.jo'
 use 'shade.jo'
 use 'env.jo'
 use 'shadows.jo'
@@ -1100,6 +1101,9 @@ boko_hit_flash = (remaining: f64) -> vec4:
     vec4(2.6, 2.6, 2.7, f32(0.55 * smoothstep(0.13, 0.19, remaining)))
 
 enemy_anim_update = (dt: f64):
+    # Recursive presentation repairs reuse this update's immutable palettes.
+    # Release them before animation can write the next simulation pose.
+    __combat_local_poses.clear()
     # Enemy movement happens after hero_animate: carry the already posed hero now.
     hero_world = pl.body_delta * hero_world
     pl.body_delta = mat4()
@@ -1403,10 +1407,9 @@ monsters_fire_draw = ():
             seed = f32(i*17+j*7)
             height = f32((if j < 4: 0.34 + 0.055 * f64(j) else: 0.70) + 0.24 * (0.5+0.5*sin(e.anim_t*11.0+f64(j)*2.3)))
             strength = f32(smoothstep(0.0,0.30,e.burning)*0.90)
-            # Paired, offset torso tongues keep hot cores separate across the
-            # back instead of merging into one round yellow patch.
+            # Torso tongues overlap at their roots and share the limb flow.
             loop k in [0..(if j < 4: 1 else: 2)):
-                offset = if j < 4: 0.0 else: (f64(k)-0.5)*0.34
+                offset = if j < 4: 0.0 else: (f64(k)-0.5)*0.16
                 width = if j < 4: f32(0.14 + 0.025 * sin(f64(j)*2.7)) else: f32(0.19)
                 flames.push(PInst(vec4(root+right*f32(offset),width),vec4(wake+right*f32(offset*0.45),strength),vec4(0,0,seed+f32(k*11),height-f32(k)*0.22)))
     body_fire_draw(flames,elapsed())
@@ -1433,10 +1436,13 @@ struct CombatBody:
     vertices: ChVert[]
     indices: u32[]
     head: int[]
+    unique: ChVert[]
+    skin_index: int[]
 combat_bodies: {str: CombatBody} = {}
 combat_body_prepare = (m: Model):
     if combat_bodies.has(m.name): return
     body = CombatBody()
+    buckets: {str: int[]} = {}
     head = bone_index(m, "head")
     loop part in [0..m.parts.len()):
         vertices = model_body_vertices.get("{m.name}:{part}") ?? []
@@ -1448,6 +1454,22 @@ combat_body_prepare = (m: Model):
                 if int(v.jnt[k]) == head: weight += f64(v.wgt[k])
             if weight >= 0.5: body.head.push(body.vertices.len())
             body.vertices.push(v)
+            # Sharp normals/UV seams duplicate skinning inputs. Preserve the
+            # complete surface order, but evaluate each exact input only once.
+            key = "{v.pos}:{v.jnt}:{v.wgt}"
+            candidates = buckets.get(key) ?? []
+            index = -1
+            loop candidate in candidates:
+                other = body.unique[candidate]
+                if v.pos == other.pos and v.jnt == other.jnt and v.wgt == other.wgt:
+                    index = candidate
+                    break
+            if index < 0:
+                index = body.unique.len()
+                body.unique.push(v)
+                candidates.push(index)
+                buckets[key] = candidates
+            body.skin_index.push(index)
     combat_bodies[m.name] = body
 __combat_triangle_lo: vec3[]
 __combat_triangle_hi: vec3[]
@@ -1485,19 +1507,51 @@ __blade_near_triangle = (a: vec3,b: vec3,p: vec3,q: vec3,r: vec3) -> bool:
     loop gap in [__cliff_segment_gap(a,b,p,q),__cliff_segment_gap(a,b,q,r),__cliff_segment_gap(a,b,r,p)]:
         if length(gap)<0.085: return true
     false
+struct CombatSkinRows:
+    x: vec4
+    y: vec4
+    z: vec4
+__combat_skin_rows: CombatSkinRows[]
+struct CombatLocalPose:
+    model: str
+    palette: f32[]
+    points: vec3[]
+__combat_local_poses: {int: CombatLocalPose} = {}
 __posed_body_points = (model_: Model, palette: Skin, world: mat4, points: mut vec3[]):
+    cpu_mark("combat_skin")
     points.clear()
     if palette.mats.len() == 0: return
+    key = (data(palette.mats) as *u8) as int
+    body = combat_bodies[model_.name]
+    if let cached = __combat_local_poses.get(key):
+        if cached.model == model_.name:
+            loop index in body.skin_index: points.push(transform_point(world,cached.points[index]))
+            cpu_mark("combat_solve")
+            return
     a = palette.mats
-    loop v in combat_bodies[model_.name].vertices:
+    # Decode the palette once per pose, rather than loading twelve scalar
+    # entries and constructing three vectors for every weighted body vertex.
+    # Keep the original dot products and accumulation order exactly intact.
+    __combat_skin_rows.resize(a.len()/12)
+    loop bone in [0..__combat_skin_rows.len()):
+        o = bone*12
+        __combat_skin_rows[bone] = CombatSkinRows(vec4(a[o],a[o+1],a[o+2],a[o+3]),vec4(a[o+4],a[o+5],a[o+6],a[o+7]),vec4(a[o+8],a[o+9],a[o+10],a[o+11]))
+    local: vec3[]
+    local.reserve(body.unique.len())
+    loop v in body.unique:
         q = vec3(0,0,0)
         p = vec4(v.pos,1)
         loop k in [0..4):
             weight = v.wgt[k]
             if weight <= 0.0: continue
-            o = int(v.jnt[k]) * 12
-            q += vec3(dot(vec4(a[o],a[o+1],a[o+2],a[o+3]),p), dot(vec4(a[o+4],a[o+5],a[o+6],a[o+7]),p), dot(vec4(a[o+8],a[o+9],a[o+10],a[o+11]),p)) * weight
-        points.push(transform_point(world,q))
+            rows = __combat_skin_rows[int(v.jnt[k])]
+            q += vec3(dot(rows.x,p),dot(rows.y,p),dot(rows.z,p)) * weight
+        local.push(q)
+    # Retain the palette with its pointer key: COW animation writes cannot
+    # mutate a cached pose or recycle its storage during recursive repairs.
+    __combat_local_poses[key] = CombatLocalPose(model_.name,a,local)
+    loop index in body.skin_index: points.push(transform_point(world,local[index]))
+    cpu_mark("combat_solve")
 
 # Indices into the retained posed body points. Select the same head-weighted
 # vertices as the framing check; guards/recoils cannot use a fixed root height.

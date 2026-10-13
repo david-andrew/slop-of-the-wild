@@ -31,6 +31,23 @@ main = ():
         world = translation(vec3(0.3,2,-1)) * rotation_y(0.73)
         points: vec3[]
         __posed_body_points(m,palette,world,points)
+        repeated: vec3[]
+        __posed_body_points(m,palette,world,repeated)
+        assert(repeated == points,"repeated palette reuse preserves every posed vertex exactly")
+        moved: vec3[]
+        moved_world = translation(vec3(0.25,-0.5,1))*world
+        __posed_body_points(m,palette,moved_world,moved)
+        changed = palette
+        loop bone in [0..changed.mats.len()/12): changed.mats[bone*12+3] += 0.125
+        updated: vec3[]
+        __posed_body_points(m,changed,world,updated)
+        displacement = transform_point(world,vec3(0.125,0,0))-transform_point(world,vec3())
+        loop vertex in [0..points.len()):
+            assert(length(moved[vertex]-points[vertex]-vec3(0.25,-0.5,1))<0.00001,"cached pose follows corrected world placement")
+            assert(length(updated[vertex]-points[vertex]-displacement)<0.00001,"palette COW writes invalidate the cached skinning result")
+        __posed_body_points(m,palette,world,repeated)
+        assert(repeated == points,"retained original palette survives a later animation write")
+        print("PASS combat pose cache {m.name}: {body.vertices.len()} vertices / {body.unique.len()} unique inputs; repeated, translated and changed palettes")
         at = 0
         head_at = 0
         index_at = 0

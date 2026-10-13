@@ -57,19 +57,24 @@ build_u = (vp: mat4, shadow: bool) -> BuildU:
         hooks.glow, f32(int(shadow)), vec3(0, 0, 0), sc_lp, sc_lc, f32(env.clouds), veg_player, fade_width = f32(if pl.state == .climb: 2.6 else: 1.0))
 
 __draw_named_all = (u0: BuildU):
+    frustum = frustum_from(u0.vp)
     loop k, m in named_meshes:
         if not named_visible(k): continue
         u = u0
-        if let g = hooks.named_glow.get(k): u.glow_color = g
         if k == "tower":
             u.lift = vec3(0, f32(hooks.tower_lift), 0)
             u.keep_center = TOWER.xz
             u.keep_radius = 5.0
         if let lf = hooks.named_lift.get(k): u.lift = vec3(0, f32(lf), 0)
-        u.char = f32(hooks.named_char.get(k, 0.0))
         if let c = hooks.named_collapse.get(k):
             u.base = c.xyz
             u.collapse = c.w
+        if let bounds = named_bounds.get(k):
+            lo,hi = named_draw_bounds(bounds,u)
+            if not box_visible(frustum,lo,hi): continue
+        # Offscreen props need neither material lookups nor draw submission.
+        if let g = hooks.named_glow.get(k): u.glow_color = g
+        u.char = f32(hooks.named_char.get(k, 0.0))
         # the castle and the far towers stand out of the haze (they are what the eye looks for)
         if k == "castle" or k == "far_towers": u.density = u.density * 0.45
         draw_named(k, u)

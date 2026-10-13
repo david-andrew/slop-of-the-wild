@@ -1,0 +1,153 @@
+# Real fuel lifetime, renderer coverage and conservative projected-card limits.
+use 'tree_checks.jo'
+from 'tree_checks.jo' import __tree_course
+use '../game/elements.jo'
+use '../game/fx.jo'
+use '../game/body_fire.jo'
+use '../game/structures.jo'
+use '../game/architecture_assets.jo'
+use '../game/wildlife.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/items.jo'
+use '../game/env.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/render.jo'
+
+__audio_state=2
+items_init()
+__tree_course()
+camp_wood.clear()
+pl.pos=vec3(20,0,20)
+assert(ignite_at(vec3(0.5,0.1,0.5)))
+assert(ignite_at(vec3(1.5,0.1,0.5)))
+assert(burn_value(0.5,0.5,0)==0 and burn_value(0.5,0.5,2)==0,"ignition leaves fresh fuel green until consumed")
+loop frame in [0..320):
+    # Observe the actual renderer's instances without drawing or spawning particles.
+    flames[0].t=f64(frame)/60.0
+    seed_random(835)
+    expected=random()
+    seed_random(835)
+    instances: PInst[]
+    grass_fire_instances(vec3(0,2,10),Frustum(),instances)
+    assert(random()==expected,"continuous fire never consumes gameplay RNG")
+    assert(instances.len()==flames.len(),"every nearby burning cell has a flame every frame")
+    loop tongue in instances:
+        u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,2,10),vec3(),0,near=0)
+        u.time=f32(frame)/60.0
+        color=part_fs(PartO(vec4(),vec2(0.5,0.23),tongue.color,tongue.data,vec4(0,0,0,10),tongue.pos.w),u)
+        assert(color.w>0.10,"continuous roots stay visibly lit across every flow phase")
+    assert(burn_value(0.5,0.5,0)==0,"rendering never pre-scorches a live cell")
+flames[0].life=0
+elements_update(1.0/60.0,pl.pos)
+assert(burn_value(0.5,0.5,0)>0.99,"expired cell becomes charcoal")
+assert(burn_value(1.5,0.5,0)==0,"adjacent live cell remains uncharred")
+assert(burn_value(-0.5,0.5,0)==0,"scar never runs ahead into untouched fuel")
+print("PASS fuel: ignition, 320 uninterrupted rendered phases and RNG; scorch only in expired cell")
+
+# The production 2048-cell / 2048-texel map has one texel per fuel cell.
+hf.n=BURN_N
+hf.cell=2
+hf.x0=0
+hf.z0=0
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+burn_cell_mark(101,101,1)
+assert(burn_value(101,101,0)==1,"one-texel cell receives full char")
+assert(burn_value(99,101,0)==0 and burn_value(103,101,0)==0,"production-resolution footprint excludes neighbours")
+burn_cell_mark(103,101,1)
+assert(burn_value(101,101,0)==1 and burn_value(103,101,0)==1,"spent adjacent cells join without pale interior seams")
+print("PASS production scorch map: full cell pigment, exact footprint, contiguous spent fuel")
+
+# Include huge cards, oblique cameras, rising trails and 3m lens clipping.
+loop pitch in [0.0,0.65,1.25]:
+    view=rotation_x(pitch)
+    vp=perspective(radians(50.0),16.0/9.0,0.1,1000.0)*view
+    loop distance in [2.0,3.0,3.5,4.5,8.0]:
+        pos=transform_point(inverse(view),v3(0,0,-distance))
+        loop size in [0.15,0.65,8.0]:
+            instance=PInst(vec4(pos,f32(size)),vec4(1,0.5,0.1,1),vec4(0.3,-1,3,-1.45))
+            u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0)
+            anchor=vp*vec4(pos,1)
+            loop corner in [vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(1,1)]:
+                vertex=part_vs(QuadV(corner),instance,u)
+                delta=vertex.pos.xy/vertex.pos.w-anchor.xy/anchor.w
+                assert(abs(delta.x)<=0.3001 and abs(delta.y)<=0.3001,"card stays inside 30% screen width/height: at most 9% area")
+                if distance<=3: assert(vertex.color.w<0.00001,"whole foreground card clips before it can smear")
+                body=body_fire_vs(QuadV(corner),PInst(vec4(pos,f32(size)),vec4(-0.8,0,0,1),vec4(0,0,7,f32(size*3))),BodyFireU(vp,vec3(1,0,0),0,vec3()))
+                body_delta=body.pos.xy/body.pos.w-anchor.xy/anchor.w
+                assert(abs(body_delta.x)<=0.3001 and abs(body_delta.y)<=0.3001,"pose-bound trails share the <=9% screen-area bound")
+                if distance<=3: assert(body.strength<0.00001,"body fire also clips within 3m")
+print("PASS camera fire: 180 projected corners, steep angles and huge sheets; <=9% area, 3m clip")
+
+# Jo shares the flame submission while retaining the standalone articulated shader.
+vp=perspective(radians(50.0),16.0/9.0,0.1,1000.0)
+u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,time=1.25)
+bu=BodyFireU(vp,vec3(1,0,0),1.25,vec3())
+instance=PInst(vec4(0,1,-6,0.22),vec4(-0.3,0.1,0,0.9),vec4(0,-7,7,0.95))
+loop corner in [vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(1,1)]:
+    batched=part_vs(QuadV(corner),instance,u)
+    original=body_fire_vs(QuadV(corner),instance,bu)
+    assert(batched.pos==original.pos and batched.uv==original.uv and batched.color.w==original.strength,"shared submission preserves pose-bound vertices and camera fade")
+loop uv in [vec2(0,0.2),vec2(-0.3,0.45),vec2(0.15,0.8)]:
+    batched=part_fs(PartO(vec4(),uv,vec4(0,0,0,0.9),instance.data,vec4(0,0,0,6),0.22),u)
+    original=body_fire_fs(BodyFireO(vec4(),uv,7,0.9),bu)
+    assert(batched==original,"shared submission preserves body flame flow, colour and breakup")
+print("PASS batched body fire: exact articulated vertices, fade and fragment flow without an extra Jo draw")
+
+__tree_course()
+camp_wood.clear()
+pl.pos=vec3(20,0,20)
+p=vec3(0.5,0,0.5)
+col=add_cyl(p,0.35,0.9,false,.wood)
+barrels=[Barrel(p,false,col=col)]
+crate_col=add_box(vec3(-0.5,0,0.5),vec3(0.4,0.7,0.4),surf=.wood)
+camp_wood=[CampWood(vec3(-0.5,0,0.5),"probe_crate",crate_col)]
+bonfires=[Bonfire(vec3(0.5,0,-0.5))]
+loop frame in [0..360): elements_update(1.0/60.0,pl.pos)
+assert(not barrels[0].alive and not colliders[col].active,"wood barrel burns out and releases collision")
+assert(not camp_wood[0].alive and not colliders[crate_col].active and hooks.named_hidden["probe_crate"],"crate burns out, hides all named timber and releases collision")
+assert(barrels[0].char>0.9 and camp_wood[0].char>0.9,"props visibly char before collapse")
+snapshot=architecture_snapshot()
+assert(snapshot.wood.len()==1 and snapshot.wood[0].key=="probe_crate","prepared architecture owns its burnable prop registry")
+print("PASS wooden camp props: heat-driven barrel/crate burn, charcoal, collapse and collider retirement; prepared registry")
+loop kind in [WKind.sparrow,WKind.pigeon,WKind.crow,WKind.hawk]: assert(wild_is_bird(kind))
+assert(not wild_is_bird(.boar) and not wild_is_bird(.fox) and not wild_is_bird(.fish))
+print("PASS feather fire species: small birds and hawks use a brief scaled plume")
+
+loop state in [WState.fly,WState.dead]:
+    particles.clear()
+    bird=Animal(.crow,vec3(0,0,0),vec3(0,0,0),state=state)
+    seed_random(183)
+    loop k in [0..120): wildlife_fire_feedback(bird,1.0/60.0)
+    next=random()
+    seed_random(183)
+    particles.clear()
+    loop k in [0..120): fx_fire(wildlife_hit_center(bird),0.4,1.0/60.0)
+    assert(random()==next,"bird feedback preserves the original emitter's RNG sequence")
+    particles.clear()
+    loop k in [0..120): wildlife_fire_feedback(bird,1.0/60.0)
+    assert(particles.len()>0,"real feather feedback emits")
+    loop particle in particles:
+        assert(particle.size<0.08 and particle.visible_life<=0.32,"bird plume has a feather-sized footprint and brief motion trail")
+        if state==.dead: assert(particle.color.w==0,"dead bird never displays flame or smoke")
+print("PASS bird feedback: real live/dead emission, bounded footprint/trail, no corpse flame and identical RNG")
+
+__tree_course()
+camp_wood.clear()
+pl.pos=vec3(20,0,20)
+particles.clear()
+assert(ignite_at(vec3(0.5,0.1,0.5)))
+loop frame in [0..120): elements_update(1.0/60.0,pl.pos)
+tagged=0
+loop particle in particles:
+    if particle.fuel_cell<0: continue
+    tagged+=1
+    assert(particle.kind==.flame,"only grass flame births receive fuel ownership")
+    assert(not grass_particle_visible(particle,particle.pos+vec3(0,0,10)),"near grass uses the continuous tongue instead of old cones and lingering cards")
+    assert(grass_particle_visible(particle,particle.pos+vec3(0,0,61)),"distant grass retains its old particles")
+    untagged=particle
+    untagged.fuel_cell=-1
+    assert(grass_particle_visible(untagged,particle.pos+vec3(0,0,10)),"ordinary bonfire/wood/body sources retain their particles")
+assert(tagged>0,"real production grass emission carries fuel ownership")
+print("PASS grass ownership: {tagged} actual flame births; near cone/remnant suppression, distant and non-grass sources preserved")

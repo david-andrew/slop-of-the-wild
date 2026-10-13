@@ -126,6 +126,7 @@ cpu_checks=(
     fire_query_check
     fire_scan_check
     fire_test
+    named_bounds_check
     input_check
     integration_test
     journey_controller_check
@@ -160,6 +161,7 @@ cpu_checks=(
     tower_base_climb_check
     round91_fire_check
     round82_scorch_check
+    round83_fire_check
     round91_weather_check
     round96_weather_check
     round92_lightning_check

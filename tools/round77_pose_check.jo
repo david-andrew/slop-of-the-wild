@@ -42,12 +42,34 @@ from '../game/build.jo' import __bchunks
 guardian_dead_eye(vec3(0,0,0),vec3(0,0,1),vec3(1,0,0))
 vertices=0
 triangles=0
+# Round 95 narrowed the eye to 80% of its original radius. Probe the
+# aperture with forward rays as well as vertices: a cap made only of rim
+# vertices must fail too, even though none of its vertices reach the centre.
+lens_hits=fill(false,9)
 loop key,chunk in __bchunks:
     vertices+=chunk.verts.len()
     triangles+=chunk.idx.len()/3
     loop v in chunk.verts:
         assert(abs(f64(length(v.normal))-1.0)<0.0001,"unit eye normals")
         if v.pos.z>0:
-            assert(hypot(f64(v.pos.x),f64(v.pos.y))>0.49,"no tube end cap in front of the recessed lens")
+            assert(hypot(f64(v.pos.x),f64(v.pos.y))>0.49*0.80,"no tube end cap in front of the recessed lens")
+    loop t in [0..chunk.idx.len()/3):
+        tri_a=chunk.verts[int(chunk.idx[t*3])].pos
+        tri_b=chunk.verts[int(chunk.idx[t*3+1])].pos
+        tri_c=chunk.verts[int(chunk.idx[t*3+2])].pos
+        ab=tri_b.xy-tri_a.xy
+        ac=tri_c.xy-tri_a.xy
+        area=ab.x*ac.y-ab.y*ac.x
+        if abs(area)<0.00000001: continue
+        loop ray in [0..9):
+            angle=TAU*f64(ray)/8.0
+            q=(if ray==8:vec2(0,0) else:vec2(f32(cos(angle)*0.36),f32(sin(angle)*0.36)))-tri_a.xy
+            wb=(q.x*ac.y-q.y*ac.x)/area
+            wc=(ab.x*q.y-ab.y*q.x)/area
+            if wb < -0.00001 or wc < -0.00001 or wb+wc > 1.00001: continue
+            depth=tri_a.z+wb*(tri_b.z-tri_a.z)+wc*(tri_c.z-tri_a.z)
+            assert(depth < -0.039,"no triangle closes the aperture in front of the recessed lens")
+            lens_hits[ray]=true
+loop hit in lens_hits: assert(hit,"recessed lens covers the open aperture")
 assert(vertices==576 and triangles==240,"bounded open socket geometry")
 print("PASS Old Sentinel eye: {vertices} vertices, {triangles} triangles; open rim and recessed lens")

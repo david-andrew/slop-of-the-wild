@@ -57,13 +57,13 @@ def main():
                     for folder in ('game', 'tools'):
                         for source in (root / folder).glob('*'):
                             if source.is_file(): shutil.copy2(source, Path(snapshot) / folder / source.name)
-                # Terrain inputs are generated and ignored, but required for a full
-                # Plateau. Preserve the source tree's cp -r symlinks/read-only inputs.
+                # Terrain inputs are required for a full Plateau. Preserve the source tree's cp -r symlinks/read-only inputs.
                 for name in ['height.f32', 'water.f32', 'edge.f32', 'area.u8']:
                     subprocess.run(['cp', '-r', str(root / 'assets' / name), str(Path(snapshot) / 'assets' / name)], check=True)
                 textures = root / 'assets/src/nature/Textures'
                 assert textures.is_dir() and len(list(textures.glob('*.png'))) >= 20, 'missing nature source PNGs; incomplete snapshots invalidate startup timings'
-                shutil.copytree(textures, Path(snapshot) / 'assets/src/nature/Textures')
+                # The archive holds the committed textures; overwrite them with the source mtimes.
+                shutil.copytree(textures, Path(snapshot) / 'assets/src/nature/Textures', dirs_exist_ok=True)
                 copy = Path(temp) / 'game'
                 subprocess.run(['cp', '-r', snapshot, str(copy)], check=True)
             with (out / 'warm-assets.log').open('w') as log:

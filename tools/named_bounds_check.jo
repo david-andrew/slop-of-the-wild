@@ -1,0 +1,38 @@
+# CPU contract for the exact affine bounds of moving/burning named architecture.
+use '../game/build.jo'
+use '../game/terrain.jo'
+u=BuildU(mat4(),vec3(),vec3(),vec3(),vec3(),vec3(),vec3(),0,0,mat4(),mat4(),mat4(),Texture(0,1,1),Texture(0,1,1),Texture(0,1,1),0,0,vec3(),0,vec3())
+lo=vec3(-1,-2,-3)
+hi=vec3(2,3,4)
+checks=0
+loop lift in [vec3(),vec3(-4,10,2)]:
+    loop collapse in [0.0,0.25,0.75,1.0,2.0]:
+        u.lift=lift
+        u.collapse=f32(collapse)
+        u.base=vec3(0.3,-0.5,0.8)
+        a,b=named_draw_bounds((lo,hi),u)
+        loop x in [lo.x,hi.x]:
+            loop y in [lo.y,hi.y]:
+                loop z in [lo.z,hi.z]:
+                    point=build_vs(BVert(vec3(x,y,z),vec3(0,1,0),vec4(1,1,1,1),vec4()),u).world
+                    assert(point.x>=a.x and point.y>=a.y and point.z>=a.z and point.x<=b.x and point.y<=b.y and point.z<=b.z,"bounds contain every exact shader corner, including reversed collapse")
+                    checks+=1
+# A prop can enter view by lifting/collapsing. Test transformed bounds, not roots.
+f=frustum_from(mat4())
+u.lift=vec3()
+u.collapse=0
+u.base=vec3()
+a,b=named_draw_bounds((vec3(3,0,0),vec3(4,0.5,0.5)),u)
+assert(not box_visible(f,a,b))
+u.lift=vec3(-3,0,0)
+a,b=named_draw_bounds((vec3(3,0,0),vec3(4,0.5,0.5)),u)
+assert(box_visible(f,a,b),"moving a named mesh into the frustum restores its draw")
+u.lift=vec3()
+u.collapse=1
+u.base=vec3(0,2,0)
+a,b=named_draw_bounds((vec3(0,3,0),vec3(0.5,4,0.5)),u)
+assert(not box_visible(f,a,b))
+u.base=vec3()
+a,b=named_draw_bounds((vec3(0,3,0),vec3(0.5,4,0.5)),u)
+assert(box_visible(f,a,b),"collapsing a named mesh into the frustum restores its draw")
+print("PASS named bounds: {checks} shader corners; lift/collapse frustum re-entry")

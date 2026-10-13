@@ -223,12 +223,10 @@ grass_fs = (i: GrassO, u: GrassU) -> vec4:
         litter = mix(litter, vec3(0.16, 0.22, 0.10) * (0.82 + grain * 0.34), smoothstep(0.36, 0.68, cushion))
         turf = mix(turf, litter, i.forest * 0.93)
         if i.kind < 0.5: c = mix(c, turf * (0.90 + 0.10 * i.t), i.forest)
-    # Heat curls the blade to a dull coal; cooled scars leave ash-grey stubble.
-    # The existing scar recovery fades that ash toward brown before grass returns.
+    # Charcoal stubble keeps the warm soil pigment as the per-cell scar recovers.
     if max(i.charred, i.scorch) > 0.01:
-        ash = mix(vec3(0.035, 0.030, 0.025), vec3(0.28, 0.265, 0.235), smoothstep(0.35, 0.78, r) * (1.0 - smoothstep(0.10, 0.22, i.t * 0.25)))
-        # Singed ochre blades fringe the surviving green; cool stubble matches
-        # the pale ash islands behind the darker hot coal seam.
+        ash = mix(vec3(0.040, 0.030, 0.024), vec3(0.090, 0.068, 0.048), r)
+        # Singed ochre fringes the surviving green; cool stubble matches charcoal.
         c = mix(c, vec3(0.30, 0.22, 0.095), smoothstep(0.02, 0.20, i.charred))
         c = mix(c, ash, smoothstep(0.18, 0.62, i.charred))
         c = mix(c, vec3(0.15, 0.11, 0.075), smoothstep(0.05, 0.8, i.scorch))

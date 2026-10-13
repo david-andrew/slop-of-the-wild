@@ -465,6 +465,8 @@ wildlife_arrow_hit = (ar: Arrow, i: int):
     wildlife_damage(animals[i], ar.damage, ar.prev, ar.fire)
 
 __flock_scared = fill(false, 5)
+wild_is_bird = (kind: WKind) -> bool:
+    kind == .sparrow or kind == .pigeon or kind == .crow or kind == .hawk
 
 wildlife_update = (dt: f64):
     wild_calls.clear()

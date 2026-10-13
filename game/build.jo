@@ -346,6 +346,7 @@ __cur_key = 0
 __named = ""
 __named_b: {str: Builder} = {}
 named_meshes: {str: Mesh} = {}
+named_bounds: {str: (vec3,vec3)} = {}
 __begin = (p: vec3):
     if len(__named) > 0:
         cur = __named_b.get(__named) ?? Builder()
@@ -660,12 +661,36 @@ build_finish = ():
     # too, so overlapping faces cannot change pixels with the asset-cache mode.
     loop k in sorted(__named_b.keys()):
         b = __named_b[k]
-        if b.verts.len() > 0: named_meshes[k] = static_mesh(b.verts, b.idx)
+        if b.verts.len() > 0:
+            named_meshes[k] = static_mesh(b.verts, b.idx)
+            lo = vec3(1e9,1e9,1e9)
+            hi = vec3(-1e9,-1e9,-1e9)
+            loop v in b.verts:
+                lo = min(lo,v.pos)
+                hi = max(hi,v.pos)
+            named_bounds[k] = (lo,hi)
     if env("BOTW_BAKE_ASSETS") == none and env("BOTW_ASSET_CHECK") == none: __named_b = {}
     build_ready = true
 
-draw_named = (name: str, u: BuildU):
-    if let m = named_meshes.get(name): draw_fast(build_sh, m, u)
+named_draw_bounds = (bounds: (vec3,vec3), u: BuildU) -> (vec3,vec3):
+    # Exactly the affine lift/collapse in build_vs, including expanded timber
+    # footprints and moving shrine/tower pieces. Compute from cached load bounds.
+    if u.collapse == 0.0 and u.base == vec3(): return (bounds.0+u.lift,bounds.1+u.lift)
+    a = bounds.0+u.lift
+    b = bounds.1+u.lift
+    a.y = u.base.y+(a.y-u.base.y)*(1.0-u.collapse*0.94)
+    b.y = u.base.y+(b.y-u.base.y)*(1.0-u.collapse*0.94)
+    a.xz = u.base.xz+(a.xz-u.base.xz)*(1.0+u.collapse*0.12)
+    b.xz = u.base.xz+(b.xz-u.base.xz)*(1.0+u.collapse*0.12)
+    (min(a,b),max(a,b))
+
+draw_named = (name: str, u: BuildU, frustum: Frustum = Frustum()):
+    if let m = named_meshes.get(name):
+        if frustum.planes.len() > 0:
+            if let bounds = named_bounds.get(name):
+                lo,hi = named_draw_bounds(bounds,u)
+                if not box_visible(frustum,lo,hi): return
+        draw_fast(build_sh, m, u)
 
 build_extra_draw: (BuildU, mat4, vec3, f64) -> void = (u: BuildU, vp: mat4, cam: vec3, distance: f64): pass
 
@@ -690,4 +715,3 @@ HIDEM = vec4(0.0, 0.0, 0.0, 2.0)
 ROCKM = vec4(0.0, 0.0, 0.0, 3.0)
 SHEIKAH_M = vec4(-1.0, 0.0, 0.0, 0.0)          # Sheikah stone, traces dark
 SHEIKAH_LIT = vec4(-1.0, 0.0, 1.3, 0.0)        # traces glowing
-

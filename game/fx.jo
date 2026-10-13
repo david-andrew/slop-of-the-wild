@@ -17,6 +17,7 @@ use 'element_puzzles.jo'
 use 'wildlife.jo'
 use 'chars.jo'
 use 'skel.jo'
+use 'body_fire.jo'
 
 # Particles: flames, smoke, embers, sparks, dust, splashes, leaves, the purple smoke of a
 # defeated monster, and the rain. Simulated on the CPU, drawn as camera-facing soft sprites in
@@ -37,6 +38,7 @@ struct Particle:
     rot = 0.0
     water_bound = false
     visible_life = 1.0       # render-only envelope; retain simulation/RNG pool lifetime
+    fuel_cell = -1          # near grass uses its live cell tongue instead of birth/death cards
 
 struct PInst:
     pos: vec4           # xyz, size
@@ -92,6 +94,13 @@ flame_near_corner = (front: vec2, corner: vec2, close: f32) -> vec2:
 flame_near_up = (cam_up: vec3, close: f32) -> vec3:
     normalize(mix(vec3(0, 1, 0), cam_up, close * 0.35))
 
+flame_card_bound = (point: vec3, root: vec3, vp: mat4) -> vec3:
+    anchor = vp * vec4(root,1)
+    projected = vp * vec4(point-root,0)
+    center = anchor.xy/max(anchor.w,0.001)
+    extent = max(abs(projected.x),abs(projected.y)) + abs(projected.w)*(1.0+max(abs(center.x),abs(center.y)))
+    root + (point-root)*min(1.0,max(anchor.w,0.0)*0.23/max(extent,0.001))
+
 flame_front_corner = (corner: vec2, size: f32, seed: f32, age: f32) -> vec2:
     # A continuous triangle wave keeps rotating seeds from popping at wraps.
     shape = abs(fract(seed * 3.655) * 2.0 - 1.0)
@@ -105,6 +114,32 @@ flame_front_corner = (corner: vec2, size: f32, seed: f32, age: f32) -> vec2:
     vec2(corner.x * width + (corner.y + 1.0) * size * 0.07 * sin(seed * 3.0 + age * 9.0), (corner.y + 1.0) * height)
 
 part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
+    if i.data.y < -6.5:
+        body = body_fire_vs(v,i,BodyFireU(u.vp,u.cam_right,f32(u.time),u.cam))
+        return PartO(body.pos,body.uv,vec4(i.color.xyz,body.strength),i.data,body.pos,i.pos.w)
+    if i.data.y < -5.5:
+        # This card replaces ordinary particle geometry completely. Construct
+        # its final tongue directly, skipping the discarded front, rotations,
+        # terrain roots and near-camera bed. Preserve the original fuel seed.
+        data = i.data
+        if i.data.w < 0.0 and u.ground_grid.w > 0.5:
+            ground = flame_ground(i.pos.xz,u)
+            if i.pos.y-ground < 1.1 and i.pos.y-ground > -0.4:
+                data.z = i.data.z+sin(i.pos.x*0.73+i.pos.z*0.51)*2.0
+        y = (v.corner.y+1.0)*0.5
+        seed = i.data.z
+        height = 0.48+fract(seed*1.73)*0.78
+        curl = sin(y*6.0-u.time*7.0+seed)*y*y*0.18
+        w = i.pos.xyz+u.cam_right*(v.corner.x*i.pos.w+curl)
+        w.y = flame_ground(w.xz,u)+0.025+y*height
+        w.xz += u.wind*y*y*0.16
+        data.y = -6
+        color = i.color
+        if i.data.w < 0.0:
+            color.w *= smoothstep(3.0,4.5,length(i.pos.xyz-u.cam))
+            w = flame_card_bound(w,i.pos.xyz,u.vp)
+        cp = u.vp*vec4(w,1)
+        return PartO(cp,v.corner*0.5+vec2(0.5,0.5),color,data,cp,i.pos.w)
     s = i.pos.w
     # Tag fire smoke once at emission, rather than classify every live smoke
     # particle on the CPU each draw. Decode its ordinary angle on the GPU.
@@ -204,10 +239,19 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
         close = 1.0 - smoothstep(7.0, 15.0, length(i.pos.xyz - u.cam))
         wisp = i.pos.xyz + u.cam_right * (v.corner.x * s * 0.55) + u.cam_up * (v.corner.y * s * 1.25)
         w = mix(w, wisp, close)
+    color = i.color
+    if i.data.w < 0.0:
+        # Clip whole cards at the lens, rather than fading per-vertex depth
+        # across a sheet that intersects the camera. Bound projected extents
+        # to 30% per axis (9% of the screen), including elevated tree fire.
+        color.w *= smoothstep(3.0, 4.5, length(i.pos.xyz-u.cam))
+        w = flame_card_bound(w,i.pos.xyz,u.vp)
     cp = u.vp * vec4(w, 1)
-    PartO(cp, v.corner * 0.5 + vec2(0.5, 0.5), i.color, data, cp, s)
+    PartO(cp, v.corner * 0.5 + vec2(0.5, 0.5), color, data, cp, s)
 
 part_fs = (o: PartO, u: PartU) -> vec4:
+    if o.data.y < -6.5:
+        return body_fire_fs(BodyFireO(o.pos,o.uv,o.data.z,o.color.w),BodyFireU(u.vp,u.cam_right,f32(u.time),u.cam))
     d = length(o.uv - vec2(0.5, 0.5)) * 2.0
     k = o.data.y
     a = smoothstep(1.0, 0.2, d)
@@ -252,13 +296,14 @@ part_fs = (o: PartO, u: PartU) -> vec4:
     if o.data.w < 0.0:
         y = o.uv.y
         x = abs(o.uv.x - 0.5)
-        edge = vnoise(vec2(o.uv.x * 6.0, y * 4.0 - o.data.x * 6.0)) * 0.12
+        persistent = o.data.y < -5.5
+        edge = if persistent: f32(0) else: vnoise(vec2(o.uv.x * 6.0, y * 4.0 - o.data.x * 6.0)) * 0.12
         core: f32 = 0.0
         ember: f32 = 0.0
-        bed_mode = o.data.y < -3.5
+        bed_mode = o.data.y < -3.5 and not persistent
         close = clamp((if bed_mode: -4.0 else: -2.0) - o.data.y, 0.0, 1.0)
         coal: f32 = 0.0
-        if o.data.y < -1.5:
+        if o.data.y < -1.5 and not persistent:
             # A ragged low ribbon with several crests, rather than one candle.
             crest = 0.40 + fract(o.data.z * 3.17) * 0.22 + 0.18 * sin(o.uv.x * (11.0 + fract(o.data.z * 1.73) * 9.0) + o.data.z * 3.0 + o.data.x * 7.0) + edge
             shoulder = smoothstep(0.51, 0.31, x)
@@ -294,11 +339,23 @@ part_fs = (o: PartO, u: PartU) -> vec4:
                 a = mix(a, tongue, close)
                 core = mix(core, tongue * smoothstep(0.50, 0.08, y) * 0.60, close)
                 ember *= 1.0 - close
-        else:
+        else if not persistent:
             # Attached burn cues retain one small tapered tongue.
             wdt = 0.40 * pow(1.0 - y, 0.65) * smoothstep(-0.1, 0.3, y) + 0.02
             a = smoothstep(wdt + edge, wdt * 0.1, x) * smoothstep(1.0, 0.45, y)
             core = smoothstep(wdt * 0.6, 0.0, x) * smoothstep(0.7, 0.2, y)
+        if persistent:
+            flow = y*7.0-u.time*9.0+o.data.z
+            bend = sin(flow)*y*0.12
+            center = abs(o.uv.x-0.5+bend)
+            width = 0.31*pow(max(1.0-y,0.0),0.72)
+            main = 1.0-smoothstep(width*0.20,width+0.025,center)
+            side = abs(o.uv.x-0.25-bend*0.65)
+            lick = (1.0-smoothstep(width*0.18,width*0.55+0.02,side))*(1.0-smoothstep(0.42,0.82,y))*0.65
+            breakup = vnoise(vec2(o.uv.x*6.0+o.data.z,y*6.0-u.time*3.5))
+            a = max(main,lick)*smoothstep(0.0,0.06,y)*(1.0-smoothstep(0.78,1.0,y))*(1.0-smoothstep(0.25,0.85,y)*smoothstep(0.48,0.78,breakup)*0.85)
+            core = main*(1.0-smoothstep(0.08,0.52,y))*0.55
+            ember = 0.0
         glsl_discard(o.color.w * a < 0.008)
         # (soft where it meets the ground and rises from behind a rise: no hard seam)
         if u.near > 0.0:
@@ -668,6 +725,18 @@ fx_equipment_douse = (p: vec3):
         offset = v3(cos(a) * 0.10, 0.08 + f64(k % 2) * 0.06, sin(a) * 0.10)
         fx_feedback((if k < 2: PKind.smoke else: PKind.steam), p + offset, v3(cos(a) * 0.18, 0.55 + f64(k % 3) * 0.12, sin(a) * 0.18), 0.48 + f64(k % 3) * 0.08, 0.13 + f64(k % 2) * 0.035, if k < 2: rgba(0.24, 0.23, 0.22, 0.40) else: rgba(0.70, 0.76, 0.78, 0.20))
 
+# Feather feedback preserves the same emitter and its gameplay RNG draws.
+wildlife_fire_feedback = (a: Animal, dt: f64):
+    first = particles.len()
+    fx_fire(wildlife_hit_center(a),0.4,dt)
+    if wild_is_bird(a.kind):
+        loop k in [first..particles.len()):
+            particles[k].size *= 0.18
+            particles[k].visible_life = 0.32
+            if a.state == .dead or a.state == .gone:
+                particles[k].visible_life = 0.001
+                particles[k].color.w = 0.0
+
 fx_charcoal = (p: vec3):
     fx_poof(p, 1)
 
@@ -893,6 +962,30 @@ __air_dressing = (cam: vec3, indoor: bool):
                 fade = 1.0 - smoothstep(14.0, 25.0, f64(length(foot - cam)))
                 __pinst_add.push(PInst(vec4(q, f32(hh)), vec4(1.0, 0.86, 0.62, f32(0.045 * strength * canopy * fade)), vec4(0, 11, f32(0.07 + seed * 0.035), 0)))
 
+__hero_fire_bones = ["spine_01", "spine_02", "upperarm_l", "upperarm_r", "calf_l", "calf_r"]
+
+grass_particle_visible = (p: Particle, cam: vec3) -> bool:
+    p.kind != .flame or p.fuel_cell < 0 or length(p.pos-cam) > 60.0
+
+grass_fire_instances = (cam: vec3, frustum: Frustum, instances: mut PInst[]):
+    # Draw-time fuel tongues cannot miss a frame between random particle
+    # births. Every live nearby cell has a rooted, advected tongue; no RNG,
+    # simulation particles, sources or chemistry updates are added here.
+    loop mut f in flames:
+        # Geometry and hash seeds are immutable for a fuel cell. Production
+        # ignition initializes them once; synthetic fixtures initialize lazily.
+        if f.render_seed < 0.0:
+            f.render_center = cell_pos(f.cell)
+            f.render_seed = hash2(f64(f.cell),83.0)
+            f.render_offset = hash2(f64(f.cell),84.0)
+        p = f.render_center
+        if length(p-cam) > 60.0 or length(p-cam) < 3.0: continue
+        if not box_visible(frustum,p-vec3(1.6,0.1,1.6),p+vec3(1.6,1.8,1.6)): continue
+        seed = f.render_seed
+        q = p+v3((seed-0.5)*0.8,0.08,(f.render_offset-0.5)*0.8)
+        size = 0.38+seed*0.20
+        instances.push(PInst(vec4(q,f32(size)),vec4(1.55,0.45,0.055,0.88),vec4(f32(fract(f.t)), -6, f32(seed*TAU),-1.6)))
+
 fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
     if not __fx_ready: return
     cpu_mark("fx_list_build")
@@ -905,7 +998,9 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
     __pinst_heat.clear()
     __pinst_electric.clear()
     frustum = frustum_from(vp)
+    grass_fire_instances(cam,frustum,__pinst_flame)
     loop p in particles:
+        if not grass_particle_visible(p,cam): continue
         # Fire remnants keep their simulation lifetime after their visible fade.
         # Skip them before constructing and testing six-plane bounds.
         f = p.age / (p.life * p.visible_life)
@@ -930,9 +1025,10 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
                     q = p.pos + v3(0.0, s * 2.8 + 0.3, 0.0)
                     __pinst_heat.push(PInst(vec4(q, f32(s * 1.65)), vec4(1, 1, 1, a * 0.65), vec4(f32(f), 12, f32(p.rot), 0)))
                 __pinst_flame.push(PInst(vec4(p.pos.x, p.pos.y + f32(s * 0.7), p.pos.z, f32(s)), col, vec4(f32(f), -1, f32(p.rot), -1.45)))
-                if p.color.y < 0.7:
+                if p.color.y < 0.7 and length(p.pos-cam) > 10.0:
                     # A lower crossed tongue gives the front a body in depth.
-                    # Small footprint and shorter visible life keep fill below the old sheets.
+                    # Omit its flat ember card near the camera: that orange
+                    # footprint looked like a downward reflection in the ash.
                     q = p.pos + v3(cos(p.rot)*s*0.3, s*0.45, sin(p.rot)*s*0.3)
                     __pinst_flame.push(PInst(vec4(q, f32(s*0.72)), vec4(col.xyz*0.85, col.w*0.55), vec4(f32(f), -1, f32(p.rot+2.17), -1.25)))
             arc:
@@ -1194,14 +1290,16 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
         # Body-attached tongues follow the actual recoil pose. Build at draw
         # time without RNG so feedback cannot change the spreading fire.
         toward = normalize(vec3(cam.x - pl.pos.x, 0, cam.z - pl.pos.z))
-        loop k in [0..5):
-            bone = ["spine_02", "upperarm_l", "upperarm_r", "calf_l", "calf_r"][k]
+        loop k in [0..6):
+            bone = __hero_fire_bones[k]
             m = hero_world * bone_world(hero_m, hero_skin, bone)
-            q = m[3].xyz + toward * 0.19
-            phase = fract(pl.anim_t * 3.6 + f64(k) * 0.237)
-            size = 0.19 + 0.045 * sin(pl.anim_t * 19.0 + f64(k) * 2.7)
+            q = m[3].xyz + toward * (if k < 2: f32(0.29) else: f32(0.19))
+            size = (if k < 2: 0.22 else: 0.16) + 0.025 * sin(pl.anim_t * 19.0 + f64(k) * 2.7)
             fade = f32(smoothstep(0.0, 0.22, player_burn_t))
-            __pinst_flame.push(PInst(vec4(q + vec3(0, f32(size * 0.5), 0), f32(size)), vec4(1.6, 0.52, 0.07, fade * 0.9), vec4(f32(phase), 0, f32(k) * 1.73, -1.45)))
+            wake = -pl.vel * 0.09
+            wake.y = clamp(wake.y,-0.10,0.15)
+            height = if k == 0: 0.95 else if k == 1: 0.72 else if k < 4: 0.62 else: 0.78
+            __pinst_flame.push(PInst(vec4(q,f32(size)),vec4(wake,fade*0.9),vec4(0,-7,f32(k)*1.73,f32(height))))
     cpu_mark("fx_submit")
     u = PartU(vp, right, up, cam, env.haze, f32(env.density), post.depth_copy.depth, f32(sc.near), f32(sc.far), env.wind * f32(env.gust))
     u.sun_dir = env.sun_dir

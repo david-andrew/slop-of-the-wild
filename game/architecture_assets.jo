@@ -49,6 +49,23 @@ pack_array = (s: mut AssetStream, xs: mut RainCell[], writing: bool):
         pack_value(s, x, writing)
         xs[i] = x
 
+pack_value = (s: mut AssetStream, x: mut CampWood, writing: bool):
+    pack_value(s, x.pos, writing)
+    pack_value(s, x.key, writing)
+    pack_value(s, x.col, writing)
+pack_array = (s: mut AssetStream, xs: mut CampWood[], writing: bool):
+    n = xs.len()
+    pack_count(s, n, writing)
+    if not s.ok or n > 65536:
+        s.ok = false
+        return
+    zero: CampWood
+    if not writing: xs = fill(zero, n)
+    loop i in [0..xs.len()):
+        x = xs[i]
+        pack_value(s, x, writing)
+        xs[i] = x
+
 pack_value = (s: mut AssetStream, x: mut Zone, writing: bool):
     pack_value(s, x.name, writing)
     pack_value(s, x.lo, writing)
@@ -166,6 +183,7 @@ struct ArchitectureAsset:
     tower_bases: vec3[]
     tents: vec3[]
     tent_cols: int[]
+    wood: CampWood[]
     rocks: vec4[]
     burn: u8[]
     keh: int[]
@@ -202,6 +220,7 @@ architecture_snapshot = () -> ArchitectureAsset:
         tower_bases = tower_col_bases,
         tents = camp_tents,
         tent_cols = camp_tent_colliders,
+        wood = camp_wood,
         rocks = sor_rocks,
         burn = burn_px,
         keh = [__keh_cols.0, __keh_cols.1],
@@ -236,6 +255,7 @@ architecture_io = (s: mut AssetStream, x: mut ArchitectureAsset, writing: bool):
     pack_array(s, x.tower_bases, writing)
     pack_array(s, x.tents, writing)
     pack_array(s, x.tent_cols, writing)
+    pack_array(s, x.wood, writing)
     pack_array(s, x.rocks, writing)
     pack_array(s, x.burn, writing)
     pack_array(s, x.keh, writing)
@@ -287,6 +307,7 @@ architecture_load = (path: str = "assets/prepared/structures.bin") -> bool:
     tower_col_bases = x.tower_bases
     camp_tents = x.tents
     camp_tent_colliders = x.tent_cols
+    camp_wood = x.wood
     sor_rocks = x.rocks
     burn_px = x.burn
     __global_rng = x.rng
