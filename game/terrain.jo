@@ -913,6 +913,8 @@ terrain_upload = ():
     if env("BOTW_LOADTIME") != none: eprint("    terrain textures {time() - started:.3}s")
     started = time()
     tnode_buf = inst_buffer(tnodes)
+    # A level-(LOD_LEVELS-1) quadtree has at most 4^(LOD_LEVELS-1) leaves.
+    inst_reserve(tnode_buf, (1 << (2 * (LOD_LEVELS - 1))) * size_of(TNode))
     if env("BOTW_LOADTIME") != none: eprint("    terrain bounds {time() - started:.3}s")
     # Finish/release terrain compiler stages before other programs and the large
     # audio bank allocate. CPU normal/texture preparation still overlaps this batch.

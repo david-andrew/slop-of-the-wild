@@ -8,6 +8,7 @@ use 'terrain.jo'
 # thins out with distance, sways in rolling gusts and bends away from the player.
 
 const GPATCH = 4.0
+const GRASS_RADIUS = 58.0
 const GBLADES = 1500
 
 struct GrassV:
@@ -312,9 +313,12 @@ grass_init = ():
     grass_buf_close = inst_buffer(gpatches_close)
     grass_buf = inst_buffer(gpatches)
     grass_buf_far = inst_buffer(gpatches)
+    cells = int(GRASS_RADIUS / GPATCH) + 1
+    maximum = (cells * 2 + 1) * (cells * 2 + 1)
+    loop b in [&grass_buf_close, &grass_buf, &grass_buf_far]: inst_reserve(b[0], maximum * size_of(GPatch))
 
 # patches around the camera inside the view
-grass_select = (cam: vec3, vp: mat4, radius: f64 = 58.0):
+grass_select = (cam: vec3, vp: mat4, radius: f64 = GRASS_RADIUS):
     gpatches.clear()
     gpatches_close.clear()
     gpatches_far.clear()

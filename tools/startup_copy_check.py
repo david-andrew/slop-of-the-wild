@@ -14,6 +14,7 @@ import shutil
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--backend', choices=['vulkan', 'opengl'], default='vulkan')
     ap.add_argument('--ref', default='master')
     ap.add_argument('--repeats', type=int, default=18)
     ap.add_argument('--binary-repeats', type=int, default=6)
@@ -33,6 +34,7 @@ def main():
     mesh_packs = subprocess.run(['git', 'cat-file', '-e', revision + ':game/architecture_assets.jo'],
                                 cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     clean = {k: v for k, v in os.environ.items() if not k.startswith(('BOTW_', 'SLOPPY_'))}
+    clean['SLOPPY_VULKAN'] = '0' if a.backend == 'opengl' else '1'
     # No cache flush, driver setting changes, or modifications to another worktree.
     with tempfile.TemporaryDirectory(prefix='botw-startup-copy-', dir=out) as temp:
         if a.prepared_copy:

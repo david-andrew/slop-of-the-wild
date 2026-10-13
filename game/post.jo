@@ -417,7 +417,44 @@ struct Post:
 
 post = Post()
 
-# the HDR target for the frame (re-made when the window changes size)
+# Two production scene scales retain their targets. Resize invalidates both;
+# switching scale reuses textures/descriptors and the precomputed grain image.
+struct PostTargets:
+    w = 0
+    h = 0
+    scene = Target()
+    q1 = Target()
+    q2 = Target()
+    painted = Target()
+    depth_copy = Target()
+    grain = Target()
+    grain_source_w = 0
+    grain_source_h = 0
+post_spare = PostTargets()
+post_output_w = 0
+post_output_h = 0
+post_targets_save = () -> PostTargets:
+    PostTargets(post.w, post.h, post.scene, post.q1, post.q2, post.painted, post.depth_copy, post.grain, post.grain_source_w, post.grain_source_h)
+post_targets_load = (t: PostTargets):
+    post.w = t.w
+    post.h = t.h
+    post.scene = t.scene
+    post.q1 = t.q1
+    post.q2 = t.q2
+    post.painted = t.painted
+    post.depth_copy = t.depth_copy
+    post.grain = t.grain
+    post.grain_source_w = t.grain_source_w
+    post.grain_source_h = t.grain_source_h
+post_targets_free = (t: PostTargets):
+    free_target(t.scene)
+    free_target(t.q1)
+    free_target(t.q2)
+    free_target(t.painted)
+    free_target(t.depth_copy)
+    free_target(t.grain)
+
+# the HDR target for the frame (cached for each production scale)
 post_begin = () -> Target:
     if not post.ready:
         post.ready = true
@@ -427,12 +464,24 @@ post_begin = () -> Target:
         post.paint_sh = make_sh(shader(pp_vs, pp_paint_fs))
     w = max(int(f64(__screen_px_w()) * post.scale), 16)
     h = max(int(f64(__screen_px_h()) * post.scale), 16)
+    ow = __screen_px_w()
+    oh = __screen_px_h()
+    if ow != post_output_w or oh != post_output_h:
+        post_targets_free(post_targets_save())
+        post_targets_free(post_spare)
+        post_targets_load(PostTargets())
+        post_spare = PostTargets()
+        post_output_w = ow
+        post_output_h = oh
     if w != post.w or h != post.h:
-        free_target(post.scene)
-        free_target(post.q1)
-        free_target(post.q2)
-        free_target(post.painted)
-        free_target(post.depth_copy)
+        previous = post_targets_save()
+        if post_spare.w == w and post_spare.h == h:
+            post_targets_load(post_spare)
+            post_spare = previous
+            return post.scene
+        post_targets_free(post_spare)
+        post_spare = previous
+        post_targets_load(PostTargets())
         post.w = w
         post.h = h
         post.scene = make_target(w, h)
@@ -442,8 +491,6 @@ post_begin = () -> Target:
         post.depth_copy = make_target(w, h)
     # Full output dimensions matter: the composite runs on the output grid,
     # with noise coordinates measured in scene pixels. Rebuild on either change.
-    ow = __screen_px_w()
-    oh = __screen_px_h()
     if not __soft and post.grain_supported and (post.grain.w != ow or post.grain.h != oh or post.grain_source_w != w or post.grain_source_h != h):
         free_target(post.grain)
         post.grain = Target(w = ow, h = oh)

@@ -75,7 +75,12 @@ make_sh = (src: ShaderSource) -> Shader:
     if env("BOTW_BAKE_ASSETS") != none or env("BOTW_ASSET_CHECK") != none: return Shader()
     __gfx_init_gl_only()
     if env("BOTW_GPU_FRAME_LOG") != none: eprint("shader request: frame {frame_number()}")
-    shader_load_finish(shader_load_submit(src))
+    sh = shader_load_finish(shader_load_submit(src))
+    if env("BOTW_DRAW_TRACE") != none:
+        names = ["prop_vs", "prop_inst_vs", "ch_vs", "ch_shadow_vs", "part_vs", "talus_rock_vs", "shrine_water_vs"]
+        loop name in names:
+            if find(src.vs, "f_{name}_") >= 0: eprint("shader program: {sh.prog} {name}")
+    sh
 
 game_read_pixels = (x: int, y: int, w: int, h: int, out: *u8):
     if not game_vulkan_backend():
@@ -252,6 +257,7 @@ struct InstBuf:
     vbo = 0
     count = 0
     stride = 0
+    capacity = 0
 
 inst_buffer[I] = (items: I[]) -> InstBuf:
     b = InstBuf(vbo = gl_create_buffer(), count = items.len(), stride = size_of(I))
@@ -262,9 +268,48 @@ inst_buffer[I] = (items: I[]) -> InstBuf:
 inst_uploads = 0
 inst_bytes = 0
 
-inst_update[I] = (b: mut InstBuf, items: I[]):
+# Reserve persistent GPU storage during load, before its first upload/draw.
+inst_reserve = (b: mut InstBuf, bytes: int):
+    if bytes <= b.capacity: return
+    b.capacity = bytes
     glBindBuffer(GL_ARRAY_BUFFER, u32(b.vbo))
-    glBufferData(GL_ARRAY_BUFFER, max(items.len(), 1) * size_of(I), data(items) as *u8, GL_DYNAMIC_DRAW)
+    glBufferData(GL_ARRAY_BUFFER, b.capacity, null, GL_DYNAMIC_DRAW)
+
+# Persistent visibility/cull buffers survive frames that do not upload them.
+# Reserve their storage once; subsequent changes copy only live bytes.
+inst_update[I] = (b: mut InstBuf, items: I[]):
+    if not game_vulkan_backend():
+        inst_stream(b, items)
+        return
+    b.count = items.len()
+    if items.len() == 0: return
+    bytes = items.len() * size_of(I)
+    glBindBuffer(GL_ARRAY_BUFFER, u32(b.vbo))
+    if bytes > b.capacity:
+        b.capacity = max(65536, bytes * 2)
+        glBufferData(GL_ARRAY_BUFFER, b.capacity, null, GL_DYNAMIC_DRAW)
+    glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, data(items) as *u8)
+    inst_uploads += 1
+    inst_bytes += bytes
+
+# Use only when every draw is preceded by an upload in the SAME frame.
+inst_stream[I] = (b: mut InstBuf, items: I[]):
+    if items.len() == 0:
+        b.count = 0
+        return
+    glBindBuffer(GL_ARRAY_BUFFER, u32(b.vbo))
+    bytes = max(items.len(), 1) * size_of(I)
+    # Vulkan STREAM data is immutable for this frame, suballocated from the
+    # reusable upload arena. DYNAMIC copies into a device buffer, breaks the
+    # render pass and barriers all prior reads on every update.
+    if game_vulkan_backend():
+        glBufferData(GL_ARRAY_BUFFER, bytes, data(items) as *u8, GL_STREAM_DRAW)
+    else:
+        # Orphan a pre-sized store: several FX batches reuse one name in a frame.
+        # A minimum 64 KiB avoids incremental growth as visibility changes.
+        if bytes > b.capacity: b.capacity = max(65536, bytes * 2)
+        glBufferData(GL_ARRAY_BUFFER, b.capacity, null, GL_STREAM_DRAW)
+        if items.len() > 0: glBufferSubData(GL_ARRAY_BUFFER, 0, items.len() * size_of(I), data(items) as *u8)
     b.count = items.len()
     inst_uploads += 1
     inst_bytes += items.len() * size_of(I)
@@ -276,7 +321,10 @@ draw_static[U] = (sh: Shader, m: Mesh, b: InstBuf, params: U, first: int = 0, co
     p = params
     when TARGET != "wasm":
         if game_vulkan_backend():
-            __vk_draw_mesh(game_draw_program(sh, m.mode), m.mode, m.vbo, m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, size_of(U), b.vbo, b.stride, n, first * b.stride)
+            program = game_draw_program(sh, m.mode)
+            draw_trace_begin(program)
+            __vk_draw_mesh(program, m.mode, m.vbo, m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, size_of(U), b.vbo, b.stride, n, first * b.stride)
+            draw_trace_end(program, m.mode)
             return
     glUseProgram(u32(sh.prog))
     __draw_uniforms(sh, p)
@@ -364,7 +412,10 @@ draw_fast[U] = (sh: Shader, m: Mesh, params: U):
     p = params
     when TARGET != "wasm":
         if game_vulkan_backend():
-            __vk_draw_at(game_draw_program(sh, m.mode), m.mode, __mesh_addr(m), m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, size_of(U), 0, 0, 0)
+            program = game_draw_program(sh, m.mode)
+            draw_trace_begin(program)
+            __vk_draw_at(program, m.mode, __mesh_addr(m), m.stride, m.count, m.ibo, m.index_count, (&p) as *u8, size_of(U), 0, 0, 0)
+            draw_trace_end(program, m.mode)
             return
     glUseProgram(u32(sh.prog))
     __draw_uniforms(sh, p)
@@ -406,6 +457,29 @@ gl_restore_2d = ():
     glDisable(GL_CULL_FACE)
     __bind_current()
     __apply_blend(__blend)
+
+# Opt-in diagnostic around the actual game draw, including lazy pipeline work.
+# Reads release runtime state; never changes its implementation or synchronization.
+draw_trace = env("BOTW_DRAW_TRACE") != none
+__draw_trace_start = 0.0
+__draw_trace_pipelines = 0
+draw_trace_begin = (program: int):
+    if not draw_trace: return
+    __draw_trace_start = time()
+    when TARGET != "wasm":
+        if game_vulkan_backend(): __draw_trace_pipelines = __vgp[program].pipelines.len()
+draw_trace_end = (program: int, mode: int):
+    if not draw_trace: return
+    ms = (time() - __draw_trace_start) * 1000.0
+    made = 0
+    when TARGET != "wasm":
+        if game_vulkan_backend(): made = __vgp[program].pipelines.len() - __draw_trace_pipelines
+    if made > 0 or ms > 2.0:
+        when TARGET != "wasm":
+            if game_vulkan_backend():
+                cf, df = __vg_fb_formats(__vg_fb)
+                eprint("draw state: frame {frame_number()} program {program} color {cf} depth {df} mask {__vg_cmask} blend {__vg_blend} factors {__vg_bf}")
+        eprint("draw trace: frame {frame_number()} program {program} mode {mode} ms {ms:.6} pipelines {made}")
 
 # ---- small math ----
 v3 = (x: f64, y: f64, z: f64) -> vec3: vec3(f32(x), f32(y), f32(z))

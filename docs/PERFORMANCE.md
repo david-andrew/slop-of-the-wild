@@ -1,118 +1,138 @@
 # Performance — Sloppy 0.6.0, 2026-10-12
 
-The pinned toolchain is the unmodified official **0.6.0** release (`7c8d133`).
-Measurements use an i7-6700 / GTX 1070 on the shared Linux host, after the full
-suite completed, with no controlled CPU workers. These are observed distributions,
-not isolated hardware guarantees. Vulkan pipeline caches are warm unless stated otherwise.
+Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland,
+**2133×1200 physical pixels**, production dynamic scene scale. All outliers are
+retained. These are **producer/present-return intervals, not scanout timestamps**;
+the shared desktop is not an isolated hardware guarantee.
 
-## Vulkan presentation at 2133×1200
+## Default and ten-minute route
 
-Two 720-frame captures per scene/mode, with the first 240 frames discarded:
-**960 pooled intervals per row**, nearest rank, production dynamic scene scale.
-Each helper owns one render lock per process. Intervals are present-return
-handoffs, not scanout timestamps. `SLOPPY_VSYNC=0` was confirmed as **mailbox**
-on this driver; the release defaults to FIFO when the variable is absent.
+Both launchers explicitly select Vulkan mailbox (`SLOPPY_VULKAN=1`,
+`SLOPPY_VSYNC=0`), preserving environment overrides. Release OpenGL's Wayland
+path waits for frame callbacks; `SLOPPY_VSYNC=0` does not make that path mailbox.
 
-| Scene | FIFO p50 / p99 / worst ms | Mailbox p50 / p99 / worst ms |
-|---|---|---|
-| Forest | 16.67 / 25.26 / 34.09 | 11.13 / 15.54 / 50.14 |
-| Fire | 16.68 / 33.62 / 53.15 | 8.91 / 12.95 / 17.00 |
-| Overlook | 16.68 / 30.35 / 57.53 | 7.43 / 10.81 / 44.37 |
+The same forest/meadow waypoints run for 600 real seconds with production dt.
+Complete monotonic two-second windows start four seconds after the first return,
+rounded up to an even second. Each window uses nearest-rank p99; no tail trimming.
 
-Mailbox lowers p99 in all three matched views, so `tools/play.sh` and
-the packaged launcher select `SLOPPY_VSYNC=0`. Set `SLOPPY_VSYNC=1` to restore
-FIFO; set `SLOPPY_VULKAN=0` for OpenGL. The old locally patched
-`SLOPPY_PRESENT=mailbox` option is gone. The forest mailbox worst is **50.14 ms** versus FIFO's **34.09 ms**: lower p99
-does not remove every hitch. GLES per-pass timer queries do not
-measure the Vulkan renderer; its diagnostics report return intervals and CPU.
-
-## Ten-minute forest session windows
-
-Each mode walks the same forest/meadow waypoint route for 600 real seconds,
-with production dt and dynamic scale at 2133×1200. Movement continues through
-all ten minute samples: FIFO covers **2.53 km**, mailbox **2.55 km**. Complete
-monotonic two-second windows begin after four seconds plus an even-second boundary;
-counts below use each window's nearest-rank p99. All outliers remain.
-
-| Mode | Interval p50 / p99 / worst ms | Windows p99 >20 ms | Windows p99 >17.5 ms |
+| Game/backend | Interval p50 / p99 / worst, ms | Windows p99 >20 ms | >17.5 ms |
 |---|---|---|---|
-| Fifo | 16.67 / 31.36 / 331.99 | 191/297 | 268/297 |
-| Mailbox | 11.32 / 17.56 / 223.17 | 45/297 | 104/297 |
+| Before, Vulkan FIFO | 16.67 / 31.36 / 331.99 | 191/297 | 268/297 |
+| Before, Vulkan mailbox | 11.32 / 17.56 / 223.17 | 45/297 | 104/297 |
+| After, release OpenGL | 16.68 / 26.11 / 458.28 | 182/297 | 291/297 |
+| After, Vulkan mailbox **default** | 10.83 / 16.36 / 170.84 | 33/297 | 80/297 |
 
-Mailbox improves both window counts, but the strict all-window 17.5 ms target
-is **not met**. Worst window p99 is **178.64 ms FIFO / 63.85 ms mailbox**.
-These producer-return measurements include callback and presentation stalls;
-they are not delivered-frame timings. After minute one, live allocation ranges
-are **50,533–50,550 FIFO / 50,544–50,575 mailbox**. RSS ends at **799.67 / 771.91 MiB**,
-with brief higher samples retained in the JSON; heap counters do not measure
-all live bytes.
+The older toolchain with locally patched OpenGL mailbox recorded **4/297**
+windows over 20 ms; that patched runtime is not the release OpenGL tested here.
+The default improves **45 → 33/297** windows over 20 ms and worst interval
+**223.17 → 170.84 ms**. OpenGL is clearly worse on this route and all three
+matched scenes. The strict all-window 17.5 ms target remains **unmet**.
+The default’s worst interval contains **159.44 ms in presentation** versus
+11.31 ms callback wall / 5.34 ms callback thread CPU.
 
-## Matched render validation
+## Every mailbox tail: attribution and game fixes
 
-Ten fixed-frame 1280×720 views compare Vulkan, release OpenGL and master
-`6d09c8c` (the renamed game with the previous toolchain). The opening uses frame
-600, after its initial blackout. On release OpenGL, opening/overlook/forest/fire/
-pond/camp/snow/shrine/title match master **pixel for pixel**; storm differs by
-one count in one channel of one pixel. The CPU pine width hash explicitly retains
-the old swizzle evaluation input; otherwise the compiler fix reshaped firs.
+The historical 45/297 log contains 233 intervals over 20 ms, with callback/present
+and thread timing but no draw/native-call trace; exact first-use causes cannot be
+recovered retrospectively. A new complete warm-cache replay records **261/261**
+intervals over 20 ms, including startup transitions, with game stages, draw timing,
+resource changes and native Vulkan call boundaries. Every interval is retained in
+[the attribution evidence](performance-pacing060-tails.json.gz).
 
-Vulkan preserves scene geometry, objects and UI, but does **not** reproduce every
-OpenGL pixel. Across these views, mean absolute RGB difference is **0.05–2.66
-counts out of 255**; p99 is **1–27 counts**. Mip pyramids now work, while the
-release device does not enable OpenGL's 8× anisotropy. Shader floating-point
-and sampling differences remain visible in textured foliage/shading. Cropped
-RGBA/float readback, facet orientation, terrain noise, skin palettes and material/
-post surfaces are verified by real GPU checks. Exact Vulkan/OpenGL parity is
-not claimed. Images and 4× difference maps remain in `build/sloppy060/visual-gated/`.
+* **Two missing pipelines:** instanced props and Talus rocks, both depth-only
+  D32 shadow draws, color mask zero, blending disabled. First draws cost
+  **14.18 / 288.30 ms**; native creation itself costs **14.13 / 288.24 ms**.
+  A populated disk cache did not contain these previously unused state keys.
+* **Resource churn:** 1,059 buffer and 207 image creations during that replay.
+  Tail-associated creation calls were tiny (buffer ≤0.004 ms, image ≤0.005 ms,
+  memory allocation ≤1.10 ms). The descriptor array is fixed at **16,384**;
+  texture slot high-water growth/recycling is not descriptor-array reallocation.
+  No steady swapchain recreation or descriptor-update call over 2 ms occurred.
+* **Runtime waits and CPU stages:** acquire reached **155.66 ms**, frame-fence
+  waits **42.17 ms**, and submission **25.58 ms**. Other tails retain their
+  poll/present or named callback stages (terrain selection, music, enemies,
+  vegetation and wildlife). Driver waits can consume thread CPU; a high CPU
+  counter alone does not prove expensive game computation. CPU call tracing
+  does not identify which GPU pass preceded a fence wait.
 
-## Prepared startup from a fresh export
+Warmup now draws the missing shadow states, loaded character/material variants,
+all four shrines and their water, cave water, mist, rain/night values, fire/smoke
+blend states and lightning's **RGBA8 output target**, without simulation or RNG
+advancement. Cull buffers retain persistent storage reserved from model placement,
+quadtree and grass-grid bounds. Only batches rebuilt before each draw use transient
+streaming (FX, wildlife, glider cords, Talus and blade trails); empty batches skip
+uploads. Both production resolutions retain post, smoke and grain targets.
 
-Clean `git archive` plus all nature texture inputs, freshly prepared packs,
-`warm_assets.sh`, then six new source processes and six executable processes.
-X11 1280×720, scene scale 1, one captured frame. Lock wait is excluded; shared
-page/driver caches are not flushed. Every pack hits, with zero startup PNG decodes.
+The fixed native 60-second route has **no new pipelines, images or swapchains**.
+It records five tiny buffer creations (including the second frame's upload arena),
+rather than repeated per-frame allocation. Its remaining tails include acquire
+and submission waits. Diagnostic runs are not used as uninstrumented percentile
+comparisons. [Runtime work still needed](SLOPPY_SHOWCASE.md#where-sloppy-fell-short).
 
-| Launch | In-game load median (range), s | Whole process median (range), s |
+## Three pacing scenes
+
+Two 720-interval captures per row, first 240 intervals excluded: **960 pooled
+samples**, nearest rank, matched production scale at 2133×1200.
+
+| Scene | Vulkan mailbox p50 / p99 / worst, ms | Release OpenGL p50 / p99 / worst, ms |
 |---|---|---|
-| Compile and run source | 1.475 (1.43–1.52) | 3.180 (3.15–3.23) |
-| Prepared executable | 1.355 (1.33–1.45) | 1.615 (1.58–1.71) |
+| Forest | 10.80 / 14.72 / 49.35 | 16.68 / 29.70 / 68.95 |
+| Fire | 8.51 / 12.85 / 45.76 | 16.68 / 29.18 / 61.45 |
+| Overlook | 7.08 / 8.58 / 59.35 | 16.68 / 24.88 / 61.03 |
 
-In-game load includes first-callback render warmup. Source process time also
-includes compilation. First-callback thread CPU medians are **4.117 / 4.410 ms**
-for source/executable. Warm-cache startup meets the existing **3.5 s load median**
-budget. A new GPU/program pipeline cache can add substantial first-launch
-shader work; warm-cache figures must not be presented as cold-cache times.
+## Validation and startup
 
-The self-contained Linux package is built from HEAD, with linked nature texture
-inputs materialized at their target timestamps. The packaging preflight at `9138e8f`, extracted at
-`BOTW_SKIP=1 BOTW_AT="-1000,1620,3.14"` hits every prepared pack, reports
-**zero PNG decodes** and **18,587 vegetation placements**. Two one-frame forest
-launches use an isolated `XDG_CACHE_HOME`: empty Sloppy pipeline cache **8.91 s
-load / 9.76 s whole process**, then warm **1.31 / 2.18 s**. Shared driver/page
-caches are unchanged; this is not a fully cold machine. Forest screenshot cost
-also differs from the opening used by the repeated startup audit.
+Twelve relevant GPU checks pass across both backends, including streamed-instance
+snapshot/empty-batch checks and target reuse. Repeating weather, shrine, effect and
+resolution transitions after warmup adds **zero pipelines** (46 before/after).
+The prepared-asset check passes complete byte equivalence, collision/roof/RNG and
+named draw order. Ten matched views retain geometry, UI and materials: OpenGL
+matches the old game pixel for pixel in nine views; storm differs by one channel
+count in one pixel. An unmatched natural lightning-flash reference is retained
+alongside the repeated, matching-phase storm capture. Vulkan/OpenGL mean absolute
+RGB differences remain **0.05–2.66 / 255**, p99 **1–26 counts**; Vulkan still lacks
+OpenGL's 8× anisotropy.
 
-Reproduce (Python helpers take their own locks; the direct session takes one explicitly):
+Fresh prepared-copy startup, six source and six executable processes, X11
+1280×720, scale 1, one screenshot; lock wait excluded and all packs hit:
+
+| Launch | Load median (range), s | Whole process median (range), s |
+|---|---|---|
+| Source | 1.485 (1.43–1.94) | 3.165 (3.10–3.65) |
+| Executable | 1.380 (1.35–1.40) | 1.605 (1.58–1.63) |
+
+This includes render warmup and meets the **3.5 s warm load median** budget.
+Before: 1.475 / 1.355 s load medians. Source whole-process time includes compilation.
+
+The rebuilt package passes fresh-extract forest startup on Wayland at 2133×1200,
+with HOME pointing to an **existing empty directory**, `XDG_CACHE_HOME` absent,
+and the same HOME reused for the warm launch. All packs hit, zero PNG decodes,
+18,587 vegetation placements; a valid HOME `.cache/sloppy/*.vkpipelines` file is
+saved. New HOME/local shader caches are cold; system page caches are not flushed.
+
+| Package backend | Empty-cache load / whole process, s | Warm load / whole process, s |
+|---|---|---|
+| Vulkan mailbox | 9.62 / 11.54 | 1.83 / 3.74 |
+| OpenGL | 22.73 / 24.66 | 1.92 / 3.83 |
+
+Reproduce (Python helpers own their render locks; never wrap them):
 
 ```sh
-python3 tools/render_evidence.py pacing --output build/sloppy060/pacing --repeats 2 --frames 720
-sloppy/bin/sloppy build tools/render_session.jo -o build/sloppy060/session
-# Repeat once with SLOPPY_VSYNC=1 (FIFO), once with 0 (mailbox):
-BOTW_SKIP=1 BOTW_AT="-1140,1500,3.14" BOTW_HOUR=11 BOTW_WEATHER=clear \
-BOTW_FRAME_LOG=1 SLOPPY_PLATFORM=wayland SLOPPY_WINDOW=1280x720 \
-SLOPPY_VSYNC=1 PROBE_SECONDS=600 PROBE_ROUTE=forest \
-flock /tmp/botw-render.lock timeout -k 5 660 build/sloppy060/session > build/sloppy060/forest-fifo.log
-python3 tools/renderer_compare.py --baseline build/sloppy060/master-renamed --output build/sloppy060/visual
-python3 tools/startup_copy_check.py --ref HEAD --repeats 6 --binary-repeats 6 --output build/sloppy060/startup
+python3 tools/render_evidence.py soak --backend opengl --route forest --seconds 600 --output build/pacing/gl
+python3 tools/render_evidence.py soak --backend vulkan --present-modes mailbox --route forest --seconds 600 --output build/pacing/vk
+python3 tools/render_evidence.py pacing --backend opengl --repeats 2 --frames 720 --output build/pacing/scenes-gl
+python3 tools/render_evidence.py pacing --backend vulkan --present-modes mailbox --repeats 2 --frames 720 --output build/pacing/scenes-vk
+# Add --stage-trace and LD_AUDIT=$PWD/build/pacing/vulkan-trace.so for attribution:
+cc -shared -fPIC -O2 tools/vulkan_call_trace.c -o build/pacing/vulkan-trace.so
+python3 tools/pacing_report.py build/pacing/vk/*.log --output build/pacing/tails.json.gz
+python3 tools/startup_copy_check.py --ref HEAD --backend vulkan --repeats 6 --binary-repeats 6 --output build/pacing/startup
+tools/prepared_assets_check.sh
+tools/package_linux.sh
+python3 tools/package_cache_check.py build/slop-of-the-wild-linux-x86_64.tar.gz --output build/pacing/package
 ```
 
-[Machine-readable release evidence](performance-sloppy060.json) records the full-suite
-verdicts, flags, source hashes, repeats, session windows and audio/render results.
-Raw evidence is retained in `build/sloppy060/pacing-final/`,
-`build/sloppy060/forest-final/`, `build/sloppy060/visual-gated/` and
-`build/sloppy060/startup-final/`. Summaries include flags, source/executable
-hashes, every repeat and raw interval/window distributions.
-
-[Historical pre-0.6 OpenGL timing, contention and startup studies](rounds/PERFORMANCE_PRE_060.md)
-retain their original data and protocols. They are separate from these release
-Vulkan measurements.
+[Current machine-readable results and hashes](performance-pacing060.json).
+Raw logs, all native calls, images, unmatched flash, startup repeats and package
+extracts/caches remain under `build/pacing060/`. The prior full release suite and
+historical distributions remain in [release evidence](performance-sloppy060.json)
+and [pre-0.6 studies](rounds/PERFORMANCE_PRE_060.md).

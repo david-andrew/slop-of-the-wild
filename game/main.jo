@@ -4,6 +4,10 @@ build:
 
 use 'audio_cache.jo'
 use 'gfx.jo'
+use 'sky.jo'
+use 'talus.jo'
+use 'shadows.jo'
+use 'dome.jo'
 use 'shader_load.jo'
 from 'shadows.jo' import shadow_frame
 use 'cputime.jo'
@@ -1367,7 +1371,24 @@ render_warmup = ():
     # Outdoor view (terrain, vegetation, grass, sky, water, characters, post).
     p = v3(-1000.0, height_at(-1000.0, 1620.0) + 3.0, 1620.0)
     render_world(p, p + vec3(0, 0, 1), 50.0)
+    bind_target(post.scene)
     trail_warmup(sc.vp, p + vec3(0, 0, 3))
+    fx_warmup(sc.cam, sc.vp, sc.view)
+    # Dawn mist is otherwise not requested until the hour changes mid-play.
+    saved_env = env
+    env.valley_mist = 1.0
+    draw_valley_mist(sc.vp, sc.cam)
+    env = saved_env
+    # Uniform variants share a Vulkan pipeline, but exercise their materials
+    # with rain/night values as well as the daytime outdoor path.
+    saved_rain = rain_streaks
+    rain_streaks = [vec3(5, 5, 5)]
+    env.night = 1.0
+    env.rain = 1.0
+    env.wet = 1.0
+    render_world(p, p + vec3(0, 0, 1), 50.0)
+    rain_streaks = saved_rain
+    env = saved_env
     # The wet terrain is a separate program; link completion alone does not warm
     # its driver draw specialization. Compile that path before the first storm.
     saved_wet = env.wet
@@ -1379,12 +1400,45 @@ render_warmup = ():
     # warmup views and the first visible frames.
     shadow_frame = saved_shadow_frame
     # Shrine material, mechanisms, the monk's translucent dome, and the cave pool.
-    shr_cur = 0
-    p = srec[0].o + vec3(0, 2, -4)
-    render_world(p, p + vec3(0, 0, -1), 50.0)
+    loop id in [0..4):
+        shr_cur = id
+        p = srec[id].o + vec3(0, 2, -4)
+        render_world(p, p + vec3(0, 0, -1), 50.0)
+    # Owa's channel and Keh's cistern use separate program IDs.
+    bind_target(post.scene)
+    shrine_water_draw(sc.vp, p, sc.cam, 1.0)
+    # Talus instancing has its own vertex shader in both color and shadow passes.
+    saved_scene = sc
+    rocks = [TalusRockI(translation(p), vec4(1, 1, 1, 1), vec4(0, 0, 0, 3.5))]
+    gl_opaque_state()
+    talus_draw_rocks(rocks)
+    # Rigid and instanced props can enter view independently of actor culling.
+    props = inst_buffer([PropI(translation(p), vec4(1, 1, 1, 1))])
+    draw_prop(talus_crystal, translation(p), vec4(1, 1, 1, 1))
+    draw_props(talus_crystal, props)
+    dome_draw(sc.vp, p, 1.0, sc.cam, vec3(0.3, 0.8, 1), 1.0)
+    gl_opaque_state()
+    shadow_begin(0)
+    sc.shadow = true
+    sc.shadow_k = 0
+    talus_draw_rocks(rocks)
+    draw_prop(talus_crystal, translation(p), vec4(1, 1, 1, 1))
+    draw_props(talus_crystal, props)
+    shadow_end()
+    gl_delete_buffer(props.vbo)
+    sc = saved_scene
     shr_cur = -1
     render_world(SOR_BED + vec3(0, 2, 4), SOR_BED, 50.0)
     shr_cur = saved_shrine
+    # Prepare the second production resolution and its smoke/grain targets.
+    # Return to the original scale so startup and the controller agree.
+    saved_scale = post.scale
+    if not __res_fixed:
+        post.scale = if pixel_size().x > 1700.0: 0.72 else: 0.9
+        render_world(view_pos(), view_target(), view_fov())
+        bind_target(post.scene)
+        fx_warmup(sc.cam, sc.vp, sc.view)
+        post.scale = saved_scale
     # Both staggered shadow cascades belong to the starting camera before play begins.
     loop k in [0..2): render_world(view_pos(), view_target(), view_fov())
     story.title_alpha = 1.0
@@ -1392,7 +1446,11 @@ render_warmup = ():
     flush()
     story.title_alpha = saved_alpha
     when TARGET != "wasm":
-        glFinish()
+        if game_vulkan_backend():
+            __vg_end_pass()
+            if __vk_recording: __vk_submit_and_wait()
+            if __vk_pcache_dirty: __vk_save_pipeline_cache()
+        else: glFinish()
     shader_load_cache_commit()
     sc = saved_sc
     cpu_timing = ct

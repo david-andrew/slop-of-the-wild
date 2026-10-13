@@ -24,11 +24,33 @@ host-visible device-memory aperture. OpenGL remains available with
 absence of the OpenGL path's 8× anisotropy.
 
 Presentation probes measure producer returns and CPU, not scanout or delivered
-frames. GLES per-pass timer queries apply only to OpenGL. The launchers select
-`SLOPPY_VSYNC=0` after lower measured p99 in forest, fire and overlook; direct
-release launches default to FIFO. The performance report retains every outlier
+frames. GLES per-pass timer queries apply only to OpenGL. The launchers explicitly select
+Vulkan mailbox (`SLOPPY_VULKAN=1`, `SLOPPY_VSYNC=0`): release OpenGL
+Wayland frame callbacks pace worse on the matched route and three views. Direct
+release Vulkan launches default to FIFO. The performance report retains every outlier
 and counts complete windows over 20 and 17.5 ms.
 
 [Runtime adapters and historical language findings](SLOPPY_NOTES.md),
 [movement reference gaps](MOVEMENT_REFERENCE.md),
 [pre-0.6 performance history](rounds/PERFORMANCE_PRE_060.md).
+
+
+## where Sloppy fell short
+
+The populated Vulkan disk cache does not pre-create shader/state pipelines.
+Two previously unused shadow combinations still compiled mid-play; game warmup
+now covers them. A public prewarm API should accept attachment formats, topology,
+color mask, blending and shadow bias, and cache persistence should leave the
+critical draw/present path.
+
+Resource churn is fixed in the game, but native acquisition, frame-fence and
+submission tails remain. `__vk_present` acquires with an infinite timeout before
+submitting the recorded render work; `__vk_begin_frame` waits on a fixed two-frame
+ring. The runtime needs render/acquire overlap, configurable queue depth with
+paced backpressure, backend-independent fences and separate acquire/submit/
+present/fence telemetry. Vulkan GPU timestamp queries are also needed to separate
+GPU draw work from upload/barrier stalls; the existing GLES timers cannot do it.
+Persistent uploads currently end passes and barrier all memory: resource-scoped
+hazards and a public reusable upload interface would avoid game dependence on
+private buffer internals. Release OpenGL Wayland additionally needs a mailbox
+option that honors the public presentation setting. No runtime files are patched.

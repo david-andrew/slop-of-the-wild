@@ -1828,6 +1828,19 @@ vegetation_warmup = ():
     vp = orthographic(-30.0, 30.0, -5.0, 55.0, 0.1, 100.0) * look_at(vec3(0, 20, 50), vec3(0, 20, 0), vec3(0, 1, 0))
     u = veg_u(vp, false)
     u.cam = vec3(0, 20, 50)
+    # A visibility bucket can contain at most all placements of its model.
+    # Reserve that exact bound once, so later camera/cascade changes never grow
+    # a device buffer. Each pass/LOD keeps independent persistent storage.
+    counts = fill(0, vmodels.len())
+    loop p in places: counts[p.model] += 1
+    loop i in [0..vmodels.len()):
+        bytes = max(counts[i], 1) * size_of(VInst)
+        loop k in [0..VEG_PASSES):
+            b = __bk(k, i)
+            inst_reserve(buckets[b].buf, bytes)
+            if vmodels[i].has_low: inst_reserve(far_buckets[b].buf, bytes)
+            if vmodels[i].has_shadow_low: inst_reserve(shadow_buckets[b].buf, bytes)
+            if vmodels[i].crown.count > 0: inst_reserve(crown_buckets[b].buf, bytes)
     # Seed only drawable paths. Uploaded snapshots remain empty: the first real
     # cull always uploads its exact ordered instances, even for a singleton.
     loop i in [0..vmodels.len()):

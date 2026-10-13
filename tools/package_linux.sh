@@ -32,6 +32,8 @@ cat > "$pkg/play.sh" <<'EOF'
 #!/bin/bash
 # Runs the game from this folder (its assets are read relative to it).
 cd "$(dirname "$0")"
+# Match the measured source launcher defaults.
+export SLOPPY_VULKAN=${SLOPPY_VULKAN-1}
 export SLOPPY_VSYNC=${SLOPPY_VSYNC-0}
 exec ./slop-of-the-wild "$@"
 EOF
@@ -45,7 +47,7 @@ Linux x86-64. Run:
     ./play.sh
 
 Vulkan mailbox presentation is the default; SLOPPY_VSYNC=1 ./play.sh selects FIFO.
-SLOPPY_VULKAN=0 ./play.sh selects OpenGL.
+SLOPPY_VULKAN=0 ./play.sh selects OpenGL (Wayland frame-callback pacing in 0.6).
 
 The first launch prepares shaders for your GPU (up to ~30 s); later launches take a few seconds.
 Progress is saved to ~/.botw-clone-save (choose "Start over" in the menu, or run

@@ -407,6 +407,7 @@ player_shock_t = 0.0
 player_burn_t = 0.0
 __pbuf_smoke = InstBuf()
 __smoke_rt = Target()
+__smoke_spare = Target()
 __smoke_comp = Shader()
 __smoke_fullres = env("BOTW_FX_FULLRES") != none
 __pbuf_add = InstBuf()
@@ -434,22 +435,27 @@ fx_smoke_draw = (u: PartU):
     # Visible smoke writes response zero, avoiding intermediate foliage/stone tags.
     if __smoke_fullres:
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ZERO)
-        inst_update(__pbuf_smoke, __pinst_smoke)
+        inst_stream(__pbuf_smoke, __pinst_smoke)
         draw_static(part_sh, part_quad, __pbuf_smoke, u)
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
         return
     w = max(post.w / 2, 1)
     h = max(post.h / 2, 1)
     if __smoke_rt.w != w or __smoke_rt.h != h:
-        free_target(__smoke_rt)
-        __smoke_rt = make_target(w, h, true, false)
+        previous = __smoke_rt
+        if __smoke_spare.w == w and __smoke_spare.h == h:
+            __smoke_rt = __smoke_spare
+        else:
+            free_target(__smoke_spare)
+            __smoke_rt = make_target(w, h, true, false)
+        __smoke_spare = previous
     bind_target(__smoke_rt)
     glDisable(GL_DEPTH_TEST)
     glClearColor(0, 0, 0, 0)
     glClear(GL_COLOR_BUFFER_BIT)
     # The offscreen alpha stores coverage; RGB is premultiplied by this blend.
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
-    inst_update(__pbuf_smoke, __pinst_smoke)
+    inst_stream(__pbuf_smoke, __pinst_smoke)
     draw_static(part_sh, part_quad, __pbuf_smoke, u)
     bind_target(post.scene)
     glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ZERO)
@@ -1145,20 +1151,20 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
         eprint("fx particles: frame {frame_number()} live {particles.len()} smoke {__pinst_smoke.len()} alpha {__pinst_alpha.len()} heat {__pinst_heat.len()} flames {__pinst_flame.len()} additive {__pinst_add.len()} smoke_scale {smoke_scale}")
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
     if __pinst_heat.len() > 0:
-        inst_update(__pbuf_alpha, __pinst_heat)
+        inst_stream(__pbuf_alpha, __pinst_heat)
         draw_static(part_sh, part_quad, __pbuf_alpha, u)
     fx_smoke_draw(u)
     if __pinst_alpha.len() > 0:
-        inst_update(__pbuf_alpha, __pinst_alpha)
+        inst_stream(__pbuf_alpha, __pinst_alpha)
         draw_static(part_sh, part_quad, __pbuf_alpha, u)
     if __pinst_flame.len() > 0:
         # Unlike emissive sparks, overlapping flame bodies must never sum to white.
         # Reuse the alpha instance buffer after its previous draw; no new target/pass.
-        inst_update(__pbuf_alpha, __pinst_flame)
+        inst_stream(__pbuf_alpha, __pinst_flame)
         draw_static(part_sh, part_quad, __pbuf_alpha, u)
     if __pinst_add.len() > 0:
         glBlendFunc(GL_SRC_ALPHA, GL_ONE)
-        inst_update(__pbuf_add, __pinst_add)
+        inst_stream(__pbuf_add, __pinst_add)
         draw_static(part_sh, part_quad, __pbuf_add, u)
     glDepthMask(1)
     glDisable(GL_BLEND)
@@ -1254,7 +1260,45 @@ fx_electric_draw = (cam: vec3, vp: mat4, view: mat4):
     glEnable(GL_BLEND)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE)
     # Reuse the additive buffer after its scene submission.
-    inst_update(__pbuf_add, __pinst_electric)
+    inst_stream(__pbuf_add, __pinst_electric)
     draw_static(__electric_sh, part_quad, __pbuf_add, u)
     glDisable(GL_BLEND)
     glDepthMask(1)
+
+# Exercise every FX shader/blend/target combination without emitting particles,
+# consuming random numbers, or altering the live lists. Weather, fire, contact
+# shadows and night fireflies share part_sh; lightning uses __electric_sh.
+fx_warmup = (cam: vec3, vp: mat4, view: mat4):
+    right = vec3(view[0].x, view[1].x, view[2].x)
+    up = vec3(view[0].y, view[1].y, view[2].y)
+    u = PartU(vp, right, up, cam, env.haze, f32(env.density), post.depth_copy.depth, f32(sc.near), f32(sc.far))
+    u.scene = post.depth_copy.color
+    u.ground_heights = height_tex
+    u.ground_grid = vec4(f32(hf.x0), f32(hf.z0), f32(hf.cell), 1)
+    sample: PInst[]
+    loop kind in [0, 1, 3, 4, 12, 17, 18]:
+        sample.push(PInst(vec4(cam + vec3(0, 0, -4), 0.1), vec4(1, 0.5, 0.1, 0.5), vec4(0, f32(kind), 0, -1.45)))
+    glEnable(GL_DEPTH_TEST)
+    glDepthMask(0)
+    glDisable(GL_CULL_FACE)
+    glEnable(GL_BLEND)
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+    inst_stream(__pbuf_alpha, sample)
+    draw_static(part_sh, part_quad, __pbuf_alpha, u)
+    saved = __pinst_smoke
+    __pinst_smoke = sample
+    fx_smoke_draw(u)
+    __pinst_smoke = saved
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+    inst_stream(__pbuf_add, sample)
+    draw_static(part_sh, part_quad, __pbuf_add, u)
+    # Electric strokes are drawn after post into the RGBA8 output, rather
+    # than the HDR scene. Match that attachment format/depth in a tiny target.
+    output = make_target(64, 64, false, true)
+    bind_target(output)
+    glDisable(GL_DEPTH_TEST)
+    draw_static(__electric_sh, part_quad, __pbuf_add, u)
+    bind_target(post.scene)
+    free_target(output)
+    glDepthMask(1)
+    glDisable(GL_BLEND)

@@ -89,3 +89,26 @@ game_read_pixels(0, 0, 32, 32, data(actual))
 assert(expected[0] >= 127 and expected[2] == 0)
 loop i in [0..actual.len()): assert(actual[i] == expected[i], "texture binding restored inside cached scope")
 print("draw cache: alternating shader/instanced VAOs, indexed and dynamic count/VBO storage update; identical RGBA bytes, scalar updates and external sampler binding interference PASS")
+
+# Updating one instance name twice must preserve both already recorded draws.
+# Empty visible batches must neither draw old instances nor allocate a store.
+batch_mesh = mesh([CacheVert(vec2(-1, -1), vec4(0.2, 0.4, 0.6, 1)), CacheVert(vec2(0, -1), vec4(0.2, 0.4, 0.6, 1)), CacheVert(vec2(-1, 1), vec4(0.2, 0.4, 0.6, 1))])
+bind_target(target)
+glDisable(GL_BLEND)
+glClearColor(0, 0, 0, 0)
+glClear(GL_COLOR_BUFFER_BIT)
+inst_stream(instances, [CacheInst(vec2(0, 0))])
+draw_static(s, batch_mesh, instances, CacheU(0.25))
+inst_stream(instances, [CacheInst(vec2(1, 0))])
+draw_static(s, batch_mesh, instances, CacheU(0.75))
+empty_instances: CacheInst[]
+inst_stream(instances, empty_instances)
+assert(instances.count == 0)
+draw_static(s, batch_mesh, instances, CacheU(1.0))
+rgba = fill(u8(0), 32 * 32 * 4)
+game_read_pixels(0, 0, 32, 32, data(rgba))
+left = (8 * 32 + 8) * 4
+right = (8 * 32 + 24) * 4
+assert(rgba[left] >= 12 and rgba[left] <= 14, "first streamed batch retains its own vertices")
+assert(rgba[right] >= 37 and rgba[right] <= 39, "second streamed batch has updated vertices")
+print("streamed instance snapshots and empty batches PASS")

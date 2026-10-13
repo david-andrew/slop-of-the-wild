@@ -1,0 +1,54 @@
+# Caller owns one render lock. Exercise transitions AFTER production warmup;
+# assert Vulkan has no first-use pipelines left for these material/state paths.
+build:
+    opt = release
+use '../game/main.jo'
+use '../game/post.jo'
+use '../game/render.jo'
+use '../game/scene.jo'
+use '../game/fx.jo'
+use '../game/sky.jo'
+use '../game/shrines.jo'
+use '../game/camera.jo'
+use '../game/env.jo'
+use '../game/gfx.jo'
+pipeline_inventory = () -> int:
+    total = 0
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            loop p in __vgp: total += p.pipelines.len()
+    total
+check_draw = ():
+    draw()
+    before = pipeline_inventory()
+    saved_env = env
+    saved_shrine = shr_cur
+    high_scale = post.scale
+    high = post.scene.color.id
+    post.scale = if pixel_size().x > 1700.0: 0.72 else: 0.9
+    low = post_begin().color.id
+    post.scale = high_scale
+    assert(post_begin().color.id == high, "scale return reuses the original HDR target")
+    post.scale = if pixel_size().x > 1700.0: 0.72 else: 0.9
+    assert(post_begin().color.id == low, "second scale switch reuses its target")
+    post.scale = high_scale
+    loop id in [0..4):
+        shr_cur = id
+        p = srec[id].o + vec3(0, 2, -4)
+        render_world(p, p + vec3(0, 0, -1), 50.0)
+    shr_cur = -1
+    env.wet = 1.0
+    env.rain = 1.0
+    env.night = 1.0
+    env.valley_mist = 1.0
+    render_world(view_pos(), view_target(), view_fov())
+    bind_target(post.scene)
+    fx_warmup(sc.cam, sc.vp, sc.view)
+    env = saved_env
+    shr_cur = saved_shrine
+    after = pipeline_inventory()
+    eprint("warmup coverage: before {before} after {after}")
+    assert(before == after, "a transition created a pipeline after render_warmup")
+    print("PASS warmup: weather/night/fire/electric/shrines and cached scale transitions")
+    exit(0)
+main = (): __game_run(update, check_draw)

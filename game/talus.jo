@@ -660,7 +660,7 @@ talus_model_init = ():
 
 talus_draw_rocks = (rocks: TalusRockI[]):
     talus_model_init()
-    inst_update(talus_rock_buf,rocks)
+    inst_stream(talus_rock_buf,rocks)
     u = build_u((if sc.shadow:cascades.vps[sc.shadow_k] else:sc.vp),sc.shadow)
     u.player = vec3(0,-1000,0)
     draw_static(talus_rock_sh,talus_rock,talus_rock_buf,u)

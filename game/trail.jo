@@ -82,7 +82,11 @@ trail_draw = (vp: mat4, now: f64):
         c = TrailV(bases[k + 1], vec2(ages[k + 1], 0))
         d = TrailV(tips[k + 1], vec2(ages[k + 1], 1))
         loop v in [a, b, d, a, d, c]: vs.push(v)
-    update_mesh(__trail_mesh, vs)
+    # A ribbon is regenerated while swinging. STREAM keeps previous draws'
+    # vertices immutable in Vulkan's arena and avoids device-buffer growth.
+    glBindBuffer(GL_ARRAY_BUFFER, u32(__trail_mesh.vbo))
+    glBufferData(GL_ARRAY_BUFFER, vs.len() * size_of(TrailV), data(vs) as *u8, GL_STREAM_DRAW)
+    __trail_mesh.count = vs.len()
     gl_blend_state(true)
     glDisable(GL_CULL_FACE)
     draw_fast(__trail_sh, __trail_mesh, TrailU(vp))

@@ -628,7 +628,7 @@ __glider_rig = (canopy: mat4, left: vec3, right: vec3):
         __glider_cord_mesh = mesh(b.vs,b.idx)
         __glider_cord_buffer = inst_buffer([PropI(mat4(),vec4(1,1,1,1))])
     strands = glider_rig_instances(canopy,left,right)
-    inst_update(__glider_cord_buffer,strands)
+    inst_stream(__glider_cord_buffer,strands)
     draw_props(__glider_cord_mesh,__glider_cord_buffer)
 
 # how wet the hero is: soaked swimming or in the rain, dries over a minute

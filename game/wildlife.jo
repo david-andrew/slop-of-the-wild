@@ -864,12 +864,12 @@ wildlife_draw = ():
     loop k in [0..9):
         b = __wild_batches[k]
         if b.items.len() == 0: continue
-        inst_update(b.buf, b.items)
+        inst_stream(b.buf, b.items)
         draw_props(__bird(k / 3, k % 3), b.buf, creature = 1.0)
     loop k in [12..18):
         b = __wild_batches[k]
         if b.items.len() == 0: continue
-        inst_update(b.buf, b.items)
+        inst_stream(b.buf, b.items)
         draw_props(__bird_details[k - 12], b.buf, creature = 1.0)
     if sc.shadow or env.night > 0.5 or env.rain > 0.3: return
     loop bi in 0.. and b in bugs:
@@ -883,7 +883,7 @@ wildlife_draw = ():
     loop k in [0..3):
         b = __wild_batches[9 + k]
         if b.items.len() == 0: continue
-        inst_update(b.buf, b.items)
+        inst_stream(b.buf, b.items)
         draw_props(__butterfly(k), b.buf)
 
 # A continuous wedge from tucked haunches to tall withers and a heavy rooting head.

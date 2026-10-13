@@ -2,6 +2,7 @@ build:
     opt = release
 use '../game/main.jo'
 use '../game/gfx.jo'
+use '../game/post.jo'
 use '../game/frametime.jo'
 use '../game/cputime.jo'
 use '../game/player.jo'
@@ -147,6 +148,22 @@ probe_memory = (minute: int):
             if words[0] == "VmSize:": virtual = to_int(words[1]) ?? 0
     eprint("session minute: {minute} elapsed {time()-probe_start:.3} rss_kib {rss} virtual_kib {virtual} heap_allocations {live} heap_cached_big_bytes {kept} distance {probe_distance:.3} engaged {probe_engaged} swing {probe_swing} fx {probe_fire} rain {probe_rain} snow {probe_snow}")
 
+# Fingerprint live handles too: length alone misses recycled texture names and
+# replaced buffers. Upload arena blocks and descriptor high-water are separate.
+probe_resource_last = (0, 0, 0, 0, 0, 0)
+probe_resources = (phase: str):
+    if not __vk: return
+    images = 0
+    buffers = 0
+    pipes = 0
+    loop t in __vgt: images += t.img.image
+    loop b in __vgb: buffers += b.buf.buffer
+    loop p in __vgp: pipes += p.pipelines.len()
+    state = (images, buffers, pipes, __vk_blocks.len(), __vk_slot_next, __vk_swapchain)
+    if state == probe_resource_last: return
+    probe_resource_last = state
+    eprint("resource trace: frame {frame_number()} phase {phase} images {images} buffers {buffers} pipelines {pipes} blocks {__vk_blocks.len()} slots {__vk_slot_next} swapchain {__vk_swapchain} scale {post.scale:.2}")
+
 main = ():
     window(__win_title, __win_w, __win_h)
     assert(__wayland and not __soft)
@@ -168,7 +185,9 @@ main = ():
         dt = clamp(now-last, 0.0, 0.1)
         last = now
         if __fixed_step: dt = 1.0/60.0
-        if probe_start == 0.0: probe_start = now
+        if probe_start == 0.0:
+            probe_start = now
+            eprint("probe monotonic start: {probe_start:.9}")
         __gl_screen_resize(__win_w, __win_h)
         probe_run_start = if probe_stages: time() else: 0.0
         probe_run_thread_start = if probe_stages: frame_thread_time() else: 0.0
@@ -183,7 +202,8 @@ main = ():
         n = frame_number()-1
         interval = if returned > 0.0: (done-returned)*1000.0 else: 0.0
         returned = done
-        if probe_stages and interval > 17.5 and n > 240:
+        if probe_stages: probe_resources("after")
+        if probe_stages and interval > 20.0 and n > 0:
             prior = if n > 0: (loop_start - (done - interval/1000.0))*1000.0 else: 0.0
             eprint("return stages: frame {n} interval {interval:.3} prior {prior:.3} poll {(polled-loop_start)*1000.0:.3}/{(poll_thread-loop_thread)*1000.0:.3} resize {(probe_run_start-polled)*1000.0:.3}/{(probe_run_thread_start-poll_thread)*1000.0:.3} runtime_pre {probe_pre_ms:.3}/{probe_pre_thread_ms:.3} callback {probe_callback_ms:.3}/{probe_thread_ms:.3} runtime_post {(started-probe_draw_end)*1000.0:.3}/{(submitted_thread-probe_draw_thread_end)*1000.0:.3} present {__last_present*1000.0:.3}/{(present_thread-submitted_thread)*1000.0:.3}")
             cpu_return_trace(n)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wayland present-return and real-time rendered soak evidence (opt-in).
+"""Wayland Vulkan/OpenGL present-return and rendered soak evidence (opt-in).
 
 Owns ONE flock per bounded render; do not wrap this script in flock. All scratch
 stays under build/. Presentation timestamps are call returns, never scanout.
@@ -52,7 +52,7 @@ def analyze(log, soak=False):
     assert [int(r[0]) for r in rows] == list(range(len(rows))), 'missing/duplicate frame rows'
     assert all(b[1] > a[1] for a, b in zip(rows, rows[1:])), 'non-monotonic return timestamps'
     assert all(r[6:] == [2133, 1200] for r in rows), 'physical viewport mismatch'
-    assert 'vulkan (' in text, 'Vulkan presentation not confirmed'
+    assert 'probe presentation:' in text, 'presentation not confirmed'
     game_rows = [[float(v) for v in line.split()[2:]] for line in text.splitlines()
                  if line.startswith('frame sample:')]
     returns = {int(r[0]): r for r in rows}
@@ -133,7 +133,10 @@ def run(exe, out, name, flags, seconds=None, frames=2400):
     if seconds is not None:
         assert 'PROBE_SECONDS' in env and 'SLOPPY_SCREENSHOT' not in env
     expected_mode = 'mailbox' if env.get('SLOPPY_VSYNC') == '0' else 'fifo'
-    assert f'probe swapchain: {1 if expected_mode == "mailbox" else 2}' in log_path.read_text(), 'presentation mode mismatch'
+    if env.get('SLOPPY_VULKAN') != '0':
+        assert f'probe swapchain: {1 if expected_mode == "mailbox" else 2}' in log_path.read_text(), 'presentation mode mismatch'
+    else:
+        assert 'vulkan (' not in log_path.read_text(), 'OpenGL was requested'
     meta['load_after'] = Path('/proc/loadavg').read_text().strip()
     from PIL import Image
     assert Image.open(out/(name+'.png')).size == (2133, 1200)
@@ -142,7 +145,7 @@ def run(exe, out, name, flags, seconds=None, frames=2400):
         assert len(result['minutes']) == int(seconds//60), 'missing minute snapshots'
         last = result['minutes'][-1]
         assert last['distance'] > 100, 'traversal did not move'
-        if seconds >= 300:
+        if seconds >= 300 and env.get('PROBE_ROUTE', 'mixed') == 'mixed':
             assert last['engaged'] > 0 and last['swing'] > 0, 'combat coverage missing'
             assert last['fx'] > 0 and last['rain'] > 0 and last['snow'] > 0, 'route coverage missing'
     (out/(name+'.json')).write_text(json.dumps(result, indent=2)+'\n')
@@ -156,11 +159,16 @@ def main():
     p.add_argument('--output', type=Path, default=Path('build/render-evidence'))
     p.add_argument('--repeats', type=int, default=3)
     p.add_argument('--views', nargs='+', choices=['forest', 'fire', 'overlook'], default=['forest', 'fire', 'overlook'])
+    p.add_argument('--backend', choices=['vulkan', 'opengl'], default='vulkan')
+    p.add_argument('--route', choices=['forest', 'mixed'], default='mixed')
     p.add_argument('--stage-trace', action='store_true', help='attribute return tails to poll/resize/runtime and existing game CPU/GPU stages')
     p.add_argument('--frames', type=int, default=2400)
-    p.add_argument('--present-modes', nargs='+', choices=['default','mailbox'], default=['default','mailbox'])
+    p.add_argument('--present-modes', nargs='+', choices=['default','mailbox'], default=None)
     p.add_argument('--seconds', type=int, default=600)
     a = p.parse_args()
+    if a.present_modes is None: a.present_modes = ['default'] if a.backend == 'opengl' else ['default', 'mailbox']
+    if a.backend == 'opengl' and a.present_modes != ['default']:
+        p.error('0.6 OpenGL Wayland uses frame callbacks; use --present-modes default')
     os.chdir(ROOT)
     out = a.output.resolve()
     assert out.is_relative_to(ROOT/'build'), 'scratch output must be under build/'
@@ -177,18 +185,21 @@ def main():
               'sources': {str(p): digest(p) for p in sorted(Path('game').glob('*.jo'))},
               'tools': {str(p): digest(p) for p in [Path('tools/render_session.jo'), Path(__file__)]},
               'runtime': {str(p): digest(p) for p in sorted(Path('sloppy/lib').rglob('*.jo'))},
-              'protocol': 'Vulkan swapchain; 2133x1200 physical pixels; default dynamic scene scale; '
+              'protocol': 'Wayland backend comparison; 2133x1200 physical pixels; default dynamic scene scale; '
                           'steady probes use fixed 1/60 simulation dt, soak uses real production dt; '
                           'nearest-rank percentiles; present-call return timestamps, NOT compositor delivery; '
                           '240 warmup frames excluded only from pacing aggregate; per-minute soak includes all transitions',
               'runs': {}}
     trace = {'PROBE_STAGES': '1', 'BOTW_CPU': '1', 'BOTW_CPU_TRACE_MS': '8',
-             'BOTW_GPU': '1', 'BOTW_GPU_FRAME_LOG': '1'} if a.stage_trace else {}
+             'BOTW_CPU_RETURN_TRACE': '1', 'BOTW_DRAW_TRACE': '1', 'BOTW_GPU_FRAME_LOG': '1'} if a.stage_trace else {}
+    trace['SLOPPY_VULKAN'] = '0' if a.backend == 'opengl' else '1'
+    if a.backend == 'opengl': trace['SLOPPY_VSYNC'] = '0'
+    result['backend'] = a.backend
     result['stage_tracing'] = a.stage_trace
     if a.mode == 'soak':
         for mode in a.present_modes:
-            flags = {**trace, 'BOTW_AT': '-1000,1620,3.14',
-                     'BOTW_GIVE': 'travelers_sword,travelers_shield,warm_doublet'}
+            flags = {**trace, 'BOTW_AT': '-1140,1500,3.14' if a.route == 'forest' else '-1000,1620,3.14', 'PROBE_ROUTE': a.route}
+            if a.route == 'mixed': flags['BOTW_GIVE'] = 'travelers_sword,travelers_shield,warm_doublet'
             if mode == 'mailbox': flags['SLOPPY_VSYNC'] = '0'
             name = f'soak-{mode}'
             result['runs'][name] = run(exe, out, name, flags, seconds=a.seconds)
