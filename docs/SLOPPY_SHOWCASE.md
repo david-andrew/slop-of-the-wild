@@ -37,6 +37,8 @@ and counts complete windows over 20 and 17.5 ms.
 
 ## where Sloppy fell short
 
+[Verified 0.6.0 issues, standalone reproducers and upstream changes](SLOPPY_UPSTREAM.md).
+
 The populated Vulkan disk cache does not pre-create shader/state pipelines.
 Two previously unused shadow combinations still compiled mid-play; game warmup
 now covers them. A public prewarm API should accept attachment formats, topology,

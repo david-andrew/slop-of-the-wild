@@ -102,11 +102,8 @@ sheikah_traces = (w: vec3, n: vec3, sparse: f32) -> f32:
     t = (max(max(a, b), c) * step(0.45, h2) + ring) * step(sparse, hash12(cell + vec2(11.0, 5.0)))
     clamp(t + node * 0.3, 0.0, 1.0)
 
-build_fs = (i: BuildO, u: BuildU) -> vec4:
-    if u.collapse > 0.0:
-        holes = hash12(floor(i.world.xz * 12.0) + vec2(floor(i.world.y * 10.0), 0))
-        glsl_discard(holes < smoothstep(0.35, 1.0, u.collapse))
-    if u.shadow_pass > 0.5: return vec4(1, 1, 1, 1)
+# Shared with the scripted tower-base clearance regression.
+build_occluder_fade = (i: BuildO, u: BuildU) -> f32:
     # whatever stands between the camera and the player dissolves (a stake, a pillar, a wall's end)
     cp = u.player + vec3(0, 1.0, 0) - u.cam
     tt = clamp(dot(i.world - u.cam, cp) / max(dot(cp, cp), 0.01), 0.0, 1.0)
@@ -120,11 +117,24 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
     if u.fade_width > 1.1 and u.keep_radius > 0.0:
         outer = smoothstep(u.keep_radius, u.keep_radius + 0.6, length(i.world.xz - u.keep_center))
         fade = max(fade, outer * smoothstep(1.15, 0.95, tt))
-    if u.player.y < -500.0: fade = 0.0
-    # Climbing uses a broad lens/support clearance region. Averaging partially
-    # discarded beam pixels in the paint pass left a brown ghost over the legs.
-    # Remove those foreground supports completely, preserving the held shaft.
-    if u.fade_width > 1.1 and fade > 0.001: fade = 1.0
+    # Torn roots and structural timber can intersect the body even at the
+    # sightline endpoint. Clear its one-metre capsule, retaining held stone.
+    body = vec3(u.player.x, clamp(i.world.y, u.player.y, u.player.y + 1.6), u.player.z)
+    if i.mat.w > 0.5 and i.mat.w < 1.5 and length(i.world-body) < 1.0: fade = 1.0
+    if length(i.world-u.cam) < 1.0: fade = 1.0
+    if u.player.y < -500.0 or u.shadow_pass > 0.5: fade = 0.0
+    # Every structural surface uses complete clearance, including while entering
+    # a climb from the base rocks. Partial coverage averages into ghost beams
+    # in the paint pass even before the broader climbing fade becomes active.
+    if fade > 0.001: fade = 1.0
+    fade
+
+build_fs = (i: BuildO, u: BuildU) -> vec4:
+    if u.collapse > 0.0:
+        holes = hash12(floor(i.world.xz * 12.0) + vec2(floor(i.world.y * 10.0), 0))
+        glsl_discard(holes < smoothstep(0.35, 1.0, u.collapse))
+    if u.shadow_pass > 0.5: return vec4(1, 1, 1, 1)
+    fade = build_occluder_fade(i, u)
     glsl_discard(fade > glsl_occluder_dither(i.pos.xy))
     n = normalize(i.normal)
     w = i.world

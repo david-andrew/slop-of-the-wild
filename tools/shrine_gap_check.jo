@@ -1,0 +1,108 @@
+build:
+    opt = release
+# Inspect actual static render triangles across doorway clearance, including
+# decorative meshes that never enter the collision/routing checks.
+use '../game/architecture_assets.jo'
+use '../game/build.jo'
+use '../game/shrines.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/audio_cache.jo'
+from '../game/build.jo' import __bchunks, __named_b
+
+assert(env("BOTW_ASSET_CHECK") != none, "run with BOTW_ASSET_CHECK=1 for CPU-only mesh inspection")
+__audio_state = 2
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+hit = architecture_load()
+prepared = env("BOTW_NO_PREPARED_ASSETS") == none
+assert(hit == prepared, "prepare assets before the prepared gap check")
+if not hit:
+    sor_interior()
+    structures_build()
+
+struct Passage:
+    name: str
+    id: int
+    center: vec3
+    east: bool
+    width: f32
+    height: f32 = 2.5
+    depth: f32 = 3.0
+
+# Centers span the one-metre reveal. Exclude jambs and floor contact; moving
+# leaves and breakable walls are checked by the obstruction and route suites.
+passages = [
+    Passage("oman main", OMAN, vec3(0,0.3,-24.5), false, 2.8),
+    Passage("oman foundry", OMAN, vec3(-12.5,0.3,-28), true, 2.8),
+    Passage("jaba north", JABAIJ, vec3(0,0.3,-20.5), false, 2.8),
+    Passage("jaba east", JABAIJ, vec3(10.5,0.3,-10), true, 2.8),
+    Passage("jaba gallery", JABAIJ, vec3(15.5,0.3,-10), true, 2.1),
+    Passage("jaba shutter housing", JABAIJ, vec3(32,0.3,-10), true, 1.4),
+    Passage("jaba far fracture", JABAIJ, vec3(61,0.3,-10), true, 6.5),
+    Passage("jaba monk", JABAIJ, vec3(0,0.3,-44.5), false, 2.8),
+    Passage("owa stair", OWA, vec3(0,1.1,-42.5), false, 2.8),
+    Passage("owa clockwork", OWA, vec3(12.5,0.3,-28.5), true, 2.8),
+    Passage("owa low refuge", OWA, vec3(2.5,2.8,-51), true, 1.2, depth=2.0),
+    Passage("owa middle refuge", OWA, vec3(2.5,5.3,-61), true, 1.2, depth=2.0),
+    Passage("owa high refuge", OWA, vec3(2.5,7.8,-71), true, 1.2, depth=2.0),
+    Passage("owa monk", OWA, vec3(2.5,9.3,-80), true, 2.8),
+    Passage("keh gate housing", KEH, vec3(0,0.3,-30.5), false, 2.8),
+    Passage("keh raised niche", KEH, vec3(-12.5,3.95,-14), true, 2.8),
+    Passage("keh frost cistern", KEH, vec3(-16.5,3.95,-14), true, 2.8),
+]
+
+triangle_hit = (origin: vec3, dir: vec3, a: vec3, b: vec3, c: vec3, distance: f32) -> bool:
+    ab = b-a
+    ac = c-a
+    p = cross(dir,ac)
+    det = dot(ab,p)
+    if abs(det) < 0.00001: return false
+    inv = 1.0/det
+    t = origin-a
+    u = dot(t,p)*inv
+    if u < 0.0 or u > 1.0: return false
+    q = cross(t,ab)
+    v = dot(dir,q)*inv
+    if v < 0.0 or u+v > 1.0: return false
+    d = dot(ac,q)*inv
+    d > 0.001 and d < distance-0.001
+
+failures = 0
+loop passage in passages:
+    center = srec[passage.id].o+passage.center
+    dir = if passage.east: vec3(1,0,0) else: vec3(0,0,1)
+    across = if passage.east: vec3(0,0,1) else: vec3(1,0,0)
+    half = vec3(passage.width*0.5,passage.height,passage.width*0.5)
+    if passage.east: half.x = passage.depth*0.5
+    else: half.z = passage.depth*0.5
+    lo = center-half*vec3(1,0,1)
+    hi = center+half
+    blocked = 0
+    inspect = (name: str, b: Builder):
+        if name == "ja_baij_crack_n" or name == "ja_baij_crack_e" or name == "ja_baij_crack_far": return
+        # Proximity rune prompts hover at refuge mouths; they are intentional
+        # UI markers, not masonry or panels obstructing the open passage.
+        if contains(name,"_rune_"): return
+        loop tri in [0..b.idx.len()/3):
+            a=b.verts[int(b.idx[tri*3])].pos
+            bb=b.verts[int(b.idx[tri*3+1])].pos
+            c=b.verts[int(b.idx[tri*3+2])].pos
+            lower=min(a,min(bb,c))
+            upper=max(a,max(bb,c))
+            if lower.x > hi.x or lower.y > hi.y or lower.z > hi.z or upper.x < lo.x or upper.y < lo.y or upper.z < lo.z: continue
+            loop row in [0..5):
+                loop col in [0..7):
+                    eye = center-dir*(passage.depth*0.5)+across*(passage.width*(f32(col)/6.0-0.5))+vec3(0,passage.height*f32(row)/4.0,0)
+                    if triangle_hit(eye,dir,a,bb,c,passage.depth):
+                        if blocked == 0: print("BLOCKED {passage.name}: {name}, triangle {tri}, sample {col},{row}")
+                        blocked += 1
+    loop key,b in __bchunks: inspect("chunk {key}",b)
+    loop key,b in __named_b: inspect(key,b)
+    if blocked > 0: failures += 1
+    else: print("PASS {passage.name}: 35 clear render rays")
+assert(failures == 0, "static decorative/render geometry obstructs a shrine passage")
+print("PASS shrine gaps: {passages.len()} passages, 595 render rays, " + (if prepared: "prepared" else: "generated"))

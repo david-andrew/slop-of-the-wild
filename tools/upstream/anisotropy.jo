@@ -1,0 +1,13 @@
+# Caller owns the render lock. Probe the exact feature factory used by vkCreateDevice.
+# VkPhysicalDeviceFeatures2: 4 u32 header words, samplerAnisotropy at feature 19.
+window("Anisotropic sampler support", 64, 64)
+assert(__vk, "run with SLOPPY_VULKAN=1 on a Vulkan-capable device")
+supported, s12, s13 = __vk_features(false)
+vkGetPhysicalDeviceFeatures2(__vk_pd, data(supported) as *u8)
+requested, r12, r13 = __vk_features(true)
+t = gl_create_texture()
+glBindTexture(GL_TEXTURE_2D, u32(t))
+gl_tex_image(1, 1, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, null, 0)
+glTexParameteri(GL_TEXTURE_2D, u32(0x84FE), 8) # GL_TEXTURE_MAX_ANISOTROPY
+print("samplerAnisotropy supported: {supported[23]}; requested by runtime: {requested[23]}; expected enabled when supported")
+assert(supported[23] == 0 or requested[23] != 0, "Vulkan leaves anisotropy disabled and ignores its texture parameter")

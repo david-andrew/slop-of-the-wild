@@ -1,0 +1,153 @@
+build:
+    opt = release
+# Fresh-process generated/prepared checks of the actual submitted geometry.
+use '../game/gfx.jo'
+use '../game/player.jo'
+use '../game/render.jo'
+use '../game/architecture_assets.jo'
+use '../game/shrines.jo'
+use '../game/build.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/items.jo'
+use '../game/audio_cache.jo'
+from '../game/build.jo' import __named_b, __bchunks
+from '../game/shrines.jo' import __cracks, __crates, __oman_bridge, __shuttle, __shutter, __return_bridge, __keh_gate, __keh_crate, __float, __ice, __gears, __barrels, __barrel_mesh, __pillar, __pillar_stand, __pillar_bridge, __tip_mesh, __boulder_mesh, __puzzle_capture, __puzzle_meshes, __puzzle_mesh_names, __boom, __enter_now, BOULDER_R
+assert(env("BOTW_ASSET_CHECK") != none, "use shrine_obstruction_check.sh")
+__audio_state = 2
+capture_meshes = ():
+    __puzzle_capture = true
+capture_meshes()
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+prepared = env("BOTW_NO_PREPARED_ASSETS") == none
+hit = architecture_load()
+assert(hit == prepared, "prepared obstruction check must load its pack")
+if not hit:
+    sor_interior()
+    structures_build()
+static_count = colliders.len()
+items_init()
+shrines_setup()
+
+bounds = (b: Builder) -> (vec3, vec3):
+    assert(b.verts.len() > 0 and b.idx.len() > 0, "empty named puzzle mesh")
+    lo = vec3(10000, 10000, 10000)
+    hi = -lo
+    loop k in b.idx:
+        assert(int(k) < b.verts.len(), "invalid puzzle mesh index")
+        p = b.verts[int(k)].pos
+        lo = min(lo, p)
+        hi = max(hi, p)
+    (lo, hi)
+mesh_bounds = (m: Mesh, model: mat4) -> (vec3, vec3):
+    assert(m.count > 0 and m.index_count > 0, "empty submitted puzzle mesh")
+    name = __puzzle_mesh_names.get(m.vbo)
+    assert(name != none, "every moving obstruction must have an inspected named body")
+    source = __puzzle_meshes[name!]
+    b = Builder()
+    loop v in source.vs: b.verts.push(BVert(transform_point(model, v.pos), v.normal, v.color, vec4(0, 0, 0, 0)))
+    b.idx = source.idx
+    bounds(b)
+matching = (name: str, extent: (vec3, vec3), c: Collider, tolerance: f32 = 0.10):
+    model = translation(c.pos) * rotation_y(c.yaw)
+    lo = vec3(10000, 10000, 10000)
+    hi = -lo
+    loop x in [-1.0, 1.0]:
+        loop y in [0.0, 2.0]:
+            loop z in [-1.0, 1.0]:
+                p = transform_point(model, c.half * v3(x, y, z))
+                lo = min(lo, p)
+                hi = max(hi, p)
+    if length(extent.0-lo) > tolerance or length(extent.1-hi) > tolerance:
+        print("FAIL {name}: mesh {extent} collider {lo}, {hi}")
+    assert(length(extent.0-lo) <= tolerance and length(extent.1-hi) <= tolerance, "named mesh must match collider position and extent")
+    print("PASS {name}: nonempty named mesh matches collider")
+
+# Walls, floors, piers, stairs and other fixed puzzle obstructions use the
+# named architecture chunks. Inspect their real vertices in collider space.
+static_checked = 0
+static_misses = 0
+loop id in [0..4):
+    r = srec[id]
+    points: BVert[]
+    collect = (b: Builder):
+        loop v in b.verts:
+            q = v.pos-r.o
+            if q.x >= r.lo.x-2 and q.x <= r.hi.x+2 and q.z >= r.lo.z-2 and q.z <= r.hi.z+2 and q.y >= r.lo.y-2 and q.y <= r.hi.y+2: points.push(v)
+    loop key,b in __bchunks: collect(b)
+    loop key,b in __named_b: collect(b)
+    slate_tiles = 0
+    loop v in points:
+        if v.normal.y > 0.99 and abs(v.pos.y-r.o.y-0.003) < 0.0001 and v.color.z > v.color.y and v.color.y > v.color.x: slate_tiles += 1
+    assert(slate_tiles > 100, "actual shrine floor vertices must retain blue slate pigment")
+    loop ci in [0..static_count):
+        c = colliders[ci]
+        q = c.pos-r.o
+        if q.x < r.lo.x or q.x > r.hi.x or q.z < r.lo.z or q.z > r.hi.z or q.y < r.lo.y or q.y > r.hi.y: continue
+        lo = vec3(10000,10000,10000)
+        hi = -lo
+        vertices = 0
+        roof = false
+        loop point in points:
+            p = transform_dir(rotation_y(-c.yaw), point.pos-c.pos)
+            if abs(p.x) > c.half.x+0.15 or abs(p.z) > c.half.z+0.15 or p.y < -0.15 or p.y > c.half.y*2.0+0.15: continue
+            lo = min(lo,p)
+            hi = max(hi,p)
+            vertices += 1
+            if q.y > 4.0 and abs(p.y) < 0.15 and point.normal.y < -0.5: roof = true
+        expected_lo = vec3(-c.half.x,0,-c.half.z)
+        expected_hi = vec3(c.half.x,c.half.y*2.0,c.half.z)
+        # Profiled ceiling colliders extend through an invisible backing above
+        # the room. Their collision-facing soffit and horizontal reach must
+        # match; puzzle walls, floors and piers require their full solid extent.
+        # Flat exterior caps above the profiled soffit seal the roof; their
+        # sides start at the room top and extend one metre upward out of view.
+        roof = roof or (q.y >= 6.0 and abs(c.half.y-0.5) < 0.001 and c.half.x >= 6.0 and c.half.z >= 5.0 and hi.y < 0.5)
+        if roof: expected_hi.y = hi.y
+        if vertices < 3 or length(lo-expected_lo) > 0.55 or length(hi-expected_hi) > 0.55:
+            print("STATIC MISS {r.key}/{ci}: base {q} half {c.half} mesh {lo} {hi} vertices {vertices}")
+            static_misses += 1
+        static_checked += 1
+print("static obstructions: {static_checked} checked, {static_misses} misses")
+assert(static_checked > 100 and static_misses == 0, "every fixed shrine collider needs visible chunk geometry of matching extent")
+
+loop crack in __cracks:
+    assert(__named_b.contains(crack.name) and named_meshes.contains(crack.name), "Crack has no named render mesh")
+    matching(crack.name, bounds(__named_b[crack.name]), colliders[crack.col])
+    assert(named_visible(crack.name), "intact wall must be submitted by the renderer")
+assert(__cracks.len() == 3, "all breakable walls checked")
+pieces: Piece[] = [__oman_bridge, __shuttle, __shutter, __return_bridge, __keh_gate, __keh_crate, __float]
+loop crate in __crates: pieces.push(crate.p)
+loop gear in __gears: pieces.push(gear.p)
+loop ice in __ice: pieces.push(ice)
+loop p in pieces:
+    assert(p.col >= 0, "puzzle piece has no collider")
+    matching(__puzzle_mesh_names[p.body.vbo], mesh_bounds(p.body, piece_model(p)), colliders[p.col])
+loop barrel in __barrels:
+    # The wooden drum extends 3 cm beyond its intentionally forgiving capsule.
+    matching("ja_baij_barrel", mesh_bounds(__barrel_mesh, translation(barrel.pos)), colliders[barrel.col], 0.16)
+matching("ja_baij_pillar_standing", mesh_bounds(__pillar.body, piece_model(__pillar)), colliders[__pillar_stand])
+# Falling pillar uses its actual pivot rotation, then a level walkable top.
+matching("ja_baij_pillar_bridge", mesh_bounds(__pillar.body, translation(__pillar.pos) * rotation_x(PI/2.0)), colliders[__pillar_bridge])
+loop gear in __gears:
+    loop tip in gear.tips:
+        matching("owa_daim_tip", mesh_bounds(__tip_mesh, translation(colliders[tip].pos)), colliders[tip])
+rolling = mesh_bounds(__boulder_mesh, mat4())
+assert(length(rolling.0+v3(BOULDER_R,BOULDER_R,BOULDER_R)) < 0.12 and length(rolling.1-v3(BOULDER_R,BOULDER_R,BOULDER_R)) < 0.12, "named boulder mesh matches its gameplay hit radius")
+print("PASS owa_daim_boulder: nonempty named mesh matches rolling hit radius")
+
+# A blast must retire both the collider and that exact named mesh. Route tests
+# separately exercise carrying, ignition, throwing and walking through each gap.
+__enter_now(JABAIJ)
+pl.pos = srec[JABAIJ].o + vec3(-12, 0, 0)
+loop crack in __cracks:
+    __boom(crack.center)
+    assert(not colliders[crack.col].active and not named_visible(crack.name), "broken wall still collides or draws")
+print("PASS all four shrine puzzle obstructions: " + (if prepared: "prepared" else: "generated"))

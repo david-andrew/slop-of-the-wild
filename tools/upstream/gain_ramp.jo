@@ -1,0 +1,11 @@
+# No output device/window required: exercise the release's actual mixer.
+__audio_state = 2
+master_volume(1)
+id = play(Sound(fill(f32(0.5), 2048)))
+__mix(1)
+before = __mix_buf[0]
+set_volume(id, 0)
+__mix(1)
+after = __mix_buf[0]
+print("gain-change boundary: {before} -> {after}; expected a ramp over e.g. 960 frames")
+assert(abs(after-before) < 0.001, "a smooth per-voice gain change needs a mixer ramp")

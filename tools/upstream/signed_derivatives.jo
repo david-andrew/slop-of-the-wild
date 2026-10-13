@@ -1,0 +1,14 @@
+# Expected compile failure in 0.6.0: signed fragment derivatives are absent.
+struct ProbeVertex:
+    pos: vec2
+struct ProbeParams:
+    tex: Texture
+struct ProbeOut:
+    pos: vec4
+    uv: vec2
+probe_vs = (v: ProbeVertex, u: ProbeParams) -> ProbeOut:
+    ProbeOut(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+probe_fs = (i: ProbeOut, u: ProbeParams) -> vec4:
+    vec4(dFdx(i.uv.x), dFdy(i.uv.y), 0, 1)
+source = shader(probe_vs, probe_fs)
+print(source.fs)

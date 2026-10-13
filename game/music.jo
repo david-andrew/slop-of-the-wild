@@ -301,6 +301,9 @@ struct ScoreVoice:
     ramp_from = 1.0
     ramp_at = 0.0
     ramp_frames = 1.0
+    source_pos = 0.0
+    mixer_pos = 0.0
+    prepared_until = 0
 score_voices: ScoreVoice[]
 music_hold = 0.0
 music_activity = 0.0
@@ -319,37 +322,70 @@ music_cue_duck = ():
     music_duck = min(music_duck, music_duck_floor)
     loop v in score_voices: score_set_volume(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))
 
+# The release mixer consumes at most 8192 output frames per update. A pitched
+# ring retains that lookahead plus interpolation guards, independent of note length.
+# Shared piano banks stay immutable; only this small voice-owned window is baked.
 __score_play = (s: Sound, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
     initial = gain * (if score: seq.volume else: 1.0) * music_duck
-    samples = [loop x in s.samples: x * f32(initial)]
-    id = play(Sound(samples), 1.0, pan, pitch)
+    window = int(ceil(8192.0 * pitch)) + 3
+    id = play(Sound(fill(f32(0), window * 2)), 1.0, pan, pitch, true)
     score_voices.push(ScoreVoice(id, gain, duration(s) / pitch, context = score, source = s, applied = initial, ramp_from = initial))
+    score_set_volume(id, initial)
     id
 
-# Each score handle owns its samples. Bake interrupted 20 ms gain envelopes into
-# its unplayed suffix, leaving the release's mixer and shared sample banks intact.
-# Only gain changes touch the suffix; source frames account for pitched playback.
+# Retarget from the envelope's current sample, preserving the 20 ms attack even
+# when interrupted. Unchanged targets only fill newly consumed ring frames.
+# Absolute source positions keep pitch/interpolation continuous across ring wraps.
 score_set_volume = (id: int, gain: f64):
     si = -1
     loop i in [0..score_voices.len()):
         if score_voices[i].id == id: si = i
     if si < 0: return
-    v = score_voices[si]
-    if abs(gain - v.applied) < 0.00000001: return
     loop vi in [0..__voices.len()):
         if __voices[vi].id != id: continue
+        v = score_voices[si]
         pos = __voices[vi].pos
-        start = floor(pos)
-        from = mix(v.ramp_from, v.applied, clamp((start - v.ramp_at) / v.ramp_frames, 0.0, 1.0))
-        frames = max(1.0, 0.020 * f64(MIX_RATE) * __voices[vi].pitch)
-        loop frame in [int(start)..v.source.samples.len() / 2):
-            g = f32(mix(from, gain, clamp((f64(frame) - start) / frames, 0.0, 1.0)))
-            __voices[vi].sound.samples[frame * 2] = v.source.samples[frame * 2] * g
-            __voices[vi].sound.samples[frame * 2 + 1] = v.source.samples[frame * 2 + 1] * g
-        score_voices[si].ramp_from = from
-        score_voices[si].applied = gain
-        score_voices[si].ramp_at = start
-        score_voices[si].ramp_frames = frames
+        window = __voices[vi].sound.samples.len() / 2
+        consumed = pos - v.mixer_pos
+        if consumed < 0.0: consumed += f64(window)
+        absolute = v.source_pos + consumed
+        start = int(floor(absolute))
+        changed = abs(gain - v.applied) >= 0.00000001
+        was_silent = v.applied == 0.0
+        if changed:
+            v.ramp_from = mix(v.ramp_from, v.applied, clamp((f64(start) - v.ramp_at) / v.ramp_frames, 0.0, 1.0))
+            v.applied = gain
+            v.ramp_at = f64(start)
+            v.ramp_frames = max(1.0, 0.020 * f64(MIX_RATE) * __voices[vi].pitch)
+        # Keep the constant tail at unity in the ring and apply its gain in the
+        # mixer. Retargeting then bakes only the 20 ms ramp, not the lookahead.
+        # Zero needs an actual silent suffix so a single large block can finish
+        # the release; entering/leaving silence rewrites the bounded window once.
+        scale_ = if gain > 0.0: gain else: max(v.ramp_from, 1.0)
+        __voices[vi].volume = f32(scale_)
+        end = start + window - 1
+        ramp_end = int(ceil(v.ramp_at + v.ramp_frames)) + 1
+        source = data(v.source.samples)
+        dest = data(__voices[vi].sound.samples)
+        total = v.source.samples.len() / 2
+        # Refill consumed source frames, then repair the
+        # interrupted ramp. A silence transition uses one complete window span.
+        spans = if changed and (was_silent or gain == 0.0): [(start,end)] else: [(max(start,v.prepared_until),end), (start,if changed: min(end,ramp_end) else: start)]
+        slope = (v.applied-v.ramp_from)/v.ramp_frames
+        inverse = 1.0/scale_
+        target = f32(v.applied*inverse)
+        loop span in spans:
+            ring = (int(floor(pos)) + span.0 - start) % window
+            loop frame in [span.0..span.1):
+                g = if frame >= ramp_end-1: target else: f32((v.ramp_from + (f64(frame)-v.ramp_at)*slope)*inverse)
+                dest[ring * 2] = if frame < total: source[frame * 2] * g else: 0.0
+                dest[ring * 2 + 1] = if frame < total: source[frame * 2 + 1] * g else: 0.0
+                ring += 1
+                if ring == window: ring = 0
+        v.source_pos = absolute
+        v.mixer_pos = pos
+        v.prepared_until = end
+        score_voices[si] = v
         return
 
 piano_play = (midi: int, vel: f64 = 0.7, pan: f64 = 0.0, volume: f64 = 1.0, short: bool = false, score: bool = false, restrained: bool = false) -> int:
@@ -623,7 +659,7 @@ music_update = (dt: f64):
         score_voices[i].left -= dt
         v = score_voices[i]
         if v.left <= 0.0:
-            if v.retiring: stop(v.id)
+            stop(v.id)
             score_voices.remove(i)
         else:
             score_set_volume(v.id, (if v.retiring: 0.0 else: v.gain * (if v.context: seq.volume else: 1.0) * music_duck))

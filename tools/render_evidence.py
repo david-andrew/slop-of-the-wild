@@ -145,6 +145,16 @@ def run(exe, out, name, flags, seconds=None, frames=2400):
         assert len(result['minutes']) == int(seconds//60), 'missing minute snapshots'
         last = result['minutes'][-1]
         assert last['distance'] > 100, 'traversal did not move'
+        if env.get('PROBE_ROUTE') == 'combat':
+            score = [(float(t),m) for t,m in re.findall(r'combat score: elapsed ([\d.]+) mood (\w+)',log_path.read_text())]
+            entries = [t for t,m in score if 40 <= t < 80 and m == 'combat']
+            assert entries, 'combat entry must occur after warmup'
+            # Production hits can defeat the camp before the scheduled retreat.
+            # Retain either actual victory or escape rather than forcing AI/HP.
+            assert any(t > entries[0] and m != 'combat' for t,m in score), 'combat exit must resume field score'
+            assert score[-1][1] != 'combat', 'route must finish outside combat'
+            assert last['engaged'] > 0 and last['swing'] > 0, 'combat coverage missing'
+            result['score_transitions'] = [dict(elapsed_s=t,mood=m) for t,m in score]
         if seconds >= 300 and env.get('PROBE_ROUTE', 'mixed') == 'mixed':
             assert last['engaged'] > 0 and last['swing'] > 0, 'combat coverage missing'
             assert last['fx'] > 0 and last['rain'] > 0 and last['snow'] > 0, 'route coverage missing'
@@ -160,7 +170,7 @@ def main():
     p.add_argument('--repeats', type=int, default=3)
     p.add_argument('--views', nargs='+', choices=['forest', 'fire', 'overlook'], default=['forest', 'fire', 'overlook'])
     p.add_argument('--backend', choices=['vulkan', 'opengl'], default='vulkan')
-    p.add_argument('--route', choices=['forest', 'mixed'], default='mixed')
+    p.add_argument('--route', choices=['forest', 'mixed', 'combat'], default='mixed')
     p.add_argument('--stage-trace', action='store_true', help='attribute return tails to poll/resize/runtime and existing game CPU/GPU stages')
     p.add_argument('--frames', type=int, default=2400)
     p.add_argument('--present-modes', nargs='+', choices=['default','mailbox'], default=None)
@@ -198,8 +208,8 @@ def main():
     result['stage_tracing'] = a.stage_trace
     if a.mode == 'soak':
         for mode in a.present_modes:
-            flags = {**trace, 'BOTW_AT': '-1140,1500,3.14' if a.route == 'forest' else '-1000,1620,3.14', 'PROBE_ROUTE': a.route}
-            if a.route == 'mixed': flags['BOTW_GIVE'] = 'travelers_sword,travelers_shield,warm_doublet'
+            flags = {**trace, 'BOTW_AT': '-1140,1500,3.14' if a.route == 'forest' else ('-1030,1805,1.57' if a.route == 'combat' else '-1000,1620,3.14'), 'PROBE_ROUTE': a.route}
+            if a.route in ('mixed','combat'): flags['BOTW_GIVE'] = 'travelers_sword,travelers_shield,warm_doublet'
             if mode == 'mailbox': flags['SLOPPY_VSYNC'] = '0'
             name = f'soak-{mode}'
             result['runs'][name] = run(exe, out, name, flags, seconds=a.seconds)

@@ -29,6 +29,8 @@ struct Cam:
     lock_side = -1.0          # keep the nearest shoulder for this lock acquisition
     lock_side_chosen = false
     crowd_frame = 0.0         # eased space for three-enemy windups and foreground equipment
+    paired_target = vec3(0, 0, 0)
+    paired_lift = 0.0
     lock_frame = 0.0          # enter the paired combat view over 0.4 s; ease its release
     aiming = false            # drawing the bow: close over the right shoulder
     override = false          # cutscenes set pos/target directly
@@ -229,6 +231,7 @@ camera_snap = ():
     cam.return_settle = false
     cam.hurt_frame = 0.0
     cam.lock_frame = 0.0
+    cam.paired_lift = 0.0
     cam.crowd_frame = 0.0
     cam.step_remaining = 0.0
     cam.step_player = pl.pos
@@ -429,6 +432,24 @@ __camera_step = (dt: f64):
                 ceiling = raycast(want_pos, vec3(0, 1, 0), gy - f64(want_pos.y) + 0.35, true, false)
                 if ceiling.hit: gy = min(gy, f64(want_pos.y) + max(0.0, ceiling.dist - 0.35))
             want_pos.y = f32(gy)
+    # A blocked shoulder can leave the lens between the two actors. Rise into
+    # a clear view rather than widening past 100 degrees or losing either head.
+    want_lift = 0.0
+    if cam.locked and not cam.aiming and cam.lock_frame > 0.5 and (pl.state == .ground or pl.state == .hurt):
+        a = normalize((pl.pos-want_pos).xz)
+        b = normalize((cam.lock_pos-want_pos).xz)
+        angle = acos(clamp(f64(dot(a,b)),-1.0,1.0))*0.5
+        need_fov = atan(tan(angle)/(0.25*aspect_ratio()))*360.0/PI
+        if min(free,cam.collision_dist) < boom-0.5 and need_fov > 80.0: want_lift = 4.0
+    cam.paired_lift = approach(cam.paired_lift,want_lift,6.0,dt)
+    if cam.paired_lift > 0.001:
+        rise = cam.paired_lift
+        right = normalize(cross(back,vec3(0,1,0)))
+        loop side in [-0.35,0.0,0.35]:
+            ceiling = raycast(want_pos+right*f32(side),vec3(0,1,0),rise+0.35,true,false)
+            if ceiling.hit: rise = min(rise,max(0.0,ceiling.dist-0.35))
+        want_pos.y += f32(rise)
+        cam.collision_active = true
     # Terrain projection can replace the point; lens clearance is the final goal constraint.
     if length(camera_lens_push(want_pos)) > 0.001: cam.collision_active = true
     if cam.override: cam.return_settle = false
@@ -455,11 +476,28 @@ __camera_step = (dt: f64):
         cam.shake = max(0.0, cam.shake - dt * 2.5)
         s = f32(cam.shake * cam.shake * 0.25)
         cam.pos += vec3(f32(random(-1.0, 1.0)) * s, f32(random(-1.0, 1.0)) * s, f32(random(-1.0, 1.0)) * s)
+    # Aim along the angular midpoint, not the root-space midpoint: perspective
+    # makes nearby Link larger than the distant lock target. Keep both centred
+    # even with the guard shoulder active, without moving the collision boom.
+    if cam.lock_frame > 0.0:
+        a = normalize(pl.pos + vec3(0,1.2,0) - cam.pos)
+        b = normalize(cam.lock_pos + vec3(0,1.2,0) - cam.pos)
+        centre = normalize(vec3(a.x+b.x,0,a.z+b.z))
+        centre.y = (cam.target.y-cam.pos.y) / max(0.1,length((cam.target-cam.pos).xz))
+        cam.paired_target = cam.pos + normalize(centre) * max(1.0, length(cam.target-cam.pos))
     # Movement follows the displayed view while a crane returns to control.
     # Using the hidden chase yaw made held forward input change direction at release.
     cam_yaw_global = if cam.return_settle: yaw_of(view_target() - view_pos()) else: cam.yaw
     if cam.handoff_t >= 1.0: cam.handoff_duration = 0.75
     combat_fov = lerp(cam.fov, lerp(min(cam.fov, 44.0), max(cam.fov, 54.0), cam.crowd_frame), cam.lock_frame)
+    if cam.lock_frame > 0.0:
+        a = normalize((pl.pos-cam.pos).xz)
+        b = normalize((cam.lock_pos-cam.pos).xz)
+        half_angle = acos(clamp(f64(dot(a,b)),-1.0,1.0))*0.5
+        # The angular midpoint centres the pair; widen only enough that each
+        # head remains in the middle third, with room for its posed offset.
+        paired_fov = clamp(atan(tan(half_angle)/(0.25*aspect_ratio()))*360.0/PI,44.0,100.0)
+        combat_fov = max(combat_fov,lerp(cam.fov,paired_fov,cam.lock_frame))
     aim_fov = approach(aim_fov, (if cam.aiming: 38.0 else: combat_fov), (if cam.lock_frame > 0.0: 20.0 else: 8.0), dt)
     __camera_record_view()
 
@@ -520,11 +558,19 @@ __camera_turn = (dt: f64):
         boom = lerp(4.4,6.4,cam.crowd_frame)
         chosen = shoulder
         best_free = -1.0
-        loop scale_ in [1.0,0.8,0.6,0.45]:
+        loop scale_ in [1.0,0.8,0.6,0.45,1.2,1.4]:
             candidate = max(0.38,shoulder*scale_)
             back = __cam_back(facing+candidate*cam.lock_side,cam.pitch)
             hit = raycast(paired,back,boom+0.35,true,false)
-            free = if hit.hit: hit.dist else: boom+0.35
+            free = if hit.hit: max(0.8,hit.dist-0.45) else: boom
+            # Evaluate the same lens radius used by the final ground sweep.
+            # A centre-only candidate can graze a trunk and collapse the boom
+            # until the lens sits between the paired actors.
+            right = normalize(cross(back,vec3(0,1,0)))
+            loop edge in [-0.35,0.35]:
+                h = raycast(paired+right*f32(edge),back,boom+0.35,true,false)
+                if h.hit: free = min(free,max(0.8,h.dist-0.45))
+            if use_terrain and cam_open_ground: free = min(free,__cam_free(paired,back,boom))
             if free > best_free+0.35:
                 chosen = candidate
                 best_free = free
@@ -639,7 +685,7 @@ camera_aim_blend = (a: vec3, at: vec3, b: vec3, bt: vec3, k: f64) -> vec3:
 
 # the camera actually used this frame (player camera blended with a cutscene camera)
 view_pos = () -> vec3: if cam.override: mix(cam.from_pos, cam.o_pos, f32(smooth01(cam.blend))) else: mix(cam.pos, cam.from_pos, f32(smooth01(cam.blend)))
-view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, cam.target, cam.from_pos, cam.from_target, smooth01(cam.blend))
+view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, mix(cam.target,cam.paired_target,f32(cam.lock_frame)), cam.from_pos, cam.from_target, smooth01(cam.blend))
 view_fov = () -> f64: if cam.override: lerp(cam.from_fov, cam.o_fov, smooth01(cam.blend)) else: lerp(aim_fov, cam.from_fov, smooth01(cam.blend))
 __camdbg = env("BOTW_CAMDBG") != none
 __camdbg_n = 0

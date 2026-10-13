@@ -40,6 +40,9 @@ __noop = (): pass
 see_out_from = vec3(0, -10000, 0)
 hooks = RenderHooks(__noop, __noop)
 
+# Retained CPU mesh buffers follow the same culling as submitted named draws.
+named_visible = (name: str) -> bool: not (hooks.named_hidden.get(name) ?? false)
+
 terr_u = (vp: mat4, shadow: bool) -> TerrU:
     TerrU(vp = vp, cam = sc.cam, origin = vec2(f32(hf.x0), f32(hf.z0)), cell = f32(hf.cell), nsamp = f32(hf.n),
         heights = height_tex, normals = normal_tex, mats = mat_tex, sun_dir = env.light_dir,
@@ -55,7 +58,7 @@ build_u = (vp: mat4, shadow: bool) -> BuildU:
 
 __draw_named_all = (u0: BuildU):
     loop k, m in named_meshes:
-        if hooks.named_hidden.get(k) ?? false: continue
+        if not named_visible(k): continue
         u = u0
         if let g = hooks.named_glow.get(k): u.glow_color = g
         if k == "tower":

@@ -1,0 +1,52 @@
+# Shared production-controller route: one complete circuit on the lowest shaft.
+use '../game/player.jo'
+use '../game/gfx.jo'
+use '../game/input.jo'
+use '../game/camera.jo'
+use '../game/structures.jo'
+use '../game/build.jo'
+
+base_climb_angle = 0.0
+base_climb_previous = vec3(0,0,1)
+base_climb_frames = 0
+base_climb_start = ():
+    p = TOWER + vec3(0,4,4.85)
+    pl = Player(pos=p,last_safe=p,state=.air,grounded=false,st_t=0.3,vel=vec3(0,-1,0),face=0,air_peak=f64(p.y))
+    cam = Cam(yaw=0,pitch=0.25)
+    cam_yaw_global = 0.0
+    act = Actions(move=vec2(0,1))
+    loop k in [0..6): player_update(1.0/60.0)
+    assert(pl.state==.climb,"production controller catches the lowest tower course")
+    camera_snap()
+    base_climb_previous = normalize(vec3(pl.pos.x-TOWER.x,0,pl.pos.z-TOWER.z))
+
+base_climb_step = (dt: f64):
+    act = Actions(move=vec2(1,0))
+    player_update(dt)
+    assert(pl.state==.climb,"uninterrupted climb around the tower base")
+    direction = normalize(vec3(pl.pos.x-TOWER.x,0,pl.pos.z-TOWER.z))
+    base_climb_angle += atan2(f64(cross(base_climb_previous,direction).y),f64(dot(base_climb_previous,direction)))
+    base_climb_previous = direction
+    cam.yaw=pl.face
+    camera_update(dt)
+    base_climb_frames += 1
+    # Probe every part of a one-metre body capsule and the lens with the exact
+    # production architecture fade, including before/after the climb state.
+    loop width in [1.0,2.6]:
+        u = BuildU(cam=view_pos(),player=pl.pos,fade_width=f32(width))
+        loop y in [0.0,0.8,1.6]:
+            loop k in [0..12):
+                a = f64(k)*TAU/12.0
+                point = pl.pos + v3(cos(a)*0.95,y,sin(a)*0.95)
+                vertex = BuildO(vec4(),point,vec3(0,1,0),vec4(1,1,1,1),WOODM)
+                assert(build_occluder_fade(vertex,u)==1.0,"no structural timber survives inside the body capsule")
+                vertex.world = u.cam + v3(cos(a)*0.95,0,sin(a)*0.95)
+                vertex.mat = PLAIN
+                assert(build_occluder_fade(vertex,u)==1.0,"every structural material clears the lens fully")
+                u.shadow_pass = 1.0
+                assert(build_occluder_fade(vertex,u)==0.0,"clearance cannot remove structure shadows")
+                u.shadow_pass = 0.0
+
+base_climb_finish = ():
+    assert(abs(base_climb_angle)>TAU,"script must circle the entire tower base")
+    print("PASS tower-base climb: {base_climb_frames} uninterrupted controller frames, {base_climb_angle*180.0/PI:.1} degrees; 1m timber/lens clearance every frame and retained shadows")

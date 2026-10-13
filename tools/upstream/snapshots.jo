@@ -1,0 +1,29 @@
+# Caller owns the render lock. glBlitFramebuffer exists as a raw GLES extern,
+# but does not route through Vulkan. Use full-size byte readback as the control.
+window("Color/depth snapshot", 64, 64)
+make_fb = () -> int:
+    t = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(t))
+    gl_tex_image(2, 2, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, null, 0)
+    d = gl_create_texture()
+    glBindTexture(GL_TEXTURE_2D, u32(d))
+    gl_tex_image(2, 2, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, null, 0)
+    fb = gl_create_framebuffer()
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(fb))
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(t), 0)
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, u32(d), 0)
+    fb
+src = make_fb()
+glClearColor(0.25, 0.5, 0.75, 1)
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+dst = make_fb()
+glClearColor(0, 0, 0, 1)
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+glBindFramebuffer(u32(0x8CA8), u32(src)) # READ_FRAMEBUFFER
+glBindFramebuffer(u32(0x8CA9), u32(dst)) # DRAW_FRAMEBUFFER
+glBlitFramebuffer(0, 0, 2, 2, 0, 0, 2, 2, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+glBindFramebuffer(GL_FRAMEBUFFER, u32(dst))
+px = fill(u8(0), 16)
+gl_read_pixels(0, 0, 2, 2, data(px))
+print("snapshot red: {px[0]}; expected 64 (+/-1)")
+assert(abs(int(px[0])-64) <= 1, "snapshot must copy the Vulkan image as well as the GL image")

@@ -1,0 +1,73 @@
+# Production water/direct-metal damage paths and third-person inspection spacing.
+use 'tree_checks.jo'
+use '../game/gfx.jo'
+from 'tree_checks.jo' import __tree_course
+use '../game/elements.jo'
+use '../game/fx.jo'
+use '../game/player.jo'
+use '../game/combat.jo'
+use '../game/items.jo'
+use '../game/water.jo'
+use '../game/env.jo'
+use '../game/terrain.jo'
+
+__audio_state = 2
+items_init()
+loop hz in [30,60,120]:
+    __tree_course()
+    inv = Inventory()
+    water_grid_set(fill(f32(1.0),4096),64,-32.0,-32.0,1.0)
+    env = Env(weather=.storm,rain=1.0)
+    loop distance in [0.0,5.0,12.0]:
+        pl = Player(pos=v3(distance,0.5,0))
+        fight = Fight()
+        strike_at(vec3(0,1,0))
+        assert(pl.hp == 8 and pl.state != .dead and player_shock_t > 0.3,"one water strike costs one heart, even at its origin")
+        loop k in [0..hz):
+            player_update(1.0/f64(hz))
+            elements_update(1.0/f64(hz),pl.pos)
+        assert(pl.hp == 8,"lingering water arcs never repeat the same strike damage")
+    pl = Player(pos=vec3(20,0.5,0))
+    fight = Fight()
+    strike_at(vec3(0,1,0))
+    assert(pl.hp == 12,"water beyond the bounded conduction radius is safe")
+    print("PASS water damage {hz}Hz: 0/5/12m each lose 4 of 12 quarters once; 20m unaffected")
+
+    # Real metal-warning completion, including a player standing in water.
+    loop wet in [false,true]:
+        __tree_course()
+        if wet: water_grid_set(fill(f32(1.0),4096),64,-32.0,-32.0,1.0)
+        inv = Inventory()
+        inv_add("travelers_sword")
+        pl = Player(pos=vec3(0,0.5,0))
+        fight = Fight()
+        env = Env(weather=.storm,rain=1.0)
+        assert(lightning_begin(),"carried metal starts a warning")
+        lightning_warn = 0.001
+        elements_update(1.0/f64(hz),pl.pos)
+        assert(pl.hp == 0 and pl.state == .dead,"direct carried-metal strike retains three-heart damage on land and in water")
+    print("PASS direct metal {hz}Hz: warning resolves to 12 quarters on land and in water")
+
+__tree_course()
+inv = Inventory()
+water_grid_set(fill(f32(1.0),4096),64,-32.0,-32.0,1.0)
+pl = Player(pos=vec3(0,0.5,0))
+env = Env(weather=.storm,rain=1.0)
+spawn_item("travelers_sword",vec3(2,0.5,0),vec3())
+lightning_gear = GearTrace(id="travelers_sword",kind=.weapon,world=0)
+lightning_warn = 0.001
+elements_update(1.0/60.0,pl.pos)
+assert(pl.hp == 8,"nearby dropped metal gives water shock, not a direct carried-metal hit")
+print("PASS dropped metal: nearby water strike costs one heart")
+
+loop yaw in [-1.1,0.0,1.57,3.14]:
+    pl = Player(pos=vec3(0,0.5,0))
+    ahead = v3(sin(yaw),0,-cos(yaw))
+    eye = pl.pos-ahead*5.0+vec3(0,3,0)
+    gaze = normalize(pl.pos+vec3(0,1.5,0)-eye)
+    target = scripted_lightning_target(eye,gaze,pl.pos)
+    distance = length(target-pl.pos.xz)
+    assert(distance >= 4.999 and distance < 16.0,"inspection impact clears Jo and stays within water conduction range")
+    delta = vec3(target.x,1,target.y)-eye
+    assert(dot(delta,gaze)>0 and abs(dot(delta,normalize(cross(gaze,vec3(0,1,0)))))<0.001,"inspection impact remains in front on the camera azimuth")
+print("PASS inspection target: four yaw angles, >=5m from Jo and <16m conduction reach")

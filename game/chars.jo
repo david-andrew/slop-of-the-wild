@@ -10,6 +10,7 @@ use 'player.jo'
 use 'input.jo'
 use 'combat.jo'
 use 'camera.jo'
+from 'camera.jo' import __camera_record_view
 use 'physics.jo'
 use 'structures.jo'
 from 'structures.jo' import __cliff_inside, __cliff_segment_gap
@@ -27,6 +28,7 @@ use 'enemy_contacts.jo'
 use 'enemy_weapon_pose.jo'
 use 'enemy_camp.jo'
 use 'sheath.jo'
+use 'body_fire.jo'
 
 # The living things on screen: the hero (animation chosen from the player's state, combat on the
 # upper body, weapons in hand or on the back, the paraglider), the old man, monsters and their
@@ -90,6 +92,14 @@ chars_init = ():
     weapon_tracks_init(hero_m, human)
     boko_club_part = part_index(boko_m, "club")
     chars_ready = ranger_m.ok and human.bones.len() > 0
+    # Flatten retained body data and reserve pose scratch during loading, rather
+    # than assembling indices/heads on the first nearby encounter.
+    loop m in [ranger_m, hero_bare_m, boko_m]: combat_body_prepare(m)
+    __combat_hero_points.reserve(max(combat_bodies[ranger_m.name].vertices.len(), combat_bodies[hero_bare_m.name].vertices.len()))
+    __combat_enemy_points.reserve(combat_bodies[boko_m.name].vertices.len())
+    __combat_selected_points.reserve(combat_bodies[boko_m.name].vertices.len() + 8)
+    __combat_triangle_lo.reserve(combat_bodies[boko_m.name].indices.len()/3)
+    __combat_triangle_hi.reserve(combat_bodies[boko_m.name].indices.len()/3)
 
 # Bone geometry shares the Bokoblin bind rig exactly, including fingers and feet.
 # Body and skull are separate parts; no flesh surface is reused or recolored.
@@ -1162,7 +1172,7 @@ enemy_anim_update = (dt: f64):
         if e.state == .chase or e.state == .idle or e.state == .recover:
             rotate_bone(human, pose, lib_bone(human, "spine_01"), vec3(0, 0, 1), (personality - 0.5) * 0.16)
             rotate_bone(human, pose, lib_bone(human, "Head"), vec3(0, 1, 0), (personality - 0.5) * 0.18)
-        if e.state == .windup:
+        if e.state == .windup and e.burning <= 0.0:
             pose = sample_clip(human, ci((if e.move == 3: "fight_idle" else: (if e.move == 4: "throw" else: "attack"))), min(e.t * 0.35, 0.18), false)
         if e.state == .attack and e.burning <= 0.0:
             # A socket pinned to the contact track cannot wait for a windup/idle
@@ -1178,7 +1188,7 @@ enemy_anim_update = (dt: f64):
         build_ = e.contact_scale
         eanims[i].world = facing_mat(e.pos + vec3(0, f32(e.lift), 0), e.face) * scaling(build_)
         # asleep, each turned its own way from the fire and rolled a little onto a side
-        if e.state == .sleep:
+        if e.state == .sleep and e.burning <= 0.0:
             hs = fract(f64(i) * 0.7548)
             eanims[i].world = facing_mat(e.pos, e.face + (hs - 0.5) * 2.6) * rotation_z((fract(f64(i) * 0.5698) - 0.5) * 0.5) * scaling(build_)
         # Sample the recoil clip immediately so hit-stop freezes a struck pose,
@@ -1202,13 +1212,13 @@ enemy_anim_update = (dt: f64):
             eanims[i].footing.state = .gone
             eanims[i].footing.feet.clear()
         camp_settle_poker(boko_m, human, pose, e)
-        if e.state == .attack and e.move == 3:
+        if e.state == .attack and e.move == 3 and e.burning <= 0.0:
             # Pin the drawn boot to the same baked kick track after the footing pass.
             foot = bone_index(boko_m, "foot_r")
             contact = enemy_contact_socket(3, e.t, true)
             boko_plant(boko_m, pose, [bone_index(boko_m, "thigh_r"), bone_index(boko_m, "calf_r"), foot], contact[3].xyz)
             eanims[i].skin = skin_at(boko_m, pose, foot, contact)
-        else if e.state == .attack:
+        else if e.state == .attack and e.burning <= 0.0:
             # State time drives both sides of the blow. Clip blending, footing and recoil
             # can move the torso, but never move the drawn grip off its collision track.
             eanims[i].world = enemy_contact_world(e.pos, e.face, e.move, e.t, build_)
@@ -1326,6 +1336,33 @@ monsters_draw = ():
                 draw_prop(guardian_eye, eye, (if e.state == .laser: rgba(1.0, 0.4, 0.4, 1) else: rgba(0.5, 0.8, 1.0, 1)), glow)
             _: pass
 
+# Transparent submission follows the sky/grass, so they cannot overwrite the
+# tips extending beyond a limb. The roots use the exact final skinned pose.
+monsters_fire_draw = ():
+    if sc.shadow: return
+    flames: PInst[]
+    right = vec3(sc.view[0].x,sc.view[1].x,sc.view[2].x)
+    names = ["lowerarm_l","lowerarm_r","calf_l","calf_r","spine_01","spine_02"]
+    loop i in 0.. and e in enemies:
+        if e.burning <= 0.0 or not enemy_alive(e) or i >= eanims.len(): continue
+        if e.kind != .bokoblin and e.kind != .blue_bokoblin and e.kind != .stalkoblin: continue
+        if length(e.pos-sc.cam)>80.0: continue
+        loop j in [0..6):
+            root = (eanims[i].world * bone_world(boko_m,eanims[i].skin,names[j]))[3].xyz
+            toward = normalize(vec3(sc.cam.x-root.x,0,sc.cam.z-root.z))
+            root += toward * (if j < 4: f32(0.15) else: f32(0.27))
+            seed = f32(i*17+j*7)
+            height = f32((if j < 4: 0.95 else: 1.20) + 0.28 * (0.5+0.5*sin(e.anim_t*11.0+f64(j))))
+            strength = f32(smoothstep(0.0,0.30,e.burning)*0.90)
+            # Paired, offset torso tongues keep hot cores separate across the
+            # back instead of merging into one round yellow patch.
+            loop k in [0..(if j < 4: 1 else: 2)):
+                offset = if j < 4: 0.0 else: (f64(k)-0.5)*0.34
+                width = if j < 4: f32(0.25) else: f32(0.20)
+                flames.push(PInst(vec4(root+right*f32(offset),width),vec4(1,1,1,strength),vec4(0,0,seed+f32(k*11),height+f32(k)*0.18)))
+    body_fire_draw(flames,elapsed())
+
+
 # the guardian's red sight line (additive, after the opaque scene)
 lasers_draw = ():
     loop e in enemies:
@@ -1343,7 +1380,47 @@ lasers_draw = ():
 # Only nearby bodies are skinned on CPU, reusing retained source vertices.
 __combat_hero_points: vec3[]
 __combat_enemy_points: vec3[]
-__combat_body_indices: u32[]
+struct CombatBody:
+    vertices: ChVert[]
+    indices: u32[]
+    head: int[]
+combat_bodies: {str: CombatBody} = {}
+combat_body_prepare = (m: Model):
+    if combat_bodies.has(m.name): return
+    body = CombatBody()
+    head = bone_index(m, "head")
+    loop part in [0..m.parts.len()):
+        vertices = model_body_vertices.get("{m.name}:{part}") ?? []
+        base = body.vertices.len()
+        loop index in model_body_indices.get("{m.name}:{part}") ?? []: body.indices.push(index + u32(base))
+        loop v in vertices:
+            weight = 0.0
+            loop k in [0..4):
+                if int(v.jnt[k]) == head: weight += f64(v.wgt[k])
+            if weight >= 0.5: body.head.push(body.vertices.len())
+            body.vertices.push(v)
+    combat_bodies[m.name] = body
+__combat_triangle_lo: vec3[]
+__combat_triangle_hi: vec3[]
+__combat_triangle_bounds = (p: vec3,q: vec3,r: vec3) -> (vec3,vec3):
+    area = length(cross(q-p,r-p))
+    if area < 0.000001: return (vec3(1e9,1e9,1e9),vec3(-1e9,-1e9,-1e9))
+    # Preserve __cliff_inside's edge tolerance even on thin triangles: its
+    # relaxed barycentric bounds expand each corner by epsilon*(3*v-sum).
+    epsilon = f32(0.0001 / f64(area))
+    sum = p+q+r
+    ep = p+(p*3.0-sum)*epsilon
+    eq = q+(q*3.0-sum)*epsilon
+    er = r+(r*3.0-sum)*epsilon
+    (min(ep,min(eq,er)),max(ep,max(eq,er)))
+__combat_triangle_prepare = (indices: u32[], points: vec3[]):
+    __combat_triangle_lo.clear()
+    __combat_triangle_hi.clear()
+    loop triangle in [0..indices.len()/3):
+        k = triangle*3
+        lo,hi = __combat_triangle_bounds(points[int(indices[k])],points[int(indices[k+1])],points[int(indices[k+2])])
+        __combat_triangle_lo.push(lo)
+        __combat_triangle_hi.push(hi)
 __blade_near_triangle = (a: vec3,b: vec3,p: vec3,q: vec3,r: vec3) -> bool:
     cross_ = cross(q-p,r-p)
     if length(cross_) < 0.000001: return false
@@ -1363,49 +1440,62 @@ __posed_body_points = (model_: Model, palette: Skin, world: mat4, points: mut ve
     points.clear()
     if palette.mats.len() == 0: return
     a = palette.mats
-    loop part_index in [0..model_.parts.len()):
-        vertices = model_body_vertices.get("{model_.name}:{part_index}") ?? []
-        loop v in vertices:
-            q = vec3(0,0,0)
-            p = vec4(v.pos,1)
-            loop k in [0..4):
-                weight = v.wgt[k]
-                if weight <= 0.0: continue
-                o = int(v.jnt[k]) * 12
-                q += vec3(dot(vec4(a[o],a[o+1],a[o+2],a[o+3]),p), dot(vec4(a[o+4],a[o+5],a[o+6],a[o+7]),p), dot(vec4(a[o+8],a[o+9],a[o+10],a[o+11]),p)) * weight
-            points.push(transform_point(world,q))
+    loop v in combat_bodies[model_.name].vertices:
+        q = vec3(0,0,0)
+        p = vec4(v.pos,1)
+        loop k in [0..4):
+            weight = v.wgt[k]
+            if weight <= 0.0: continue
+            o = int(v.jnt[k]) * 12
+            q += vec3(dot(vec4(a[o],a[o+1],a[o+2],a[o+3]),p), dot(vec4(a[o+4],a[o+5],a[o+6],a[o+7]),p), dot(vec4(a[o+8],a[o+9],a[o+10],a[o+11]),p)) * weight
+        points.push(transform_point(world,q))
 
-combat_presentation_clear = ():
+# Indices into the retained posed body points. Select the same head-weighted
+# vertices as the framing check; guards/recoils cannot use a fixed root height.
+__combat_hero_head: int[]
+__combat_enemy_head: int[]
+__combat_selected_points: vec3[]
+__combat_head_indices = (model_: Model) -> int[]: combat_bodies[model_.name].head
+__combat_head_centre = (points: vec3[], indices: int[]) -> vec3:
+    lo = vec3(1e9,1e9,1e9)
+    hi = vec3(-1e9,-1e9,-1e9)
+    loop index in indices:
+        lo = min(lo,points[index])
+        hi = max(hi,points[index])
+    (lo+hi)*0.5
+
+combat_presentation_clear = (reframe: bool = true):
     if not chars_ready or cam.override: return
     count = 0
     loop e in enemies:
         if enemy_melee_body(e) and e.state != .gone and e.state != .buried and not e.skull_out and length(e.pos-pl.pos) < 15.0: count += 1
     if count == 0: return
-    if __combat_body_indices.len() == 0:
-        base = 0
-        loop part_index in [0..boko_m.parts.len()):
-            key = "{boko_m.name}:{part_index}"
-            indices = model_body_indices.get(key) ?? []
-            vertices = model_body_vertices.get(key) ?? []
-            loop index in indices: __combat_body_indices.push(index+u32(base))
-            base += vertices.len()
     __posed_body_points(hero_m,hero_skin,hero_world,__combat_hero_points)
     if __combat_hero_points.len() == 0: return
     # A teleport/LOD handoff can leave last frame's pose at its old location.
     # It cannot constrain bodies in the new scene until animation catches up.
     if length(hero_world[3].xyz-pl.pos) > 2.0: return
+    body_indices = combat_bodies[boko_m.name].indices
+    __combat_hero_head = __combat_head_indices(hero_m)
+    __combat_enemy_head = __combat_head_indices(boko_m)
+    hero_head = __combat_head_centre(__combat_hero_points,__combat_hero_head)
     weapon = equipped_weapon()
     hand = socket_world(hero_m,hero_world,hero_skin,SOCKET_HAND_R)
     grip = hand[3].xyz
     tip = transform_point(hand,v3(0.0,weapon_length(item(weapon)),0.0))
     blade_out = weapon != "" and (fight.weapon_out or fight.act != .idle) and fight.act != .aim and pl.state != .climb and pl.state != .swim and pl.state != .glide
     vp = perspective(view_fov()*PI/180.0,aspect_ratio(),0.1,1000.0)*look_at(view_pos(),view_target(),vec3(0,1,0))
+    if reframe: __combat_selected_points.clear()
+    selected_head = vec3(0,0,0)
+    selected_ready = false
     loop i in [0..min(enemies.len(),eanims.len())):
         e = enemies[i]
         if not enemy_melee_body(e) or e.state == .gone or e.state == .buried or e.skull_out or length(e.pos-pl.pos) >= 15.0: continue
         if length(eanims[i].world[3].xyz-(e.pos+vec3(0,f32(e.lift),0))) > 2.0: continue
         __posed_body_points(boko_m,eanims[i].skin,eanims[i].world,__combat_enemy_points)
         if __combat_enemy_points.len() == 0: continue
+        enemy_head = __combat_head_centre(__combat_enemy_points,__combat_enemy_head)
+        triangles_ready = false
         start = enemies[i].pos
         shift = vec3(0,0,0)
         loop pass_ in [0..8):
@@ -1414,6 +1504,22 @@ combat_presentation_clear = ():
             push_out(candidate,enemy_body_radius(e),enemy_body_height(e))
             shift += candidate-enemies[i].pos
             enemies[i].pos = candidate
+            # Resolve head overlap using this frame's final view and poses.
+            # A 5 px margin protects the 40 px gate at 1280x720. Move the real
+            # capsule with the body and preserve world collision, not a draw offset.
+            hc = vp*vec4(hero_head,1)
+            ec = vp*vec4(enemy_head+shift,1)
+            if hc.w > 0.1 and ec.w > 0.1:
+                delta_head = (ec.xy/ec.w-hc.xy/hc.w)*vec2(640,360)
+                if length(delta_head) < 45.0:
+                    sign = if abs(delta_head.x) > 1.0: (if delta_head.x > 0.0: 1.0 else: -1.0) else: (if i%2==0: 1.0 else: -1.0)
+                    want_x = f32(sign*sqrt(max(0.0,2025.0-f64(delta_head.y*delta_head.y))))
+                    right = normalize(cross(view_target()-view_pos(),vec3(0,1,0)))
+                    per_pixel = f64(ec.w)*tan(view_fov()*PI/360.0)*aspect_ratio()/640.0
+                    next = enemies[i].pos+right*f32(f64(want_x-delta_head.x)*per_pixel)
+                    push_out(next,enemy_body_radius(e),enemy_body_height(e))
+                    shift += next-enemies[i].pos
+                    enemies[i].pos = next
             away = enemies[i].pos-pl.pos
             n = normalize(vec3(away.x,0,away.z)+vec3(0.0001,0,0))
             hero_edge = -1e9
@@ -1421,19 +1527,33 @@ combat_presentation_clear = ():
             loop q in __combat_hero_points: hero_edge = max(hero_edge,f64(dot(q,n)))
             loop q in __combat_enemy_points: enemy_edge = min(enemy_edge,f64(dot(q+shift,n)))
             need = max(0.0,hero_edge+0.025-enemy_edge)
+            if body_vertical_overlap(enemies[i].pos,enemy_body_height(e),pl.pos,HEIGHT):
+                need = max(need,enemy_attack_ring(e)-f64(length(away.xz)))
             if blade_out:
                 axis = tip-grip
                 middle = enemies[i].pos+vec3(0,1,0)
                 nearest = grip+axis*clamp(dot(middle-grip,axis)/max(dot(axis,axis),0.0001),0.0,1.0)
                 if length((nearest-middle).xz) < 1.3 and abs(nearest.y-middle.y) < 1.7:
+                    if not triangles_ready:
+                        __combat_triangle_prepare(body_indices,__combat_enemy_points)
+                        triangles_ready = true
+                    # Pose is fixed throughout this solve. Translate the blade back
+                    # by the root correction; reuse every triangle bound across passes.
+                    blade_a = grip-shift
+                    blade_b = tip-shift
+                    blade_lo = min(blade_a,blade_b)-vec3(0.085,0.085,0.085)
+                    blade_hi = max(blade_a,blade_b)+vec3(0.085,0.085,0.085)
                     touching = false
-                    loop triangle in [0..__combat_body_indices.len()/3):
+                    loop triangle in [0..body_indices.len()/3):
+                        lo = __combat_triangle_lo[triangle]
+                        hi = __combat_triangle_hi[triangle]
+                        if lo.x > blade_hi.x or lo.y > blade_hi.y or lo.z > blade_hi.z or hi.x < blade_lo.x or hi.y < blade_lo.y or hi.z < blade_lo.z: continue
                         k = triangle*3
-                        a = __combat_enemy_points[int(__combat_body_indices[k])]+shift
-                        b = __combat_enemy_points[int(__combat_body_indices[k+1])]+shift
-                        c = __combat_enemy_points[int(__combat_body_indices[k+2])]+shift
-                        if not __blade_near_triangle(grip,tip,a,b,c): continue
-                        enemy_surface_hit(i,grip+axis*clamp(dot((a+b+c)/3.0-grip,axis)/max(dot(axis,axis),0.0001),0.0,1.0))
+                        a = __combat_enemy_points[int(body_indices[k])]
+                        b = __combat_enemy_points[int(body_indices[k+1])]
+                        c = __combat_enemy_points[int(body_indices[k+2])]
+                        if not __blade_near_triangle(blade_a,blade_b,a,b,c): continue
+                        enemy_surface_hit(i,grip+axis*clamp(dot((a+b+c)/3.0+shift-grip,axis)/max(dot(axis,axis),0.0001),0.0,1.0))
                         touching = true
                         break
                     if touching:
@@ -1472,3 +1592,49 @@ combat_presentation_clear = ():
         # Preserve the final animation/recoil palette; only its world placement changes.
         delta = enemies[i].pos-start
         eanims[i].world = translation(delta)*eanims[i].world
+        if i == fight.target:
+            selected_head = enemy_head+shift
+            selected_ready = true
+            if reframe:
+                loop q in __combat_enemy_points: __combat_selected_points.push(q+shift)
+                # Conservative corners around the actual procedural weapon,
+                # transformed by the same final draw socket as its mesh.
+                if len(e.weapon) > 0:
+                    spear = item(e.weapon).shape == .spear
+                    extent = if spear: 0.06 else: 0.2
+                    weapon_draw = boko_weapon_draw_transform(i)
+                    loop x in [-extent,extent]:
+                        loop y in [if spear: -0.8 else: -0.3, if spear: 1.25 else: 1.0]:
+                            loop z in [-extent,extent]: __combat_selected_points.push(transform_point(weapon_draw,v3(x,y,z)))
+    # Root corrections and the final animated head can leave the spring's
+    # earlier look point stale for one frame. Repair only an out-of-third pair,
+    # then replay body/head clearance once in that final view.
+    if reframe and selected_ready and cam.locked and not cam.aiming and cam.lock_frame > 0.99 and cam.blend < 0.01:
+        hc = vp*vec4(hero_head,1)
+        ec = vp*vec4(selected_head,1)
+        clipped = false
+        loop q in __combat_selected_points:
+            c = vp*vec4(q,1)
+            if c.w <= 0.1 or abs(c.x/c.w) > 0.93 or abs(c.y/c.w) > 0.93: clipped = true
+        if hc.w > 0.1 and ec.w > 0.1 and (clipped or abs(hc.x/hc.w) > 1.0/3.0 or abs(ec.x/ec.w) > 1.0/3.0):
+            eye = view_pos()
+            a = normalize(hero_head-eye)
+            b = normalize(selected_head-eye)
+            centre = normalize(a+b)
+            cam.paired_target = eye+normalize(centre)*max(1.0,length(cam.target-eye))
+            forward = normalize(view_target()-eye)
+            right = normalize(cross(forward,vec3(0,1,0)))
+            up = normalize(cross(right,forward))
+            width = 0.0
+            loop head in [hero_head,selected_head]:
+                d = head-eye
+                width = max(width,abs(f64(dot(d,right)))/max(0.1,f64(dot(d,forward))))
+            needed = width*3.1/aspect_ratio()
+            loop q in __combat_selected_points:
+                d = q-eye
+                depth = max(0.1,f64(dot(d,forward)))
+                needed = max(needed,abs(f64(dot(d,right)))/(depth*aspect_ratio()*0.93))
+                needed = max(needed,abs(f64(dot(d,up)))/(depth*0.93))
+            aim_fov = max(aim_fov,min(100.0,atan(needed)*360.0/PI))
+            __camera_record_view()
+            combat_presentation_clear(false)

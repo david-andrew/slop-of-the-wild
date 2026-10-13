@@ -16,7 +16,7 @@ use '../game/camera.jo'
 use '../game/input.jo'
 use '../game/render.jo'
 from '../game/build.jo' import __named_b, __bchunks
-from '../game/shrines.jo' import __enter_now, __preset, __rune_sites, __float_mast, __profile_roof
+from '../game/shrines.jo' import __enter_now, __preset, __rune_sites, __float_mast, __profile_roof, __cracks
 
 worldgen_load()
 hf.mat = fill(u8(0), hf.n * hf.n * 4)
@@ -47,6 +47,19 @@ mesh_blocks = (b: Builder, a: vec3, target: vec3) -> bool:
         k = j * 3
         if blocks(a, target, b.verts[int(b.idx[k])].pos, b.verts[int(b.idx[k + 1])].pos, b.verts[int(b.idx[k + 2])].pos): return true
     false
+named_blocks = (name: str, eye: vec3, target: vec3) -> bool:
+    if not named_visible(name): return false
+    mesh_blocks(__named_b.get(name) ?? Builder(), eye, target)
+
+# Intact fracture meshes must remain opaque to discovery, including the wall
+# behind the chain-room probe's chase camera. Hidden buffers remain allocated.
+loop crack in __cracks:
+    c = colliders[crack.col]
+    across = if c.half.x > c.half.z: vec3(0, 0, 2) else: vec3(2, 0, 0)
+    eye = crack.center + vec3(0, 1.5, 0) + across
+    target = crack.center + vec3(0, 1.5, 0) - across
+    assert(named_blocks(crack.name, eye, target), "intact fracture wall must block discovery")
+
 visible = (id: int, target: vec3) -> bool:
     a = view_pos()
     f = normalize(view_target() - a)
@@ -62,7 +75,7 @@ visible = (id: int, target: vec3) -> bool:
     if raycast(a, normalize(delta), max(0.01, f64(length(delta)) - 0.6), true, false).hit: return false
     loop key, b in __named_b:
         if contains(key, srec[id].key) and not contains(key, "_rune_") and not contains(key, "_circuit_") and not contains(key, "_signal_"):
-            if mesh_blocks(b, a, target): return false
+            if named_blocks(key, a, target): return false
     loop key, b in __bchunks:
         if mesh_blocks(b, a, target): return false
     true
@@ -70,10 +83,19 @@ visible = (id: int, target: vec3) -> bool:
 discover = (id: int, stage: int, name: str, spot: vec3, targets: vec3[]):
     __enter_now(id)
     __preset(id, stage)
+    if id == JABAIJ and stage == 1:
+        eye = srec[id].o + v3(0, 2.6, -16.8)
+        target = srec[id].o + v3(0, 2, -35.5)
+        assert(mesh_blocks(__named_b["ja_baij_crack_n"], eye, target), "retain the north wall mesh at its doorway")
+        assert(not named_blocks("ja_baij_crack_n", eye, target), "completed north wall must be culled from discovery")
     pl.pos = srec[id].o + spot
     pl.face = 0.0
     cam = Cam()
     cam.yaw = 0.0
+    # Publish the active chamber's draw state before applying renderer culling;
+    # entry/setup initially hides its architecture, lamps and control cues.
+    shrines_update(0.0)
+    assert(named_visible(srec[id].key + "_architecture"), "active chamber architecture must participate in discovery")
     camera_snap()
     found = fill(-1, targets.len())
     loop frame in [0..180):

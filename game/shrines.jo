@@ -118,9 +118,8 @@ __shrine_id = (o: vec3) -> int:
     0
 
 __floor_colour = (id: int) -> vec4:
-    # Forged warm-grey plates, scorched ochre stone, aged green clockwork slabs,
-    # and blue frost tiles retain distinct pigment under the shared cool light.
-    [stone(0.30, 0.29, 0.25), stone(0.32, 0.235, 0.18), stone(0.20, 0.28, 0.235), stone(0.20, 0.36, 0.40)][id]
+    # Shared blue slate; plate sizes, metal insets and fixtures carry identity.
+    SHR_FLOOR
 
 # Distinct reflected light temperatures.
 __shrine_accent = [vec3(2.2, 0.78, 0.22), vec3(1.9, 0.28, 0.24), vec3(1.65, 1.32, 0.38), vec3(0.22, 1.25, 1.45)]
@@ -1065,8 +1064,11 @@ __shrine_details = (r: SRec, id: int):
             # Pale broken keystones make the actual cracked wall the entry focal point.
             loop x in [-1.4, 0.0, 1.4]:
                 box_m(translation(at(o, x, 5.35, -18.7)) * rotation_z(0.12 * x) * scaling(v3(0.65, 0.5, 0.35)), fired, PLAIN, false)
-            loop x in [-13.6, 9.6]:
-                box(at(o, x, 0.0, -9.0), v3(0.4, 2.4, 7.0), 0.0, soot, PLAIN, false)
+            box(at(o, -13.6, 0.0, -9.0), v3(0.4, 2.4, 7.0), 0.0, soot, PLAIN, false)
+            # The east soot liner used to mask the fractured doorway and remain
+            # across it after a blast. Stop beside its jambs, not across the gap.
+            loop span in [(-12.5, -12.25), (-7.75, -5.5)]:
+                box(at(o, 9.6, 0.0, (span.0 + span.1) * 0.5), v3(0.4, 2.4, span.1 - span.0), 0.0, soot, PLAIN, false)
             __vault(o, 9.6, -43.0, -21.0, 7.0, 4.4, 2, pale)
             __pit_depth(o, 10.0, -36.0, -26.0)
             __portal(o, -43.65, 4.2, pale)
@@ -1294,6 +1296,9 @@ __build_jabaij = (r: SRec):
     __shell(o, -14.0, 10.0, -20.0, 4.0, 0.0, SHR_ENTRY_TOP[JABAIJ], [Gap("n", 0.0, 4.0, 4.0), Gap("e", -10.0, 4.0, 3.5)], decor = false, coffers = false, shaft = true)
     __floor(o, -14.0, 10.0, -20.0, 4.0, 0.0)
     __lift_pad(o)
+    # Visible breakable stone fills exactly the two room-A collision gaps.
+    __crack_wall(o, "ja_baij_crack_n", -2.0, 2.0, -21.0, -20.0, 4.0)
+    __crack_wall(o, "ja_baij_crack_e", 10.0, 11.0, -12.0, -8.0, 3.5)
     # the alcove behind the east wall
     __shell(o, 11.0, 15.0, -12.5, -7.5, 0.0, 4.0, [Gap("e", -10.0, 3.0, 3.5)], "w")
     __floor(o, 10.0, 15.0, -12.5, -7.5, 0.0)
@@ -1580,6 +1585,19 @@ __install_build_hook = () -> bool:
 __shr_hook_installed = __install_build_hook()
 
 # ---------------- moving pieces ----------------
+# CPU inspection of the actual meshes submitted by moving puzzle pieces. Off in
+# normal play; test names identify each body without retaining upload buffers.
+__puzzle_capture = false
+__puzzle_meshes: {str: MeshB} = {}
+__puzzle_mesh_names: {int: str} = {}
+__puzzle_mesh = (label: str, b: MeshB) -> Mesh:
+    m = mesh(b.vs, b.idx)
+    if __puzzle_capture:
+        name = label + "_{__puzzle_meshes.len()}"
+        __puzzle_meshes[name] = b
+        __puzzle_mesh_names[m.vbo] = name
+    m
+
 # a slab drawn with the prop shader (dark stone, glowing lines), optionally solid
 struct Piece:
     body: Mesh
@@ -1602,7 +1620,7 @@ __body_mesh = (size: vec3, col: vec4) -> Mesh:
         mb_box(b, v3(side * (hx - 0.055), h * 0.5, 0.0), v3(0.06, h * 0.5, hz), col)
         mb_box(b, v3(0.0, h * 0.5, side * (hz - 0.055)), v3(hx, h * 0.5, 0.06), col)
         loop end in [-1.0, 1.0]: mb_sphere(b, v3(side * (hx - 0.1), h + 0.012, end * (hz - 0.1)), v3(0.045, 0.02, 0.045), rgb(0.65, 0.61, 0.48), 6)
-    mesh(b.vs, b.idx)
+    __puzzle_mesh("slate_piece", b)
 
 # Riveted weight: dark inset plates, raised edge rails, seams and small worn fasteners.
 __metal_weight = (size: vec3) -> Mesh:
@@ -1625,7 +1643,7 @@ __metal_weight = (size: vec3) -> Mesh:
             mb_box(b, v3(side * hx, y, 0.0), v3(0.025, 0.035, hz), edge)
     loop z in [-0.42, 0.42]:
         mb_box(b, v3(0.0, h + 0.012, z), v3(hx - 0.14, 0.012, 0.36), rgb(0.28, 0.32, 0.34))
-    mesh(b.vs, b.idx)
+    __puzzle_mesh("metal_weight", b)
 
 # Floating wooden weight: separate planks, dark seams and restrained corner straps.
 __wood_crate = (size: vec3) -> Mesh:
@@ -1645,7 +1663,7 @@ __wood_crate = (size: vec3) -> Mesh:
         loop end in [-1.0,1.0]:
             mb_box(b,v3(side*(hx-0.04),h*0.5,end*(hz-0.04)),v3(0.05,h*0.5,0.05),rgb(0.19,0.20,0.18))
             loop y in [0.12,h-0.12]: mb_sphere(b,v3(side*(hx+0.02),y,end*(hz-0.07)),v3(0.022,0.032,0.032),rgb(0.39,0.40,0.35),6)
-    mesh(b.vs,b.idx)
+    __puzzle_mesh("wood_crate", b)
 
 # Moving machinery: cast dark iron frame, inset wear plates, bolts and ribs.
 # Small pivot/status inserts carry colour; no continuous emissive perimeter.
@@ -1666,7 +1684,7 @@ __machine_body = (size: vec3) -> Mesh:
             mb_sphere(b,v3(side*(hx-0.12),h+0.025,z),v3(0.045,0.02,0.045),rgb(0.59,0.53,0.39),6)
     loop side in [-1.0,1.0]:
         mb_cyl(b,v3(0.0,0.04,side*hz*0.7),v3(0.0,h*0.65,side*hz*0.7),0.22,0.22,rgb(0.18,0.19,0.18),10)
-    mesh(b.vs,b.idx)
+    __puzzle_mesh("machine", b)
 
 __machine_lamps = (size: vec3) -> Mesh:
     b=MeshB()
@@ -2201,7 +2219,7 @@ __setup_jabaij = ():
     lines = MeshB()
     loop k in [0..6):
         loop zf in [0.005, -1.205]: mb_box(lines, v3(0.0, 1.5 + f64(k) * 1.8, zf), v3(0.9, 0.04, 0.006), __swhite)
-    __pillar = Piece(mesh(b.vs, b.idx), mesh(lines.vs, lines.idx), v3(2.4, 12.2, 1.2), __pillar_pivot)
+    __pillar = Piece(__puzzle_mesh("ja_baij_pillar", b), mesh(lines.vs, lines.idx), v3(2.4, 12.2, 1.2), __pillar_pivot)
     __pillar_stand = add_box(at(o, 0.0, -1.2, -36.6), v3(1.2, 6.1, 0.6), 0.0, false, .stone)
     __pillar_bridge = add_box(at(o, 0.0, -1.2, -30.0), v3(1.2, 0.6, 6.1), 0.0, false, .stone)
     colliders[__pillar_bridge].active = false
@@ -2210,7 +2228,7 @@ __setup_jabaij = ():
     mb_cyl(bm, v3(0.0, 0.2, 0.0), v3(0.0, 0.26, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
     mb_cyl(bm, v3(0.0, 0.64, 0.0), v3(0.0, 0.7, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
     mb_cyl(bm, v3(0.0, 0.9, 0.0), v3(0.0, 1.0, 0.0), 0.04, 0.04, rgb(0.4, 0.4, 0.4), 4)
-    __barrel_mesh = mesh(bm.vs, bm.idx)
+    __barrel_mesh = __puzzle_mesh("ja_baij_barrel", bm)
     bands = MeshB()
     loop y in [0.21, 0.65]: mb_cyl(bands, v3(0, y, 0), v3(0, y + 0.035, 0), 0.349, 0.349, __swhite, 12)
     __barrel_inlay = mesh(bands.vs, bands.idx)
@@ -2492,14 +2510,14 @@ __setup_owa = ():
     tb = MeshB()
     mb_cyl(tb, v3(0.0, 0.0, 0.0), v3(0.0, 0.6, 0.0), OWA_TIP, OWA_TIP, rgb(0.38, 0.37, 0.36), 20)
     mb_cyl(tb, v3(0.0, 0.6, 0.0), v3(0.0, 0.601, 0.0), OWA_TIP, 0.0, rgb(0.38, 0.37, 0.36), 20)
-    __tip_mesh = mesh(tb.vs, tb.idx)
+    __tip_mesh = __puzzle_mesh("owa_daim_tip", tb)
     tl = MeshB()
     mb_cyl(tl, v3(0.0, 0.0, 0.0), v3(0.0, 0.61, 0.0), OWA_TIP + 0.01, OWA_TIP + 0.01, __swhite, 20)
     __tip_lines = mesh(tl.vs, tl.idx)
     b = MeshB()
     mb_sphere(b, v3(0.0, 0.0, 0.0), v3(BOULDER_R, BOULDER_R, BOULDER_R), rgb(0.42, 0.4, 0.38), 14)
     loop k in [0..3): mb_box(b, v3(0.0, 0.0, 0.0), v3(BOULDER_R * 1.01, 0.05, 0.12), rgb(0.3, 0.6, 0.9), rotation_y(f64(k) * PI / 3.0))
-    __boulder_mesh = mesh(b.vs, b.idx)
+    __boulder_mesh = __puzzle_mesh("owa_daim_boulder", b)
     shr_chest(at(o, 10.4, 0.0, -28.5), -PI / 2.0, "travelers_shield")
 
 __owa_aligned = false
@@ -3818,4 +3836,3 @@ shrines_draw_2d = ():
     if not __shr_ready: return
     # Survey rings belong to the tower reveal too, while its ordinary HUD is hidden.
     if shr_cur < 0 and (story.beat == .tower_rise or not ui.hide): map_survey_draw()
-

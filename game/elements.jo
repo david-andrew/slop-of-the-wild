@@ -465,7 +465,7 @@ __shock_graph = ():
             reached[i] = true
             if strike_relays.len() >= SHOCK_RELAYS: break
 
-strike_at = (p: vec3):
+strike_at = (p: vec3, direct_metal: bool = false):
     strike_id += 1
     strike_pos = p
     strike_t = 0.3
@@ -474,7 +474,12 @@ strike_at = (p: vec3):
     strike_water = if strike_wet: water_region(p, SHOCK_WATER_REACH) else: {}
     __shock_graph()
     __shock_arcs()
-    if __shock_water_at(pl.pos): shock_player(4, p, 3.0)
+    # Resolve a warned hit on carried metal before secondary water conduction:
+    # the one-heart splash must not grant immunity to the direct three-heart hit.
+    chest = pl.pos + vec3(0,1,0)
+    if direct_metal and length(chest-p) < 3.0 and shock_link_clear(p,chest):
+        shock_player(12, p + vec3(0.2,0,0), 5.0)
+    else if __shock_water_at(pl.pos): shock_player(4, p, 3.0)
 
 __shock_arc = (path: ConductionPath):
     dist = f64(length(path.to - path.from))
@@ -886,7 +891,28 @@ elements_update = (dt: f64, cam: vec3):
         if burning(e.el) and e.burning <= 0.0: e.el.burning = 0.0
         if e.burning > 0.0:
             if random() < dt * 2.0: ignite_at(e.pos)
-            if random() < dt * 20.0: fx_fire(e.pos + vec3(0, 0.9, 0), 0.6, 0.05)
+            if random() < dt * 20.0:
+                first = particles.len()
+                fx_fire(e.pos + vec3(0, 0.9, 0), 0.6, 0.05)
+                # The rig draws the flames. Reuse the old torso particles for
+                # rising soot and sparks with the same lifetime/RNG budget.
+                if e.kind == .bokoblin or e.kind == .blue_bokoblin or e.kind == .stalkoblin:
+                    loop k in [first..particles.len()):
+                        if particles[k].kind != .flame: continue
+                        q = particles[k]
+                        if fract(q.rot*3.17) < 0.35:
+                            q.kind = .ember
+                            q.size = 0.045
+                            q.color = rgba(2.0,1.0,0.15,0.95)
+                            q.vel.y = 2.8
+                        else:
+                            q.kind = .smoke
+                            q.pos.y += 0.5
+                            q.size = 0.32
+                            q.color = rgba(0.20,0.18,0.17,0.32)
+                            q.vel.y = 1.8
+                            q.rot += 1024.0
+                        particles[k] = q
     # ---- wildlife: the same material/exposure rules and accepted damage path ----
     loop mut a in animals:
         if a.state == .dead or a.state == .gone: continue
@@ -1013,11 +1039,8 @@ elements_update = (dt: f64, cam: vec3):
             roof = rain_cover_height(f64(impact.x), f64(impact.z))
             sheltered = roof >= f64(impact.y) + 0.1
             if sheltered: impact.y = f32(roof + 0.05)
-            strike_at(impact)
+            strike_at(impact, not sheltered and lightning_gear.world < 0)
             elem_events.push(ElemEvent("thunder", lightning_pos))
-            chest = pl.pos + vec3(0, 1, 0)
-            to = chest - impact
-            if not sheltered and rain_exposed(chest) and f64(length(to)) < 3.0 and not raycast(impact, to, max(f64(length(to)) - 0.05, 0.001)).hit: shock_player(12, impact + vec3(0.2, 0, 0), 5.0)
             fx_sparks(impact, 40, rgba(0.7, 0.85, 1.0, 1))
             ignite_at(impact)
             lightning_gear = GearTrace()

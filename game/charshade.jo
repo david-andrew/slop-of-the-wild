@@ -248,7 +248,7 @@ ch_point_light = (alb: vec3, n: vec3, w: vec3, lp: vec4, lc: vec3, skin_: f32) -
 # Rain cannot add a new orange lobe or brighten the silhouette through this.
 ch_fibre_wet = (lit: vec3, pigment: vec3, wet: f32, fibre: f32) -> vec3:
     neutral = pigment * (luma(lit)/max(luma(pigment),0.001))
-    mix(lit,neutral,wet*fibre*0.80)
+    mix(lit,neutral,wet*fibre)
 
 ch_fs = (i: ChO, u: ChU) -> vec4:
     if u.dissolve > 0.0:
@@ -273,7 +273,14 @@ ch_fs = (i: ChO, u: ChU) -> vec4:
     skin_ = (1.0-hair_) * smoothstep(0.07, 0.20, tx.x - tx.z) * smoothstep(0.22, 0.36, tx.y) * smoothstep(0.40, 0.63, tx.x) * u.hero_material
     leather = (1.0-hair_) * smoothstep(0.025, 0.12, tx.x - tx.z) * (1.0 - smoothstep(0.30, 0.53, tx.y)) * (1.0 - skin_) * u.hero_material
     # Soaked cloth absorbs more light than skin and leather.
-    alb = alb * (1.0 - u.wet * (0.38 - skin_ * 0.25 - leather * 0.04 + hair_ * 0.04))
+    # Hair retains golden pigment with restrained wet absorption. Remove the
+    # cloth tint's hue while preserving its luminance and the body silhouette.
+    fibre = tx.xyz * i.col.xyz
+    fibre = fibre * (luma(alb)/max(luma(fibre),0.001))
+    alb = mix(alb, fibre, hair_ * u.hero_material * u.wet)
+    gold = vec3(0.72,0.64,0.34)
+    alb = mix(alb,gold*(luma(alb)/luma(gold)),hair_*u.hero_material*u.wet)
+    alb = alb * (1.0 - u.wet * (0.38 - skin_ * 0.25 - leather * 0.04 - hair_ * 0.02))
     # Texture-space strokes deform with the garment and its painted folds.
     # Skin keeps fine mesh-bound pigment beneath the scene's shared value wash.
     cloth = (1.0 - hair_) * (1.0 - skin_) * (1.0 - leather) * u.hero_material

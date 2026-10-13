@@ -1,0 +1,50 @@
+# Caller owns the render lock. Same full-base route as the headless assertion.
+build:
+    opt = release
+use '../game/main.jo'
+use '../game/vegetation.jo'
+use '../game/render.jo'
+use '../game/player.jo'
+use '../game/chars.jo'
+use '../game/post.jo'
+use '../game/scene.jo'
+use '../game/gfx.jo'
+use 'performance_output.jo'
+use 'tower_base_climb_route.jo'
+started = false
+climb_update = (dt: f64):
+    update(dt)
+    if not started:
+        started=true
+        base_climb_start()
+    base_climb_step(dt)
+    veg_player=pl.pos
+    hooks.grass_player=pl.pos
+    hero_animate(dt,-1.0)
+    if frame_number()==2600: base_climb_finish()
+samples: f32[]
+checked_pixels=0
+climb_draw = ():
+    draw()
+    # Negative scene alpha marks partially discarded occluders for the paint
+    # resolve. Read the production HDR scene every frame, before that resolve
+    # can blur a residual beam into the hero. The crop covers a 1m radius
+    # around the full body, including both head and feet.
+    clip=sc.vp*vec4(pl.pos+vec3(0,0.8,0),1)
+    if clip.w<=0.0: return
+    scale=f64(post.h)/(2.0*tan(radians(sc.fov)*0.5)*f64(clip.w))
+    center=(clip.xy/clip.w*0.5+vec2(0.5,0.5))*vec2(f32(post.w),f32(post.h))
+    x0=clamp(int(f64(center.x)-scale),0,post.w-1)
+    y0=clamp(int(f64(center.y)-scale*1.8),0,post.h-1)
+    x1=clamp(int(f64(center.x)+scale)+1,x0+1,post.w)
+    y1=clamp(int(f64(center.y)+scale*1.8)+1,y0+1,post.h)
+    count=(x1-x0)*(y1-y0)*4
+    if samples.len()<count: samples=fill(f32(0),count)
+    glBindFramebuffer(GL_FRAMEBUFFER,u32(post.scene.fbo))
+    game_read_pixels_f32(x0,y0,x1-x0,y1-y0,data(samples) as *u8)
+    glBindFramebuffer(GL_FRAMEBUFFER,0)
+    loop pixel in [0..count/4):
+        assert(samples[pixel*4+3]>=-0.001,"no translucent occluder pigment in the full-body 1m screen envelope")
+    checked_pixels+=count/4
+    if frame_number()==2600: print("PASS rendered full-base climb: {checked_pixels} HDR pixels across every frame; zero negative-alpha occluders near the body")
+main = (): performance_output_run(climb_update,climb_draw)

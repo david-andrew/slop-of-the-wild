@@ -47,6 +47,7 @@ use 'enemy_camp.jo'
 use 'elements.jo'
 use 'element_puzzles.jo'
 use 'fx.jo'
+use 'body_fire.jo'
 use 'sfx.jo'
 use 'shrines.jo'
 use 'wildlife.jo'
@@ -421,6 +422,7 @@ hooks.opaque = ():
     draw_uniform_end()
 
 hooks.transparent = ():
+    monsters_fire_draw()
     fire_glows.clear()
     loop b in bonfires:
         if b.lit: fire_glows.push(b.pos)
@@ -718,12 +720,12 @@ storm_bolt = (dt: f64):
     x = f64(pl.pos.x) + sin(ang) * d
     z = f64(pl.pos.z) - cos(ang) * d
     # (test: BOTW_BOLT_AT="x,z" puts the forced strike there)
-    if __bolt_at > 0:
+    if __bolt_at > 0 and frame_number() == __bolt_at:
         # A scripted strike uses the actual view, including free/title cameras.
         # Keep its lower jagged trunk in the central scene instead of sampling
         # a broad gameplay-yaw sector that can put it beyond the frame edge.
         gaze = if free_cam: v3(sin(fc_yaw) * cos(fc_pitch), sin(fc_pitch), -cos(fc_yaw) * cos(fc_pitch)) else: normalize(view_target() - eye)
-        target = scripted_lightning_target(eye, gaze)
+        target = scripted_lightning_target(eye, gaze, pl.pos)
         x = f64(target.x)
         z = f64(target.y)
         if let s = env("BOTW_BOLT_AT"):
@@ -733,7 +735,10 @@ storm_bolt = (dt: f64):
                 z = to_float(a[1]) ?? z
     g = height_at(x, z)
     p = v3(x + random(-30.0, 30.0), g + 380.0, z + random(-30.0, 30.0))
+    hp_before = pl.hp
     strike_at(v3(x, g + 0.5, z))
+    if env("BOTW_CAMDBG") != none:
+        eprint("bolt frame={frame_number()} strike={strike_pos} player={pl.pos} distance={length(strike_pos.xz-pl.pos.xz):.2}m hp={hp_before}->{pl.hp} wet={strike_wet}")
     # One camera-facing emissive stroke per bend, plus a soft halo. Physical
     # distance is recomputed for forced pond strikes (the random distance is stale).
     d = f64(length(v3(x, g, z) - eye))
@@ -1374,6 +1379,7 @@ render_warmup = ():
     bind_target(post.scene)
     trail_warmup(sc.vp, p + vec3(0, 0, 3))
     fx_warmup(sc.cam, sc.vp, sc.view)
+    body_fire_warmup()
     # Dawn mist is otherwise not requested until the hour changes mid-play.
     saved_env = env
     env.valley_mist = 1.0
@@ -1438,6 +1444,7 @@ render_warmup = ():
         render_world(view_pos(), view_target(), view_fov())
         bind_target(post.scene)
         fx_warmup(sc.cam, sc.vp, sc.view)
+        body_fire_warmup()
         post.scale = saved_scale
     # Both staggered shadow cascades belong to the starting camera before play begins.
     loop k in [0..2): render_world(view_pos(), view_target(), view_fov())

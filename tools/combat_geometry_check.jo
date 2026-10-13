@@ -1,0 +1,75 @@
+# Headless equivalence of cached body data and the filtered posed contact query.
+use '../game/chars.jo'
+use '../game/skel.jo'
+use '../game/gfx.jo'
+use '../game/structures.jo'
+from '../game/chars.jo' import __posed_body_points, __blade_near_triangle, __combat_head_indices, __combat_triangle_prepare, __combat_triangle_lo, __combat_triangle_hi
+from '../game/structures.jo' import __cliff_inside, __cliff_segment_gap
+reference_blade_triangle = (a: vec3,b: vec3,p: vec3,q: vec3,r: vec3) -> bool:
+    cross_ = cross(q-p,r-p)
+    if length(cross_) < 0.000001: return false
+    n = normalize(cross_)
+    da = f64(dot(a-p,n))
+    db = f64(dot(b-p,n))
+    f = if da*db <= 0.0 and abs(da-db)>0.000001: clamp(da/(da-db),0.0,1.0) else: (if abs(da)<abs(db): 0.0 else: 1.0)
+    axis = mix(a,b,f32(f))
+    signed = f64(dot(axis-p,n))
+    projected = axis-n*f32(signed)
+    triangle = CliffTriangle(p,q,r,n, min(p,min(q,r)),max(p,max(q,r)))
+    if abs(signed)<0.085 and __cliff_inside(projected,triangle): return true
+    loop gap in [__cliff_segment_gap(a,b,p,q),__cliff_segment_gap(a,b,q,r),__cliff_segment_gap(a,b,r,p)]:
+        if length(gap)<0.085: return true
+    false
+
+main = ():
+    chars_init()
+    triangles = 0
+    loop m in [hero_bare_m, ranger_m, boko_m]:
+        body = combat_bodies[m.name]
+        assert(body.vertices.len() > 0 and body.head.len() > 0)
+        palette = skin_rest(m)
+        world = translation(vec3(0.3,2,-1)) * rotation_y(0.73)
+        points: vec3[]
+        __posed_body_points(m,palette,world,points)
+        at = 0
+        head_at = 0
+        index_at = 0
+        head = bone_index(m,"head")
+        loop part in [0..m.parts.len()):
+            vertices = model_body_vertices.get("{m.name}:{part}") ?? []
+            loop index in model_body_indices.get("{m.name}:{part}") ?? []:
+                assert(body.indices[index_at] == index + u32(at))
+                index_at += 1
+            loop v in vertices:
+                point = vec3(0,0,0)
+                weight = 0.0
+                loop k in [0..4):
+                    o = int(v.jnt[k])*12
+                    p = vec4(v.pos,1)
+                    a = palette.mats
+                    point += vec3(dot(vec4(a[o],a[o+1],a[o+2],a[o+3]),p),dot(vec4(a[o+4],a[o+5],a[o+6],a[o+7]),p),dot(vec4(a[o+8],a[o+9],a[o+10],a[o+11]),p))*v.wgt[k]
+                    if int(v.jnt[k]) == head: weight += f64(v.wgt[k])
+                assert(length(points[at] - transform_point(world,point)) < 0.000001,"cached vertices preserve the complete posed surface")
+                if weight >= 0.5:
+                    assert(__combat_head_indices(m)[head_at] == at,"head cache follows the current hero model")
+                    head_at += 1
+                at += 1
+        __combat_triangle_prepare(body.indices,points)
+        loop tri in [0..body.indices.len()/3):
+            p = points[int(body.indices[tri*3])]
+            q = points[int(body.indices[tri*3+1])]
+            r = points[int(body.indices[tri*3+2])]
+            centre = (p+q+r)/3.0
+            # Crossing, grazing, remote and tiny/sliver face probes on real meshes.
+            loop offset in [vec3(0,0,0),vec3(0.08,0,0),vec3(0.086,0,0),vec3(0.1,0.1,0.1),vec3(1,2,3)]:
+                a = centre+offset-vec3(0.1,0.1,0.4)
+                b = centre+offset+vec3(0.1,0.1,0.4)
+                lo = __combat_triangle_lo[tri]
+                hi = __combat_triangle_hi[tri]
+                blade_lo = min(a,b)-vec3(0.085,0.085,0.085)
+                blade_hi = max(a,b)+vec3(0.085,0.085,0.085)
+                overlaps = not (lo.x > blade_hi.x or lo.y > blade_hi.y or lo.z > blade_hi.z or hi.x < blade_lo.x or hi.y < blade_lo.y or hi.z < blade_lo.z)
+                actual = overlaps and __blade_near_triangle(a,b,p,q,r)
+                assert(actual == reference_blade_triangle(a,b,p,q,r),"cached expanded-box filter preserves every contact result")
+                triangles += 1
+    print("PASS combat geometry: cached poses/indices/heads match both hero models and enemy; {triangles} filtered/unfiltered triangle queries agree")

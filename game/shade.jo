@@ -1,6 +1,8 @@
 # Shader-side library: noise, the painterly light model, aerial perspective, shadows.
 # (plain Jot functions: the shader translator turns them into GLSL where shaders call them)
 
+# Keep this float hash consistent at shared lattice corners. The Vulkan
+# adapter fences its initial multiply against contraction (game_spirv_noise_precision).
 hash12 = (p: vec2) -> f32:
     q = fract(p * 0.1031)
     q = q + vec2(dot(q, vec2(q.y + 33.33, q.x + 33.33)), dot(q, vec2(q.y + 33.33, q.x + 33.33)))

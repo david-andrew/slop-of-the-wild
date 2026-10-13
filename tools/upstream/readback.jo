@@ -1,0 +1,23 @@
+# Caller owns the render lock. Oversized buffers prevent the cropped read overflowing.
+window("Readback bounds/type", 64, 64)
+fbo = gl_create_framebuffer()
+t = gl_create_texture()
+glBindTexture(GL_TEXTURE_2D, u32(t))
+gl_tex_image(2, 2, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, null, 0)
+glBindFramebuffer(GL_FRAMEBUFFER, u32(fbo))
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(t), 0)
+glClearColor(0.25, 0.5, 0.75, 1)
+glClear(GL_COLOR_BUFFER_BIT)
+bytes = fill(u8(17), 16)
+gl_read_pixels(1, 1, 1, 1, data(bytes))
+print("crop guard byte: {bytes[4]}; expected 17")
+# RGBA32F is valid for GLES float readback. The previous RGBA8 read allocated
+# 16 bytes, enough for this 1x1 float image even with Vulkan's wrong byte count.
+glBindTexture(GL_TEXTURE_2D, u32(t))
+gl_tex_image(1, 1, 0x8814, GL_RGBA, GL_FLOAT, null, 0)
+glClearColor(0.25, 0.5, 0.75, 1)
+glClear(GL_COLOR_BUFFER_BIT)
+floats = fill(f32(-1), 4)
+gl_read_pixels_f32(0, 0, 1, 1, data(floats) as *u8)
+print("float red: {floats[0]}; expected about 0.25; last alpha: {floats[3]}; expected 1")
+assert(bytes[4] == 17 and abs(floats[0]-0.25) < 0.01 and floats[3] == 1, "honor crop bounds and float conversion")

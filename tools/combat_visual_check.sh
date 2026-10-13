@@ -23,14 +23,31 @@ source += '''
 visual_case = env("COMBAT_VISUAL") ?? "windup"
 visual_enemy = -1
 visual_hits = 0
+visual_damage = 0.0
+visual_hp: f64[]
+visual_swings: int[]
 visual_first_hit = -1
 visual_capture_frame = () -> bool:
     if visual_case == "camp_sword" or visual_case == "camp_claymore" or visual_case == "camp_spear":
-        return (frame_number() >= 118 and frame_number() <= 170) or (visual_first_hit >= 0 and frame_number() <= visual_first_hit + 20) or frame_number() % 10 == 0
+        return (frame_number() >= 145 and frame_number() <= 175) or (visual_first_hit >= 0 and frame_number() <= visual_first_hit + 20) or frame_number() % 10 == 0
     [29,30,31,32,33,34,35,40,45,46,50,54,58,65,75,95,115,145,175,180].contains(frame_number())
 update = (dt: f64):
     if visual_case == "camp_sword" or visual_case == "camp_claymore" or visual_case == "camp_spear":
+        if visual_hp.len() == 0:
+            loop e in enemies:
+                visual_hp.push(e.hp)
+                visual_swings.push(e.last_swing)
         production_update(dt)
+        loop i in [0..enemies.len()):
+            e = enemies[i]
+            # Enemy HP, not merely a flash/hitstop from some unrelated event.
+            if e.hp < visual_hp[i] and e.last_swing >= 0 and e.last_swing != visual_swings[i]:
+                damage = visual_hp[i] - e.hp
+                visual_damage += damage
+                assert(hitstop > 0.0, "real camp sword damage has readable impact pause")
+                print("combat visual {visual_case}: melee_damage={damage:.1} enemy={i} hp={e.hp:.1} swing={e.last_swing}")
+            visual_hp[i] = e.hp
+            visual_swings[i] = e.last_swing
         if hitstop > 0.0:
             visual_hits += 1
             if visual_first_hit < 0: visual_first_hit = frame_number()
@@ -42,8 +59,8 @@ update = (dt: f64):
             foe = enemies[fight.target]
             print("combat visual {visual_case}: approach frame={frame_number()} gap={length(foe.pos - pl.pos):.3} hero_t={fight.t:.3} foe={foe.state} foe_t={foe.t:.3}")
         if frame_number() == 300:
-            assert(visual_hits > 0, "camp production inputs land a readable melee blow")
-            print("combat visual {visual_case}: impact_frames={visual_hits}")
+            assert(visual_hits > 0 and visual_damage > 0.0, "camp production inputs deal real melee damage with readable impact pause")
+            print("combat visual {visual_case}: impact_frames={visual_hits} total_melee_damage={visual_damage:.1}")
         return
     if visual_enemy < 0:
         enemies.clear()
@@ -240,7 +257,13 @@ for scene in ${COMBAT_SCENES:-windup windup_heavy strike slam shove hit flurry f
     weapon=travelers_sword
     if [[ $scene == camp_claymore ]]; then weapon=travelers_claymore; fi
     if [[ $scene == camp_spear ]]; then weapon=boko_spear; fi
-    input=(BOTW_GIVE="$weapon,travelers_shield" SLOPPY_INPUT='1:k+,1:w+,170:j+,171:j-,180:w-,185:j+,186:j-,215:j+,216:j-,245:j+,246:j-')
+    swings='1:k+,1:w+,170:j+,171:j-,180:w-,185:j+,186:j-,215:j+,216:j-,245:j+,246:j-'
+    if [[ $scene == camp_sword ]]; then
+      # Start before the camp guard commits; follow through into blade reach.
+      # The old 170/185 presses plus 180 movement stop whiffed, then got interrupted.
+      swings='1:k+,1:w+,150:j+,151:j-,165:j+,166:j-,195:j+,196:j-,200:w-,225:j+,226:j-,255:j+,256:j-'
+    fi
+    input=(BOTW_GIVE="$weapon,travelers_shield" SLOPPY_INPUT="$swings")
   fi
   flock /tmp/botw-render.lock env BOTW_SKIP=1 BOTW_AT="$at" BOTW_HOUR=10 BOTW_WEATHER=clear \
     "${input[@]}" COMBAT_VISUAL="$scene" BOTW_SCALE=1 BOTW_NOVSYNC=1 SLOPPY_VSYNC=0 SLOPPY_PLATFORM=x11 SLOPPY_WINDOW=1280x720 \

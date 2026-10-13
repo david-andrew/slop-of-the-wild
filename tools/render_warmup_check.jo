@@ -7,6 +7,8 @@ use '../game/post.jo'
 use '../game/render.jo'
 use '../game/scene.jo'
 use '../game/fx.jo'
+use '../game/body_fire.jo'
+use '../game/trail.jo'
 use '../game/sky.jo'
 use '../game/shrines.jo'
 use '../game/camera.jo'
@@ -44,11 +46,13 @@ check_draw = ():
     render_world(view_pos(), view_target(), view_fov())
     bind_target(post.scene)
     fx_warmup(sc.cam, sc.vp, sc.view)
+    trail_warmup(sc.vp, sc.cam + vec3(0,0,-4))
+    body_fire_warmup()
     env = saved_env
     shr_cur = saved_shrine
     after = pipeline_inventory()
     eprint("warmup coverage: before {before} after {after}")
     assert(before == after, "a transition created a pipeline after render_warmup")
-    print("PASS warmup: weather/night/fire/electric/shrines and cached scale transitions")
+    print("PASS warmup: combat trails/body fire/weather/night/fire/electric/shrines and cached scale transitions")
     exit(0)
 main = (): __game_run(update, check_draw)

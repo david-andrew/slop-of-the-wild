@@ -1,0 +1,61 @@
+build:
+    opt = release
+# CPU inspection of the real water triangles, independent of the lip builder.
+use '../game/water_render.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+water_generate()
+
+front = (height: f32, across: f32) -> f32:
+    origin = vec3(-1490,height,across)
+    dir = vec3(1,0,0)
+    nearest = f32(10000)
+    loop tri in [0..water_indices.len()/3):
+        av=water_vertices[int(water_indices[tri*3])]
+        bv=water_vertices[int(water_indices[tri*3+1])]
+        cv=water_vertices[int(water_indices[tri*3+2])]
+        if av.mist > 0.0 or bv.mist > 0.0 or cv.mist > 0.0: continue
+        a=av.pos
+        b=bv.pos
+        c=cv.pos
+        if min(a.y,min(b.y,c.y)) > height or max(a.y,max(b.y,c.y)) < height: continue
+        if min(a.z,min(b.z,c.z)) > across or max(a.z,max(b.z,c.z)) < across: continue
+        ab=b-a
+        ac=c-a
+        p=cross(dir,ac)
+        det=dot(ab,p)
+        if abs(det) < 0.00001: continue
+        t=origin-a
+        u=dot(t,p)/det
+        q=cross(t,ab)
+        v=dot(dir,q)/det
+        d=dot(ac,q)/det
+        if u >= -0.00001 and v >= -0.00001 and u+v <= 1.00001 and d > 0.0 and d < 100.0:
+            nearest=min(nearest,origin.x+d)
+    assert(nearest < -1400.0, "crest probe must meet a continuous sheet")
+    nearest
+
+left=front(246,1813)
+center=front(246,1823)
+right=front(246,1833)
+bow=(left+right)*0.5-center
+assert(bow > 3.0, "crest centre must visibly bow outward from its banks")
+print("PASS waterfall crest: y246 front x {left}, {center}, {right}; centre bows {bow:.2} m beyond banks")
+checked=0
+loop tri in [0..water_indices.len()/3):
+    a=water_vertices[int(water_indices[tri*3])]
+    b=water_vertices[int(water_indices[tri*3+1])]
+    c=water_vertices[int(water_indices[tri*3+2])]
+    q=(a.pos+b.pos+c.pos)/3.0
+    if a.mist > 0.0 or q.x < -1460 or q.x > -1404 or q.z < 1810 or q.z > 1836 or q.y < 228 or q.y > 251: continue
+    n=cross(b.pos-a.pos,c.pos-a.pos)
+    assert(length(n) > 0.00001, "refinement cannot emit degenerate triangles")
+    assert(n.y >= -0.0001, "rolling water cannot fold back across its downstream join")
+    checked+=1
+assert(checked > 500, "crest needs enough real surface resolution for a smooth roll")
+print("PASS waterfall roll: {checked} nondegenerate, unfolded crest triangles")

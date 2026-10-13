@@ -1,0 +1,49 @@
+# Attached flame shape and actual finite panic motion, with no graphics context.
+use '../game/body_fire.jo'
+use '../game/enemies.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/items.jo'
+use '../game/fx.jo'
+use '../game/gfx.jo'
+use '../game/audio_cache.jo'
+from '../game/enemies.jo' import __enemy_step
+
+u=BodyFireU(mat4(),vec3(1,0,0),0)
+loop tick in [0..120):
+    u.time=f32(tick)/60.0
+    flame=PInst(vec4(0,0,0,0.095),vec4(1,1,1,0.9),vec4(0,0,7,0.42))
+    bottom=body_fire_vs(QuadV(vec2(0,-1)),flame,u)
+    top=body_fire_vs(QuadV(vec2(0,1)),flame,u)
+    assert(length(bottom.pos.xyz)<0.00001,"flame root follows the animated socket exactly")
+    assert(top.pos.y>0.26 and top.pos.y<=0.43,"limb tongues remain taller than their 0.19m width")
+    center=body_fire_fs(BodyFireO(vec4(),vec2(0,0.3),7,0.9),u)
+    edge=body_fire_fs(BodyFireO(vec4(),vec2(1,0.3),7,0.9),u)
+    tip=body_fire_fs(BodyFireO(vec4(),vec2(0,1),7,0.9),u)
+    assert(center.w>0.25 and edge.w==0.0 and tip.w==0.0,"soft tapered licking flame, no opaque orange disk")
+print("PASS body flame: 120 flicker frames; attached roots, tall narrow tongues, soft transparent edges")
+
+__audio_state=2
+items_init()
+hf.n=64
+hf.cell=2.0
+hf.x0=-64.0
+hf.z0=-64.0
+hf.h=fill(f32(0),4096)
+hf.mat=fill(u8(0),4096*4)
+pl=Player(pos=vec3(0,0,80))
+env.rain=0.0
+loop state in [EState.idle,EState.windup,EState.attack,EState.sleep]:
+    e=Enemy(.bokoblin,vec3(0,0,0),vec3(0,0,0),state=state,hp=20,hp_max=20,burning=1.5,weapon="boko_club")
+    distance=0.0
+    loop frame in [0..90):
+        previous=e.pos
+        alarm=false
+        __enemy_step(e,1.0/60.0,false,alarm)
+        distance+=f64(length(e.pos-previous))
+    assert(distance>6.0 and distance<7.0,"brief burning panic run uses real locomotion")
+    assert(e.burning<0.00001 and e.hp>16.9,"burn and its damage end after the existing finite timer")
+    assert(e.weapon=="","burning runner drops its weapon")
+    print("PASS {state} burning run: {distance:.2}m in 1.5s, finite burn and dropped weapon")

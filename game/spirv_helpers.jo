@@ -46,3 +46,39 @@ game_spirv_derivatives = (src: str) -> str:
     bytes = fill(u8(0), src.len())
     mem_copy(data(bytes), data(words) as *u8, bytes.len())
     str_from_bytes(bytes)
+
+# Corner offsets can contract into p * 0.1031 after driver inlining. The
+# resulting rounding difference is magnified by hash12's final fract, so the
+# same corner approaches 1 in one vnoise cell and 0 in its neighbour. Fence
+# that multiply only; retain the hash and every other shader optimization.
+game_spirv_noise_precision = (src: str) -> str:
+    if src == "": return src
+    words = fill(u32(0), src.len() / 4)
+    mem_copy(data(words) as *u8, data(src), src.len())
+    scale = u32(0)
+    at = 5
+    loop at < words.len():
+        n = int(words[at] >> 16)
+        op = words[at] & 65535
+        assert(n > 0 and at + n <= words.len(), "invalid SPIR-V instruction")
+        if op == 43 and n == 4 and words[at + 3] == u32(0x3DD32618): scale = words[at + 2] # f32(0.1031)
+        at += n
+    if scale == 0: return src
+    decorations: u32[]
+    insert = 0
+    at = 5
+    loop at < words.len():
+        n = int(words[at] >> 16)
+        op = words[at] & 65535
+        if insert == 0 and op >= 19 and op <= 39: insert = at
+        if op == 142 and n == 5 and words[at + 4] == scale:
+            decorations.push(u32(3 << 16) | 71) # OpDecorate
+            decorations.push(words[at + 2])
+            decorations.push(42) # NoContraction
+        at += n
+    if decorations.len() == 0: return src
+    assert(insert > 0, "noise precision requires a SPIR-V type section")
+    out = words[..insert) + decorations + words[insert..]
+    bytes = fill(u8(0), out.len() * 4)
+    mem_copy(data(bytes), data(out) as *u8, bytes.len())
+    str_from_bytes(bytes)

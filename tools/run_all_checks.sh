@@ -92,6 +92,10 @@ check() {
 
 jo() {
     local name=$1
+    if [[ $name == shrine_obstruction_check ]]; then
+        tools/shrine_obstruction_check.sh
+        return
+    fi
     sloppy/bin/sloppy build "tools/$name.jo" -o "$out/bin/$name" || return
     "$out/bin/$name" "${@:2}"
 }
@@ -138,6 +142,7 @@ cpu_checks=(
     shrine_ceremony_check
     shrine_discovery_check
     shrine_enclosure_check
+    shrine_obstruction_check
     shrine_lighting_check
     shrine_paint_check
     shrine_shaft_check
@@ -150,6 +155,10 @@ cpu_checks=(
     talus_test
     title_handoff_check
     tower_activation_check
+    tower_base_climb_check
+    round91_fire_check
+    round91_weather_check
+    round92_lightning_check
     title_panorama_check
     tree_test
     vegetation_reach_check
@@ -158,6 +167,7 @@ cpu_checks=(
     wake_contact_check
     wading_check
     water_coverage_check
+    waterfall_shape_check
     weather_fx_test
     vapor_shape_check
     weather_shading_check
@@ -182,12 +192,12 @@ done
 # Fresh-process and production-controller wrappers also exercise their fixtures.
 for name in save_check status_save_check encounter_weather_save_check \
     talus_save_element_check element_journey_check journey_check late_story_check \
-    shrine_route_check prepared_assets_check; do
+    shrine_route_check shrine_gap_check prepared_assets_check; do
     check cpu "$name" "tools/$name.sh"
 done
 check cpu journey_keyboard_check tools/journey_check.sh --keyboard
 for name in defect_hunt_check enemy_model_check hero_model_check wildlife_mesh_check \
-    weather_silhouette_test environment_visuals_check round70_heat_check; do
+    weather_silhouette_test environment_visuals_check round70_heat_check round92_lightning_target_check; do
     check cpu "$name" python3 "tools/$name.py"
 done
 check cpu movement_source_audit python3 docs/ref/verify_movement_response_sources.py
@@ -196,13 +206,16 @@ check cpu listening_clips python3 tools/listen.py
 
 # Small GPU equivalence tests never self-lock. Compile while holding their sole
 # lock too, so even a compiler-run window cannot overlap another renderer.
-for name in draw_cache_check skin_row_check fir_surface_check hero_surface_check material_paint_check post_edge_check \
-    shader_load_check shader_adapter_check slot_check terrain_noise_check climb_occluder_check; do
+for name in combat_geometry_check draw_cache_check skin_row_check fir_surface_check hero_surface_check material_paint_check post_edge_check \
+    shader_load_check shader_adapter_check slot_check terrain_noise_check noise_seam_check climb_occluder_check; do
     # flock launches a fresh shell; export this function and its binary directory.
     export out
     export -f jo
     check render "$name" bash -c 'jo "$1"' -- "$name"
 done
+
+# Every rendered frame of the full tower-base circuit checks its HDR body crop.
+check render tower_base_climb_capture env BOTW_SKIP=1 BOTW_TOWER=1 BOTW_HOUR=11 BOTW_WEATHER=clear BOTW_SCALE=1 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=2600 SLOPPY_SCREENSHOT="$out/tower-base.png" timeout 240 sloppy/bin/sloppy tools/tower_base_climb_capture.jo
 
 # The runner owns no lock when invoking these tools; they lock their own renders.
 for name in production_loop_check menu_pause_check opening_check title_rise_visual_check daylight_check \
@@ -210,8 +223,11 @@ for name in production_loop_check menu_pause_check opening_check title_rise_visu
     shrine_exit_check combat_visual_check; do
     check self "$name" "tools/$name.sh"
 done
+# A real placed-camp approach; keep it explicit so --only can reproduce a miss.
+check self camp_sword_visual_check env COMBAT_SCENES=camp_sword tools/combat_visual_check.sh "$out/camp-sword"
 check self prepared_frame_check python3 tools/prepared_frame_check.py
 check self element_input_check python3 tools/element_input_check.py
+check self renderer_structure_check python3 tools/renderer_structure_check.py
 check self weather_silhouette_check python3 tools/weather_silhouette_check.py
 check self sky_camera_check python3 tools/sky_camera_check.py
 check self traversal_check tools/traversal_check

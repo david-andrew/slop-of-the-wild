@@ -8,6 +8,7 @@ use '../game/cputime.jo'
 use '../game/player.jo'
 use '../game/camera.jo'
 use '../game/combat.jo'
+use '../game/music.jo'
 use '../game/enemies.jo'
 use '../game/terrain.jo'
 use '../game/elements.jo'
@@ -41,6 +42,7 @@ probe_pre_thread_ms = 0.0
 probe_run_start = 0.0
 probe_run_thread_start = 0.0
 probe_route_name = env("PROBE_ROUTE") ?? "mixed"
+probe_music_last = Mood.silent
 probe_waypoint = 0
 probe_waypoint_t = 0.0
 probe_waypoints = [vec2(-1140, 1610), vec2(-1030, 1730), vec2(-1000, 1815), vec2(-975, 1750), vec2(-1050, 1640), vec2(-1140, 1500)]
@@ -64,6 +66,29 @@ probe_route = ():
         if frame_number() % 120 == 0: eprint("forest pose: goal {goal.x:.1},{goal.y:.1} delta {delta.x:.2},{delta.y:.2} yaw {cam.yaw:.3} global {cam_yaw_global:.3}")
         probe_key(.w, true)
         probe_key(.shift, int(elapsed) % 12 < 3)
+        return
+    if probe_route_name == "combat":
+        phase = int(elapsed / 40.0)
+        local = elapsed-f64(phase)*40.0
+        fighting = phase % 3 == 1
+        if phase != probe_phase:
+            probe_phase = phase
+            loop k in [Key.w,.right,.shift,.k,.j]: probe_key(k,false)
+            x = if fighting: -1439.0 else: -1030.0
+            z = if fighting: 1606.0 else: 1805.0
+            __teleport(v3(x,height_at(x,z),z),if fighting: 0.0 else: 1.57,false)
+            pl.state = .ground
+            pl.hp_max = 1200
+            pl.hp = pl.hp_max
+            fight = Fight(weapon_out = fighting)
+            eprint("session phase: {phase} combat-entry {fighting} elapsed {elapsed:.3}")
+        probe_key(.w, if fighting: local < 2.8 else: local < 25.0)
+        probe_key(.right, not fighting and local < 25.0)
+        probe_key(.shift, not fighting and int(local)%12 < 3)
+        probe_key(.k,fighting)
+        attack = int(elapsed/0.75)
+        probe_key(.j,fighting and local > 2.5 and attack != probe_attack)
+        probe_attack = attack
         return
     if probe_route_name != "mixed": return
     phase = int(elapsed / 60.0)
@@ -107,6 +132,9 @@ probe_update = (dt: f64):
     if probe_soak: probe_route()
     before = pl.pos
     update(dt)
+    if probe_route_name == "combat" and seq.mood != probe_music_last:
+        eprint("combat score: elapsed {time()-probe_start:.3} mood {seq.mood} want {seq.want} volume {seq.volume:.6}")
+        probe_music_last = seq.mood
     if probe_soak:
         probe_distance += f64(length(pl.pos - before))
         if fight.act == .swing: probe_swing += 1

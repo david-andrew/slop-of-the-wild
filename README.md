@@ -294,10 +294,16 @@ described in [docs/MUSIC.md](docs/MUSIC.md).
 
 ## Combat framing regression
 
-`tools/combat_visual_check.sh` now owns one render lock per scene; do not wrap it.
+`tools/combat_visual_check.sh` owns one render lock per scene; do not wrap it.
+`tools/run_all_checks.sh --only camp_sword_visual_check` covers the placed camp at
+`BOTW_SKIP=1 BOTW_AT="-1439,1606,0"`, with a Wanderer's Sword and shield. Its inputs
+are `1:k+,1:w+,150:j+,151:j-,165:j+,166:j-,195:j+,196:j-,200:w-,225:j+,226:j-,255:j+,256:j-`:
+attack during the approach and keep moving into reach. The check requires actual
+enemy HP loss and impact pause. The old 170/185-frame opening stopped movement at
+180, fell short of the posed bodies and lost its follow-up to the enemy's attack.
 `tools/round57_visual_check.sh` likewise releases the lock between renders.
 
-The offline framing check skins every body triangle over four 960-frame fights:
+The offline framing check skins every body triangle over four 960-frame fights plus a tent-fire crowd:
 five enemies on flat ground, three on a walkable terrain slope, one inside the
 Temple's ruin doorway, and three beside a collidable forest tree. Each uses attacks,
 lateral movement, lock/unlock and camera pans; the doorway uses shorter moves
@@ -306,6 +312,11 @@ screen coverage, perspective-correct foreground overlap with Jo, and a separatin
 plane between the posed body meshes, followed by exact triangle separation where
 the conservative envelopes overlap. Each fight must land real sword damage. Equipment has
 separate masks, and selected windup visibility includes other bodies and equipment.
+Posed head centres must stay at least 40 px apart at 1280×720, and both the
+hero/enemy and enemy/enemy capsules must remain separate. After one second of
+lock acquisition, Jo and the selected foe's heads must stay in the middle third.
+The additional three-foe course converges beside tent 5 at `-955,1964,0`, with
+no player input, including the critic's frame 230.
 The contact checks test weapon reach separately. It does not subtract terrain occlusion
 or the existing character dissolve, so the screen measurement is conservative.
 The offline C helper rasterizes body masks and measures triangle distances;
@@ -318,8 +329,8 @@ build/framing-venv/bin/python tools/combat_framing_check.py --output build/comba
 ```
 
 The check compiles its measurement helper under the output directory and takes one
-render lock per scene itself. `--scene flat|slope|doorway|tree` selects one case;
-the default runs all four; `--frames 720` retains the shorter historical course. `--game PATH --baseline` measures a baseline without enforcing
+render lock per scene itself. `--scene flat|slope|doorway|tree|tentfire` selects one case;
+the default runs all five; `--frames 720` retains the shorter historical course. `--game PATH --baseline` measures a baseline without enforcing
 the new thresholds; `--analyze-only` rechecks a retained pose trace without rendering.
 Round 77 before/after captures, per-frame metrics and regression logs are under
 `build/round77/`.

@@ -674,6 +674,12 @@ __cliff_depth = (p: vec3) -> f64:
     bend = (noise(across * 0.016, y * 0.006) - 0.5) * 5.0
     ribs = noise((across + bend) * 0.047, y * 0.006 + 13.0)
     columns = smooth01((ribs - 0.28) / 0.48) * 17.0
+    # Selected shoulders expose flat joint planes and abrupt recessed returns.
+    # Linear ramps keep the breaks angular instead of rounding every rib.
+    angular = smoothstep(0.32,0.65,noise(across*0.026+3.0,17.0))
+    block = fract((across + y*0.11 + bend*0.25)/39.0)
+    plane = clamp(min(block/0.24,(1.0-block)/0.13),0.0,1.0)
+    columns = lerp(columns,3.0+plane*15.0,angular)
     gullies = smooth01((noise((across + bend) * 0.079 + 7.0, y * 0.004) - 0.57) / 0.25) * 12.0
     broad = (noise(across * 0.022, y * 0.012) - 0.5) * 16.0
     # Split the long walls with unequal ribs, broken shelves and inclined
@@ -691,7 +697,11 @@ __cliff_depth = (p: vec3) -> f64:
     toe = smoothstep(108.0,118.0,bed_height)*(1.0-smoothstep(126.0,135.0,bed_height))
     # The low pool camera sees the toe, below the former first shelf. Carry
     # real bedding across this shoulder even where the random envelope dies.
-    shelf = (upper*8.0+lower*6.0+mid*7.0+high*5.0+toe*3.0*poolside)*max(presence,poolside*0.85)
+    split_upper = clamp((bed_height-219.0)/1.8,0.0,1.0)*(1.0-clamp((bed_height-229.0)/2.0,0.0,1.0))
+    split_mid = clamp((bed_height-185.0)/1.6,0.0,1.0)*(1.0-clamp((bed_height-196.0)/1.8,0.0,1.0))
+    upper = lerp(upper,split_upper,angular)
+    mid = lerp(mid,split_mid,angular)
+    shelf = (upper*10.0+lower*6.0+mid*9.0+high*5.0+toe*3.0*poolside)*max(presence,poolside*0.85)
     # Deliberate diagonal fault bays break the tall north buttress and the
     # south pool shoulder. Their broad returns are resolved by all three LODs.
     fault = 1.0 - smoothstep(1.8, 5.5, abs(across - 1339.0 + (y - 190.0) * 0.11))
@@ -854,7 +864,7 @@ __cliff_skin = (stations: CliffStation[], step: int) -> Builder:
         face = normalize(cross(c.pos-a.pos,d.pos-a.pos))
         loop v in [a,c,d]:
             q = v
-            q.normal = normalize(v.normal*0.82+face*0.18)
+            q.normal = normalize(v.normal*0.45+face*0.55)
             faceted.idx.push(u32(faceted.verts.len()))
             faceted.verts.push(q)
     faceted
@@ -1227,12 +1237,11 @@ __west_cliffs = ():
             n = normalize(cross(b-a,c-a))
             q = (a+b+c)/3.0
             if plates >= 2 or n.y < 0.50 or q.y < 135.0 or q.y > 255.0: continue
-            if q.z > 1780.0 and q.z < 1880.0: continue
             if length(q-last) < 14.0: continue
             h = hash2(f64(tri), 711.0)
             if h < 0.76: continue
             q += vec3(1.5, -0.55, 0)
-            __cliff_fragment(q, v3(2.4 + h, 0.65, 2.2 + h), 0.12 + h * 0.25, 711.0 + f64(tri))
+            __cliff_fragment(q, v3(3.4 + h*1.8, 1.25, 2.8 + h), 0.12 + h * 0.25, 711.0 + f64(tri))
             last = q
             plates += 1
 

@@ -272,7 +272,7 @@ check_lock_camera = ():
                 camera_update(dt)
                 peak = max(peak, f64(length(view_pos() - last)) * f64(hz) / 60.0)
                 if k == hz / 2 - 1:
-                    assert(cam.lock_frame > 0.99 and cam.dist_cur < 4.45 and view_fov() < 44.1, "lock closes its boom and field of view within 0.5 s")
+                    assert(cam.lock_frame > 0.99 and cam.dist_cur < 4.45 and view_fov() >= 43.9 and view_fov() <= 100.0, "lock closes its boom and fits the pair within 0.5 s")
             eye = view_pos()
             assert(cam.lock_side == (if gap == 2.0: 1.0 else: -1.0), "acquisition keeps its nearer shoulder")
             forward = normalize(view_target() - eye)
@@ -284,6 +284,7 @@ check_lock_camera = ():
             px = f64(dot(ph,right))/f64(dot(ph,forward))
             ex = f64(dot(eh,right))/f64(dot(eh,forward))
             assert(abs(px-ex)/(cone*16.0/9.0) > 0.08,"locked head centres keep readable horizontal separation")
+            assert(abs(px) < cone*16.0/9.0/3.0 and abs(ex) < cone*16.0/9.0/3.0, "lock keeps both head centres in the middle third")
             loop actor in [pl.pos, cam.lock_pos]:
                 loop height in [0.05, 1.8]:
                     loop side in [-0.35, 0.35]:

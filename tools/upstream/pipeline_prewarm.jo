@@ -1,0 +1,29 @@
+# Caller owns the render lock. Run on Vulkan; cache data is not a pipeline object.
+struct ProbeVertex:
+    pos: vec2
+struct ProbeParams:
+    tex: Texture
+struct ProbeOut:
+    pos: vec4
+    uv: vec2
+probe_vs = (v: ProbeVertex, u: ProbeParams) -> ProbeOut:
+    ProbeOut(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+probe_fs = (i: ProbeOut, u: ProbeParams) -> vec4: vec4(1, 0, 0, 1)
+window("Pipeline first use", 64, 64)
+sh = make_shader(shader(probe_vs, probe_fs))
+tri = mesh([ProbeVertex(vec2(-1,-1)), ProbeVertex(vec2(3,-1)), ProbeVertex(vec2(-1,3))])
+print("pipelines after make_shader: {__vgp[sh.prog].pipelines.len()}; expected 0 in 0.6")
+glDisable(GL_DEPTH_TEST)
+glDisable(GL_CULL_FACE)
+glDisable(GL_BLEND)
+start = time()
+draw(sh, tri, ProbeParams(Texture()))
+print("first draw: {(time()-start)*1000:.3} ms; pipelines {__vgp[sh.prog].pipelines.len()}")
+glColorMask(0, 0, 0, 0)
+start = time()
+draw(sh, tri, ProbeParams(Texture()))
+print("new color-mask state: {(time()-start)*1000:.3} ms; pipelines {__vgp[sh.prog].pipelines.len()}")
+# Persist this cache so a second launch can verify object creation still occurs.
+__vg_end_pass()
+__vk_submit_and_wait()
+__vk_save_pipeline_cache()

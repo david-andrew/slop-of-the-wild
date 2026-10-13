@@ -57,7 +57,12 @@ struct WaterO:
 
 water_vs = (v: WVert, u: WaterU) -> WaterO:
     w = v.pos
-    # Lift and drift only the existing mist fans; surface vertices stay fixed.
+    # The upper river rolls west into the crest; only a shallow surface wave
+    # moves its silhouette, leaving gameplay water levels unchanged.
+    if v.mist == 0.0 and w.x > -1435.0 and w.x < -1350.0 and w.z > 1807.0 and w.z < 1841.0 and w.y > 237.0:
+        bank = 1.0 - smoothstep(8.0,17.0,abs(w.z-1823.0))
+        w.y += bank * (sin(w.x*0.68+u.time*3.2+w.z*0.21)*0.12 + sin(w.x*1.3+u.time*5.6)*0.06)
+    # Lift and drift the existing spray fans.
     if v.mist > 0.0:
         w += vec3(sin(u.time * 0.38 + v.pos.y) * 1.7, v.mist * (1.4 + sin(u.time * 0.6 + v.pos.x) * 0.35), cos(u.time * 0.29 + v.pos.y) * 0.9)
     WaterO(u.vp * vec4(w, 1), w, v.impact, v.fall, v.ledge, v.mist)
@@ -105,11 +110,14 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
     if i.mist > 0.0:
         cloud = vnoise(w.xz * 0.24 + vec2(u.time * 0.14, u.time * 0.06))
         west_pool = w.x > -1505.0 and w.x < -1450.0 and w.z > 1800.0 and w.z < 1848.0 and w.y < 120.0
-        alpha = i.mist * smoothstep(0.20, 0.78, cloud) * (if west_pool: 0.46 else: 0.30)
+        west_spray = w.x > -1505.0 and w.x < -1400.0 and w.z > 1800.0 and w.z < 1848.0 and w.y >= 120.0
+        spray = vnoise(vec2(w.z*1.4+sin(w.y*0.17)*0.8,(w.y+u.time*18.0)*0.32))
+        alpha = i.mist * smoothstep(0.20, 0.78, if west_spray: spray else: cloud) * (if west_pool: 0.46 else if west_spray: 0.45 else: 0.30)
         # Forward-scattered sun gives dawn spray a warm rim; skylight keeps
         # the plume visible in rain without making the cloud emissive.
         light = pow(max(dot(normalize(w - u.cam), normalize(u.sun_dir)), 0.0), 4.0)
         col = vec3(0.80, 0.90, 0.91) * (u.sun_color * (0.38 + light * 0.35) + u.horizon * 0.85)
+        if west_spray: col = vec3(0.92,0.98,1.0)*(u.sun_color*0.60+u.horizon*1.05)
         return vec4(atmos(col, w, u.cam, normalize(u.sun_dir), u.haze, u.sun_color, u.density, u.falloff), alpha)
     # The falling face has its own moving whitewater, before shoreline rejection and
     # horizontal-water reflection. World-anchored strands never turn with the camera.
@@ -121,17 +129,24 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
     # One authored flow coordinate spans all three drops and the intervening
     # shallow benches. Local cell top/bottom and facet orientation must never
     # restart a lip, pinch the sheet or rotate its streaks at those contacts.
-    if west_course and w.x < -1418.0 and w.y > 108.0 and (w.y < 237.0 or steep > 0.5):
+    if west_course and w.x < -1412.0 and w.y > 108.0 and w.y < 255.0:
         across = w.z - 1823.0
         travel = w.y + u.time * 22.0
         broad = vnoise(vec2(across * 0.30 + sin(w.y * 0.037 + across * 0.19) * 0.38, travel * 0.036))
         strand = vnoise(vec2(across * 0.91 + broad * 1.35 + sin(travel * 0.09 + across * 0.31) * 0.38, travel * 0.065 + 7.3))
         fleck = vnoise(vec2(across * 1.80 + broad * 0.85, travel * 0.23 + 3.7))
-        edge = 14.2 - abs(across - sin(w.x * 0.055) * 0.8)
-        margin = smoothstep(0.0, 3.5, edge + (broad - 0.5) * 2.4)
+        crest_height = 249.8 + (1.0-smoothstep(0.0,15.0,abs(across)))*1.0
+        drop = crest_height - w.y
+        # The upper drop pinches, the next opens over its bench, and unequal
+        # fringes spread again at the plunge. This is one continuous flow mask.
+        width = 12.0 + sin(drop*0.068+0.4)*1.8 - exp(-pow((drop-35.0)/13.0,2.0))*2.8 + exp(-pow((drop-83.0)/16.0,2.0))*1.8
+        bench = min(abs(w.y-194.0),abs(w.y-144.0))
+        width = mix(width,14.8,1.0-smoothstep(2.0,8.0,bench))
+        drift = sin(drop*0.043)*1.4 + sin(drop*0.11+across*0.27)*0.8
+        edge = width - abs(across-drift)
+        margin = smoothstep(0.0, 1.5, edge + (broad - 0.5) * 3.6 + (fleck-0.5)*1.2)
         core = smoothstep(1.8, 6.0, edge)
-        drop = 249.8 - w.y
-        aeration = smoothstep(4.0, 17.0, drop)
+        aeration = smoothstep(9.0, 27.0, drop)
         # Wide tapered washes carry finer, unequal rivulets. All advect at
         # 22 m/s; varying lengths break up the paint without dashed marks.
         white = smoothstep(0.28, 0.72, broad * 0.44 + strand * 0.31 + fleck * 0.25)
@@ -139,10 +154,17 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         ledge_d = min(abs(w.y - 144.0), abs(w.y - 194.0))
         splash = (1.0 - smoothstep(1.0, 5.0, ledge_d + (broad - 0.5) * 4.0)) * smoothstep(0.30, 0.66, strand)
         white = max(white, splash * 0.90)
-        roll = (1.0 - smoothstep(0.0, 8.0, abs(drop - 7.0))) * (0.32 + strand * 0.40)
+        roll = (1.0 - smoothstep(0.0, 7.0, abs(drop - 14.0))) * smoothstep(0.55,0.82,strand) * 0.34
         white = max(white, roll)
         lit = u.sun_color * 0.46 + u.horizon * 0.82
-        body = vec3(0.10, 0.34, 0.37) * lit
+        # A thick, unbroken glassy shoulder precedes the broken white strands.
+        # Its broad sky reflection follows the curved facets as water rolls over.
+        roll_n = normalize(vec3(-smoothstep(250.0,230.0,w.y),smoothstep(230.0,250.0,w.y),across*0.008))
+        facing = abs(dot(roll_n,normalize(u.cam-w)))
+        sheen = pow(1.0-clamp(facing,0.0,1.0),3.0)
+        glass = (vec3(0.12,0.38,0.41)+vec3(0.27,0.43,0.45)*(0.30+sheen*0.65)) * lit
+        body = mix(glass,vec3(0.10,0.34,0.37)*lit,aeration)
+        body += vec3(0.10,0.15,0.15)*lit*(1.0-aeration)*smoothstep(0.52,0.78,strand)
         foam = vec3(0.96, 1.0, 0.98) * lit
         c = mix(body, foam, white)
         c = atmos(c, w, u.cam, normalize(u.sun_dir), u.haze, u.sun_color, u.density, u.falloff)
@@ -313,6 +335,15 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
     # (a thin broken line right at the edge, not a milky sheet over every shallow)
     foam = smoothstep(0.07, 0.0, depth) * smoothstep(0.45, 0.7, vnoise(w.xz * 3.0 + vec2(u.time * 0.5, 0)))
     c = mix(c, vec3(0.85, 0.9, 0.9) * (u.sun_color * 0.4 + u.horizon * 0.6), foam * 0.6)
+    # Advected filaments gather toward the fall instead of a pale still slab.
+    if west_course and w.y > 237.0:
+        travel = w.x + u.time * 4.6
+        flow = vnoise(vec2(travel*0.16,(w.z-1823.0)*0.75 + sin(travel*0.18)*0.48))
+        crest = 1.0-smoothstep(0.0,22.0,w.x+1430.0)
+        streak = smoothstep(0.62,0.83,flow)*(0.05+crest*0.18)
+        lit = u.sun_color*0.46+u.horizon*0.82
+        c = mix(c,vec3(0.08,0.30,0.33)*lit,0.25)
+        c = mix(c,vec3(0.85,0.95,0.95)*lit,streak)
     # Hopper Pond's shallow clear water: transmit the scene and relight only the bed.
     # Screen depth distinguishes sand from submerged legs, fish and shore geometry.
     # This keeps the original silhouettes instead of painting a flat bottom over them.
@@ -401,13 +432,23 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
     a = a * shore
     # Churn at the actual foot, feathered into the pool. The mesh carries the radial
     # envelope; existing moving wave noise breaks it into drifting foam islands.
-    if i.impact > 0.01:
+    impact = i.impact
+    west_plunge = w.x > -1510.0 and w.x < -1474.0 and w.z > 1803.0 and w.z < 1843.0 and w.y > 99.0 and w.y < 109.0
+    if west_plunge:
+        # Spread the churn away from the sheet into its receiving pool. A
+        # flattened footprint avoids a small white disc hidden under the mist.
+        contact = length((w.xz-vec2(-1488.0,1823.0))/vec2(19.0,16.0))
+        impact = max(impact,1.0-smoothstep(0.15,1.0,contact))
+    if impact > 0.01:
         # Separate narrow moving crests from the broad churn. The cached radial
         # envelope keeps rings at real receiving pools, in the same water draw.
-        crest = sin((1.0 - i.impact) * 38.0 - u.time * 3.8) * 0.5 + 0.5
-        ring = smoothstep(0.84, 0.98, crest) * smoothstep(0.03, 0.18, i.impact) * (1.0 - smoothstep(0.72, 0.98, i.impact))
+        crest = sin((1.0 - impact) * 38.0 - u.time * 3.8) * 0.5 + 0.5
+        ring = smoothstep(0.84, 0.98, crest) * smoothstep(0.03, 0.18, impact) * (1.0 - smoothstep(0.72, 0.98, impact))
         ring *= 0.6 + h0 * 0.4
-        froth = smoothstep(0.27, 0.66, h0) * i.impact
+        froth = smoothstep(if west_plunge: 0.18 else: 0.27, 0.66, h0) * impact
+        if west_plunge:
+            rafts = vnoise(w.xz*0.72+vec2(-u.time*0.65,u.time*0.23))
+            froth = max(froth,smoothstep(0.35,0.67,rafts)*impact*0.94)
         c = mix(c, vec3(0.83, 0.91, 0.89) * (u.sun_color * 0.4 + u.horizon * 0.7), froth * 0.86)
         c = mix(c, vec3(0.68, 0.86, 0.84) * (u.sun_color * 0.45 + u.horizon * 0.85), ring * 0.65)
         a = max(a, max(froth * 0.92, ring * 0.78))
@@ -535,33 +576,56 @@ water_build = ():
         water_levels = []
     __water_ready = true
 
-# Refine only the west crest, preserving collision/swimming grids and the sheet.
+# Shared edge splits let the crest bow smoothly, including its silhouette.
+# Only the render mesh changes; gameplay water and collision remain on their grid.
 west_canyon_lip = (vs: mut WVert[], idx: mut u32[]):
-    refined: u32[]
-    loop tri in [0..idx.len()/3):
-        a = idx[tri*3]
-        b = idx[tri*3+1]
-        c = idx[tri*3+2]
-        q = (vs[int(a)].pos+vs[int(b)].pos+vs[int(c)].pos)/3.0
-        if q.x < -1460.0 or q.x > -1412.0 or q.z < 1807.0 or q.z > 1841.0 or q.y < 228.0 or q.y > 245.0 or vs[int(a)].mist > 0.0:
-            loop k in [a,b,c]: refined.push(k)
-            continue
-        center = u32(vs.len())
-        aa=vs[int(a)]
-        bb=vs[int(b)]
-        cc=vs[int(c)]
-        vs.push(WVert((aa.pos+bb.pos+cc.pos)/3.0,(aa.impact+bb.impact+cc.impact)/3.0,(aa.fall+bb.fall+cc.fall)/3.0,(aa.ledge+bb.ledge+cc.ledge)/3.0,(aa.mist+bb.mist+cc.mist)/3.0))
-        # Shared edges remain exact, including against an unrefined upstream
-        # triangle. Only interior vertices refine the rolling crest.
-        loop k in [a,b,center,b,c,center,c,a,center]:refined.push(k)
-    idx = refined
+    midpoint = (a: WVert, b: WVert) -> WVert:
+        WVert((a.pos+b.pos)*0.5,(a.impact+b.impact)*0.5,(a.fall+b.fall)*0.5,(a.ledge+b.ledge)*0.5,(a.mist+b.mist)*0.5)
+    loop refinement in [0..2):
+        mids: {str: u32} = {}
+        key = (a: u32, b: u32) -> str: "{min(a,b)}:{max(a,b)}"
+        loop tri in [0..idx.len()/3):
+            a = idx[tri*3]
+            b = idx[tri*3+1]
+            c = idx[tri*3+2]
+            q = (vs[int(a)].pos+vs[int(b)].pos+vs[int(c)].pos)/3.0
+            if q.x < -1450.0 or q.x > -1404.0 or q.z < 1807.0 or q.z > 1841.0 or q.y < 220.0 or q.y > 251.0 or vs[int(a)].mist > 0.0: continue
+            loop edge in [(a,b),(b,c),(c,a)]:
+                k = key(edge.0,edge.1)
+                if mids.contains(k): continue
+                mids[k] = u32(vs.len())
+                vs.push(midpoint(vs[int(edge.0)],vs[int(edge.1)]))
+        refined: u32[]
+        loop tri in [0..idx.len()/3):
+            a = idx[tri*3]
+            b = idx[tri*3+1]
+            c = idx[tri*3+2]
+            ring: u32[]
+            loop edge in [(a,b),(b,c),(c,a)]:
+                ring.push(edge.0)
+                if let m = mids.get(key(edge.0,edge.1)): ring.push(m)
+            if ring.len() == 3:
+                loop k in ring: refined.push(k)
+                continue
+            aa=vs[int(a)]
+            bb=vs[int(b)]
+            cc=vs[int(c)]
+            center = u32(vs.len())
+            vs.push(WVert((aa.pos+bb.pos+cc.pos)/3.0,(aa.impact+bb.impact+cc.impact)/3.0,(aa.fall+bb.fall+cc.fall)/3.0,(aa.ledge+bb.ledge+cc.ledge)/3.0,(aa.mist+bb.mist+cc.mist)/3.0))
+            loop j in [0..ring.len()):
+                loop k in [ring[j],ring[(j+1)%ring.len()],center]: refined.push(k)
+        idx = refined
     loop mut v in vs:
         p = v.pos
-        if v.mist > 0.0 or p.x < -1460.0 or p.x > -1412.0 or p.z < 1807.0 or p.z > 1841.0 or p.y > 245.0: continue
-        edge = 1.0 - smoothstep(8.0, 17.0, abs(f64(p.z)-1823.0))
-        roll = exp(-((f64(p.y)-241.0)/7.5)^2.0)*(1.0-smoothstep(242.0,245.0,f64(p.y)))
-        v.pos.x -= f32(edge * roll * (2.4 + sin(f64(p.z)*0.21)*0.6))
-        v.pos.y += f32(edge * roll * (0.65 + sin(f64(p.z)*0.38)*0.28))
+        if v.mist > 0.0 or p.x < -1450.0 or p.x > -1404.0 or p.z < 1807.0 or p.z > 1841.0 or p.y < 190.0 or p.y > 251.0: continue
+        # Bow the entire roll forward, then ease back over thirty metres of
+        # downstream run. The join stays monotonic to avoid folding the sheet.
+        bow = 1.0 - smoothstep(0.0, 15.0, abs(f64(p.z)-1823.0))
+        join = smoothstep(-1458.0,-1428.0,f64(p.x)) * (1.0-smoothstep(-1412.0,-1404.0,f64(p.x)))
+        shoulder = exp(-((f64(p.x)+1417.0)/9.0)^2.0)
+        curl = exp(-((f64(p.x)+1426.0)/9.0)^2.0)
+        v.pos.x -= f32(bow*join*10.0)
+        v.pos.y += f32(bow*join*(shoulder*0.6-curl*2.7))
     # Small vertical spray fans peel off unequal heights at the sheet edges.
     # Existing mist shading and its one water draw carry these 64 triangles.
     loop side in [-1.0,1.0]:
@@ -570,10 +634,10 @@ west_canyon_lip = (vs: mut WVert[], idx: mut u32[]):
             x = if y > 205.0:-1434.0 else if y > 160.0:-1451.0 else:-1471.0
             center = v3(x-4.0,y,1823.0+side*(11.0+f64(k%2)))
             base = u32(vs.len())
-            vs.push(WVert(center, mist=0.62))
+            vs.push(WVert(center, mist=0.48))
             loop j in [0..8):
                 a = f64(j)*TAU/8.0
-                vs.push(WVert(center+v3(-1.4*cos(a),sin(a)*5.0,side*cos(a)*3.1),mist=0.001))
+                vs.push(WVert(center+v3(-1.4*cos(a),sin(a)*6.0,side*cos(a)*1.7),mist=0.001))
             loop j in [0..8):
                 loop id in [base,base+1+u32(j),base+1+u32((j+1)%8)]:idx.push(id)
 

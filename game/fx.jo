@@ -513,16 +513,32 @@ fx_wade = (p: vec3, level: f64, vel: vec3, entry: bool):
 # Use each segment's 3D range: upper branches viewed from below are further
 # from the eye than the ground strike, and must not collapse into a hairline.
 # Scripted inspection strikes meet the centre ray near its terrain contact.
-# A lower bound keeps the ordinary preset outside Link's water shock radius.
-scripted_lightning_target = (eye: vec3, gaze: vec3) -> vec2:
-    hit = ray_terrain(eye, gaze, 160.0, 0.4)
+# Inspection strikes land in the foreground so the visible cloud-to-ground
+# span reaches past mid-frame. Their normal water-conduction rules still apply.
+scripted_lightning_target = (eye: vec3, gaze: vec3, actor: vec3? = none) -> vec2:
     horizontal = vec3(gaze.x, 0, gaze.z)
     ahead = if length(horizontal) > 0.001: normalize(horizontal) else: vec3(0, 0, -1)
-    distance = if hit.hit: clamp(f64(length(vec3(hit.pos.x - eye.x, 0, hit.pos.z - eye.z))), 24.0, 80.0) else: 55.0
+    right = vec3(-ahead.z, 0, ahead.x)
+    up = normalize(cross(right, gaze))
+    distance = 3.0
+    # Choose the actual ground/water surface below the screen midpoint. A fixed
+    # range leaves the pond's raised water plane near the horizon, hiding most
+    # of the bolt. This affects inspection strikes, not ordinary storm targeting.
+    loop k in [6..65):
+        d = f64(k) * 0.5
+        x = f64(eye.x + ahead.x * f32(d))
+        z = f64(eye.z + ahead.z * f32(d))
+        surface = max(height_at(x,z),water_level(x,z) ?? -10000.0)
+        delta = v3(x,surface,z)-eye
+        depth = dot(delta,gaze)
+        if depth > 1.0 and dot(delta,up)/depth < -0.08: distance=d
+    # A third-person centre ray passes through Jo. Keep the inspection impact
+    # five metres beyond him, still inside the connected-water shock radius.
+    if let p = actor: distance = max(distance, f64(dot(p-eye,ahead)) + 5.0)
     vec2(eye.x + ahead.x * f32(distance), eye.z + ahead.z * f32(distance))
 
 lightning_halfwidth = (pos: vec3, cam: vec3) -> f64:
-    max(0.11, f64(length(pos - cam)) * 0.0065)
+    max(0.035, f64(length(pos - cam)) * 0.0065)
 
 # Lightning enters the glow envelope at full opacity on its strike frame.
 # Other glow motes retain their fade-in, and the shared pool cap still applies.
@@ -545,42 +561,27 @@ fx_lightning_path = (strike: vec3, cam: vec3):
     g = f64(strike.y)
     z = f64(strike.z)
     p = strike
-    loop k in [1..169):
-        # The pond camera sees a narrow air gap above the canopy. Keep fine,
-        # unequal bends throughout that gap, with broader upper-cloud turns.
-        low = min(f64(k) / 144.0, 1.0)
-        high = max(f64(k - 144) / 24.0, 0.0)
-        h = low * 44.0 + high * 336.0 + sin(f64(k) * 2.17) * 0.06
-        sway = 0.18 + low * 0.66 + high * 13.0
-        zig = if random() < 0.5: -1.0 else: 1.0
-        q = v3(x + (random(-0.35, 0.35) + zig) * sway, g + h, z + random(-sway, sway))
-        center = (p + q) * 0.5
-        # Fine near bends retain a three-pixel core at 1080p; the distant
-        # trunk retains its six-pixel core instead of merging nearby teeth.
-        width = lightning_halfwidth(center, cam)
-        if k <= 144: width *= lerp(0.5, 1.0, smoothstep(35.0, 120.0, f64(length(center - cam))))
+    drift = vec2(0, 0)
+    loop k in [1..73):
+        # Unequal metre-scale leaders replace the evenly spaced tiny teeth.
+        # Resolve the first 60 m well, then carry the trunk into the cloud bank.
+        t = f64(k) / 72.0
+        h = 380.0 * pow(t, 1.65)
+        drift = drift * 0.72 + vec2(f32(random(-1.0, 1.0)), f32(random(-1.0, 1.0))) * f32(0.55 + t * 6.0)
+        q = v3(x + f64(drift.x), g + h, z + f64(drift.y))
+        width = lightning_halfwidth((p + q) * 0.5, cam)
         emit_lightning(p, q, width, rgba(0.88, 0.96, 1, 1))
-        if k == 20 or k == 64 or k == 106 or k == 156:
+        if k == 2 or k == 5 or k == 21 or k == 42 or k == 61:
             fp = q
             side = v3(random(-1.0, 1.0), 0.0, random(-1.0, 1.0))
-            loop m in [0..7):
-                # Turn each branch; terminate at ground instead of flattening
-                # the remaining segments into a horizontal laser.
-                turn = random(-0.95, 0.95)
-                side = transform_dir(rotation_y(turn), side)
-                fq = fp + side * f32(random(1.5, 5.5)) + v3(random(-1.5, 1.5), random(-4.5, -1.2), random(-1.5, 1.5))
-                if f64(fq.y) < g + 0.25: break
-                branch_center = (fp + fq) * 0.5
-                width = lightning_halfwidth(branch_center, cam) * lerp(0.6, 0.22, f64(m) / 6.0)
-                previous = fp
-                perpendicular = normalize(vec3(-side.z, 0, side.x))
-                loop bend in [1..7):
-                    bt = f32(bend) / 6.0
-                    jag = (if bend % 2 == 0: -1.0 else: 1.0) * random(0.20, 0.42)
-                    point = mix(fp, fq, bt) + perpendicular * f32(jag)
-                    if bend == 6: point = fq
-                    emit_lightning(previous, point, width, rgba(0.88, 0.96, 1, 0.85))
-                    previous = point
+            side = normalize(side)
+            loop m in [0..8):
+                side = transform_dir(rotation_y(random(-0.65, 0.65)), side)
+                reach = (0.7 + t * 6.0) * random(0.8, 1.8)
+                fq = fp + side * f32(reach) + v3(0.0, -reach * random(0.55, 1.5), 0.0)
+                if f64(fq.y) < g + 0.15: break
+                bw = lightning_halfwidth((fp + fq) * 0.5, cam) * lerp(0.65, 0.18, f64(m) / 7.0)
+                emit_lightning(fp, fq, bw, rgba(0.78, 0.88, 1, 0.85))
                 fp = fq
         p = q
     __global_rng = saved_rng
@@ -1017,7 +1018,13 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
             yy = f64(fc.z) + (f64(fc.w) - f64(fc.z)) * ph
             q = vec3(fc.x + f32((hk - 0.5) * 3.0), f32(yy), fc.y + f32((fract(hk * 7.3) - 0.5) * 3.0)) + __fall_out[ci] * f32(1.5 + ph * 3.0)
             a = f32(0.4 * sin(ph * PI) * (0.4 + 0.6 * ph))
-            __pinst_smoke.push(PInst(vec4(q.x, q.y, q.z, f32(1.5 + ph * 3.5)), vec4(0.92, 0.95, 0.97, a), vec4(f32(ph), 1, f32(hk * 10.0), 0)))
+            west = fc.x > -1496.0 and fc.x < -1404.0 and fc.y > 1805.0 and fc.y < 1844.0
+            if west:
+                # Aerated drops peel off the curtain; smoke shading made these
+                # contacts read as grey puffs against the white falling water.
+                __pinst_alpha.push(PInst(vec4(q, f32(0.32 + ph * 0.55)), vec4(0.92,0.98,1.0,a*1.4), vec4(f32(ph),4,f32(hk*10.0),0)))
+            else:
+                __pinst_smoke.push(PInst(vec4(q.x, q.y, q.z, f32(1.5 + ph * 3.5)), vec4(0.92, 0.95, 0.97, a), vec4(f32(ph), 1, f32(hk * 10.0), 0)))
     # Baked triangle/shelf intersections anchor spray on the real sheet, rather
     # than at dry grid-cell centres. Existing smoke and alpha batches carry it.
     loop si in 0.. and shelf in fall_shelves:
@@ -1029,7 +1036,7 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
             fan = shelf.pos + shelf.out * f32((if west: 4.5 else: 0.0) + ph * 3.0) + side * f32((f64(k) - 1.0) * 1.4)
             fan.y += f32(sin(ph * PI) * 2.2 - ph * 1.2)
             a = f32(sin(ph * PI) * 0.64)
-            __pinst_smoke.push(PInst(vec4(fan, f32((if west: 2.2 else: 1.6) + ph * 2.8)), vec4((if west: vec3(0.92, 0.96, 0.98) else: vec3(0.87, 0.94, 0.96)), a), vec4(f32(ph), 1, f32(si + k), 0)))
+            if not west: __pinst_smoke.push(PInst(vec4(fan, f32(1.6 + ph * 2.8)), vec4(0.87,0.94,0.96,a), vec4(f32(ph),1,f32(si+k),0)))
             __pinst_alpha.push(PInst(vec4(fan + shelf.out * f32(ph * 1.5), f32(0.45 + ph * 0.65)), vec4(0.9, 0.96, 0.98, a), vec4(f32(ph), 4, f32(si + k), 0)))
     loop fi in 0.. and fp in fall_feet:
         if f64(length(fp - cam)) > 300.0: continue

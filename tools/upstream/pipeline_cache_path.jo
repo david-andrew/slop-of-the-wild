@@ -1,0 +1,5 @@
+# No window required; call the release path builder directly.
+# Set XDG_CACHE_HOME to a nonexistent directory, then repeat after mkdir -p.
+path = __vk_pcache_path()
+print("pipeline cache path: '{path}'; XDG_CACHE_HOME='{env("XDG_CACHE_HOME") ?? ""}'")
+assert(path != "", "a nonexistent XDG cache parent silently disables persistence")

@@ -123,7 +123,7 @@ shader_load_submit = (src: ShaderSource) -> LoadingShader:
     shader_load_init()
     s = src
     if game_vulkan_backend():
-        s.fs_spirv = game_spirv_derivatives(s.fs_spirv)
+        s.fs_spirv = game_spirv_noise_precision(game_spirv_derivatives(s.fs_spirv))
         return LoadingShader(ready = make_shader(s))
     s.vs = __patch_glsl(s.vs)
     s.fs = __patch_glsl(s.fs)

@@ -30,6 +30,92 @@ matched scenes. The strict all-window 17.5 ms target remains **unmet**.
 The default’s worst interval contains **159.44 ms in presentation** versus
 11.31 ms callback wall / 5.34 ms callback thread CPU.
 
+## Round 64: score fades and combat framing
+
+Music now keeps a voice-owned ring sized for the release mixer's largest block.
+Ordinary gain changes rewrite only the **20 ms ramp**; steady playback refills
+consumed frames. New notes never copy an entire recording. Entering/leaving
+silence rebuilds that bounded window once. Shared piano samples stay immutable.
+`music_transition_check` asserts **p99 thread CPU <1 ms**: victory **0.130 ms**,
+escape **0.096 ms**, and overlapping-note mood/duck stress **0.297 ms**. The
+handoff delta remains below 0.000001, variable-block click checks pass, fractional
+pitch/window-wrap error is below 0.000000004, and LUFS/true-peak checks pass.
+
+Lock framing centres the pair's screen bearings and widens the lens as needed.
+The final posed-head solve retains at least **40 px** separation at 1280×720;
+its correction moves the real capsule. The framing check includes a three-foe
+converging tent-fire crowd, middle-third lock assertions after acquisition,
+and hero/enemy plus enemy/enemy capsule clearance. Confined views use the lens
+radius when selecting a shoulder, a ceiling-safe elevated fallback, and final
+posed body/weapon bounds. Core combat, reach, camera and 2,386 input assertions
+pass. The optional `camp_sword` visual script's missed-hit assertion also fails
+on **d05ace6**; both baseline and after logs are retained. Round 65 below resolves the stale fixture.
+
+Both use production dynamic scale, real dt, Vulkan mailbox at 2133×1200,
+and the same complete two-second windows. The combat route enters at **41.392 s**
+and returns to field at **80.898 s**; both fades occur after warmup.
+
+| Route | Return p50 / p99 / worst, ms | Windows p99 >20 ms | >17.5 ms |
+|---|---|---|---|
+| 600 s forest/meadow sprint | 10.59 / 16.63 / 249.79 | 28/297 | 69/297 |
+| 120 s field → combat → field | 10.03 / 14.88 / 49.24 | 7/57 | 14/57 |
+
+The historical default recorded **33/297** and **80/297** forest windows.
+These shared-desktop runs retain every outlier; the all-window 17.5 ms target
+remains unmet. The forest’s worst return includes **238.87 ms in presentation**,
+versus **10.84 ms callback wall / 5.76 ms callback thread CPU**.
+
+Raw logs, source/executable hashes, every two-second window, audio meters,
+pose traces and critic-frame screenshots are in `build/round64/`. Python render
+helpers own their locks; reproduce the routes without wrapping them:
+
+```sh
+python3 tools/render_evidence.py soak --backend vulkan --present-modes mailbox --route forest --seconds 600 --output build/round64/verified-forest
+python3 tools/render_evidence.py soak --backend vulkan --present-modes mailbox --route combat --seconds 120 --output build/round64/verified-combat
+```
+
+## Round 65: real camp hits and combat entry
+
+The camp script was stale: its original inputs leave a **0.504 m** capsule gap
+(hit threshold 0.40 m), make **zero posed triangle contacts**, and lose the
+follow-up to an enemy attack. Earlier attacks and movement through frame 200 land
+**13 HP damage / 19 impact frames** on unchanged baseline and final code.
+`run_all_checks.sh` now includes `camp_sword_visual_check`, requiring HP loss
+with a new melee swing ID and impact pause; inputs are in the README.
+
+Native tracing identifies a **17.18 ms burning-body pipeline** first used at
+46.65 s. Startup now warms both scene scales: **zero pipelines during play**,
+**47 → 47** in transition checks. Sparks, trails, flash, health/lock HUD and alert
+FX add no cold pipelines; audio cue banks already load/filter before play.
+Entry callback CPU maxima for AI/camera/events/music are **0.95/0.10/0.04/0.55 ms**,
+including multiple ticks. Remaining entry tails contain posed clearance work
+(**13.71 ms across three ticks**) or native image-acquire waits.
+
+Body/head topology and scratch capacity are prepared at loading; posed triangle
+bounds are reused across correction passes with unchanged tolerances.
+**428,520** filtered/unfiltered queries agree. A matched three-foe cutting-pose
+replay reduces clearance CPU p99 **5.18 → 4.00 ms bare / 7.20 → 4.12 ms dressed**,
+retaining the same solved positions within 1 mm.
+
+Final uninstrumented routes, same real dt/default scale/window protocol:
+
+| Route | Return p50 / p99 / worst, ms | Windows p99 >20 ms | >17.5 ms |
+|---|---|---|---|
+| 600 s forest | 10.84 / 16.39 / 196.87 | 30/297 | 74/297 |
+| 120 s combat | 10.40 / 19.64 / 73.32 | 12/57 | 18/57 |
+
+The **40–80 s camp phase improves 2/20 → 0/20** windows over 20 ms; worst window
+p99 falls **31.84 → 18.41 ms**. All twelve combat-route failures occur after 94 s,
+back in the field. Forest **30/297 versus 28/297** establishes no forest-tail win;
+its worst interval includes **186.41 ms presentation / 4.24 ms callback thread
+CPU**. The all-window 17.5 ms target remains unmet.
+
+Combat/camera/music, **27 visual scenes, five framing courses**, geometry/warmup
+and live-audio/loudness checks pass. Final hashes/windows, native attribution
+(`combat-entry.json`), pose replays, original/corrected camp logs and captures are
+in `build/round65/`. Reuse the route commands above with Round 65 output paths;
+helpers own their render locks.
+
 ## Every mailbox tail: attribution and game fixes
 
 The historical 45/297 log contains 233 intervals over 20 ms, with callback/present

@@ -1,0 +1,12 @@
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/env.jo'
+use 'tower_base_climb_route.jo'
+worldgen_load()
+structures_pads()
+worldgen_finish()
+structures_generate()
+env.rain=0.0
+base_climb_start()
+loop frame in [0..2600): base_climb_step(1.0/60.0)
+base_climb_finish()

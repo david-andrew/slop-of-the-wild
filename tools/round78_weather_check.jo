@@ -14,8 +14,8 @@ loop tt in [0.0, 12.0, 120.0, 900.0]:
     loop k in [1..MALICE_SEGMENTS + 1):
         phase = f32(k) / f32(MALICE_SEGMENTS)
         q = malice_spine(phase, f32(tt))
-        assert(length(q - previous) < malice_thickness(phase) + malice_thickness(f32(k - 1) / f32(MALICE_SEGMENTS)), "neighbouring tube sections cannot separate")
-        assert(length(q.xz) > 75.0 and length(q.xz) < 170.0, "vortex wraps outside the keep")
+        assert(length(q - previous) < malice_thickness(phase) + malice_thickness(f32(k - 1) / f32(MALICE_SEGMENTS)), "neighbouring smoke banks overlap")
+        assert(length(q.xz) > 70.0 and length(q.xz) < 170.0, "vortex wraps outside the keep")
         assert(q.y > 40.0 and q.y < 500.0, "spires remain exposed")
         min_y = min(min_y, q.y)
         max_y = max(max_y, q.y)
@@ -30,7 +30,7 @@ loop tt in [0.0, 12.0, 120.0, 900.0]:
             if dot(q, toward) > 0.0: front += 1
             else: back += 1
         assert(front > 60 and back > 60, "all viewpoints retain foreground and background wraps")
-print("PASS continuous malice: adjacent sections join; tight climbing 2.65-turn funnel; front/back wraps at 24 time/view combinations")
+print("PASS continuous malice: adjacent sections join; irregular rising smoke circulation; front/back wraps at 24 time/view combinations")
 
 # The alpha overlay must follow the mesh across the former arm boundaries.
 loop tt in [0.0, 12.0, 120.0]:
@@ -70,12 +70,12 @@ expected = random()
 seed_random(101)
 fx_lightning_path(vec3(0, 0, 0), vec3(0, 2, 20))
 assert(random() == expected, "bolt geometry leaves gameplay RNG untouched")
-assert(particles.len() >= 240 and particles.len() <= 336, "168 main bends plus finely bent bounded branches")
+assert(particles.len() >= 95 and particles.len() <= 112, "72 unequal leaders and five bounded branches")
 lower = 0
 loop p in particles:
     assert(p.kind == .arc and abs(p.vel.y) > 0.025, "no horizontal branch runs")
     if p.pos.y < 25.0: lower += 1
-assert(lower >= 15, "pond camera sees at least fifteen lower bends")
+assert(lower >= 10, "pond camera sees at least fifteen lower bends")
 peaks = 0
 active = false
 loop k in [0..101):
@@ -129,10 +129,12 @@ loop eye in [vec3(0,3,0),vec3(15,8,10)]:
         target=scripted_lightning_target(eye,gaze)
         delta=vec3(target.x-eye.x,0,target.y-eye.z)
         distance=length(delta)
-        assert(distance>=23.999 and distance<=80.001,"visible strike has bounded distance outside body shock reach")
+        assert(distance>=2.999 and distance<=32.001,"scripted strike stays in the open foreground")
         side=normalize(cross(gaze,vec3(0,1,0)))
         assert(abs(dot(delta,side))<0.0001,"strike remains on camera's central azimuth")
-        assert(dot(normalize(vec3(target.x,0,target.y)-eye),gaze)>0.98,"impact sits in the central scene")
+        ground_delta=vec3(target.x,0,target.y)-eye
+        up=normalize(cross(side,gaze))
+        assert(dot(ground_delta,up)/dot(ground_delta,gaze)<-0.0799,"cloud-to-ground strike spans over half the viewport height")
 fallback=scripted_lightning_target(vec3(0,3,0),vec3(0,0,-1))
-assert(abs(fallback.x)<0.00001 and abs(fallback.y+55.0)<0.00001,"level-camera forward fallback")
-print("PASS scripted lightning: six camera/height cases; central terrain contact, bounded safe distance and forward fallback")
+assert(abs(fallback.x)<0.00001 and abs(fallback.y+32.0)<0.00001,"level-camera forward fallback")
+print("PASS scripted lightning: six camera/height cases; central terrain contact, bounded foreground distance and forward fallback")

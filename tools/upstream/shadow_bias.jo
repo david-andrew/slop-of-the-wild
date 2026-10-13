@@ -1,0 +1,5 @@
+# Expected compile failure: no portable polygon-offset entry point in 0.6.0.
+# A raw libGLES extern would bypass Vulkan; it is not a backend-neutral workaround.
+window("Shadow bias API", 64, 64)
+glPolygonOffset(1.5, 2.0)
+glEnable(0x8037) # GL_POLYGON_OFFSET_FILL

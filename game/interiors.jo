@@ -887,9 +887,22 @@ corridor = (a: vec3, b: vec3, n: int):
             loop k in [-1.0, 1.0]:
                 add_box(mid + side * f32(k * 2.6) - vec3(0, 1.2, 0), v3((seg + 0.6) * 0.5, 3.25, 0.5), yaw, false, .stone)
                 h = hash2(f64(i), k + 31.0)
-                pocket = noise(f64(i)*0.35,k*7.0+53.0)
-                if h > 0.32 and pocket > 0.40:
-                    sor_split_stone(mid + side * f32(k * (2.10 + h * 0.18)) + normalize(vec3(d.x,0,d.z)) * f32((h-0.5)*seg*0.75), v3(0.25 + h * 0.42, 0.14 + h * 0.18, 0.24 + h * 0.23), yaw + h * 2.0, f64(i) + k * 33.0, stone(0.20, 0.215, 0.195), SOR_STONE)
+                # Unequal one-sided falls separated by several empty stations.
+                # Tiny chips occasionally cross the path; larger pieces hug the
+                # lining and remain decorative above the unchanged ramp collider.
+                cluster = (i >= 18 and i <= 20 and k < 0.0) or (i >= 27 and i <= 28 and k > 0.0) or (i >= n-4 and i < n-1 and k < 0.0)
+                if cluster:
+                    loop chip in [0..3):
+                        q = hash2(f64(i*13+chip), k+53.0)
+                        across = 1.65 + q*0.65
+                        station = (f64(chip)-1.0)*0.30 + (q-0.5)*0.18
+                        point = mid + side*f32(k*across) + normalize(vec3(d.x,0,d.z))*f32(station*seg)
+                        point.y += f32(station*f64(d.y)/f64(n) + 0.015)
+                        sor_split_stone(point, v3(0.24+q*0.40,0.12+q*0.16,0.19+q*0.23), yaw+q*2.0, f64(i*13+chip)+k*33.0, stone(0.20,0.215,0.195), SOR_STONE)
+                if k > 0.0 and (i == 23 or i == 31):
+                    loop chip in [0..3):
+                        q = hash2(f64(i*7+chip),73.0)
+                        sor_split_stone(mid + side*f32(-0.9+f64(chip)*0.65) + normalize(vec3(d.x,0,d.z))*f32((q-0.5)*seg*0.35), v3(0.10+q*0.07,0.045,0.08+q*0.05),yaw+q*4.0,f64(i*7+chip),stone(0.24,0.25,0.22),SOR_STONE)
                 ax = normalize(vec3(d.x,0,d.z))
                 # Broken strata sit in the lining: exposed faces project less than
                 # half a metre, with dark undersides instead of rounded beige bulges.
@@ -963,7 +976,8 @@ corridor = (a: vec3, b: vec3, n: int):
             # Broken masonry and stone fragments continue back toward the door.
             loop k in [-1.0, 1.0]:
                 h = hash2(f64(i), k + 19.0)
-                rock_lump(mid + side * f32(k * (1.7 + h * 0.3)) + ax * f32((h - 0.5) * seg) + vec3(0, 0.04, 0), v3(0.22 + h * 0.28, 0.12 + h * 0.16, 0.2 + h * 0.17), rotation_y(h * 6.0), f64(i) * 9.0 + k, darken(rockc, 0.13), SOR_STONE)
+                if not ((i >= 6 and i <= 8 and k < 0.0) or (i >= 13 and i <= 14 and k > 0.0)): continue
+                rock_lump(mid + side * f32(k * (1.55 + h * 0.5)) + ax * f32((h - 0.5) * seg) + vec3(0, 0.04, 0), v3(0.22 + h * 0.28, 0.12 + h * 0.16, 0.2 + h * 0.17), rotation_y(h * 6.0), f64(i) * 9.0 + k, darken(rockc, 0.13), SOR_STONE)
         # the cave floor: rubble and stones fallen along it, kept off the middle of the way
         if cave > 0.5:
             ax3 = normalize(v3(f64(d.x), 0.0, f64(d.z)))

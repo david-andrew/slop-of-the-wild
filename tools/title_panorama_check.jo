@@ -83,20 +83,20 @@ loop released in [false, true]:
                       pl.pos + vec3(0, 1.6, 0), pl.pos]
             names = ["Castle", "Death Mountain", "Dueling north", "Dueling south", "Calamity smoke", "Volcano smoke", "Calamity smoke edge", "Link head", "Link feet"]
             toward = normalize(vec3(eye.x - CASTLE.x, 0, eye.z - CASTLE.z))
-            # Bound the production vortex, edge ripple and shared density cards.
-            # World depth/rotation is shared with malice_vs, not a billboard proxy.
+            # Bound every advected phase, its radial eddy and the feathered cards.
+            # The extra 23m includes the full production radial displacement.
             loop segment in [0..MALICE_SEGMENTS + 1):
                 tt = f32(f64(frame) * DT)
                 phase = f32(segment) / f32(MALICE_SEGMENTS)
                 local = malice_spine(phase, tt)
                 q = CASTLE + v3(0.0, castle_ground, 0.0) + local
                 outward = normalize(vec3(local.x, 0, local.z))
-                radius = malice_thickness(phase) * 1.35
+                radius = malice_thickness(phase) + 23.0
                 loop sign in [vec2(-1, -1), vec2(-1, 1), vec2(1, -1), vec2(1, 1)]:
                     points.push(q + outward * sign.x * radius + vec3(0, sign.y * radius, 0))
-                    names.push("Calamity continuous coil")
-                # The density overlay uses the view plane; at the side of the
-                # helix it can extend beyond the radial tube's projected width.
+                    names.push("Calamity smoke bank")
+                # Smoke parcels use the view plane; this bounds their full cards
+                # as well as the circulation radius at every visible frame.
                 loop sign in [vec2(-1, -1), vec2(-1, 1), vec2(1, -1), vec2(1, 1)]:
                     points.push(q + right * sign.x * radius + up * sign.y * radius)
                     names.push("Calamity density envelope")
@@ -133,7 +133,7 @@ loop released in [false, true]:
                 checks += 1
                 local_checks += 1
         assert(local_checks >= 96 and partial_checks >= 100)
-print("PASS panorama: {checks} projections across 4:3, 16:10, 16:9, 21:9 and 32:9; landmarks and Link clear letterbox, and landmarks plus full continuous Calamity ribbon clear lettering throughout both fades and opaque hold, with no visible camera sweep for held and frame-300-released input")
+print("PASS panorama: {checks} projections across 4:3, 16:10, 16:9, 21:9 and 32:9; landmarks and Link clear letterbox, and landmarks plus full rising Calamity cloud clear lettering throughout both fades and opaque hold, with no visible camera sweep for held and frame-300-released input")
 
 # Optional actual-pixel companion: the runner supplies the matching capture with
 # only the atlas overlay suppressed, retaining the production cloud reserve,
