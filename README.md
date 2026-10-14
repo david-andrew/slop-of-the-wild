@@ -2,7 +2,7 @@
 
 **[Play in the browser](https://david-andrew.github.io/slop-of-the-wild/)** (desktop browser with WebGL 2; about 95 MB to load).
 
-[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **157 PASS / 0 FAIL**
+[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **170 PASS / 0 FAIL**
 ([evidence](docs/EVALUATE.md#whole-regression-suite)).
 [Compact performance summary](docs/PERFORMANCE.md), [current listening evidence](docs/MUSIC.md),
 and [Round 81 targeted findings and evidence](docs/ROUND81_SOL.md).
@@ -29,10 +29,15 @@ tools/warm_assets.sh                    # optional: bake world/mesh/audio/textur
 `tools/play.sh` launches without a render lock. Agent captures use
 `tools/play_locked.sh`, which owns the shared render lock; never wrap it in
 another `flock`. Pass a compiled executable as the play script's argument.
-Sloppy 0.6.0 uses Vulkan 1.3 by default on supported Linux drivers. The launcher
-sets `SLOPPY_VSYNC=0` for mailbox (or immediate if unavailable), whose measured
-p99 is lower in forest, fire and overlook. `SLOPPY_VSYNC=1 tools/play.sh` restores
-the release's FIFO default;
+Sloppy 0.6.0 uses Vulkan 1.3 by default on supported Linux drivers. Both Linux
+launchers select X11/XWayland when `DISPLAY` advertises an X server; Wayland-only
+desktops retain runtime platform selection. `SLOPPY_PLATFORM=wayland tools/play.sh`
+overrides this choice. The matched two-minute dynamic forest comparison reduced
+frames over 25 ms from **26 on native Wayland to 4 on managed X11**, and worst
+interval from **80.0 to 29.8 ms**. X11 p99 was still **18.37 ms**; the strict
+16.7 ms target remains unmet in that route. The launcher sets `SLOPPY_VSYNC=0`
+for mailbox preference with immediate fallback (the tested X11 driver uses
+immediate). `SLOPPY_VSYNC=1 tools/play.sh` restores the release's FIFO default;
 `SLOPPY_VULKAN=0` selects OpenGL. Presentation measurements are in
 [PERFORMANCE.md](docs/PERFORMANCE.md).
 

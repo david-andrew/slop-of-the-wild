@@ -612,12 +612,19 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
     # the walking floor. Do not turn its vertical cliff into beige paving.
     pave = smoothstep(0.3, 0.9, bt.w) * 0.85 * (1.0-cave_cliff_cover(w)*rockk)
     if pave > 0.0: alb = mix(alb, mix(vec3(0.34, 0.29, 0.21), vec3(0.42, 0.39, 0.33), vnoise(w.xz * 1.7)), pave)
-    # Spent fuel is a quiet charcoal wash with feathered irregular margins.
+    # Existing low-frequency paint noise feathers and raggedly offsets the
+    # bilinear scar edge; the original terrain pigment retains its fine detail.
     charred = max(bt.x, bt.z)
     if charred > 0.01:
         drift = vnoise(w.xz * 0.65 + vec2(3.0, 1.0))
-        be = smoothstep(0.12, 0.82, charred + (drift - 0.5) * 0.12)
-        chr = mix(vec3(0.040, 0.030, 0.024), vec3(0.090, 0.068, 0.048), smoothstep(0.20, 0.80, drift))
+        # Keep fine ash grain in the baked hash lattice range: one cached
+        # fetch, avoiding the expensive procedural fallback at 9x world scale.
+        grain = vnoise(fract(w.xz * (9.0 / 1024.0)) * 1024.0)
+        be = smoothstep(0.06, 0.92, charred + (drift - 0.5) * 0.30)
+        # Keep the painted terrain's fine detail beneath an uneven brown/coal
+        # wash. Pale ash grains and exposed soil stop spent fuel reading as tar.
+        chr = alb * vec3(0.16, 0.14, 0.12) + mix(vec3(0.022, 0.016, 0.012), vec3(0.090, 0.059, 0.033), smoothstep(0.20, 0.85, drift))
+        chr *= 0.75 + grain * 0.50
         alb = mix(alb, chr, be)
     # under water: the bed darkens to silt and weed with depth
     if u.has_water > 0.5:
@@ -710,9 +717,16 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
     alb = low_sun_turf(alb,n,l,u.sun_color,sh,(1.0-snk)*(1.0-fo)*(1.0-rockk)*smoothstep(-0.05,0.10,dot(n,l))*sh)
     floor_sky = mix(u.sky,luma(u.sky)*vec3(1.02,1.01,0.95),fo*0.8)
     mouth_stone = cave_cliff_cover(w)*rockk*(1.0-snk)
-    stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(0.97,1.0,1.02),mouth_stone*0.9)
-    floor_sky = mix(floor_sky,luma(floor_sky)*vec3(0.96,1.0,1.03),mouth_stone*0.92)
+    # The exposed river shoulder belongs to the same mineral mass as the
+    # neutral cliff skin, including snow on the bank adjoining the lip.
+    # Its source normal is still gentle where the visible shoulder folds down;
+    # snow shading must not bypass the mineral wash there.
+    canyon_stone = west_rock_cover(w)*max(rockk,snk)
+    mineral = max(mouth_stone,canyon_stone)
+    stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(1.03,1.0,0.95),mineral*0.9)
+    floor_sky = mix(floor_sky,luma(floor_sky)*vec3(1.03,1.0,0.94),mineral*0.92)
     c = paint_light(alb, n, l, v, stone_sun, floor_sky, u.ground, sh, 0.45)
+    c = mix(c,luma(c)*vec3(1.03,1.0,0.94),canyon_stone*(1.0-sh)*0.35)
     # Open turf receives sky bounce too; a broad building shadow keeps the meadow texture.
     fo2 = smoothstep(0.45, 0.85, mt.x)
     c = c + alb * (floor_sky * mix(vec3(0.8,0.95,1.1),vec3(1.0,1.0,0.95),fo)) * (0.12 + 0.23 * fo2) * (1.0 - sh)
@@ -722,7 +736,8 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
         # shade on snow: a soft lavender rather than a saturated blue; glints in the sun
         lum = dot(c, vec3(0.3, 0.5, 0.2))
         shade = 1.0 - clamp(dot(nsm, l) * sh * 1.6, 0.0, 1.0)
-        c = mix(c, lum * vec3(0.84, 0.87, 1.12), snk * shade * 0.64)
+        snow_shade = mix(vec3(0.84,0.87,1.12),vec3(0.99,1.0,0.98),canyon_stone)
+        c = mix(c, lum * snow_shade, snk * shade * 0.64)
         glitter = 1.0 - smoothstep(4.0, 12.0, dist)
         if glitter > 0.0:
             gx = floor(w.xz * 12.0)
@@ -968,7 +983,7 @@ terrain_upload = ():
     terrain_upload_finish()
 
 # scorch the ground (fire) or cut grass, in the burn map
-burn_cell_mark = (x: f64, z: f64, amount: f64):
+burn_cell_mark = (x: f64, z: f64, amount: f64, channel: int = 0):
     if burn_px.len() == 0: return
     scale = f64(BURN_N) / (hf.cell * f64(hf.n))
     cx = (x - hf.x0) * scale
@@ -979,7 +994,7 @@ burn_cell_mark = (x: f64, z: f64, amount: f64):
     loop iz in [int(ceil(cz-r))..int(ceil(cz+r))):
         loop ix in [int(ceil(cx-r))..int(ceil(cx+r))):
             if ix < 0 or iz < 0 or ix >= BURN_N or iz >= BURN_N: continue
-            k = (iz*BURN_N+ix)*4
+            k = (iz*BURN_N+ix)*4+channel
             next = u8(clamp(f64(burn_px[k]) + amount*255.0, 0.0, 255.0))
             if next == burn_px[k]: continue
             burn_px[k] = next

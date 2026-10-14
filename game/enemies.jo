@@ -713,6 +713,7 @@ __blow_coming = false
 
 enemies_update = (dt: f64, night: bool):
     enemy_events.clear()
+    if cutscene_actors_hidden(): return
     enemies_take_hits()
     enemy_throws_update()
     stalk_choose_skulls()
@@ -958,11 +959,11 @@ enemy_camera_clear = (p: vec3, side_choice: f64) -> vec3:
 enemy_waiting_clip = (age: f64, stance: int) -> str:
     ["sword_idle", "fight_idle", "idle_alt", "taunt"][(int(age / 1.2) + stance) % 4]
 
-# A short active approach retains its planted attack setup. Slot waiters and
-# blocked approaches still shift idles, rather than crouching indefinitely.
+# Slot waiters and blocked approaches share the independent animation clock.
+# Windup/attack states retain their separate planted contact poses.
 enemy_chase_idle_clip = (e: Enemy, stance: int) -> str:
-    if e.may_engage and not __blow_coming and e.t < 1.15:
-        return if stance == 0: "crouch" else: (if stance == 1: "sword_idle" else: "fight_idle")
+    # e.t is repeatedly capped/reset by lane alignment and the swing lock.
+    # It cannot measure how long a stationary guard has held a pose.
     enemy_waiting_clip(e.anim_t,stance)
 
 # Crowd/scenery pushes can change bearing after the AI's turn. Bound the final
@@ -1215,7 +1216,9 @@ __bokoblin = (e: mut Enemy, dt: f64, dist: f64, night: bool, alarm: mut bool):
                         if ob == bearing and dot(od, side) * f32(bearing) < dot(dv, side) * f32(bearing) - 0.01: rank += 1
                     # Distinct lateral waiting lanes, never a deeper queue on
                     # the same camera ray. Near guards retain the inner lanes.
-                    want = pl.pos + front * 4.6 + side * f32(bearing * (4.0 + f64(rank) * 2.6))
+                    # Small staggered arcs stay outside the protected head lanes.
+                    phase = e.anim_t * 2.4 + e.rhythm * TAU
+                    want = pl.pos + front * f32(4.6 + sin(phase) * 0.25) + side * f32(bearing * (4.0 + f64(rank) * 2.6 + (1.0-cos(phase)) * 0.18))
                     if dist > 8.0: __step_toward(e, want, 4.5, dt)
                     else:
                         step = want - e.pos
@@ -1492,3 +1495,16 @@ in_combat = () -> bool:
             continue
         if (e.state == .chase or e.state == .windup or e.state == .attack or e.state == .shoot or e.state == .laser or e.state == .seek_skull or e.state == .reassemble) and f64(length(e.pos - pl.pos)) < 35.0: return true
     false
+
+# Upper-body secondary motion; no AI clocks, root positions or attack tracks change.
+# The two pulses return to zero before either notice/recovery can finish.
+enemy_secondary_reaction = (e: Enemy) -> vec3:
+    if e.burning>0.0 or e.frozen>0.0 or e.stun>0.0: return vec3(0,0,0)
+    if e.kind!=.bokoblin and e.kind!=.blue_bokoblin and e.kind!=.stalkoblin: return vec3(0,0,0)
+    if e.state!=.notice and e.state!=.recover: return vec3(0,0,0)
+    t=e.t
+    end=if e.state==.notice:0.42 else:0.48
+    envelope=smoothstep(0.0,0.055,t)*(1.0-smoothstep(end*0.48,end,t))
+    strength=if e.state==.notice:1.0 else:0.48
+    side=if fract(e.rhythm*7.3)<0.5:-1.0 else:1.0
+    v3(sin(t*18.0)*0.10*envelope*strength,sin(t*27.0)*0.16*envelope*strength*side,-sin(t*12.0)*0.065*envelope*strength)

@@ -1,0 +1,67 @@
+# Structural score intent, not a test that blesses one fixed melody by pitch.
+# No audio/device/window: inspect the actual queued production notes.
+use '../game/music.jo'
+use '../game/story.jo'
+
+signatures: str[]
+loop i in [0..3):
+    laters.clear()
+    match i:
+        0: title_theme_a()
+        1: title_theme_b()
+        _: title_theme_c()
+    assert(laters.len() >= 45 and laters.len() <= 80, "complete but restrained piano period")
+    peak = 0.0
+    peak_at = 0.0
+    end = 0.0
+    thirds = 0
+    final_notes = 0
+    opening = 0
+    answer = 0
+    root = [2,9,7][i]
+    cadence = [16.0,15.89,17.05][i]
+    signature = ""
+    loop n in laters:
+        assert(n.midi >= 36 and n.midi <= 96, "title fits the existing recorded C2-C7 range")
+        assert(not n.glass and n.hold > 0.0, "sampled piano with explicit pedal release")
+        assert(n.t >= 0.0 and n.hold <= 3.3, "bounded scheduling and pedal")
+        if n.vel > peak:
+            peak = n.vel
+            peak_at = n.t
+        end = max(end, n.t + n.hold + 0.65)
+        if n.midi >= 67:
+            if n.t < 7.5: opening += 1
+            if n.t >= 9.0 and n.t < 16.0: answer += 1
+            signature = "{signature}{n.midi},"
+        if n.t >= cadence - 0.06:
+            final_notes += 1
+            degree = (n.midi - root + 120) % 12
+            if degree == 3 or degree == 4: thirds += 1
+            assert(n.vel < peak * 0.65, "release leaves the climax behind")
+    assert(opening >= 8 and answer >= 7, "singing question and developed answer")
+    assert(peak_at >= TITLE_LETTERING_START and peak_at <= TITLE_LETTERING_START + TITLE_LETTERING_FADE + 0.1, "strongest melodic arrival meets title fade-in")
+    assert(end >= 18.0 and end <= 22.0, "finite 18-22 second cue")
+    assert(final_notes >= 4 and thirds == 0, "open no-third ending")
+    assert(not signatures.contains(signature), "candidates have genuinely different melodies")
+    signatures.push(signature)
+    # Each bounded strike builds its sample release on the main thread. Keep
+    # attacks at least one 60Hz frame apart for either 120Hz simulation phase.
+    loop a in [0..laters.len()):
+        loop b in [a + 1..laters.len()):
+            assert(abs(laters[a].t - laters[b].t) >= 1.0 / 60.0, "spread piano preparation across frames")
+    # A real pedal-up breath before the broad answer, including the 650ms release.
+    quiet_at = [9.15,8.9,9.6][i]
+    loop n in laters:
+        assert(not (n.t <= quiet_at and n.t + n.hold + 0.65 > quiet_at), "breath must clear all piano tails")
+    print("PASS title candidate {i}: {laters.len()} notes, climax {peak_at:.3}s, release {end:.3}s, no-third ending")
+
+laters.clear()
+title_cue()
+selected = laters
+laters.clear()
+match env("BOTW_TITLE_THEME") ?? "a":
+    "b": title_theme_b()
+    "c": title_theme_c()
+    _: title_theme_a()
+assert(selected == laters, "production dispatcher preserves selected score exactly")
+print("PASS title theme selection")

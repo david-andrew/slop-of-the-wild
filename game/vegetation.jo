@@ -318,16 +318,21 @@ __veg_shadow_fs[U] = (i: VegO, u: U) -> vec4:
     vec4(1, 1, 1, 1)
 
 veg_occluder_fade[U] = (i: VegO, u: U) -> f32:
+    # Low plants include opaque stems and solid leaf geometry, not only alpha
+    # cards tagged as leaves. Fade every part consistently near the camera.
+    foliage = u.leaves > 0.5 or u.low > 0.5
     # Smooth coverage around the sight line and lens.
     cp = u.player + vec3(0, 1.0, 0) - u.cam
     ll = max(dot(cp, cp), 0.01)
     tt = clamp(dot(i.world - u.cam, cp) / ll, 0.0, 1.0)
     dl = length(u.cam + cp * tt - i.world)
-    fade = (if u.leaves > 0.5: smoothstep(1.7, 0.7, dl) else: smoothstep(0.9 * u.fade_width, 0.4 * u.fade_width, dl) * smoothstep(0.08, 0.25, tt)) * smoothstep(0.97, 0.85, tt)
+    fade = (if foliage: smoothstep(1.7, 0.7, dl) else: smoothstep(0.9 * u.fade_width, 0.4 * u.fade_width, dl) * smoothstep(0.08, 0.25, tt)) * smoothstep(0.97, 0.85, tt)
     if u.player.y < -500.0: fade = 0.0
-    # and anything right at the lens
-    # (only what is almost at the lens: in the narrow cave every wall is a few meters off)
-    fade = max(fade, smoothstep((if u.leaves > 0.5: 5.5 else: 1.5 * u.fade_width), (if u.leaves > 0.5: 2.2 else: 1.25 * u.fade_width), length(i.world - u.cam)))
+    # Fallen branches can cross the lens even with their root several meters
+    # away. Fade bark by fragment distance too; keep cave rocks tightly bounded.
+    near_outer = if foliage: 5.5 else: (if u.wood > 0.5: 5.5 else: 1.5 * u.fade_width)
+    near_inner = if foliage: 2.2 else: (if u.wood > 0.5: 3.0 else: 1.25 * u.fade_width)
+    fade = max(fade, smoothstep(near_outer, near_inner, length(i.world - u.cam)))
     fade
 
 __veg_depth_fs[U] = (i: VegO, u: U) -> vec4:
@@ -438,7 +443,15 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
         lum = dot(t.xyz, vec3(0.3, 0.6, 0.1))
         # Moss/sage fronds share the floor's quieter value range; petals retain their pigment.
         if t.y > max(t.x, t.z): alb = vec3(0.12, 0.17, 0.105) * (0.85 + 0.35 * lum) * (0.86 + 0.14 * i.h) * i.tint.xyz * (1.0 - u.wet * 0.2)
-    c = paint_light(alb, n, l, v, u.sun_color, u.sky, u.ground, sh, 0.45 * leaves + 0.1)
+    # Instanced rock at the fall crown used the foliage's saturated sky,
+    # unlike the cliff skin beneath it. Give canyon mineral the shared neutral
+    # light, including bare facets on snow-marked rocks. Bark and needles keep
+    # their own lighting; the rock's existing snow coverage stays in its albedo.
+    canyon_stone = if leaves < 0.5 and u.wood < 0.5: west_rock_cover(i.world) else: f32(0.0)
+    stone_sky = mix(u.sky,luma(u.sky)*vec3(1.03,1.0,0.94),canyon_stone*0.92)
+    stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(1.03,1.0,0.95),canyon_stone*0.9)
+    c = paint_light(alb, n, l, v, stone_sun, stone_sky, u.ground, sh, 0.45 * leaves + 0.1)
+    c = mix(c,luma(c)*vec3(1.03,1.0,0.94),canyon_stone*(1.0-sh)*0.35)
     # Cool overcast fill follows crown openings instead of filling every face
     # equally. Wet bark ridges and upper leaves remain legible in canopy shade.
     storm_fill = smoothstep(0.84, 0.95, u.clouds) * material_wet
@@ -448,7 +461,7 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
     if leaves < 0.5 and material_wet > 0.0:
         stone = 1.0 - u.wood
         # Porous bark keeps a faint broken sheen, stone a brighter rain film.
-        c = c + wet_surface(n, l, v, u.sun_color, u.sky, sh, material_wet, stone) * (0.48 + stone * 0.52)
+        c = c + wet_surface(n, l, v, stone_sun, stone_sky, sh, material_wet, stone) * (0.48 + stone * 0.52)
     if leaves > 0.5:
         back = pow(max(dot(v * -1.0, l), 0.0), 3.0)
         c = c + alb * u.sun_color * back * 0.34 * sh

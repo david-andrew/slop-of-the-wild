@@ -7,7 +7,9 @@ use '../game/gfx.jo'
 use '../game/structures.jo'
 use '../game/worldgen.jo'
 use '../game/physics.jo'
-from '../game/story.jo' import __ending
+use '../game/enemies.jo'
+use '../game/input.jo'
+from '../game/story.jo' import __ending, __roof
 worldgen_load()
 structures_pads()
 worldgen_finish()
@@ -15,14 +17,27 @@ temple()
 old_man.pos=roof_spot()
 old_man.face=0.0
 old_man.visible=true
-story.beat=.ending
+story.beat=.roof
+story.glider_given=false
+pl.pos=old_man.pos+vec3(2,0,0)
+act.interact=true
+enemies.clear()
+loop state in [EState.idle,EState.dead,EState.gone]:
+    enemies.push(Enemy(.keese,old_man.pos+vec3(0,2,0),old_man.pos,state=state))
+__roof(0)
+assert(story.beat==.ending and length(enemies[0].pos-old_man.pos)>59,"living roof Keese relocate beyond the handoff")
+assert(enemies[1].state==.dead and enemies[2].state==.gone,"clearing the meeting never revives defeated enemies")
+act.interact=false
+enemies.clear()
 story.glider_given=true
 pl.pos=lp(TEMPLE,TEMPLE_ROT,4,43.05,34.5)
 pl.state=.cutscene
 shots: vec3[]
 loop t in [1.0,5.0,8.5]:
     story.t=t
-    __ending(1.0/60.0)
+    loop frame in [0..120): __ending(1.0/60.0)
+    toward = normalize(cam.o_pos-old_man.pos)
+    assert(dot(forward_of(old_man.face),toward)>0.70,"face stays toward the held lens")
     assert(cam.override and old_man.visible and pl.state==.cutscene,"reveal holds actor and control")
     hp=pl.hp
     damage_player(4,pl.pos+vec3(1,0,0))

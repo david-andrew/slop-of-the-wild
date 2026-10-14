@@ -2,6 +2,7 @@
 """Run one X11 benchmark at exact client pixel size, under the caller's render lock.
 
 Unmap only this child's window (like opening_check), then resize it before warmup.
+--visible remaps a fixed-size managed dialog for presentation comparisons.
 No desktop/display settings change. stdout/stderr and the child status pass through.
 """
 import ctypes as ct
@@ -28,7 +29,7 @@ def validate_capture(path, size, started_ns):
         image.verify()
 
 
-def run(command, size):
+def run(command, size, visible=False):
     x = ct.CDLL(ctypes.util.find_library('X11'))
     x.XOpenDisplay.argtypes = [ct.c_char_p]
     x.XOpenDisplay.restype = ct.c_void_p
@@ -47,7 +48,10 @@ def run(command, size):
     x.XGetWMProtocols.argtypes = [ct.c_void_p, ct.c_ulong, ct.POINTER(ct.POINTER(ct.c_ulong)), ct.POINTER(ct.c_int)]
     x.XInternAtom.argtypes = [ct.c_void_p, ct.c_char_p, ct.c_int]
     x.XInternAtom.restype = ct.c_ulong
+    x.XChangeProperty.argtypes = [ct.c_void_p, ct.c_ulong, ct.c_ulong, ct.c_ulong,
+                                 ct.c_int, ct.c_int, ct.c_void_p, ct.c_int]
     x.XUnmapWindow.argtypes = [ct.c_void_p, ct.c_ulong]
+    x.XMapWindow.argtypes = [ct.c_void_p, ct.c_ulong]
     x.XDefaultScreen.argtypes = [ct.c_void_p]
     x.XDefaultScreen.restype = ct.c_int
     x.XWithdrawWindow.argtypes = [ct.c_void_p, ct.c_ulong, ct.c_int]
@@ -177,6 +181,13 @@ def run(command, size):
             if matches:
                 wid = matches[0]
                 print(f'benchmark owned client: window {wid:#x} PID {owner_pid(wid)}',flush=True)
+                if child_env.get('BOTW_BENCH_CPU_SET'):
+                    cpus = {int(value) for value in child_env['BOTW_BENCH_CPU_SET'].split(',')}
+                    pid = owner_pid(wid)
+                    if not cpus or not cpus <= os.sched_getaffinity(pid):
+                        raise RuntimeError('benchmark CPU set is outside the child allowed CPUs')
+                    os.sched_setaffinity(pid, cpus)
+                    print(f'benchmark main-thread affinity: PID {pid} CPUs {sorted(os.sched_getaffinity(pid))}', flush=True)
                 hints = SizeHints(flags=(1 << 4) | (1 << 5), min_width=size[0], min_height=size[1],
                                   max_width=size[0], max_height=size[1])
                 x.XSetWMNormalHints(display, wid, ct.byref(hints))
@@ -197,12 +208,20 @@ def run(command, size):
                     if proc.poll() is not None: return completed_capture()
                     if time.monotonic() >= deadline: raise RuntimeError('WM did not withdraw benchmark client')
                     time.sleep(.01)
-                attrs = WindowAttributes(override_redirect=1)
+                if visible:
+                    # GNOME can maximize a game client despite resize requests.
+                    # A fixed dialog honors these size hints while retaining the
+                    # ordinary managed/composited XWayland presentation path.
+                    window_type = x.XInternAtom(display, b'_NET_WM_WINDOW_TYPE', 0)
+                    dialog_type = ct.c_ulong(x.XInternAtom(display, b'_NET_WM_WINDOW_TYPE_DIALOG', 0))
+                    x.XChangeProperty(display, wid, window_type, 4, 32, 0, ct.byref(dialog_type), 1)
+                attrs = WindowAttributes(override_redirect=0 if visible else 1)
                 x.XChangeWindowAttributes(display, wid, 1 << 9, ct.byref(attrs))
                 x.XUnmapWindow(display, wid)
                 x.XResizeWindow(display, wid, *size)
+                if visible: x.XMapWindow(display, wid)
                 x.XSync(display, 0)
-                print(f'benchmark fixed output: {size[0]}x{size[1]} (hidden X11 client)', flush=True)
+                print(f'benchmark fixed output: {size[0]}x{size[1]} ({"visible managed" if visible else "hidden"} X11 client)', flush=True)
                 break
             time.sleep(.01)
         else:
@@ -249,4 +268,7 @@ def run(command, size):
 
 
 if __name__ == '__main__':
-    sys.exit(run(sys.argv[2:], tuple(map(int, sys.argv[1].split('x')))))
+    arguments = sys.argv[1:]
+    visible = arguments[0] == '--visible'
+    if visible: arguments = arguments[1:]
+    sys.exit(run(arguments[1:], tuple(map(int, arguments[0].split('x'))), visible))

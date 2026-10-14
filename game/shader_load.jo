@@ -123,6 +123,8 @@ shader_load_submit = (src: ShaderSource) -> LoadingShader:
     shader_load_init()
     s = src
     if game_vulkan_backend():
+        # Vertex noise also controls cliff displacement, grass and leaf silhouettes.
+        s.vs_spirv = game_spirv_noise_precision(s.vs_spirv)
         s.fs_spirv = game_spirv_noise_precision(game_spirv_derivatives(s.fs_spirv))
         return LoadingShader(ready = make_shader(s))
     s.vs = __patch_glsl(s.vs)

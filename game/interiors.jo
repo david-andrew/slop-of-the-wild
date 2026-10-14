@@ -592,6 +592,17 @@ sor_rock_finish = (first: int):
         moss = smoothstep(0.15,0.72,f64(n.y))*smoothstep(0.66,0.88,__n3(p*0.18))
         col = vec4(mix(col.xyz,col.xyz*vec3(0.72,0.88,0.67),f32(moss*0.35)),col.w)
         cur.verts[k].color = col
+        if cur.verts[k].mat.w == 6.0:
+            station = clamp(f64(dot(p-v3(-1128,237,1884),normalize(vec3(61,0,-40)))),0.0,73.0)
+            door = 1.0 - smoothstep(4.0,34.0,station)
+            day = smoothstep(18.0,68.0,station)
+            facing = 0.48 + 0.52 * smoothstep(-0.45,0.6,f64(n.y))
+            cur.verts[k].light = vec3(0.23,0.195,0.145)*f32((0.55+door*0.40+day*0.45)*facing)
+            # Low interior albedo and roof occlusion absorb most of the weak
+            # sky bounce. A warm reflected wash makes the first natural beds
+            # readable; it ends before the established daylight lining.
+            entrance = smoothstep(5.0,10.0,station)*(1.0-smoothstep(28.0,40.0,station))
+            cur.verts[k].light += vec3(2.40,2.10,1.65)*f32(entrance*(0.48+door*0.45)*facing)
 
 sor_mouth_point = (j: int, k: int) -> vec3:
     layer = min(5,k/6)
@@ -815,17 +826,17 @@ sor_passage_stratum = (a: vec3, b: vec3, n: int, station: f64, sign: f64, row: i
         cur.verts[k].color = darken(cur.verts[k].color,f32(if course == 0: 0.16 else: 0.03))
     __end()
 
-# Last forty metres: one continuous, fractured shell. The old collision
+# Beyond the shrine vestibule: one continuous, fractured shell. The old collision
 # backing remains separate, while this surface seals every wall and roof seam.
 sor_passage_shell = (a: vec3, b: vec3, n: int):
     side = normalize(v3(-f64(b.z - a.z), 0.0, f64(b.x - a.x)))
-    raw_point = (j: int, k: int) -> vec3: sor_passage_surface(a,b,n,16.0+f64(k)*0.5,PI*f64(j)/32.0)
+    raw_point = (j: int, k: int) -> vec3: sor_passage_surface(a,b,n,4.0+f64(k)*0.5,PI*f64(j)/32.0)
     # The shrine end uses sixteen angular panels, this shell thirty-two.
     # Seat new midpoint vertices on the old straight edge at the shared ring.
     p = (j: int, k: int) -> vec3:
         if k == 0 and j % 2 == 1: return (raw_point(j-1,k)+raw_point(j+1,k))*0.5
         raw_point(j,k)
-    rings = (n - 16) * 2
+    rings = (n - 4) * 2
     normal = (j: int, k: int) -> vec3:
         normalize(cross(p(j, min(k + 1, rings)) - p(j, max(k - 1, 0)), p(min(j + 1, 32), k) - p(max(j - 1, 0), k)))
     loop k in [0..rings):
@@ -853,6 +864,7 @@ sor_passage_floor = (a: vec3, b: vec3, i: int, n: int):
             base.y = f32(lerp(f64(base.y), height_at(f64(base.x), f64(base.z)) - 0.035, blend))
         base
     __begin(mix(a, b, f32((f64(i) + 0.5) / f64(n))))
+    first = cur.verts.len()
     loop j in [0..8):
         pa = point(j, 0)
         pb = point(j, 1)
@@ -862,6 +874,12 @@ sor_passage_floor = (a: vec3, b: vec3, i: int, n: int):
         if nn.y < 0.0: nn = -nn
         col = stone(0.22, 0.205, 0.18)
         __quad(cur, pa, pd, pc, pb, nn, col, SOR_STONE)
+    sor_rock_finish(first)
+    loop k in [first..cur.verts.len()):
+        v = cur.verts[k]
+        across = abs(f64(dot(v.pos-mix(a,b,clamp(dot(v.pos-a,b-a)/dot(b-a,b-a),0.0,1.0)),side)))
+        damp = smoothstep(0.5,2.65,across) * smoothstep(0.25,0.72,__n3(v.pos*0.43))
+        cur.verts[k].color = vec4(mix(v.color.xyz,vec3(0.16,0.21,0.105),f32(damp*0.65)),v.color.w)
     __end()
 
 # a sloping corridor with walls, a ceiling and glowing strips, from a to b (floor heights)
@@ -879,7 +897,7 @@ corridor = (a: vec3, b: vec3, n: int):
         mid = (p0 + p1) * 0.5
         # (the shrine's built passage gives way to a rough cave toward the mouth)
         cave = if n > 3: smoothstep(0.12, 0.38, f64(i) / f64(n)) else: 0.0
-        if n > 3 and i >= 16:
+        if n > 3 and i >= 4:
             # Preserve box_m's ramp collider exactly (its physics is yaw-only).
             add_box(mid - vec3(0, 1, 0), v3((seg + 0.3) * 0.5, 0.5, 2.2), yaw, false, .stone)
             sor_passage_floor(a, b, i, n)

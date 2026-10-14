@@ -1,3 +1,7 @@
+build:
+    opt = release
+
+# CPU budgets use the same release optimization as game/main.jo.
 use '../game/audio_mix.jo'
 use '../game/frametime.jo'
 # Production sequencer + software mixer. No window or playback device.

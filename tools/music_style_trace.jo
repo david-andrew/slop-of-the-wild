@@ -1,0 +1,41 @@
+use '../game/music.jo'
+use '../game/player.jo'
+use '../game/audio_mix.jo'
+use '../game/gfx.jo'
+use '../game/audio_assets.jo'
+
+# Headless production sequencer/mixer trace. Called one context per lock by
+# music_style_check.py; no window, playback device, or substitute scheduler.
+__audio_state = 2
+piano_init()
+mood = Mood.field_day
+name = args()[2]
+match name:
+    "field_night": mood = .field_night
+    "rain": mood = .field_rain
+    "golden": mood = .field_golden
+    "forest": mood = .forest
+    "snow": mood = .snow
+    "ruins": mood = .ruins
+    _: mood = .field_day
+seq = Seq(mood = mood, want = mood, volume = 1.0, rest = 2.0)
+seed_random(70070)
+pl = Player()
+pl.pos = v3(0, 235, 0)
+pl.vel = vec3(0, 0, 2.4)
+music_logging = true
+master_volume(0.8)
+loop frame in [0..72000):
+    music_update(1.0 / 60.0)
+    __mix(MIX_RATE / 60)
+assert(write_file(args()[1], music_log))
+# Sneaking affects existing context tails as well as subsequent strikes.
+pl.sneaking = true
+loop frame in [0..360): music_update(1.0 / 60.0)
+assert(abs(seq.sneak_gain - 0.32) < 0.001, "crouch duck reaches -9.9 dB")
+pl.sneaking = false
+loop frame in [0..360): music_update(1.0 / 60.0)
+assert(abs(seq.sneak_gain - 1.0) < 0.001, "crouch duck recovers")
+assert(duration(reverse_piano) == 3.0)
+assert(abs(reverse_piano.samples[0]) < 1e-7 and abs(reverse_piano.samples[reverse_piano.samples.len()-1]) < 1e-7)
+print("PASS production {name} note trace, smooth sneak gain and finite reverse endpoints")

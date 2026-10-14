@@ -1,0 +1,118 @@
+build:
+    opt = release
+# CPU pigment continuity, sealed armor panels, and a real receiving pool.
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/structures.jo'
+from '../game/structures.jo' import __temple_ashlar, __old_block
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/interiors.jo'
+use '../game/water.jo'
+use '../game/water_render.jo'
+from '../game/build.jo' import __bchunks
+
+samples = 0
+loop origin in [vec3(-818,234,2001),vec3(-852,222,1918)]:
+    loop i in [0..1000):
+        p = origin + vec3(f32(i)*0.037, f32(i%47)*0.13, f32(i%71)*0.17)
+        a = painted_stone_wash(p)
+        assert(a.x >= 0.0 and a.x <= 1.0 and a.y >= 0.90 and a.y <= 1.06, "bounded damp pigments")
+        loop offset in [vec3(0.003,0,0),vec3(0,0.003,0),vec3(0,0,0.003)]:
+            b = painted_stone_wash(p+offset)
+            assert(abs(a.x-b.x)<0.025 and abs(a.y-b.y)<0.025,"painted damp has no per-cell jumps")
+            samples += 1
+print("PASS dressed-stone wash: {samples} adjacent samples at Temple/husk world coordinates")
+
+guardian_shell_panel(vec3(0,0,0),mat4(),0.7,0.6,47.0)
+seen: {str: BVert} = {}
+vertices = 0
+loop key,b in __bchunks:
+    loop v in b.verts:
+        assert(v.mat.x==0.0 and v.mat.w< -0.5,"outer armor has no carved slab grid")
+        id = "{v.pos.x:.5},{v.pos.y:.5},{v.pos.z:.5}"
+        if let other = seen.get(id):
+            assert(v.color==other.color and length(v.normal-other.normal)<0.00001,"shared shell corners cannot have flat per-quad moss colors")
+        seen[id]=v
+        vertices+=1
+assert(vertices==96,"panel topology remains bounded")
+print("PASS shell pigment: {vertices} vertices; shared corners, curved normals, no cell palette")
+
+loop key in __bchunks.keys(): __bchunks.remove(key)
+loop side in [-1.0,1.0]:
+    __old_block(vec3(f32(side),0,0),vec3(2,2,1),0.0,stone(0.4,0.39,0.36),vec4(0.48,0.7,0,-1),false)
+joined: {str: BVert} = {}
+shared=0
+loop key,b in __bchunks:
+    loop v in b.verts:
+        assert(abs(v.mat.y-0.7)<0.00001,"whole bays cannot receive independent flat moss coverage")
+        if abs(v.pos.x)>0.0001: continue
+        id="{v.pos.y:.4},{v.pos.z:.4}"
+        if let other=joined.get(id):
+            assert(length(v.color-other.color)<0.00001,"world-position pigment is continuous at construction seams")
+            shared+=1
+        joined[id]=v
+assert(shared>=4,"probe adjoining wall bays")
+print("PASS Temple bay pigment: {shared} shared corners; stable ivy coverage and continuous washes")
+loop key in __bchunks.keys(): __bchunks.remove(key)
+__temple_ashlar(vec3(0,0,0),vec3(1.55,1.25,0.62),0.0,71.0,stone(0.4,0.39,0.36),vec4(0.48,0.7,0,-1))
+faces = 0
+loop key,b in __bchunks:
+    loop k in [0..b.idx.len()/3):
+        a = b.verts[int(b.idx[k*3])]
+        c = b.verts[int(b.idx[k*3+1])]
+        d = b.verts[int(b.idx[k*3+2])]
+        n = cross(c.pos-a.pos,d.pos-a.pos)
+        assert(length(n)>0.00001 and dot(n,a.normal+c.normal+d.normal)>0,"ashlar bevel has finite outward winding")
+        assert(dot(n,(a.pos+c.pos+d.pos)/3.0-vec3(0,0.625,0))>0,"facing and bevel point out of the stone")
+        faces += 1
+assert(faces==24,"bounded facing/bevel topology")
+print("PASS fractured facing: {faces} outward nondegenerate ashlar faces")
+
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+water_generate()
+loop p in [vec2(-1510,1814),vec2(-1504,1823),vec2(-1498,1832)]:
+    depth = water_depth(f64(p.x),f64(p.y))
+    assert(depth>2.0 and depth<7.5,"wide receiving basin stays connected and swimmable")
+anchors=0
+loop foot in fall_feet:
+    if foot.x < -1510 or foot.x > -1470 or foot.z < 1800 or foot.z > 1848 or foot.y >= 120: continue
+    anchors+=1
+    assert(foot.y<107 and abs(foot.z-1823)<12,"west mist belongs to the actual plunge pool")
+    depth=f64(foot.y)-height_at(f64(foot.x),f64(foot.z))
+    assert(depth>1.0 and depth<7.5,"impact anchor above a wet pool bed")
+    on_mesh=false
+    loop v in water_vertices:
+        if v.mist==0.0 and length(v.pos-foot)<0.001: on_mesh=true
+    assert(on_mesh,"impact height comes from the visible water mesh")
+assert(anchors==1,"one stable west-pool plume, no floating bench cards")
+print("PASS west plunge pool: three wide wet probes, one mist source on the receiving mesh")
+
+# The first-half wash is actual vertex irradiance, not extra emission. It must
+# fade before the mouth and leave the sealed walking/camera geometry intact.
+loop key in __bchunks.keys(): __bchunks.remove(key)
+corridor(v3(-1128,237,1884),v3(-1067,247.5,1844),36)
+near=vec3(0,0,0)
+far=vec3(0,0,0)
+near_n=0
+far_n=0
+axis=normalize(vec3(61,0,-40))
+loop key,b in __bchunks:
+    loop v in b.verts:
+        if v.mat.w!=6.0 or abs(v.normal.y)>0.4:continue
+        station=f64(dot(v.pos-v3(-1128,237,1884),axis))
+        if station>16.0 and station<24.0:
+            near+=v.light
+            near_n+=1
+        if station>44.0 and station<52.0:
+            far+=v.light
+            far_n+=1
+assert(near_n>0 and far_n>0,"probe both lining halves")
+near/=f32(near_n)
+far/=f32(far_n)
+assert(near.x>0.25 and near.x>far.x*1.5,"first-half indirect light must survive the mineral absorption")
+assert(near.x<1.4 and near.x>near.z and far.x<0.25,"warm entry falloff, restrained daylight-end bounce")
+print("PASS cave indirect wash: early {near}; late {far}; bounded warm falloff")

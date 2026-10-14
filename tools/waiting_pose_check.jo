@@ -1,0 +1,31 @@
+# The production chooser must not stay crouched when lane/attack timers reset.
+use '../game/enemies.jo'
+use '../game/enemy_weapon_pose.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+m=load_model("assets/models/bokoblin.mdl")
+lib=load_humanoid_anims()
+
+loop spear in [false,true]:
+    loop stance in [0,1,2]:
+        e=Enemy(.bokoblin,vec3(0,0,0),vec3(0,0,0),state=.chase,may_engage=true)
+        previous=""
+        held=0.0
+        maximum=0.0
+        head_lo=vec3(100,100,100)
+        head_hi=vec3(-100,-100,-100)
+        loop f in [0..720):
+            e.t=0.0 # Both lane alignment and yielding to another blow reset this.
+            e.anim_t=f64(f)/60.0
+            clip=enemy_chase_idle_clip(e,stance)
+            held=if clip==previous: held+1.0/60.0 else: 0.0
+            maximum=max(maximum,held)
+            previous=clip
+            p=sample_clip(lib,clip_index(lib,clip),e.anim_t,true)
+            enemy_waiting_weapon_pose(m,lib,p,spear)
+            head=bone_world(m,p,bone_index(m,"Head"))[3].xyz
+            head_lo=min(head_lo,head)
+            head_hi=max(head_hi,head)
+        assert(maximum<1.3,"no reset timer can hold an idle for two seconds")
+        assert(length(head_hi-head_lo)>0.05,"actual posed head changes after the spear/club hand overlay")
+        print("PASS waiting spear={spear} stance={stance}: longest clip {maximum:.3}s head travel {length(head_hi-head_lo):.3}m")

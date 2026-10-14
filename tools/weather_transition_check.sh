@@ -25,7 +25,7 @@ source = re.sub(r"(?m)^(use|from) '([^']+)'", lambda m: f"{m[1]} '{(Path('game')
 # Keep production loading/update/draw. Capture the current completed frame: the
 # update-start hook can read an older swapped buffer whose lightning no longer
 # matches this frame's weather log, creating false static-brightness failures.
-capture = '    if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:\n        save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")\n'
+capture = '    if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:\n        flush()\n        save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")\n'
 assert source.count(capture) == 1
 assert source.count('\ndraw = ():') == 1
 source = source.replace(capture, '').replace('\ndraw = ():', '\nweather_check_draw = ():')
@@ -70,6 +70,10 @@ for line in open(f"{d}/log.txt"):
     m = dict(re.findall(r"(\w+)=(\S+)", line))
     rows.append({"f": int(m["f"]), "clouds": float(m["clouds"]), "rain": float(m["rain"]),
                  "dark": float(m["dark"]), "wet": float(m["wet"]), "sun": float(m["sun"]), "sheltered": m["sheltered"] == "true"})
+# The 120 Hz simulation logs twice per rendered frame. Compare completed
+# frames, so a fading lightning pulse is not mistaken for a tiny sun change
+# paired with a large ambient change between two substeps of the same flash.
+rows = list({int(r["f"]): r for r in rows}.values())
 fails = []
 def check(ok, what):
     if not ok: fails.append(what)
@@ -152,6 +156,10 @@ import re, sys, glob, statistics
 from PIL import Image, ImageStat
 d, scene = sys.argv[1:]
 rows = [dict(re.findall(r"(\w+)=(\S+)", l)) for l in open(f"{d}/log.txt")]
+# The 120 Hz simulation logs twice per rendered frame. Compare completed
+# frames, so a fading lightning pulse is not mistaken for a tiny sun change
+# paired with a large ambient change between two substeps of the same flash.
+rows = list({int(r["f"]): r for r in rows}.values())
 fails = []
 def check(ok, message):
     if not ok: fails.append(message)

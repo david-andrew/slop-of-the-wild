@@ -1,0 +1,110 @@
+# Surface-centered swim clips must breathe above water through a full stroke.
+# Also exercise production float convergence, camera settling, and swim exit.
+use '../game/player.jo'
+from '../game/player.jo' import __try_mantle
+use '../game/camera.jo'
+use '../game/input.jo'
+use '../game/terrain.jo'
+use '../game/water.jo'
+use '../game/physics.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/hero_motion.jo'
+use '../game/swim_pose.jo'
+
+swim_surface_check = ():
+    lib = load_humanoid_anims()
+    idle = clip_index(lib, "idle")
+    swim = clip_index(lib, "swim")
+    tread = clip_index(lib, "swim_idle")
+    assert(swim_clip_weight(Animator(clip = idle), swim, tread) == 0.0)
+    assert(swim_clip_weight(Animator(clip = swim), swim, tread) == 1.0)
+    assert(swim_clip_weight(Animator(clip = tread, prev = swim, fade = 0.1, fade_len = 0.2), swim, tread) == 1.0)
+    loop pair in [(idle, swim), (swim, idle)]:
+        animation = Animator(clip = pair.0)
+        anim_play(animation, pair.1, 0.2)
+        previous = swim_clip_weight(animation, swim, tread)
+        loop frame in [0..12):
+            anim_update(animation, 1.0 / 60.0)
+            weight = swim_clip_weight(animation, swim, tread)
+            assert(abs(weight - previous) < 0.13, "abrupt swim render-origin change")
+            previous = weight
+        assert(abs(previous - (if pair.1 == swim: 1.0 else: 0.0)) < 0.001)
+    loop model in ["hero", "hero_bare"]:
+        m = load_model("assets/models/{model}.mdl")
+        loop clip in ["swim", "swim_idle"]:
+            c = clip_index(lib, clip)
+            assert(c >= 0 and m.ok)
+            loop sample in [0..120):
+                pose = sample_clip(lib, c, f64(sample) / 120.0 * clip_duration(lib, c), true)
+                swim_surface_pose(lib, pose, if clip == "swim": 1.0 else: 0.0)
+                head = motion_point(m, pose, bone_index(m, "head"))
+                pelvis = motion_point(m, pose, bone_index(m, "pelvis"))
+                # Origin floats at water level. The head joint must clear it;
+                # the skull extends higher. Hips and hands stay under the surface.
+                assert(head.y > 0.15, "swimming head submerged")
+                assert(pelvis.y < 0.0, "swimming hips above water")
+                loop side in ["_l", "_r"]:
+                    hand = motion_point(m, pose, bone_index(m, "hand" + side))
+                    assert(hand.y < 0.10, "stroke hand above water")
+                    if clip == "swim":
+                        shoulder = motion_point(m, pose, bone_index(m, "upperarm" + side))
+                        foot = motion_point(m, pose, bone_index(m, "foot" + side))
+                        assert(shoulder.y > 0.09, "swimming shoulder too low")
+                        assert(abs(f64(foot.y - pelvis.y)) < 0.25, "breaststroke kick not horizontal")
+    hf.n = 64
+    hf.cell = 2.0
+    hf.x0 = -64.0
+    hf.z0 = -64.0
+    hf.h = fill(f32(96), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    water_grid_set(fill(f32(100), hf.n * hf.n), hf.n, hf.x0, hf.z0, hf.cell)
+    use_terrain = true
+    pl = Player(pos = vec3(0, 98.75, 0), state = .swim, grounded = false, water_y = 100.0)
+    act = Actions(move = vec2(0, 1))
+    cam = Cam(yaw = 0.0)
+    camera_snap()
+    loop frame in [0..180):
+        player_update(1.0 / 60.0)
+        camera_update(1.0 / 60.0)
+    assert(pl.state == .swim)
+    assert(abs(f64(pl.pos.y) + SWIM_FOOT_DEPTH - 100.0) < 0.002, "wrong surface origin")
+    assert(abs(pl.speed - SWIM_SPEED) < 0.002, "swim speed changed")
+    assert(cam.pos.y > 101.3, "swim camera too close to water")
+    assert(cam.pitch > 0.40 and cam.pitch < 0.43, "swim camera not pitched down")
+    # No-input treading stays afloat without draining stamina.
+    act = Actions()
+    saved = pl.stamina
+    loop frame in [0..120): player_update(1.0 / 60.0)
+    assert(pl.state == .swim and abs(f64(pl.pos.y) + SWIM_FOOT_DEPTH - 100.0) < 0.002)
+    assert(pl.stamina == saved)
+    # The animation's added surface lift must not keep an exhausted head afloat.
+    pl.exhausted = true
+    pl.stamina = 0.0
+    pl.last_safe = vec3(100, 96, 100)
+    loop frame in [0..60): player_update(1.0 / 60.0)
+    m = load_model("assets/models/hero_bare.mdl")
+    drowning = sample_clip(lib, tread, 0.0, true)
+    head = motion_point(m, drowning, bone_index(m, "head"))
+    shown_head_y = f64(pl.pos.y + head.y) + swim_render_lift(1.0, SWIM_FOOT_DEPTH, pl.drown_t)
+    assert(shown_head_y < pl.water_y - 0.25, "exhausted head still above water")
+    loop frame in [0..60):
+        player_update(1.0 / 60.0)
+        if pl.state != .swim: break
+    assert(pl.state == .ground and pl.pos == pl.last_safe and pl.hp == pl.hp_max - 4)
+    assert(pl.stamina == pl.stamina_max and not pl.exhausted)
+    # Shallow water still stands up on its collision floor.
+    pl = Player(pos = vec3(0, 98.75, 0), state = .swim, grounded = false, water_y = 100.0)
+    hf.h = fill(f32(99.3), hf.n * hf.n)
+    player_update(1.0 / 60.0)
+    assert(pl.state == .ground and abs(f64(pl.pos.y) - 99.3) < 0.002)
+    # A 25 cm bank needs the underwater foot anchor: treating the clip origin
+    # as the collision foot would put both wall probes above this reachable rim.
+    hf.h = fill(f32(96), hf.n * hf.n)
+    add_box(vec3(0, 96, -1), vec3(3, 2.125, 0.5))
+    pl = Player(pos = vec3(0, 98.75, 0), state = .swim, grounded = false, water_y = 100.0)
+    assert(__try_mantle() and pl.state == .mantle, "swimmer cannot grab a low bank")
+    assert(abs(f64(pl.mantle_to.y) - 100.25) < 0.002)
+    print("PASS swim surface: both models, 480 stroke/tread poses, breathing head/shoulders, submerged hips/hands, horizontal kick, float, speed, camera, entry/exit crossfade, drowning/shore return, shallow exit and low-bank grab")
+
+swim_surface_check()

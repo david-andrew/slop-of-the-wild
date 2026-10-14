@@ -13,6 +13,14 @@ seam_fs = (i: SeamO, u: SeamU) -> vec4:
     p = vec2(-420, 580) + i.uv * 10.0
     n = vnoise(p)
     vec4(n, n, n, 1)
+struct VertexSeamO:
+    pos: vec4
+    value: f32
+vertex_seam_vs = (v: FsVert, u: SeamU) -> VertexSeamO:
+    uv = v.pos * 0.5 + vec2(0.5, 0.5)
+    VertexSeamO(vec4(v.pos, 0, 1), vnoise(vec2(-420, 580) + uv * 10.0))
+vertex_seam_fs = (i: VertexSeamO, u: SeamU) -> vec4:
+    vec4(i.value, i.value, i.value, 1)
 window("Noise lattice continuity", 512, 512)
 source = shader(seam_vs, seam_fs)
 sh = make_sh(source)
@@ -22,24 +30,41 @@ target.color = color_texture(512, 512, GL_RGBA32F, GL_RGBA, GL_FLOAT, GL_NEAREST
 glBindFramebuffer(GL_FRAMEBUFFER, u32(target.fbo))
 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(target.color.id), 0)
 assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
-bind_target(target)
-glDisable(GL_DEPTH_TEST)
-glDisable(GL_CULL_FACE)
-glDisable(GL_BLEND)
-draw_fast(sh, fullscreen_mesh(), SeamU(0))
-pixels = fill(f32(-1), 512 * 512 * 4)
-game_read_pixels_f32(0, 0, 512, 512, data(pixels) as *u8)
-worst = f32(0)
-loop y in [0..512):
-    loop x in [0..512):
-        at = (y * 512 + x) * 4
-        assert(pixels[at + 3] == 1.0, "continuity probe must render every pixel")
-        if x > 0: worst = max(worst, abs(pixels[at] - pixels[at - 4]))
-        if y > 0: worst = max(worst, abs(pixels[at] - pixels[at - 512 * 4]))
-# Cubic interpolation has slope <=1.5 per cell; the 10/512 step bounds a
-# continuous field by 0.0293. Leave room for raster/float rounding, while
-# rejecting the old nearly-one shared-corner discontinuity.
-assert(worst < 0.04, "float hash must agree at shared noise lattice corners")
-print("PASS noise lattice continuity: 262144 RGB32F samples, max adjacent error {worst:.9}")
+check_continuity = (program: Shader, surface: Mesh, stage: str):
+    bind_target(target)
+    glDisable(GL_DEPTH_TEST)
+    glDisable(GL_CULL_FACE)
+    glDisable(GL_BLEND)
+    draw_fast(program, surface, SeamU(0))
+    pixels = fill(f32(-1), 512 * 512 * 4)
+    game_read_pixels_f32(0, 0, 512, 512, data(pixels) as *u8)
+    worst = f32(0)
+    loop y in [0..512):
+        loop x in [0..512):
+            at = (y * 512 + x) * 4
+            assert(pixels[at + 3] == 1.0, "continuity probe must render every pixel")
+            if x > 0: worst = max(worst, abs(pixels[at] - pixels[at - 4]))
+            if y > 0: worst = max(worst, abs(pixels[at] - pixels[at - 512 * 4]))
+    # Cubic noise has slope <=1.5 per cell; 10/512 bounds the fragment
+    # probe by 0.0293. Linear interpolation of the vertex grid keeps this
+    # bound too. Allow rounding, but reject a discontinuous shared corner.
+    assert(worst < 0.04, "float hash must agree at shared noise lattice corners")
+    print("PASS {stage} noise lattice continuity: 262144 RGB32F samples, max adjacent error {worst:.9}")
+check_continuity(sh, fullscreen_mesh(), "fragment")
+
+# Sample across lattice boundaries in the vertex stage, as terrain and foliage do.
+# A dense grid makes a bad corner visible after interpolation instead of hiding
+# it behind the three vertices of a fullscreen triangle.
+vertices: FsVert[]
+indices: u32[]
+loop y in [0..129):
+    loop x in [0..129):
+        vertices.push(FsVert(vec2(f32(x), f32(y)) / 64.0 - vec2(1, 1)))
+loop y in [0..128):
+    loop x in [0..128):
+        a = u32(y * 129 + x)
+        loop k in [a, a + 1, a + 129, a + 1, a + 130, a + 129]: indices.push(k)
+vertex_sh = make_sh(shader(vertex_seam_vs, vertex_seam_fs))
+check_continuity(vertex_sh, mesh(vertices, indices), "vertex")
 glBindFramebuffer(GL_FRAMEBUFFER, 0)
 free_target(target)

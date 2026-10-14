@@ -32,7 +32,7 @@ actions = 'bonfires.push(Bonfire(v3(-945.0, height_at(-945.0, 1888.0), 1888.0), 
 harness = template.replace('# @FIELD_ACTIONS@', actions)
 harness = harness.replace('    # @FIELD_UPDATE@', re.sub(r'\bdt\b', 'DT', update).rstrip())
 (root / 'harness.jo').write_text(harness)
-subprocess.run(['sloppy/bin/sloppy', 'build', str(root / 'harness.jo'), '-o', str(root / 'check')], check=True)
+subprocess.run(['python3', 'tools/headless_build.py', str(root / 'harness.jo'), '-o', str(root / 'check')], check=True)
 clean = {k: v for k, v in os.environ.items() if not k.startswith(('BOTW_', 'SLOPPY_'))}
 try:
     run = subprocess.run([str(root / 'check')], env={**clean, 'BOTW_SHRINE_LOG': '1'},

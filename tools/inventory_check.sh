@@ -2,19 +2,20 @@
 # Full obtainable inventory, every tab and every material selection; visual evidence.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-if [[ ${1:-} != --locked ]]; then
-    exec flock /tmp/botw-render.lock "$PWD/tools/inventory_check.sh" --locked
-fi
+# Serialize one bounded render at a time; dozens of selections must not hold
+# the shared lock for an entire batch. --locked remains caller-owned.
+render_lock=(flock /tmp/botw-render.lock)
+if [[ ${1:-} == --locked ]]; then render_lock=(); fi
 out=build/inventory-check
 mkdir -p "$out"
 sloppy/bin/sloppy build tools/inventory_fixture.jo -o "$out/fixture"
 for tab in 0 1 2 3 4 5 6; do
-    SLOPPY_SCREENSHOT="$out/tab-$tab.png" SLOPPY_FRAMES=3 "$out/fixture" "$tab" > "$out/tab-$tab.log" 2>&1
+    "${render_lock[@]}" env SLOPPY_SCREENSHOT="$out/tab-$tab.png" SLOPPY_FRAMES=3 timeout 90 "$out/fixture" "$tab" > "$out/tab-$tab.log" 2>&1
 done
 # All food/material types, including the final row. input_check guards definition coverage.
 materials=$(sed -n 's/.*tab=3 items=\([0-9]*\).*/\1/p' "$out/tab-3.log")
 for sel in $(seq 0 $((materials - 1))); do
-    SLOPPY_SCREENSHOT="$out/material-$sel.png" SLOPPY_FRAMES=3 "$out/fixture" 3 "$sel" > "$out/material-$sel.log" 2>&1
+    "${render_lock[@]}" env SLOPPY_SCREENSHOT="$out/material-$sel.png" SLOPPY_FRAMES=3 timeout 90 "$out/fixture" 3 "$sel" > "$out/material-$sel.log" 2>&1
 done
 python3 - <<'PY'
 from pathlib import Path

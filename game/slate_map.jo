@@ -305,8 +305,17 @@ map_draw = (x: f64, y: f64, w: f64, h: f64):
                 continue
             col = if s.done: rgba(0.35, 0.75, 1.0, 1) else: rgba(1.0, 0.55, 0.15, 1)
             circle(sp, 8.0, rgba(0.08, 0.1, 0.12, 0.9))
-            ring(sp, 6.5, 2.0, col)
-            circle(sp, 2.5, col)
+            if s.done:
+                # A filled diamond plus a dark check survives greyscale/minification.
+                polygon([sp+vec2(0,-8),sp+vec2(8,0),sp+vec2(0,8),sp+vec2(-8,0)],col)
+                line(sp+vec2(-4,0),sp+vec2(-1,3),2.0,rgba(0.04,0.08,0.10,1))
+                line(sp+vec2(-1,3),sp+vec2(4,-3),2.0,rgba(0.04,0.08,0.10,1))
+            else:
+                # Activated entrance: an open arch, distinct from the unvisited ring.
+                line(sp+vec2(-5,6),sp+vec2(-5,-4),2.0,col)
+                line(sp+vec2(-5,-4),sp+vec2(0,-8),2.0,col)
+                line(sp+vec2(0,-8),sp+vec2(5,-4),2.0,col)
+                line(sp+vec2(5,-4),sp+vec2(5,6),2.0,col)
         loop pin in map_pins:
             if not map_in_view(pin, 0.0): continue
             q = map_screen_pos(pin)

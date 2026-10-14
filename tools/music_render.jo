@@ -8,7 +8,7 @@ use '../game/enemies.jo'
 use '../game/gfx.jo'
 use 'music_event_paths.jo'
 use '../game/physics.jo'
-from '../game/music.jo' import __was_combat, __alert_t
+from '../game/music.jo' import __was_combat, __alert_t, __piano_short
 from '../game/sfx.jo' import __sfx_rng, __sfx_drawing, __sfx_rustle_t
 from '../game/sfx.jo' import __echoes, __amb_k, __amb_cover, __amb_gust, __amb_snow, __amb_forest, __amb_ruins, __peck_t
 
@@ -71,20 +71,22 @@ __wav = (path: str, mixb: mut f32[], mixed: bool = false):
     assert(clipped == 0 and peak < 0.9, "music export must retain unclipped headroom")
     assert(write_bytes(path, b), "WAV export failed; create the output parent directory first")
 
-__put = (mixb: mut f32[], midi: int, at: f64, vel: f64, volume: f64 = 0.8, pan: f64 = 0.0, short: bool = false, restrained: bool = false):
+__put = (mixb: mut f32[], midi: int, at: f64, vel: f64, volume: f64 = 0.8, pan: f64 = 0.0, short: bool = false, restrained: bool = false, hold: f64 = -1.0):
     b = piano_blend(vel)
     soft = if restrained: piano.restrained_soft else: (if short: piano.short_soft else: piano.soft)
     notes = if short: piano.short_notes else: piano.notes
     forte = if short: piano.short_forte else: piano.forte
-    if b.pp > 0.000001: __put_s(mixb, soft, midi, at, vel, volume, pan, b.pp)
-    if b.mf > 0.000001: __put_s(mixb, notes, midi, at, vel, volume, pan, b.mf)
-    if b.ff > 0.000001: __put_s(mixb, forte, midi, at, vel, volume, pan, b.ff)
+    if b.pp > 0.000001: __put_s(mixb, soft, midi, at, vel, volume, pan, b.pp, "pp", hold)
+    if b.mf > 0.000001: __put_s(mixb, notes, midi, at, vel, volume, pan, b.mf, "mf", hold)
+    if b.ff > 0.000001: __put_s(mixb, forte, midi, at, vel, volume, pan, b.ff, "ff", hold)
 
-__put_s = (mixb: mut f32[], bank: PianoSample[], midi: int, at: f64, vel: f64, volume: f64, pan: f64, layer: f64):
-    k = clamp((midi - PIANO_LO + PIANO_STEP / 2) / PIANO_STEP, 0, bank.len() - 1)
-    base = PIANO_LO + k * PIANO_STEP
+__put_s = (mixb: mut f32[], bank: PianoSample[], midi: int, at: f64, vel: f64, volume: f64, pan: f64, layer: f64, dynamic: str, hold: f64 = -1.0):
+    k = piano_slot(midi, dynamic)
+    base = piano_recording_midi(k, dynamic)
     pitch = pow(2.0, f64(midi - base) / 12.0)
-    s = piano_expand(bank[k]).samples
+    packed = bank[k]
+    if hold >= 0.0: packed = __piano_short(packed, hold * pitch, (hold + 0.65) * pitch)
+    s = piano_expand(packed).samples
     __put_sample(mixb, s, at, pitch, piano_gain(vel, volume) * layer * 0.8, pan)
 
 __put_sample = (mixb: mut f32[], s: f32[], at: f64, pitch: f64, gain: f64, pan: f64):
@@ -200,7 +202,9 @@ loop c in ["wake", "title", "tower", "tower_night", "discovery", "orb", "orb_nig
     last = 0.0
     loop l in laters: last = max(last, l.t)
     mixb = fill(f32(0), int((max(last, 10.0) + 12.0) * f64(sr)) * 2)
-    loop l in laters: __put(mixb, l.midi, l.t + 0.5, l.vel, l.vol)
+    loop l in laters:
+        if l.glass: __put_sample(mixb, shrine_glass.samples, l.t + 0.5, pow(2.0, f64(l.midi - 72) / 12.0), l.vol * music_vol * 0.8, 0.22)
+        else: __put(mixb, l.midi, l.t + 0.5, l.vel, l.vol, hold = l.hold)
     __wav("{out_dir}/cue_{c}.wav", mixb)
     print("cue {c:10} {laters.len()} notes over {last:.1} s")
 
@@ -436,8 +440,13 @@ render_live = (name: str, seconds: f64, ambience: bool = false):
                 return_lift = 20.0 * log10(field_gain(.shrine) / field_gain(.field_day))
                 peak_delta = peak_db - field_peak_db - return_lift
                 rms_delta = rms_db - field_rms_db - return_lift
+                rms_limit = field_rms_db + return_lift + 4.0
+                # The full-mix return includes the separately checked -28
+                # dBFS shrine bed. Add its energy rather than demanding a
+                # louder field score to hide it in a relative comparison.
+                if ambience: rms_limit = 10.0 * log10(pow(10.0, rms_limit / 10.0) + pow(10.0, -28.0 / 10.0))
                 print("cue/field{suffix}: shrine-return peak {peak_delta:+.2} dB, RMS {rms_delta:+.2} dB after {return_lift:.1} dB context trim; limits +2/+4 dB")
-                assert(peak_delta <= 2.0 and rms_delta <= 4.0, "shrine-return cue must stay within 2 dB peak / 4 dB RMS (including outgoing combat tails) of field")
+                assert(peak_delta <= 2.0 and rms_db <= rms_limit, "shrine-return cue must stay within 2 dB peak / 4 dB RMS (including outgoing combat tails) of field")
             print("context {labels[k]}{suffix}: {starts[k]:.0}-{ends[k]:.0}s peak {20.0 * log10(max(peak, 0.000000001)):.2} dBFS RMS {20.0 * log10(max(rms, 0.000000001)):.2} dBFS; master 0.8/export 1.0")
     sort(costs)
     print("live {name}{suffix}: {f64(music_note_count) / seconds * 60.0:.1} notes/min, {music_note_count} notes, motif x{music_motif_count}; update+jingles ms median {costs[costs.len()/2]:.4} p99 {costs[int(f64(costs.len())*0.99)]:.4} max {costs[costs.len()-1]:.4}; max voices {vmax}")
@@ -551,13 +560,16 @@ render_encounter = (ambience: bool):
         # the actual -1 dBTP ceiling, including overlapping alert/entry voices.
         # The discovery/rain section contains the now +5 dB rain score;
         # compare it at its own gain, rather than the day score's -2 dB trim.
+        # Story/chamber gains stay independent when field is calibrated
+        # beneath the world. Compare their authored role after context trim.
+        cue_lift = if cue or k == 7: max(0.0, 20.0 * log10(SHRINE_GAIN / field_gain(.field_day))) else: 0.0
         rain_lift = if k == 6: 20.0 * log10(field_gain(.field_rain) / field_gain(.field_day)) else: 0.0
-        peak_limit = if combat: (if ambience: -1.0 else: -1.5) else: (if cue: min(-1.5, field_peak + 4.0 + rain_lift) else: (if ambience: -1.0 else: field_peak + 4.0))
+        peak_limit = if combat: (if ambience: -1.0 else: -1.5) else: (if cue: min(-1.5, field_peak + 4.0 + rain_lift + cue_lift) else: (if ambience: -1.0 else: field_peak + 4.0 + cue_lift))
         # Keep the authored window width after the shared +4.5 dB combat
         # gain and +1.7 dB last-heart compensation; true peaks are metered
         # separately over every export, including score-only buffers.
         combat_lift = 4.5 + (if k == 3: 1.7 else: 0.0)
-        rms_limit = if combat: (if ambience: [-26.0, -26.0, -24.0][k - 1] else: [-26.0, -28.0, -27.0][k - 1]) + combat_lift else: field_rms + 4.0 + rain_lift
+        rms_limit = if combat: (if ambience: [-26.0, -26.0, -24.0][k - 1] else: [-26.0, -28.0, -27.0][k - 1]) + combat_lift else: field_rms + 4.0 + rain_lift + cue_lift
         # Add the allowed continuous shrine bed in energy, not dB. Score-only
         # captures still enforce the original cue/tail margin; listen.py meters
         # the isolated bed at -30..-28 LUFS and checks full-context contrast.

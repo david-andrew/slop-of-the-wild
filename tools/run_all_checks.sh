@@ -18,18 +18,25 @@ export SLOPPY_VSYNC=0
 export PYTHONDONTWRITEBYTECODE=1
 mkdir -p build/all-checks
 list=false
-only=${2:-}
+only=
 resume=false
-case "${1:-}" in
-    '') ;;
-    --list) list=true ;;
-    --only) [[ -n $only ]] || { echo 'Usage: tools/run_all_checks.sh [--list | --only NAME]' >&2; exit 2; } ;;
-    --resume) resume=true; only= ;;
-    *) echo 'Usage: tools/run_all_checks.sh [--list | --only NAME | --resume RUN_DIR]' >&2; exit 2 ;;
-esac
+resume_dir=
+jobs=$(( ($(nproc) + 1) / 2 ))
+usage() { echo 'Usage: tools/run_all_checks.sh [-j N] [--list | --only NAME | --resume RUN_DIR]' >&2; exit 2; }
+while (( $# )); do
+    case "$1" in
+        -j|--jobs) (( $# >= 2 )) || usage; jobs=$2; shift 2 ;;
+        -j[0-9]*) jobs=${1#-j}; shift ;;
+        --list) if $list || $resume || [[ -n $only ]]; then usage; fi; list=true; shift ;;
+        --only) (( $# >= 2 )) || usage; if $list || $resume || [[ -n $only ]]; then usage; fi; only=$2; [[ -n $only ]] || usage; shift 2 ;;
+        --resume) (( $# >= 2 )) || usage; if $list || $resume || [[ -n $only ]]; then usage; fi; resume=true; resume_dir=$2; shift 2 ;;
+        *) usage ;;
+    esac
+done
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || usage
 declare -A retained=()
 if $resume; then
-    out=$(realpath "${2:?Usage: tools/run_all_checks.sh --resume build/all-checks/run-DIRECTORY}")
+    out=$(realpath "$resume_dir")
     [[ $out == "$PWD/build/all-checks/run-"* && -f $out/commit && -f $out/results.tsv ]]
     [[ $(cat "$out/commit") == "$(git rev-parse HEAD)" ]] || { echo 'Resume requires the original HEAD' >&2; exit 2; }
     # A documentation-only edit or a runner recovery fix cannot change test
@@ -49,7 +56,8 @@ else
     git status --short > "$out/worktree.txt"
     date -Iseconds > "$out/date"
 fi
-mkdir -p "$out/tmp" "$out/bin"
+mkdir -p "$out/tmp" "$out/bin" "$out/status"
+printf '%s\n' "$jobs" > "$out/jobs"
 export TMPDIR="$out/tmp"
 passed=0
 failed=0
@@ -58,17 +66,14 @@ start=$(date -d "$(cat "$out/date")" +%s)
 if ! $resume; then : > "$out/results.tsv"; fi
 : > "$out/summary.txt"
 
-check() {
+execute_check() {
     local mode=$1 name=$2 status=0
+    local check_mode=$1
     shift 2
-    if $list; then printf '%-8s %s\n' "$mode" "$name"; return; fi
-    [[ -z $only || $name == "$only" ]] || return 0
-    selected=$((selected + 1))
-    if [[ ${retained[$name]:-0} == 1 ]]; then
-        passed=$((passed + 1))
-        printf 'PASS %s (retained)\n' "$name" | tee -a "$out/summary.txt"
-        return 0
-    fi
+    local check_start=$SECONDS
+    local TMPDIR="$out/tmp/$name"
+    mkdir -p "$TMPDIR"
+    export TMPDIR
     # There is deliberately no timeout around flock: queue wait is unlimited.
     # The individual render tools bound their actual game processes.
     if [[ $mode == render ]]; then
@@ -79,6 +84,12 @@ check() {
     # Some older tests print FAIL but still exit zero. Ignore explicit zero-fail
     # counts, such as feel_test's reference summary, while detecting real failures.
     if (( status == 0 )) && sed -E 's/\b0 FAIL\b//g' "$out/$name.log" | grep -E '\bFAIL\b|panic:|Traceback \(most recent call last\)' > /dev/null; then status=1; fi
+    printf '%s\n' "$((SECONDS - check_start))" > "$out/status/$name.seconds"
+    printf '%s\n' "$status" > "$out/status/$name.exit"
+}
+
+record_check() {
+    local name=$1 status=$2
     if (( status == 0 )); then
         passed=$((passed + 1))
         printf 'PASS %s\n' "$name" | tee -a "$out/summary.txt"
@@ -90,19 +101,94 @@ check() {
     fi
 }
 
+declare -A running=()
+reap_cpu() {
+    local pid status=0 name
+    wait -n -p pid "${!running[@]}" || status=$?
+    name=${running[$pid]}
+    unset 'running[$pid]'
+    # An interrupted/crashed worker must never inherit an earlier success.
+    if [[ -f $out/status/$name.exit ]]; then status=$(cat "$out/status/$name.exit"); fi
+    record_check "$name" "$status"
+}
+flush_cpu() { while (( ${#running[@]} )); do reap_cpu; done; }
+stop_workers() {
+    trap - INT TERM
+    if (( ${#running[@]} )); then
+        # Kill descendants too: compiler/fixture children must not survive a resume.
+        python3 - "${!running[@]}" <<'PY'
+import os, signal, sys
+from pathlib import Path
+def stop(pid):
+    try: children = (Path('/proc') / str(pid) / 'task' / str(pid) / 'children').read_text().split()
+    except FileNotFoundError: children = []
+    for child in children: stop(int(child))
+    try: os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError: pass
+for pid in sys.argv[1:]: stop(int(pid))
+PY
+        wait || true
+    fi
+    exit 130
+}
+trap stop_workers INT TERM
+
+check() {
+    local mode=$1 name=$2
+    shift 2
+    if $list; then printf '%-8s %s\n' "$mode" "$name"; return; fi
+    [[ -z $only || $name == "$only" ]] || return 0
+    [[ $mode == cpu ]] || flush_cpu
+    selected=$((selected + 1))
+    if [[ ${retained[$name]:-0} == 1 ]]; then
+        passed=$((passed + 1))
+        printf 'PASS %s (retained)\n' "$name" | tee -a "$out/summary.txt"
+        return 0
+    fi
+    rm -f "$out/status/$name.exit"
+    # The timing probe asserts a sub-ms wall budget. Asset wrappers rebuild the
+    # same packs/compiler outputs. Neither may overlap other work in our pool.
+    if [[ $mode == cpu && $name =~ ^(music_transition_check|shrine_obstruction_check|shrine_gap_check|prepared_assets_check)$ ]]; then
+        flush_cpu
+        execute_check "$mode" "$name" "$@"
+        record_check "$name" "$(cat "$out/status/$name.exit")"
+    elif [[ $mode == cpu ]] && (( jobs > 1 )); then
+        execute_check "$mode" "$name" "$@" &
+        running[$!]=$name
+        if (( ${#running[@]} >= jobs )); then reap_cpu; fi
+    else
+        execute_check "$mode" "$name" "$@"
+        record_check "$name" "$(cat "$out/status/$name.exit")"
+    fi
+}
+
 jo() {
     local name=$1
+    if [[ -f tools/$name.py ]]; then
+        python3 "tools/$name.py" "${@:2}"
+        return
+    fi
     if [[ $name == shrine_obstruction_check ]]; then
         tools/shrine_obstruction_check.sh
         return
     fi
-    sloppy/bin/sloppy build "tools/$name.jo" -o "$out/bin/$name" || return
-    "$out/bin/$name" "${@:2}"
+    if [[ ${check_mode:-render} == cpu ]]; then
+        python3 tools/headless_build.py "tools/$name.jo" -o "$out/bin/$name" || return
+    else
+        sloppy/bin/sloppy build "tools/$name.jo" -o "$out/bin/$name" || return
+    fi
+    if [[ ${check_mode:-render} == cpu && $name == music_transition_check ]]; then
+        # Exclude shared renderer CPU contention as well as our own CPU pool.
+        flock /tmp/botw-render.lock "$out/bin/$name" "${@:2}"
+    else
+        "$out/bin/$name" "${@:2}"
+    fi
 }
 
 # Headless tests; helper-only *_checks.jo files are exercised by their entry
 # points (fauna includes spacing, Stalkoblin, wildlife voices and Talus).
 cpu_checks=(
+    tooling_check
     architecture_test
     art_shade_test
     camera_check
@@ -138,7 +224,9 @@ cpu_checks=(
     passage_mesh_check
     piano_test
     piano_storage_check
+    piano_import_check.py
     music_harmony_check
+    music_style_check.py
     presentation_check
     save_test
     shrine_arrival_check
@@ -153,17 +241,25 @@ cpu_checks=(
     soundscape_check
     story_approach_check
     stride_check
+    swim_surface_check
     talus_mesh_check
     talus_skin_check
     talus_test
     title_handoff_check
+    title_theme_check
     tower_activation_check
     tower_base_climb_check
     round91_fire_check
     round82_scorch_check
     round83_fire_check
+    round66_fire_material_check
     round91_weather_check
     round96_weather_check
+    round95_story_check
+    herd_spacing_check
+    waiting_pose_check
+    cutscene_actor_check
+    lens_plant_check
     round92_lightning_check
     title_panorama_check
     tree_test
@@ -186,13 +282,22 @@ cpu_checks=(
     round80_art_check
     round81_art_check
     round82_character_check
+    task66b_presentation_check
     round88_material_check
+    round66_stone_check
     camp_alert_check
     wildlife_observation_check
     wildlife_path_check
 )
 for name in "${cpu_checks[@]}"; do
-    check cpu "$name" jo "$name"
+    if [[ $name == *.py ]]; then
+        check cpu "${name%.py}" python3 "tools/$name"
+    elif [[ $name == music_transition_check || $name == piano_test ]]; then
+        # flock executes an external command, not this shell's jo helper.
+        check render "$name" sloppy/bin/sloppy "tools/$name.jo"
+    else
+        check cpu "$name" jo "$name"
+    fi
 done
 
 # Fresh-process and production-controller wrappers also exercise their fixtures.
@@ -251,6 +356,7 @@ for name in passage_check cooking_visual_check \
     check render "$name" "tools/$name.sh"
 done
 
+flush_cpu
 if $list; then exit 0; fi
 if (( selected == 0 )); then echo "Unknown check: $only" >&2; exit 2; fi
 # Keep one final row per check after retries of failed/interrupted groups.

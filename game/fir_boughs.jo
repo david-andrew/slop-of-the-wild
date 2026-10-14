@@ -64,16 +64,18 @@ fir_crown = (source: Vertex3D[], indices: u32[]) -> FirCrown:
         width = 0.0
         loop p in points: width = max(width, abs(f64(dot(p - base, side))))
         width = min(width * 0.82, reach * 0.40)
-        # A slender spine carries two unequal, short branchlets. The lateral
-        # tips finish at different radii so snow tiers have broken edges rather
-        # than two broad spearheads; upper normals retain their snow caps.
+        # Three short needle cushions overlap at unequal radii and sides.
+        # No broad spray runs the full length of the authored bough; upper
+        # surfaces keep their snow caps and the undersides retain green tiers.
         seed = fract(sin(f64(base.x) * 17.3 + f64(base.y) * 7.1 + f64(tip.z) * 11.7) * 43758.5453)
-        __fir_spray(out, base, mix(base,tip,f32(0.88+seed*0.12)), width * 0.23, reach * 0.062)
-        loop sign in [-1.0,1.0]:
-            phase = fract(seed * 7.13 + (sign + 1.0) * 0.31)
-            child_base = mix(base, tip, f32(0.20 + phase * 0.23))
-            child_tip = mix(base, tip, f32(0.57 + phase * 0.27)) + side * f32(sign * width * (0.62 + phase * 0.26)) - up * f32(reach * (0.015+phase*0.045))
-            __fir_spray(out, child_base, child_tip, width * (0.21 + phase * 0.07), reach * (0.045 + phase * 0.016))
+        loop tuft in [0..3):
+            phase = fract(seed * 7.13 + f64(tuft) * 0.371)
+            sign = if tuft == 1: -1.0 else: 1.0
+            start = f64(tuft) * 0.23 + phase * 0.035
+            finish = min(1.0,start + 0.38 + phase * 0.07)
+            child_base = mix(base, tip, f32(start))
+            child_tip = mix(base, tip, f32(finish)) + side * f32(sign * width * (if tuft == 2: 0.20 else: 0.48+phase*0.18)) - up * f32(reach * (0.01+phase*0.018))
+            __fir_spray(out, child_base, child_tip, width * (0.26 + phase * 0.08), reach * (0.045 + phase * 0.016))
 
     out
 
@@ -84,12 +86,12 @@ __fir_spray = (out: mut FirCrown, base: vec3, tip: vec3, width: f64, thickness: 
     side = if length(direction.xz) > 0.001: normalize(cross(direction, vec3(0, 1, 0))) else: vec3(1, 0, 0)
     up = normalize(cross(side, direction))
     first = out.vertices.len()
-    # Narrow tapered terminals and unequal edge widths retain solid coverage.
-    # Four rings per short branchlet keep three sprays at the former two-spray
-    # triangle budget; eight sides preserve the green underside and snow cap.
-    stations = [0.0, 0.30, 0.62, 1.0]
+    # Short terminal tapers surround a blunt, irregular middle, with no long
+    # spear tip. Four rings per cushion keep the existing three-spray budget;
+    # eight sides preserve the green underside and irregular snow cap.
+    stations = [0.0, 0.18, 0.78, 1.0]
     loop u in stations:
-        bulge = pow(max(0.0, sin(PI * u)), 0.82) * (1.22 - u * 0.72)
+        bulge = if u == 0.0 or u == 1.0: 0.0 else: (0.92 + 0.12 * sin(u * 13.0 + f64(base.y) * 5.0))
         spine = mix(base, tip, f32(u)) + up * f32(reach * 0.025 * sin(PI * u))
         loop k in [0..8):
             angle = TAU * f64(k) / 8.0

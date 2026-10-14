@@ -11,14 +11,19 @@ projects, without restrictions. This is permission from the library, not a
 claim that the recordings have a Creative Commons license.
 https://theremin.music.uiowa.edu/MIS.html
 https://theremin.music.uiowa.edu/MISpiano.html
-Accessed 2026-10-09. Source credit/permission HTML is cached outside git in
+Accessed 2026-10-09; extension and permission verified 2026-10-13. Source credit/permission HTML is cached outside git in
 assets/src/piano/; page hashes are recorded in piano-import.json.
 
-Adaptations: pp, mf and ff notes at C, Eb, Gb and A from octave 2 through 6, plus C7;
-attack alignment, gentle 25 Hz high-pass / 11 kHz low-pass filtering, short
-attack/end fades, RMS normalization with peak limits, 5-8 second dry tails,
+Adaptations: 30 slots per dynamic, A0-C8 at three-semitone spacing;
+lowest available recordings pp Bb0 / mf B0 / ff Bb0 (file labeled A0);
+pp Db1 replaces mislabeled pp C1, and mf A7/C8 are actually Ab7/B7.
+Actual source pitches are used for slot selection and playback correction;
+attack alignment, gentle 15 Hz high-pass below C2 / 25 Hz above / 11 kHz low-pass filtering, short
+attack/end fades, RMS normalization with peak limits, 4.4-8 second dry tails,
 mono downmix and 48 kHz PCM16 conversion. The game applies its stereo reverb.
 Original compositions and contextual timing live in game/music.jo.
 
 See piano-import.json for each recording's URL and SHA-256, the output SHA-256,
 processing settings and measurements. Rebuild with tools/import_piano.py.
+
+See docs/ASSETS.md for raw-source isolation, substitutions and packaging.

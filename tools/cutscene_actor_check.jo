@@ -1,0 +1,33 @@
+# No incidental actors or enemy attacks enter held shots or their camera handoff.
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/enemies.jo'
+use '../game/wildlife.jo'
+use '../game/env.jo'
+use '../game/gfx.jo'
+pl=Player(pos=vec3(0,0,0))
+cam=Cam()
+enemies.clear()
+enemies.push(Enemy(.keese,vec3(0,1,1),vec3(0,1,1),state=.chase))
+enemies.push(Enemy(.bokoblin,vec3(300,0,0),vec3(300,0,0),state=.gone,hp=0,respawn_t=231.5))
+animals.clear()
+animals.push(Animal(.boar,vec3(0,0,1),vec3(0,0,1),state=.charge,hp=8))
+loop mode in [0,1,2]:
+    pl.state=if mode==0: PState.cutscene else: PState.ground
+    cam.override=mode==1
+    cam.blend=if mode==2: 0.5 else: 0.0
+    assert(cutscene_actors_hidden())
+    before=enemies[0].pos
+    loop frame in [0..180):
+        enemies_update(1.0/60.0,false)
+        wildlife_update(1.0/60.0)
+    assert(animals[0].pos.z==1 and pl.hp==12,"wildlife cannot charge through a cinematic")
+    assert(length(enemies[0].pos-before)<0.0001 and pl.hp==12,"no approach or hit during a held shot")
+    assert(enemies[1].respawn_t==231.5,"cutscenes also pause distant encounter time away")
+pl.state=.ground
+cam.override=false
+cam.blend=0.0
+assert(not cutscene_actors_hidden(),"ordinary exploration and inspection show wildlife")
+enemies_update(1.0,false)
+assert(enemies[1].respawn_t==230.5,"distant encounter time away resumes with exploration")
+print("PASS cutscene actors: held shot, override and handoff exclude incidental actors/attacks")

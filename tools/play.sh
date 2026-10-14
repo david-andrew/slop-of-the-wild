@@ -2,8 +2,12 @@
 # Public runtime environment option, set before Sloppy initializes the window.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# 0.6 OpenGL Wayland frame callbacks produced more late forest windows.
-# Vulkan mailbox remains the measured default; both options can be overridden.
+# Managed XWayland avoids the native Wayland ten-second presentation hitch.
+# Keep native Wayland available explicitly and on Wayland-only desktops.
+if [[ -n ${DISPLAY:-} ]]; then
+    export SLOPPY_PLATFORM=${SLOPPY_PLATFORM-x11}
+fi
+# Request the fastest Vulkan mode: mailbox, or immediate when unavailable.
 export SLOPPY_VULKAN=${SLOPPY_VULKAN-1}
 export SLOPPY_VSYNC=${SLOPPY_VSYNC-0}
 # A 60 cap retained acquire stalls and worsened route tails; keep it opt-in.

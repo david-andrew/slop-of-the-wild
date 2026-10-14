@@ -24,6 +24,7 @@ use 'enemy_footing.jo'
 use 'terrain.jo'
 use 'fx.jo'
 use 'hero_motion.jo'
+use 'swim_pose.jo'
 use 'interiors.jo'
 use 'weapon_tracks.jo'
 use 'enemy_contacts.jo'
@@ -43,6 +44,8 @@ hero_dressed = false
 boko_m = Model()
 stalko_m = Model()
 human = AnimLib()
+__swim_clip = -1
+__swim_tread_clip = -1
 upper_mask: f32[]
 __combat_lower_mask: f32[]
 __walk_arms_mask: f32[]
@@ -87,6 +90,8 @@ chars_init = ():
     boko_m = load_model("assets/models/bokoblin.mdl")
     stalko_m = stalkoblin_model(boko_m)
     human = load_humanoid_anims()
+    __swim_clip = ci("swim")
+    __swim_tread_clip = ci("swim_idle")
     upper_mask = bone_mask(human, "spine_01")
     __combat_lower_mask = [loop weight in upper_mask: 1.0 - weight]
     left = bone_mask(human, "upperarm_l")
@@ -330,6 +335,8 @@ hero_animate = (dt: f64, waking: f64):
     hero_anim.speed = speed
     anim_update(hero_anim, dt)
     pose = anim_pose(human, hero_anim)
+    swim_weight = swim_clip_weight(hero_anim, __swim_clip, __swim_tread_clip)
+    if swim_weight > 0.0: swim_surface_pose(human, pose, swim_weight * smoothstep(0.05, 0.35, pl.speed))
     # The imported sword idle drops the hips 14 cm below ordinary standing.
     # Keep a loaded fighting stance without carrying that deep squat through
     # every shield raise and slash. Heavy weapons retain more knee compression.
@@ -429,7 +436,8 @@ hero_animate = (dt: f64, waking: f64):
         hero_dressed = want
         hero_m = if want or not hero_bare_m.ok: ranger_m else: hero_bare_m
         weapon_tracks_init(hero_m, human)
-    hero_world = facing_mat(pl.pos + (if pl.state == .surf: vec3(0, 0.1, 0) else: vec3(0, 0, 0)), pl.face)
+    height_offset = swim_render_lift(swim_weight, SWIM_FOOT_DEPTH, if pl.exhausted: pl.drown_t else: 0.0) + (if pl.state == .surf: 0.1 else: 0.0)
+    hero_world = facing_mat(pl.pos + vec3(0, f32(height_offset), 0), pl.face)
     if not hero_dressed and hero_bare_m.ok: hero_world = hero_world * scaling(v3(0.86, 1.0, 0.88))
     physical = hero_wake_t < 0.0 and fight.act != .hop and fight.act != .backflip and fight.act != .jump_attack
     hero_motion_apply(hero_motion, hero_m, human, pose, hero_world, dt, physical)
@@ -716,7 +724,13 @@ hero_draw = ():
     p = CharParams(hero_material = 1.0)
     if hero_wake_t>=0.0 and not hero_dressed: p.wake_shape=wake_deformation_weight(hero_wake_t)
     if not sc.shadow: p.fill = hero_storm_fill(pl.pos)
-    if pl.invuln > 0.0 and pl.state == .hurt: p.flash = vec4(1.0, 0.3, 0.2, f32(pl.invuln * 0.5))
+    if pl.invuln > 0.0 and pl.state == .hurt and not player_element_hit: p.flash = vec4(1.0, 0.3, 0.2, f32(pl.invuln * 0.5))
+    if player_burn_t > 0.0:
+        pulse = f32(smoothstep(0.0, 0.22, player_burn_t) * (0.25 + 0.12 * sin(elapsed() * 29.0)))
+        p.status_rim = vec4(1.0, 0.23, 0.035, pulse)
+    if player_shock_t > 0.0:
+        p.status_rim = vec4(0.42, 0.72, 1.0, f32(smoothstep(0.0, 0.08, player_shock_t) * (0.45 + 0.20 * sin(player_shock_t * 95.0))))
+        p.status_flash = smoothstep(0.24, 0.32, player_shock_t) * 0.12
     if pl.frozen > 0.0: p.flash = vec4(0.6, 0.85, 1.0, 0.7)
     # soaked clothes are darker
     k = f32(hero_wet * 0.25)
@@ -800,16 +814,25 @@ old_man_update = (dt: f64):
 # the sky, while shadow coverage fades without leaving a solid hood or staff.
 old_man_prop = (m: Mesh, model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64 = 0.2):
     tint = mix(color.xyz,vec3(0.34,0.95,1.75),f32(old_man.spirit))
-    draw_prop(m,model,vec4(tint,color.w),emissive+old_man.spirit*0.7,rim,opacity=old_man.opacity)
+    draw_prop(m,model,vec4(tint,color.w),emissive*(1.0-old_man.spirit*0.45)+old_man.spirit*0.18,rim,opacity=old_man.opacity)
 
-old_man_draw = (transparent: bool = false):
-    if not chars_ready or not old_man.visible: return
+old_man_draw = (transparent: bool = false, depth_only: bool = false):
+    if not chars_ready or not old_man.visible or old_man.opacity <= 0.001: return
     if sc.shadow and transparent: return
     if not sc.shadow and (old_man.opacity < 1.0) != transparent: return
-    if transparent:
+    if transparent and not depth_only:
+        # Resolve the nearest spirit surface before blending any of its pieces.
+        # Writing depth while blending still accumulated rear cloak layers drawn
+        # first, making the robe striped and the face a blank white oval.
+        glColorMask(0,0,0,0)
+        glDepthMask(1)
+        glDisable(GL_BLEND)
+        old_man_draw(true,true)
+        glColorMask(1,1,1,1)
+        glDepthFunc(GL_EQUAL)
+        glDepthMask(0)
         glEnable(GL_BLEND)
         glBlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ZERO,GL_ONE)
-        glDepthMask(0)
     sitting = old_man.clip == "sit"
     # the sit clip seats him 0.45 m up, his hips 0.3 m behind his feet: on the log
     world = facing_mat(old_man.pos, old_man.face)
@@ -865,7 +888,7 @@ old_man_draw = (transparent: bool = false):
         canopy = translation(old_man.pos + vec3(0, 2.4, 0)) * rotation_y(PI - old_man.face)
         old_man_prop(__glider(), canopy, vec4(1, 1, 1, 1), 0.0, 0.3)
         __glider_rig(canopy,transform_point(canopy,v3(-0.22,-1.0,0.1)),transform_point(canopy,v3(0.22,-1.0,0.1)))
-    if transparent: gl_opaque_state()
+    if transparent and not depth_only: gl_opaque_state()
 
 # Build once in the prop cache; exposed as CPU geometry for the seam/index check.
 # Unit-height robe, scaled by the animated chest. The hands remain concealed
@@ -1212,9 +1235,12 @@ enemy_anim_update = (dt: f64):
         pose = anim_pose(human, eanims[i].a)
         # Waiting, threatening and recovering silhouettes remain different in a group.
         # Upper-body-only adjustments leave locomotion and planted feet to the footing pass.
-        if e.state == .chase and not e.may_engage and e.speed < 2.5 and e.burning <= 0.0:
+        if e.state == .chase and e.speed < 2.5 and e.burning <= 0.0:
             top = enemy_waiting_clip(e.anim_t, stance)
-            layer_into(pose, sample_clip(human, ci(top), eanims[i].a.t * (0.78 + personality * 0.3) + personality * 2.0, true), upper_mask, 0.8)
+            # Stationary guards already sample this changing clip as their base.
+            # Only moving feet need a separate jeering upper-body layer.
+            if clip != top:
+                layer_into(pose, sample_clip(human, ci(top), eanims[i].a.t * (0.78 + personality * 0.3) + personality * 2.0, true), upper_mask, 0.8)
         if e.state == .chase or e.state == .idle or e.state == .recover:
             rotate_bone(human, pose, lib_bone(human, "spine_01"), vec3(0, 0, 1), (personality - 0.5) * 0.16)
             rotate_bone(human, pose, lib_bone(human, "Head"), vec3(0, 1, 0), (personality - 0.5) * 0.18)
@@ -1228,7 +1254,15 @@ enemy_anim_update = (dt: f64):
             # Groping arms are upper-body only; footing still plants the walking soles.
             layer_into(pose, sample_clip(human, ci("dizzy"), e.anim_t, true), upper_mask, 0.8)
         camp_idle_pose(boko_m, human, pose, e)
+        secondary=enemy_secondary_reaction(e)
         camp_notice_pose(boko_m, human, pose, e)
+        if length(secondary)>0.00001 and e.camp_role!=.sitter:
+            rotate_bone(human,pose,lib_bone(human,"spine_02"),vec3(1,0,0),f64(secondary.z))
+        # The head flick carries the broad ears. Apply after the notice override;
+        # the seated reaching contact excludes the small spine startle.
+        if length(secondary)>0.00001:
+            rotate_bone(human,pose,lib_bone(human,"Head"),vec3(1,0,0),f64(secondary.x))
+            rotate_bone(human,pose,lib_bone(human,"Head"),vec3(0,1,0),f64(secondary.y))
         if e.burning <= 0.0: boko_weapon_pose(pose, e)
         # Modest build variation within the same species; footing uses this same matrix.
         build_ = e.contact_scale
@@ -1294,6 +1328,7 @@ stalk_skull_draw_transform = (i: int) -> mat4:
     translation(e.skull_pos) * rotation_x(e.skull_roll) * scaling(e.contact_scale) * translation(-local_centre) * inverse(head_world) * eanims[i].world
 
 monsters_draw = ():
+    if cutscene_actors_hidden(): return
     loop i in 0.. and e in enemies:
         if e.state == .gone or e.state == .buried: continue
         if f64(length(e.pos - sc.cam)) > (if sc.shadow: 45.0 else: 160.0): continue
@@ -1389,6 +1424,7 @@ __body_fire_roots = ["lowerarm_l","lowerarm_r","calf_l","calf_r","spine_01","spi
 __body_fire_ends = ["hand_l","hand_r","foot_l","foot_r","spine_02","Head"]
 
 monsters_fire_draw = ():
+    if cutscene_actors_hidden(): return
     if sc.shadow: return
     flames: PInst[]
     right = vec3(sc.view[0].x,sc.view[1].x,sc.view[2].x)

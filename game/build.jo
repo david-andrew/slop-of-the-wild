@@ -1,4 +1,5 @@
 use 'gfx.jo'
+use 'vulkan_shadow.jo'
 use 'shade.jo'
 use 'terrain.jo'
 use 'physics.jo'
@@ -75,9 +76,23 @@ masonry = (w: vec3, n: vec3, size: f32) -> f32:
     xx = p.x / width + bond * 3.0
     f = fract(vec2(xx, yy))
     edge = min(min(f.x, 1.0 - f.x) * width, min(f.y, 1.0 - f.y) * size)
-    joint = smoothstep(0.006, 0.025, edge)
-    tone = 0.94 + 0.07 * hash12(vec2(floor(xx), row)) + (vnoise(p * 0.6) - 0.5) * 0.10
-    joint * tone + (1.0 - joint) * 0.84
+    wear = vnoise(p * 0.6)
+    joint = smoothstep(0.006, 0.025 + wear * 0.012, edge)
+    joint = mix(joint, f32(1.0), smoothstep(0.50, 0.78, wear) * 0.72)
+    tone = 0.94 + 0.055 * hash12(vec2(floor(xx), row)) + (wear - 0.5) * 0.14
+    joint * tone + (1.0 - joint) * 0.87
+
+# Continuous damp pigment on dressed stone and dead armor. The three rotated
+# scales have soft overlapping margins, never a per-cell/quad palette.
+painted_stone_wash = (w: vec3) -> vec2:
+    p = vec2(w.x + w.z * 0.73, w.y + (w.x - w.z) * 0.17)
+    q = vec2(p.x * 0.83 + p.y * 0.56, p.y * 0.83 - p.x * 0.56)
+    broad = vnoise(q * 0.19)
+    drift = vec2(broad * 2.1, broad * -1.7)
+    lobes = vnoise(vec2(q.x * 0.62 - q.y * 0.78, q.x * 0.78 + q.y * 0.62) * 0.47 + drift)
+    grain = vnoise(q * 1.63 + vec2(lobes * 1.2, broad))
+    fibre = vnoise(vec2(q.x * 0.75 + q.y * 0.66, q.y * 0.75 - q.x * 0.66) * 3.1)
+    vec2(broad * 0.35 + lobes * 0.45 + grain * 0.20, 0.90 + fibre * 0.16)
 
 # Sheikah stone: smooth dark slate, engraved with circuit traces (a trace per grid cell, turning
 # at its centre, with round nodes) that carry the glow
@@ -243,16 +258,10 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
         if i.mat.w < -0.5:
             # Painted damp on dressed Temple stone: oblique, warped cushions
             # with soft broken margins. Four noise taps, as in the old ivy path.
-            p = vec2(w.x + w.z, w.y)
-            q = vec2(p.x * 0.86 + p.y * 0.51, p.y * 0.86 - p.x * 0.51)
-            wash = vnoise(q * 0.24)
-            broken = vnoise(vec2(q.x * 0.71 - q.y * 0.39, q.y * 0.71 + q.x * 0.39) + vec2(wash * 1.3, wash * 0.7))
-            grain = vnoise(q * 2.2 + vec2(broken * 0.7, wash))
-            edge = wash * 0.58 + broken * 0.29 + grain * 0.13
-            ivy = smoothstep(0.38, 0.65, edge) * i.mat.y * (1.0 - abs(n.y))
-            leaf = vnoise(q * 4.3)
-            pigment = mix(vec3(0.17, 0.235, 0.12), vec3(0.27, 0.315, 0.17), broken) * (0.93 + leaf * 0.14)
-            alb = mix(alb, pigment, clamp(ivy * 0.88, 0.0, 0.82))
+            damp = painted_stone_wash(w)
+            ivy = smoothstep(0.26, 0.76, damp.x) * i.mat.y * (1.0 - abs(n.y))
+            pigment = mix(vec3(0.21, 0.255, 0.145), vec3(0.29, 0.32, 0.195), damp.x) * damp.y
+            alb = mix(alb, pigment, clamp(ivy * 0.82, 0.0, 0.70))
         else:
             ivy = smoothstep(0.42, 0.6, fbm3(vec2(w.x + w.z, w.y) * 0.25 + vec2(w.y * 0.05, 0))) * i.mat.y
             ivy = ivy * (1.0 - abs(n.y))
@@ -266,8 +275,12 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
     v = normalize(u.cam - w)
     sh = cascade_shadow(w, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) * cloud_shade(w.xz, u.time, u.clouds)
     exterior = if i.mat.w > 5.5: clamp(i.mat.w-6.0,0.0,1.0) else: f32(0.0)
-    stone_sky = mix(u.sky,luma(u.sky)*vec3(0.96,1.0,1.03),exterior*0.92)
-    stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(0.97,1.0,1.02),exterior*0.9)
+    # Dressed ruins and loose canyon rock receive the same neutral reflected
+    # sky as the cliff skin. Keep Sheikah emitters and timber on their own light.
+    mineral = i.mat.w < -0.5 or i.mat.w > 2.5 or (i.mat.x >= 0.0 and i.mat.w < 0.5)
+    neutral = if mineral: f32(0.86) else: exterior*0.92
+    stone_sky = mix(u.sky,luma(u.sky)*vec3(1.03,1.0,0.94),neutral)
+    stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(1.03,1.0,0.95),neutral*0.8)
     c = paint_light(alb, n, l, v, stone_sun, stone_sky, u.ground, sh, (if i.mat.w > 5.5: 0.1+exterior*0.16 else if i.mat.w > 3.5: 0.45 else: 0.1)) * i.color.w
     # Daylight reflected from the meadow joins the exposed brow to its host cliff.
     c = c + alb*stone_sun*vec3(0.98,1.0,1.02)*0.10*exterior*clamp(1.0-n.y*1.4,0.0,1.0)*(1.0-clamp(dot(n,l),0.0,1.0)*sh)
@@ -694,13 +707,46 @@ draw_named = (name: str, u: BuildU, frustum: Frustum = Frustum()):
 
 build_extra_draw: (BuildU, mat4, vec3, f64) -> void = (u: BuildU, vp: mat4, cam: vec3, distance: f64): pass
 
+# Static chunks share one immutable BuildU within a pass. Reuse its upload and
+# texture-slot resolution; native pipeline preparation and each indexed draw
+# remain identical to draw_fast. The portable path keeps draw_fast unchanged.
+when TARGET != "wasm":
+    __build_draw_at = (program: int, m: Mesh, uniforms: int):
+        verts = __mesh_addr(m)
+        if program <= 0 or (verts == 0 and m.count > 0): return
+        indexed = m.index_count > 0 and m.ibo > 0 and m.ibo < __vgb.len()
+        pc = __VgPush(params=uniforms,verts=verts,vstride=i32(m.stride))
+        draw_trace_begin(program)
+        __vg_prepare(program,m.mode)
+        cb = __vk_cb()
+        vkCmdPushConstants(cb,__vk_layout,0x7FFFFFFF,0,u32(__VK_PUSH_SIZE),(&pc) as *u8)
+        if indexed:
+            ib = __vgb[m.ibo]
+            if ib.frame >= 0: vkCmdBindIndexBuffer(cb,__vk_blocks[ib.block].buffer,u64(ib.off),1)
+            else: vkCmdBindIndexBuffer(cb,ib.buf.buffer,0,1)
+            vkCmdDrawIndexed(cb,u32(m.index_count),1,0,0,0)
+        else: vkCmdDraw(cb,u32(m.count),1,0,0)
+        draw_trace_end(program,m.mode)
+
 build_draw = (u: BuildU, vp: mat4, cam: vec3, max_dist: f64):
     if not build_ready: return
     f = frustum_from(vp)
+    program = 0
+    uniforms = 0
     loop c in bchunks:
         mid = (c.lo + c.hi) * 0.5
         if f64(length(mid - cam)) - f64(length(c.hi - c.lo)) * 0.5 > max_dist: continue
         if not box_visible(f, c.lo, c.hi): continue
+        when TARGET != "wasm":
+            if game_vulkan_backend():
+                if uniforms == 0:
+                    program = game_draw_program(build_sh,c.mesh.mode)
+                    p = u
+                    block,offset = __vk_upload((&p) as *u8,size_of(BuildU))
+                    __vg_tex_slots(program,__vk_blocks[block].ptr+offset)
+                    uniforms = __vk_addr(block,offset)
+                __build_draw_at(program,c.mesh,uniforms)
+                continue
         draw_fast(build_sh, c.mesh, u)
     build_extra_draw(u, vp, cam, max_dist)
 

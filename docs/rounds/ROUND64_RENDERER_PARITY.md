@@ -32,10 +32,10 @@ do not establish an incorrect Sloppy opcode or an integer-rule regression.
 
 `game_spirv_noise_precision` in `game/spirv_helpers.jo` identifies the hash's
 initial multiplication by its f32 scale constant (`0x3DD32618`) and decorates
-that result with `NoContraction`. `shader_load_submit` applies it to fragment
-modules along with the existing signed-derivative adapter. GLSL, the source
-hash, all uniforms and descriptors, and every other shader optimization stay
-as before. No compiler/runtime files are changed. The adapter deliberately
+that result with `NoContraction`. `shader_load_submit` applies it to vertex
+and fragment modules; the signed-derivative adapter remains fragment-only.
+GLSL, the source hash, all uniforms and descriptors, and every other shader
+optimization stay as before. No compiler/runtime files are changed. The adapter deliberately
 uses no generated function or result ID; the GPU continuity check catches a
 future compiler shape change that stops matching it.
 
@@ -90,6 +90,37 @@ bounds adjacent differences to 1.5 × 10/512 = 0.0293; the check allows 0.04
 for float/raster rounding and rejects a discontinuous corner. Both checks
 are registered in `tools/run_all_checks.sh` using its existing lock ownership
 conventions.
+
+### Vertex-stage regression at `56f1216`
+
+The fire view at frame 260 failed with a 3.066% broad residual while pond,
+rain pond and Temple remained at 0.000%. The bright patch behind the flames
+already differed in the opaque HDR buffer, before smoke or heat refraction.
+Fragment-only hash precision changes did not remove it. The loader had left
+vertex hashes unfenced, although terrain displacement, grass and foliage
+silhouettes use the same noise helpers. Applying the existing initial-multiply
+fence to the vertex module reduces the fire crop's residual to 0.000%, with
+the fire materials and simulation unchanged. The 2% comparison limit is retained.
+
+`noise_seam_check.jo` now also samples noise in a 129×129 vertex grid and reads
+the interpolated RGB32F image. This exercises shared lattice corners in both
+shader stages through the production loader instead of testing only fragments.
+Raw diagnostic source copies, captures and the old-loader negative control
+are retained under `build/fire-parity/`; matched CPU captures use
+`build/round83/performance-parity/`.
+
+The full renderer check passes all four views at 0.000% broad residual. The
+OpenGL fire capture remains pixel-for-pixel identical to the baseline. Both
+native backends pass the fragment/vertex continuity probe with maxima
+0.028334677 / 0.028277934; the old loader passes the fragment probe and fails
+the vertex probe. The seven fire behavior/material checks and shader loader,
+shader adapter and terrain-noise checks also pass.
+
+Three alternating AB/BA pairs per scene pass both CPU p99 gates (3% + 0.10 ms,
+frames after the first 240, no outliers removed). Callback wall/main-thread
+medians in ms are fire 9.225/7.416 → 7.809/5.811, tent-fire 11.699/10.972 →
+10.225/9.921, and lightning 13.761/7.986 → 13.470/7.893. The complete timings,
+settings, source hashes and binary hashes are in `build/round83/`.
 
 ## Final validation
 

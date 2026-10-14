@@ -1,0 +1,38 @@
+# Camera clearance for whole grass blades and modeled low-plant fragments.
+use '../game/shade.jo'
+assert(lens_plant_fade(0.0)==1.0 and lens_plant_fade(0.85)==1.0)
+assert(lens_plant_fade(1.0)>0.8,"most coverage is gone within one metre of the lens")
+assert(lens_plant_fade(1.4)<0.000001 and lens_plant_fade(10.0)==0.0)
+assert(lens_plant_distance(vec3(),1.8,vec3(0.5,1.6,0))==0.5,"raised lens measures the tall stem, not its distant root")
+assert(lens_plant_distance(vec3(),0.5,vec3(0,2,0))==1.5,"short grass below the lens keeps its height")
+previous=f32(1)
+loop k in [0..201):
+    coverage=lens_plant_fade(f32(k)*0.01)
+    assert(coverage>=0 and coverage<=previous,"coverage fades continuously toward the lens")
+    assert(previous-coverage<0.03,"no hard popping boundary")
+    previous=coverage
+print("PASS near-lens foliage: fully hidden at 85cm, >80% removed at 1m, unchanged past 1.4m")
+
+use '../game/vegetation.jo'
+struct LensPlantU:
+    player=vec3(0,-1000,0)
+    cam=vec3(0,0,0)
+    leaves=f32(0)
+    low=f32(1)
+    wood=f32(0)
+    fade_width=f32(1)
+u=LensPlantU()
+i=VegO(vec4(),vec3(0,0,2),vec3(),vec2(),vec4(),vec4(),0,0,0)
+solid=veg_occluder_fade(i,u)
+u.leaves=1
+assert(solid==veg_occluder_fade(i,u) and solid>0.99,"solid fern blades/stems fade with leaf cards")
+u.low=0
+u.leaves=0
+assert(veg_occluder_fade(i,u)==0,"rocks retain their narrow lens clearance")
+u.wood=1
+assert(veg_occluder_fade(i,u)==1,"fallen branches crossing the lens are fully hidden")
+i.world=vec3(0,0,4.25)
+assert(abs(veg_occluder_fade(i,u)-0.5)<0.00001,"bark coverage eases into view")
+i.world=vec3(0,0,5.5)
+assert(veg_occluder_fade(i,u)==0,"distant trunks retain their silhouette")
+print("PASS modeled plants: solid stems and leaves fade together; near branches fade; rocks unchanged")

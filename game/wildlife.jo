@@ -194,7 +194,7 @@ wildlife_init = ():
     # Some birds make short ordinary flights even when Link is standing still.
     loop fi in 0.. and c in [(-1018.0, 1805.0), (-1024.0, 1792.0), (-942.0, 1874.0), (-846.0, 1958.0), (-802.0, 1944.0)]:
         loop k in [0..10):
-            q = v3(c.0 + random(-3.0, 3.0), 0.0, c.1 + random(-3.0, 3.0))
+            q = v3(c.0 + random(-3.0, 3.0) + (if k<4:-2.5 else:2.0), 0.0, c.1 + random(-3.0, 3.0) + (if k<4:1.5 else:-1.0))
             q.y = f32(height_at(f64(q.x), f64(q.z)))
             __add((if k % 4 == 0: WKind.pigeon else: WKind.sparrow), q)
             a = animals.len() - 1
@@ -202,7 +202,7 @@ wildlife_init = ():
             animals[a].landing = q
             if k < 3:
                 animals[a].state = .fly
-                animals[a].pos.y += f32(2.0 + f64(k) * 0.4)
+                animals[a].pos.y += f32(1.6 + fract(animals[a].seed*0.37) * 3.6)
                 animals[a].vy = 1.0
                 animals[a].t = 1.0 + f64(k) * 0.25
         # A few butterflies at each meadow; flower placements below supply the rest.
@@ -471,6 +471,7 @@ wild_is_bird = (kind: WKind) -> bool:
 wildlife_update = (dt: f64):
     wild_calls.clear()
     wild_voices.clear()
+    if cutscene_actors_hidden(): return
     __wild_heat(dt)
     # A bounded patch signal shares herd/flock alarms without all-pairs searches.
     if __flock_scared.len() != animals.len() + 5: __flock_scared = fill(false, animals.len() + 5)
@@ -662,7 +663,7 @@ wildlife_update = (dt: f64):
                         if a.idle <= dt * 1.5: __bird_depart(a)
                         if a.startle > 0.0: continue
                         avoiding = __bird_evade(a, dt)
-                        a.pos += forward_of(a.face) * f32(7.0 * dt) + vec3(0, f32(a.vy * dt), 0)
+                        a.pos += forward_of(a.face) * f32((6.2+fract(a.seed*0.37)*1.6) * dt) + vec3(0, f32(a.vy * dt), 0)
                         if avoiding: continue
                         a.face += sin(a.t * 2.0 + a.seed) * dt
                         a.vy = approach(a.vy, 1.0, 1.0, dt)
@@ -682,8 +683,9 @@ wildlife_update = (dt: f64):
                         else:
                             # Wheel above the feeding patch before descending to a new spot.
                             if a.t > 1.0:
-                                ang = a.seed + a.t * 0.85
-                                target = a.landing + v3(cos(ang) * 5.0, 3.0 + sin(a.seed) * 0.7, sin(ang) * 5.0)
+                                ang = a.seed + a.t * (0.65+fract(a.seed*0.29)*0.35)
+                                radius = 4.0+fract(a.seed*0.57)*3.0
+                                target = a.landing + v3(cos(ang) * radius, 2.3+fract(a.seed*0.83)*3.8, sin(ang) * radius)
                                 a.face = turn_toward(a.face, yaw_of(target - a.pos), 2.8 * dt)
                                 a.vy = clamp(f64(target.y - a.pos.y), -2.0, 2.0)
                             if a.t > 5.0 + fract(a.seed) * 2.0 and dist > 10.0:
@@ -743,6 +745,7 @@ wildlife_update = (dt: f64):
                 if let wl = water_level(f64(a.pos.x), f64(a.pos.z)):
                     a.pos.y = f32(max(wl - 0.6, height_at(f64(a.pos.x), f64(a.pos.z)) + 0.15))
                 else: a.face += PI
+    wildlife_separate()
     loop mut a in animals:
         if length(a.pos - pl.pos) < 250.0: wild_voice_update(a, 0.0)
     loop mut b in bugs:
@@ -756,6 +759,42 @@ wildlife_update = (dt: f64):
             away = normalize(b.pos - (pl.pos + vec3(0, 0.8, 0)) + vec3(0.001, 0.2, 0))
             b.pos += away * f32(3.0 * dt)
             b.fleeing = max(0.0, b.fleeing - dt)
+
+# Conservative ground-body circles include the grazing snout at every heading.
+# Build a small active-body list, not an all-pairs scan through birds and fish.
+wild_body_radius = (a: Animal) -> f64:
+    if a.kind == .fox: return 0.72
+    shape = boar_shape(if a.appearance >= 0.0: a.appearance / 0.173 else: a.seed)
+    1.02 * f64(max(shape.x,shape.z))
+
+__wild_bodies: int[]
+wildlife_separate = ():
+    __wild_bodies.clear()
+    loop i in 0.. and a in animals:
+        if (a.kind != .boar and a.kind != .fox) or a.state == .gone or a.state == .dead: continue
+        if length(a.pos-pl.pos)>250.0: continue
+        __wild_bodies.push(i)
+    loop pass_ in [0..8):
+        moved = false
+        loop ai in [0..__wild_bodies.len()):
+            i = __wild_bodies[ai]
+            loop bi in [ai+1..__wild_bodies.len()):
+                j = __wild_bodies[bi]
+                delta = animals[j].pos-animals[i].pos
+                delta.y=0
+                radius = wild_body_radius(animals[i])+wild_body_radius(animals[j])+0.06
+                if dot(delta,delta)>=f32(radius*radius): continue
+                distance=f64(length(delta))
+                axis=if distance>0.0001: delta/f32(distance) else: forward_of(f64(i+j)*2.39996)
+                push=axis*f32((radius-distance)*0.5+0.001)
+                animals[i].pos-=push
+                animals[j].pos+=push
+                push_out(animals[i].pos,0.4,0.8)
+                push_out(animals[j].pos,0.4,0.8)
+                __ground(animals[i])
+                __ground(animals[j])
+                moved=true
+        if not moved: break
 
 # ---------------- animation and drawing ----------------
 __wa_n = 0
@@ -809,6 +848,7 @@ struct WildBatch:
 __wild_batches: WildBatch[]
 
 wildlife_draw = ():
+    if cutscene_actors_hidden(): return
     if not wild_ready: return
     if __wild_batches.len() == 0:
         loop k in [0..18): __wild_batches.push(WildBatch([], inst_buffer([PropI(mat4(), vec4(1, 1, 1, 1))])))
@@ -838,7 +878,8 @@ wildlife_draw = ():
                 bk = if a.kind == .sparrow: 0 else: (if a.kind == .pigeon: 1 else: 2)
                 sz = [2.0, 2.5, 2.7][bk]
                 pose = bird_pose(a)
-                bm = world * scaling(v3(sz, sz, sz))
+                trait=fract(a.seed*0.618)
+                bm = world * scaling(v3(sz*(0.90+trait*0.17),sz*(0.95+trait*0.09),sz*(1.06-trait*0.12)))
                 # Keep the perch silhouette; flight has a slim breast and separate
                 # continuously rotating wings, shared in one instance batch per species.
                 flight = pose.wing != 0
@@ -848,7 +889,7 @@ wildlife_draw = ():
                 if flight:
                     loop side in [-1.0, 1.0]:
                         wing = bm * pose.body * translation(v3(side * 0.025 * slim, 0.082 * slim, 0.0))
-                        wing *= rotation_z(side * pose.flap) * scaling(v3(side, 1.0, lerp(0.88, 0.72, smoothstep(12.0, 55.0, d))))
+                        wing *= rotation_z(side * pose.flap) * scaling(v3(side, 1.0, lerp(0.88, 0.72, smoothstep(12.0, 55.0, d))*(0.88+trait*0.20)))
                         __wild_batches[bk * 3 + 2].items.push(PropI(wing, vec4(1, 1, 1, 1)))
                 __wild_batches[12 + bk].items.push(PropI(bm * pose.head * scaling(v3(slim, slim, 1.0)), vec4(1, 1, 1, 1)))
                 if pose.wing == 0: __wild_batches[15 + bk].items.push(PropI(bm, vec4(1, 1, 1, 1)))
@@ -914,8 +955,11 @@ __boar_parts = () -> Mesh[]:
         b = MeshB()
         # z, centre height, half width, half height. Raised withers, tucked belly and slim rump.
         sections = [vec4(-0.72, 0.48, 0.06, 0.10), vec4(-0.57, 0.48, 0.20, 0.20),
-            vec4(-0.30, 0.52, 0.245, 0.26), vec4(-0.10, 0.59, 0.29, 0.33), vec4(0.08, 0.625, 0.32, 0.385),
-            vec4(0.32, 0.615, 0.315, 0.365), vec4(0.43, 0.57, 0.285, 0.32), vec4(0.54, 0.52, 0.23, 0.255)]
+            vec4(-0.43, 0.495, 0.229, 0.232), vec4(-0.30, 0.52, 0.245, 0.26),
+            vec4(-0.20, 0.553, 0.268, 0.295), vec4(-0.10, 0.585, 0.29, 0.33),
+            vec4(0.02, 0.612, 0.309, 0.362), vec4(0.14, 0.620, 0.320, 0.370),
+            vec4(0.25, 0.615, 0.319, 0.365), vec4(0.34, 0.596, 0.304, 0.350),
+            vec4(0.43, 0.566, 0.281, 0.317), vec4(0.49, 0.542, 0.255, 0.283), vec4(0.54, 0.52, 0.23, 0.255)]
         loop j in [0..sections.len()):
             r = sections[j]
             loop k in [0..17):
@@ -987,7 +1031,9 @@ __boar_parts = () -> Mesh[]:
         # The rear ring sits inside the shoulders throughout the graze arc. A deep
         # cheek tapers as one surface to the blunt snout, without a ball-shaped skull.
         rings = [vec4(-0.20, 0.040, 0.258, 0.255), vec4(-0.035, 0.035, 0.252, 0.24), vec4(0.10, 0.010, 0.235, 0.210),
-            vec4(0.30, -0.045, 0.190, 0.175), vec4(0.50, -0.125, 0.140, 0.115), vec4(0.68, -0.16, 0.135, 0.090)]
+            vec4(0.20, -0.010, 0.216, 0.198), vec4(0.30, -0.045, 0.190, 0.175),
+            vec4(0.40, -0.089, 0.162, 0.140), vec4(0.50, -0.125, 0.140, 0.115),
+            vec4(0.59, -0.149, 0.133, 0.096), vec4(0.68, -0.16, 0.135, 0.090)]
         base = u32(h.vs.len())
         loop j in [0..rings.len()):
             r = rings[j]
@@ -1000,7 +1046,8 @@ __boar_parts = () -> Mesh[]:
                 dz = f64(next.x - prev.x)
                 nz = -(x * x * f64(next.z - prev.z) / f64(r.z) + y * (f64(next.y - prev.y) + y * f64(next.w - prev.w)) / f64(r.w)) / max(dz, 0.001)
                 n = normalize(v3(x / f64(r.z), y / f64(r.w), nz))
-                col = if y < -0.25: belly else: mix(hide, cheek, f32((if y > 0.45: 0.70 else: 0.20) * smoothstep(0.25, 0.68, f64(r.x))))
+                col = mix(hide,cheek,f32((0.20+0.50*smoothstep(0.15,0.75,y))*smoothstep(0.25,0.68,f64(r.x))))
+                col = mix(col,belly,f32((1.0-smoothstep(-0.7,-0.1,y))*0.7))
                 h.vs.push(Vertex3D(v3(x * f64(r.z), f64(r.y) + y * f64(r.w), f64(r.x)), n, vec2(0, 0), col))
         loop j in [0..rings.len() - 1):
             loop k in [0..16):
@@ -1058,17 +1105,21 @@ __boar_parts = () -> Mesh[]:
         # Articulated upper leg and hock retain their existing joint transforms.
         l = MeshB()
         # A broad embedded thigh tapers through muscle into the same knee pivot.
-        leg_rows = [vec3(0.07,0.108,0.008),vec3(0.005,0.092,0.0),vec3(-0.08,0.061,-0.009),vec3(-0.188,0.043,0.0)]
+        leg_rows = [vec3(0.09,0.112,0.010),vec3(0.04,0.105,0.004),vec3(0.005,0.091,0.0),
+            vec3(-0.04,0.073,-0.006),vec3(-0.08,0.059,-0.009),vec3(-0.14,0.046,-0.004),vec3(-0.188,0.043,0.0)]
         loop j in [0..leg_rows.len()):
             row=leg_rows[j]
-            loop k in [0..9):
-                angle=TAU*f64(k)/8.0
-                n=normalize(v3(cos(angle),0.22,sin(angle)))
+            loop k in [0..13):
+                angle=TAU*f64(k)/12.0
+                prev=leg_rows[max(0,j-1)]
+                next=leg_rows[min(leg_rows.len()-1,j+1)]
+                slope=-f64(next.y-prev.y)/f64(next.x-prev.x)
+                n=normalize(v3(cos(angle),slope,sin(angle)/0.85))
                 l.vs.push(Vertex3D(v3(cos(angle)*f64(row.y),f64(row.x),sin(angle)*f64(row.y)*0.85+f64(row.z)),n,vec2(0,0),hide))
         loop j in [0..leg_rows.len()-1):
-            loop k in [0..8):
-                a=u32(j*9+k)
-                loop index in [a,a+1,a+9,a+1,a+10,a+9]:l.idx.push(index)
+            loop k in [0..12):
+                a=u32(j*13+k)
+                loop index in [a,a+1,a+13,a+1,a+14,a+13]:l.idx.push(index)
         __boar_m.push(mesh(l.vs, l.idx))
         shin = MeshB()
         mb_sphere(shin, vec3(0, 0, 0), v3(0.044, 0.047, 0.044), hide, 6)
@@ -1224,6 +1275,25 @@ bird_pose = (a: Animal) -> BirdPose:
     flying = a.state == .fly or a.state == .land
     live = a.state != .dead and a.state != .gone
     clock = a.idle + a.seed
+    if flying and live:
+        # The first raised wings and downstroke precede the climb; all clocks are
+        # simulation time, so fixed-frame captures and gameplay show the same beat.
+        # idle resets on takeoff, but survives fly/land steering changes.
+        flight_time = a.idle
+        tempo = if a.kind == .crow: 3.6+fract(a.seed*0.41)*0.8 else: 7.0+fract(a.seed*0.41)*1.5
+        beat = (if flight_time < 0.45: flight_time * 6.0 else: 2.7 + (flight_time - 0.45) * tempo) + fract(a.seed*0.73)
+        p.wing = if fract(beat) < 0.5: 1 else: 2
+        # Occasional held glides and shallow banks break repeated V silhouettes.
+        glide=smoothstep(0.45,1.0,flight_time)*smoothstep(0.65,0.94,sin(clock*1.3))
+        p.flap = 0.08 + (0.72-glide*0.61) * sin(beat * TAU)
+        bank=rotation_z(sin(clock*1.1)*0.12)*rotation_x(clamp(-a.vy*0.035,-0.14,0.12))
+        # Airborne heads share the body transform: peck/look are both zero.
+        # Skip the perch matrix products and their temporary storage per bird.
+        p.body=bank
+        if a.startle>0.0:
+            p.body=bank*translation(v3(0.0,0.04,0.0))*rotation_x(-0.18)*translation(v3(0.0,-0.04,0.0))
+        p.head=p.body
+        return p
     # Two deliberate pecks then a held, independently turning head. Feet never rotate.
     cycle = fract(clock / 2.4)
     peck = if not flying and not a.resting and live: pow(max(0.0, sin(cycle * TAU * 2.0)), 6.0) * (1.0 - smoothstep(0.48, 0.55, cycle)) else: 0.0
@@ -1231,14 +1301,7 @@ bird_pose = (a: Animal) -> BirdPose:
     pitch = if a.startle > 0.0: -0.18 else: peck * 0.3
     p.body = translation(v3(0.0, 0.04, 0.0)) * rotation_x(pitch) * translation(v3(0.0, -0.04, 0.0))
     p.head = p.body * translation(v3(0.0, 0.082, 0.025)) * rotation_y(look) * rotation_x(peck * 0.95) * translation(v3(0.0, -0.082, -0.025))
-    if flying and live:
-        # The first raised wings and downstroke precede the climb; all clocks are
-        # simulation time, so fixed-frame captures and gameplay show the same beat.
-        # idle resets on takeoff, but survives fly/land steering changes.
-        flight_time = a.idle
-        beat = if flight_time < 0.45: flight_time * 6.0 else: 2.7 + (flight_time - 0.45) * (if a.kind == .crow: 4.0 else: 9.0)
-        p.wing = if fract(beat) < 0.5: 1 else: 2
-        p.flap = 0.08 + 0.72 * sin(beat * TAU)
+
     p
 
 # A shallow feather fan with a tapered outline. Shared by all cached wing poses;
@@ -1437,6 +1500,7 @@ critter_scare = () -> f64:
 
 # Fireflies use the glow pass; daytime butterflies use solid wings above the blossoms.
 wildlife_bugs = (dt: f64, cam: vec3):
+    if cutscene_actors_hidden(): return
     dusk = clamp(env.night * 1.5, 0.0, 1.0)
     if dusk < 0.2: return
     loop b in bugs:
@@ -1600,6 +1664,7 @@ critters_update = (dt: f64):
     wild_catch_prompt()
 
 critters_draw = ():
+    if cutscene_actors_hidden(): return
     if sc.shadow: return
     loop c in critters:
         if c.hide > 0.0 or f64(length(c.pos - sc.cam)) > 45.0: continue

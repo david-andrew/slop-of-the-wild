@@ -31,10 +31,15 @@ rsync -aL "$root/assets/src/nature/Textures/" "$pkg/assets/src/nature/Textures/"
 cat > "$pkg/play.sh" <<'EOF'
 #!/bin/bash
 # Runs the game from this folder (its assets are read relative to it).
+set -euo pipefail
 cd "$(dirname "$0")"
 # Match the measured source launcher defaults.
+if [[ -n ${DISPLAY:-} ]]; then
+    export SLOPPY_PLATFORM=${SLOPPY_PLATFORM-x11}
+fi
 export SLOPPY_VULKAN=${SLOPPY_VULKAN-1}
 export SLOPPY_VSYNC=${SLOPPY_VSYNC-0}
+export BOTW_FPS=${BOTW_FPS-0}
 exec ./slop-of-the-wild "$@"
 EOF
 chmod +x "$pkg/play.sh"
@@ -46,8 +51,13 @@ Linux x86-64. Run:
 
     ./play.sh
 
-Vulkan mailbox presentation is the default; SLOPPY_VSYNC=1 ./play.sh selects FIFO.
-SLOPPY_VULKAN=0 ./play.sh selects OpenGL (Wayland frame-callback pacing in 0.6).
+X11/XWayland is the default when DISPLAY advertises an X server. Without DISPLAY,
+Sloppy chooses the available platform. SLOPPY_PLATFORM=wayland ./play.sh overrides it.
+Vulkan uses its fastest available mode (mailbox, or immediate as on the tested X11
+driver); SLOPPY_VSYNC=1 ./play.sh selects FIFO. SLOPPY_VULKAN=0 selects OpenGL.
+The matched two-minute forest comparison reduced >25 ms frames from 26 on native
+Wayland fast mode to 4 on managed X11 fast mode; FIFO had 459 and 81 respectively.
+These are producer intervals on GTX 1070/NVIDIA 580.178.04, not scanout guarantees.
 
 The first launch prepares shaders for your GPU (up to ~30 s); later launches take a few seconds.
 Progress is saved to ~/.botw-clone-save (choose "Start over" in the menu, or run

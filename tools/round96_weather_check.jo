@@ -107,3 +107,22 @@ loop forest in [0.0,0.5,1.0]:
         assert(forest_wet_absorption(pigment,f32(forest),1)==0.28,"stone response unchanged")
         if forest==0: assert(absorb==0.43,"open turf response unchanged")
 print("PASS wet forest: bounded absorption, ordered pigment values, unchanged turf/stone")
+
+# Ordinary clouds attenuate the sun without the closed-deck cutoff.
+env=Env(hour=11,time_scale=0,weather=.clear,weather_t=1e9,clouds=0.42)
+env_update(0,false)
+clear_sun=env.sun_color
+env=Env(hour=11,time_scale=0,weather=.cloudy,weather_t=1e9,clouds=0.74)
+env_update(0,false)
+assert(length(env.sun_color-clear_sun*f32(1.0-env.dark*0.92))<0.00001,"ordinary clouds preserve directional value separation")
+print("PASS cloudy daylight: normal attenuation without closed-deck sun cutoff")
+
+# Closed cloud decks cannot leave warm sun patches; flash lighting still works.
+loop hour in [6.6,7.0,11.0,17.5]:
+    env=Env(hour=hour,time_scale=0,weather=.storm,weather_t=1e9,clouds=0.95,rain=1,wet=1,storm_k=1)
+    env_update(0,false)
+    assert(length(env.sun_color)<0.00001,"closed storm deck has no directional sunlight")
+    env.lightning=1.0
+    env_update(0,false)
+    assert(luma(env.sun_color)>0.25,"strike frame retains the lightning light")
+print("PASS closed storm deck: no warm direct patch at dawn, midday or sunset; lightning preserved")

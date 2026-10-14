@@ -12,6 +12,7 @@ use 'post.jo'
 use 'water_render.jo'
 use 'enemies.jo'
 use 'player.jo'
+use 'camera.jo'
 use 'elements.jo'
 use 'element_puzzles.jo'
 use 'wildlife.jo'
@@ -128,7 +129,7 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
                 data.z = i.data.z+sin(i.pos.x*0.73+i.pos.z*0.51)*2.0
         y = (v.corner.y+1.0)*0.5
         seed = i.data.z
-        height = 0.48+fract(seed*1.73)*0.78
+        height = (0.42+fract(seed*1.73)*0.88)*(0.87+0.13*sin(u.time*11.0+seed))
         curl = sin(y*6.0-u.time*7.0+seed)*y*y*0.18
         w = i.pos.xyz+u.cam_right*(v.corner.x*i.pos.w+curl)
         w.y = flame_ground(w.xz,u)+0.025+y*height
@@ -346,14 +347,18 @@ part_fs = (o: PartO, u: PartU) -> vec4:
             core = smoothstep(wdt * 0.6, 0.0, x) * smoothstep(0.7, 0.2, y)
         if persistent:
             flow = y*7.0-u.time*9.0+o.data.z
-            bend = sin(flow)*y*0.12
-            center = abs(o.uv.x-0.5+bend)
-            width = 0.31*pow(max(1.0-y,0.0),0.72)
+            shape = fract(o.data.z * 2.17)
+            bend = sin(flow)*y*(0.10+shape*0.14)
+            center = abs(o.uv.x-0.48+bend)
+            width = (0.26+shape*0.10)*pow(max(1.0-y,0.0),0.48+shape*0.45)
             main = 1.0-smoothstep(width*0.20,width+0.025,center)
-            side = abs(o.uv.x-0.25-bend*0.65)
-            lick = (1.0-smoothstep(width*0.18,width*0.55+0.02,side))*(1.0-smoothstep(0.42,0.82,y))*0.65
+            side = abs(o.uv.x-(0.18+shape*0.18)-bend*0.65)
+            lick = (1.0-smoothstep(width*0.18,width*0.55+0.02,side))*(1.0-smoothstep(0.35+shape*0.20,0.72+shape*0.18,y))*0.75
+            other = abs(o.uv.x-0.78+bend*0.5)
+            fork = (1.0-smoothstep(width*0.1,width*0.38+0.02,other))*(1.0-smoothstep(0.28,0.52+shape*0.28,y))*0.60
             breakup = vnoise(vec2(o.uv.x*6.0+o.data.z,y*6.0-u.time*3.5))
-            a = max(main,lick)*smoothstep(0.0,0.06,y)*(1.0-smoothstep(0.78,1.0,y))*(1.0-smoothstep(0.25,0.85,y)*smoothstep(0.48,0.78,breakup)*0.85)
+            root = 0.025+0.12*(0.5+0.5*sin(o.uv.x*23.0+o.data.z+u.time*3.0))
+            a = max(main,max(lick,fork))*smoothstep(root,root+0.08,y)*(1.0-smoothstep(0.72,1.0,y))*(1.0-smoothstep(0.20,0.85,y)*smoothstep(0.48,0.78,breakup)*0.85)
             core = main*(1.0-smoothstep(0.08,0.52,y))*0.55
             ember = 0.0
         glsl_discard(o.color.w * a < 0.008)
@@ -464,6 +469,7 @@ __pinst_electric: PInst[]
 __electric_sh = Shader()
 player_shock_t = 0.0
 player_burn_t = 0.0
+player_element_hit = false
 __pbuf_smoke = InstBuf()
 __smoke_rt = Target()
 __smoke_spare = Target()
@@ -799,6 +805,7 @@ fx_leaves = (p: vec3, n: int = 6):
     loop k in [0..n): emit(.leaf, p + rv(2.0), v3(random(-1.0, 1.0), random(-0.5, 0.2), random(-1.0, 1.0)), random(2.0, 4.0), 0.09, rgba(0.35, 0.55, 0.2, 1.0), 1.2, 1.5)
 
 fx_update = (dt: f64):
+    if pl.invuln <= 0.0 or pl.state != .hurt: player_element_hit = false
     player_shock_t = max(0.0, player_shock_t - dt)
     player_burn_t = max(0.0, player_burn_t - dt * (if pl.state == .swim or env.rain > 0.5: 4.0 else: 1.0))
     loop mut p in particles:
@@ -828,8 +835,11 @@ fx_rain_ground = (cam: vec3, dt: f64, indoor: bool):
     if indoor or snowing or env.rain < 0.1: return
     n = int(env.rain * 900.0 * dt + random())
     loop k in [0..n):
-        x = f64(cam.x) + random(-14.0, 14.0)
-        z = f64(cam.z) + random(-14.0, 14.0)
+        # Spend a third of the existing impact budget in the visible foreground.
+        close = k % 3 == 0
+        span = if close: 5.0 else: 14.0
+        x = f64(cam.x) + random(-span, span)
+        z = f64(cam.z) + random(-span, span)
         cover = rain_cover_height(x, z)
         if let wl = water_level(x, z):
             if cover > wl + 0.1: continue
@@ -983,7 +993,7 @@ grass_fire_instances = (cam: vec3, frustum: Frustum, instances: mut PInst[]):
         if not box_visible(frustum,p-vec3(1.6,0.1,1.6),p+vec3(1.6,1.8,1.6)): continue
         seed = f.render_seed
         q = p+v3((seed-0.5)*0.8,0.08,(f.render_offset-0.5)*0.8)
-        size = 0.38+seed*0.20
+        size = 0.46+seed*0.24
         instances.push(PInst(vec4(q,f32(size)),vec4(1.55,0.45,0.055,0.88),vec4(f32(fract(f.t)), -6, f32(seed*TAU),-1.6)))
 
 fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
@@ -1263,25 +1273,26 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
                 if rain_view_height(f64(p.x), f64(p.z)) > f64(p.y): continue
                 __pinst_alpha.push(PInst(vec4(p.x, p.y, p.z, 0.09), col, vec4(0, 4, 0, 0)))
             else:
-                # (none right at the lens)
-                if f64(r.x) * f64(r.x) + f64(r.z) * f64(r.z) < 4.0: continue
                 offset = rain_drop_offset(r, k, tt, env.wind, env.gust)
                 p = cam + offset
-                if rain_view_height(f64(p.x), f64(p.z)) > f64(p.y) - 0.6: continue
                 # (short and faint: the near ones, long on screen, fade most; the far edge of the box too)
                 # Measure after wind drift: the nearest projected streaks can
                 # originate farther out in the seed box during strong gusts.
                 rd = f64(length(p - cam))
-                # Sparse foreground drops; the distant volume supplies density.
+                # Close drops carry the storm; mid-distance threads stay quieter.
                 depth = smoothstep(5.0, 20.0, rd)
-                keep = lerp(lerp(0.16, 0.40, env.storm_k), 1.0, depth)
+                keep = lerp(lerp(0.38, 0.85, env.storm_k), 1.0, depth)
                 if fract(f64(k) * 0.414213) > keep: continue
-                near_k = f32(smoothstep(2.0, 4.0, rd) * smoothstep(35.0, 24.0, rd))
+                near_k = f32(smoothstep(0.7, 1.8, rd) * smoothstep(35.0, 24.0, rd))
                 # The denser near volume fades at its wrap boundary instead of
                 # popping a foreground streak across the lens.
                 if k >= 6200: near_k *= 1.0 - smoothstep(7.0, 9.0, max(abs(offset.x), abs(offset.z)))
+                # Invisible volume edges need neither shelter queries nor uploads.
+                # This pays for the closer streaks without changing visible coverage.
+                if near_k <= 0.0: continue
+                if rain_view_height(f64(p.x), f64(p.z)) > f64(p.y) - 0.6: continue
                 variation = fract(f64(k) * 0.618034)
-                opacity = lerp(0.40, 0.26, depth) * (0.30 + variation * 1.15)
+                opacity = lerp(0.48, 0.18, depth) * (0.30 + variation * 1.15)
                 depth_length = lerp(0.24, 0.17, depth)
                 streak_length = depth_length * (0.40 + variation * 1.25) * (1.0 + env.storm_k * 0.35)
                 __pinst_alpha.push(PInst(vec4(p.x, p.y, p.z, 1.2), vec4(col.xyz, col.w * near_k * f32(opacity)), vec4(0, 4, f32(fract(f64(k) * 0.317)), f32(streak_length))))
@@ -1290,6 +1301,9 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
         # Body-attached tongues follow the actual recoil pose. Build at draw
         # time without RNG so feedback cannot change the spreading fire.
         toward = normalize(vec3(cam.x - pl.pos.x, 0, cam.z - pl.pos.z))
+        # The alpha batch already has the scene/depth inputs for refraction.
+        # Jo shares that submission instead of starting a separate heat draw.
+        __pinst_alpha.push(PInst(vec4(pl.pos+vec3(0,0.95,0),0.48),vec4(1,1,1,f32(player_burn_t)*0.07),vec4(0,12,2.7,0)))
         loop k in [0..6):
             bone = __hero_fire_bones[k]
             m = hero_world * bone_world(hero_m, hero_skin, bone)
@@ -1352,6 +1366,7 @@ guardian_beam_end = (a: vec3, target: vec3) -> vec3:
     a + dir * f32(distance)
 
 guardian_lasers_draw = ():
+    if cutscene_actors_hidden(): return
     loop e in enemies:
         if e.kind != .guardian: continue
         firing = e.state == .recover and e.t < 0.12

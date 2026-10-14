@@ -3,8 +3,8 @@ use '../game/env.jo'
 use '../game/audio_assets.jo'
 from '../game/music.jo' import __root_for
 
-# Twenty minutes of source score in every exploration context, independent of
-# waveform/level tests. Melody identity excludes bass, voicing, timing and gain.
+# Source-level complements to the production trace checker: fragment shape,
+# bounded pedal/rests, shared day/night material, and compatible shrine layers.
 loop mood in [Mood.field_day, Mood.field_night, Mood.field_rain, Mood.field_golden, Mood.forest, Mood.snow, Mood.ruins, Mood.shrine]:
     seq = Seq(mood = mood, want = mood)
     phrase_n = 0
@@ -12,60 +12,50 @@ loop mood in [Mood.field_day, Mood.field_night, Mood.field_rain, Mood.field_gold
     music_still = 0.0
     env.night = 0.0
     seed_random(70070)
-    memory: PhraseMemory[]
-    colours: int[]
-    colour_memory: {int: int} = {}
     phrases = 0
-    basses = 0
     notes = 0
     glass = 0
+    bass = 0
     loop seq.age < 1200.0:
         evs = p_phrase(mood)
-        pitches: int[]
-        last = -1.0
         end = 0.0
+        melody = 0
         loop e in evs:
-            assert(e.midi >= 24 and e.midi <= 120, "playable transposed MIDI range")
+            assert(e.midi >= 19 and e.midi <= 120, "playable transposed MIDI range")
             end = max(end, e.t)
             if not e.accompaniment:
-                assert(e.t > last, "rubato keeps melody order")
-                last = e.t
-                pitches.push(e.midi)
-            if e.gain < 1.0 and not e.glass:
-                assert(e.gain <= 0.30 and e.t < 0.5, "quiet left hand remains inside the gesture")
-                assert(e.midi <= __root_for(mood), "accompaniment remains in the lower register")
+                melody += 1
+                if mood != .shrine: assert(e.midi > 72, "field leaves the middle empty")
             if e.glass:
-                assert(mood == .shrine and e.gain <= 0.38, "glass belongs only to the shrine")
+                assert(mood == .shrine and e.gain <= 0.24, "glass is a finite shrine layer")
                 glass += 1
-        if pitches.len() > 0:
-            loop old in memory:
-                if old.pitches == pitches: assert(seq.age - old.at >= 180.0, "no melodic phrase recurs inside three minutes")
-            memory.push(PhraseMemory(pitches, seq.age))
+        if melody > 0:
+            assert(melody >= 2 and melody <= 7, "short authored fragments")
             phrases += 1
-            notes += pitches.len()
-        if seq.harmony_colour >= 0:
-            assert(colour_memory.get(seq.figure_key, -1) != seq.harmony_colour, "a returning figure changes its bass colour")
-            colour_memory[seq.figure_key] = seq.harmony_colour
-            if not colours.contains(seq.harmony_colour): colours.push(seq.harmony_colour)
-            basses += 1
-        assert(end < 18.0, "a phrase cannot grow into a continuous bed")
+            notes += melody
+        if mood != .shrine:
+            low = low_phrase(mood)
+            loop e in low:
+                assert(e.hand == 1 and e.midi <= 43 and e.gain < 0.36, "quiet independent low hand")
+                bass += 1
+        assert(end <= 6.0, "fragment cannot become a continuous bed")
         rest = phrase_rest(mood)
-        assert(rest >= 22.0, "long silence remains between field/shrine gestures")
+        assert(rest >= 8.0 and rest <= (if mood == .shrine: 22.0 else: 13.0), "bounded random timer slots")
         seq.age += end + rest
-    assert(phrases >= 24 and notes >= 80, "non-vacuous twenty-minute score")
-    if mood != .shrine: assert(colours.len() >= 3 and basses >= 4 and f64(basses) / f64(phrases) < 0.65, "several occasional bass colours")
-    else: assert(glass >= 12 and basses == 0, "sparse glass shrine answers")
-    print("PASS {mood}: 1200s source score; {phrases} phrases, {notes} melody notes, {basses} bass gestures, {colours.len()} colours, {glass} glass answers; no repeat <180s")
+    assert(phrases >= 24 and notes >= 60, "non-vacuous twenty-minute score")
+    if mood == .shrine: assert(glass >= 20, "generative shrine layers participate")
+    else: assert(bass >= 8, "independent bass participates")
+    print("PASS {mood}: {phrases} authored gestures / {notes} melody notes, {bass} independent bass notes, {glass} glass layers")
 
 # New glass bank participates in the same lossless prepared-asset format.
 __audio_state = 2
 piano_init()
 assert(mkdir("build/music-harmony-check"))
 asset = piano_asset()
-assert(asset.groups.len() == 10 and asset.groups[9].len() == 1)
+assert(asset.groups.len() == 13 and asset.groups[12].len() == 1)
 assert(audio_asset_write("build/music-harmony-check/piano.bin", 61, asset))
 loaded = audio_asset_read("build/music-harmony-check/piano.bin", 61)!
-assert(loaded.groups[9][0].samples == shrine_glass.samples, "prepared glass is lossless")
+assert(loaded.groups[12][0].samples == shrine_glass.samples, "prepared glass is lossless")
 assert(duration(shrine_glass) == 4.0, "finite glass decay")
 assert(abs(shrine_glass.samples[0]) < 0.000001 and abs(shrine_glass.samples[shrine_glass.samples.len()-1]) < 0.000001, "click-free glass endpoints")
-print("PASS finite shrine glass and ten-group prepared piano asset round trip")
+print("PASS finite shrine glass and thirteen-group prepared piano asset round trip")

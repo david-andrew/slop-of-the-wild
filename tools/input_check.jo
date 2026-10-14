@@ -993,7 +993,7 @@ binding_recovery_checks = ():
         act = Actions(nav = vec2(0, 1))
         options_update(0.0, 0.0)
         check("options_keyboard_row_{row}_visible", opt_sel == row and options_row_visible(row))
-    check("options_all_bindings_scroll_inside_panel", opt_first > 0)
+    check("options_all_bindings_fit_without_scroll", opt_first == 0)
     listed = fill(false, input_action_ids.len())
     loop row in [0..opt_key_order.len()):
         action = opt_key_order[row]
@@ -1014,7 +1014,7 @@ binding_recovery_checks = ():
     __mouse_wheel = 1.0
     act = Actions()
     options_update(0.0, 0.0)
-    check("options_mouse_wheel_scrolls_and_keeps_selection_visible", opt_first == 9 and options_row_visible(opt_sel))
+    check("options_wheel_keeps_all_bindings_visible", opt_first == 0 and options_row_visible(opt_sel))
     __mouse_wheel = 0.0
     opt_sel = OPT_KEY_ROW + input_action_ids.len() - 1
     loop row in [0..OPT_KEY_ROW + input_action_ids.len() - 1):

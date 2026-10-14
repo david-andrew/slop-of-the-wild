@@ -995,6 +995,11 @@ hero_form_point = (p: vec3, shoulder: vec3, elbow: vec3, wrist: vec3, bare: bool
         if forearm>0.0:
             q.y=fc.y+f32(fy*taper)
             q.z=fc.z+f32(fz*taper)
+        # A shallow clavicular ridge catches the chamber's broad light. Its
+        # centre falls into the sternum notch; the shoulder/contact rig is exact.
+        clavicle=exp(-pow((f64(p.y)-1.365+0.12*x)/0.014,2.0))
+        clavicle*=smoothstep(0.015,0.05,x)*(1.0-smoothstep(0.14,0.20,x))*smoothstep(0.01,0.055,f64(p.z))
+        q.z+=f32(clavicle*0.0035)
         # Relax the superhero asset's carved scapula ridges into a broad back.
         back=(1.0-smoothstep(0.12,0.22,x))*smoothstep(1.04,1.19,f64(p.y))*(1.0-smoothstep(1.46,1.55,f64(p.y)))
         back*=1.0-smoothstep(-0.04,-0.015,f64(p.z))
@@ -1265,7 +1270,7 @@ hero_elbow_weights = (v: ChVert, sk: Skel) -> ChVert:
     lower=skel_find(sk,"lowerarm_"+side)
     if upper<0 or lower<0: return v
     center=abs(f64(sk.gm[lower][3].x))
-    blend=f32(smoothstep(center-0.065,center+0.065,x))
+    blend=f32(smoothstep(center-0.073,center+0.073,x))
     rounded=v
     rounded.jnt=vec4(f32(upper),f32(lower),0,0)
     rounded.wgt=vec4(1.0-blend,blend,0,0)
@@ -1393,7 +1398,11 @@ hero_hand_point = (p: vec3, joints: vec4, weights: vec4, sk: Skel) -> vec3:
             if length(axis)<0.0001: axis=origin-sk.gm[sk.parent[j]][3].xyz
             axis=normalize(axis)
             radial=p-origin-axis*dot(p-origin,axis)
-            delta-=radial*w*0.24
+            delta-=radial*w*(if contains(name,"thumb"):0.24 else:0.28)
+            if contains(name,"thumb"):
+                # The dorsal thumb clears the finger group, tapering to zero at
+                # the supporting palm so the wake contact remains unchanged.
+                delta.z-=f32(0.003*smoothstep(1.278,1.295,f64(p.y)))*w
         else if starts_with(name,"hand_"):
             # Fade shaping off toward the underside at wrist.y - 22 mm.
             back=smoothstep(-0.022,0.014,f64(p.y-origin.y))
@@ -1823,7 +1832,7 @@ hero_body_paint = (im: mut Image, parts: BPart[]):
         old=v3(f64(im.pixels[k*4])/255.0,f64(im.pixels[k*4+1])/255.0,f64(im.pixels[k*4+2])/255.0)
         # Retain a quiet trace of the painted joint creases; the lit mesh now
         # carries the arm, knee and back planes instead of a second muscle map.
-        c=mix(old,pigment,f32(weights[k]*0.92))
+        c=mix(old,pigment,f32(weights[k]*0.84))
         loop channel in [0..3):
             im.pixels[k*4+channel]=u8(clamp(vcomp(vec4(c,1),channel)*255,0,255))
     bleed(im,painted,cover,3)
@@ -2136,42 +2145,43 @@ hair_tail = (bm: mut BModel, sk: Skel, head_parts: BPart[], brow: f64):
             t = f64(row)/8.0
             low = brow-0.025+0.060*front
             y = lerp(low,brow+0.111,t)
-            radius = sqrt(max(0.001,1.0-pow(t,2.1)))*0.95
+            radius = sqrt(max(0.001,1.0-pow(t,2.1)))*0.93
             ring.push(v3(sin(a)*0.093*radius-0.008*t,y,-0.023+cos(a)*0.116*radius))
         crown.push(ring)
     loop row in [0..8):
         loop k in [0..32):
             k2=(k+1)%32
-            col=gold*0.87
+            col=gold*0.79
             __xp_tri(bp,crown[row][k],crown[row][k2],crown[row+1][k],col,jh,w1,jh,w1,jh,w1)
             __xp_tri(bp,crown[row][k2],crown[row+1][k2],crown[row+1][k],col,jh,w1,jh,w1,jh,w1)
-    # Seven broad locks share a warm underlayer. Uneven spacing and swept
-    # tips describe the masses without dark stripes across the 45-pixel head.
-    loop lock in [0..7):
-        a=TAU*f64(lock)/7.0+0.12*sin(f64(lock)*2.3)
+    # Two staggered layers leave a narrow off-centre part and taper into
+    # separate tips. The underlayer is recessed below each convex clump.
+    loop lock in [0..11):
+        a=TAU*(f64(lock)+0.32)/11.0+0.07*sin(f64(lock)*2.3)
         front=max(0.0,cos(a))
         side=abs(sin(a))
-        tip=brow-0.106+front*0.125+side*0.019+0.018*sin(f64(lock)*2.7)
+        tip=brow-0.100+front*0.132+side*0.016+0.025*sin(f64(lock)*2.7)
         rows: vec3[][]
         loop row in [0..9):
             t=f64(row)/8.0
-            angle=a+0.36*sin(t*PI)+0.23*t*(if sin(a)<0.0:-1.0 else:1.0)
+            angle=a+0.22*sin(t*PI)+0.27*t*(if sin(a)<0.0:-1.0 else:1.0)
             y=lerp(brow+0.110,tip,pow(t,1.30))
             low=brow-0.025+0.060*front
             crown_t=clamp((y-low)/(brow+0.111-low),0.0,1.0)
             radius=sqrt(max(0.001,1.0-pow(crown_t,2.1)))*0.96+0.025
             radius*=1.0-0.17*smoothstep(low,tip,y)
-            width=max(0.006,0.52*sin(pow(t,0.48)*PI))* (0.94+0.15*sin(f64(lock)*1.8))
+            width=max(0.004,0.36*sin(pow(t,0.48)*PI))* (0.94+0.15*sin(f64(lock)*1.8))
             ring: vec3[]
             loop cross_section in [0..5):
                 u=f64(cross_section)/2.0-1.0
                 aa=angle+u*width
-                lift=0.005*(1.0-u*u)*sin(PI*t)
+                lift=0.014*(1.0-u*u)*sin(PI*t)
                 ring.push(v3(sin(aa)*(0.093*radius+lift)-0.008*(1.0-t),y+0.002*(1.0-u*u),-0.023+cos(aa)*(0.116*radius+lift)))
             rows.push(ring)
         loop row in [0..8):
             loop k in [0..4):
-                value=0.88+0.10*(0.5+0.5*cos(a-0.7))
+                value=0.85+0.15*(0.5+0.5*cos(a-0.7))
+                value*=0.90+0.10*sin(PI*(f64(k)+0.5)/4.0)
                 value*=0.91+0.09*sin(PI*(f64(row)+0.5)/8.0)
                 col=gold*f32(value)
                 __xp_tri(bp,rows[row][k],rows[row+1][k],rows[row][k+1],col,jh,w1,jh,w1,jh,w1)

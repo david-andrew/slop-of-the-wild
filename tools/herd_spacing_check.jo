@@ -1,0 +1,34 @@
+# Observe mixed-size grazing/walking bodies for a minute at three tick rates.
+use '../game/wildlife.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+use '../game/physics.jo'
+hf.n=256
+hf.cell=1
+hf.x0=-128
+hf.z0=-128
+hf.h=fill(f32(0),hf.n*hf.n)
+hf.mat=fill(u8(0),hf.n*hf.n*4)
+use_terrain=true
+env.hour=8
+pl.pos=vec3(-60,0,0)
+assert(wild_body_radius(Animal(.boar,vec3(),vec3(),appearance=0.95))>1.5,"heavy coat variant uses its rendered body scale")
+loop hz in [30,60,120]:
+    seed_random(66)
+    animals.clear()
+    loop k in [0..6):
+        # Includes a coincident spawn and crossing walk destinations.
+        p=v3(f64(k%3)*1.6,0,f64(k/3)*1.6)
+        animals.push(Animal(.boar,p,p,seed=f64(k)*1.73,appearance=f64(k)*0.19,idle=f64(k)*3.4,t=f64(k)*1.3,face=f64(k),hp=8))
+    animals[1].pos=animals[0].pos
+    minimum=100.0
+    loop frame in [0..60*hz):
+        wildlife_update(1.0/f64(hz))
+        loop i in [0..animals.len()):
+            loop j in [i+1..animals.len()):
+                gap=f64(length(animals[i].pos.xz-animals[j].pos.xz))-wild_body_radius(animals[i])-wild_body_radius(animals[j])
+                minimum=min(minimum,gap)
+                assert(gap>=-0.001,"herd bodies never overlap, including intersecting walk paths")
+    print("PASS herd {hz}Hz: 60 seconds, six sizes, minimum body gap {minimum:.5}m")

@@ -1,122 +1,47 @@
-# Music and sound evidence
+# Original music for Slop of the Wild
 
-Exploration uses sampled piano, open intervals and long rests, with no continuous
-pad. The original F# A B E D plateau motif remains in discovery and set pieces.
+All figures and cues are original. The construction follows [MUSIC_STYLE](MUSIC_STYLE.md): the world's sound carries exploration; piano gestures comment on it.
 
-## Field, alert and combat transitions
+Field uses twelve authored high fragments (two extra for snow or ruins), a fixed opening, and an independent low hand with its own RNG, queue and clock. Timer opportunities are 8–13 seconds apart; many pass silently. The high part lives above C5, the low part in C1–F2, leaving the middle empty. Root/fifth/fourth/second and borrowed b7 colours withhold both thirds and tonic endings. Per-fragment rubato, ±3 dB gain and ±30% pan preserve each gesture's identity. Ordered pitch signatures cannot recur within 180 seconds. Night shares day material, with slower gestures and more empty turns. Golden light brings the high hand down an octave within the 88-key piano's range while preserving the empty middle. Snow uses brittle repeated notes; ruins withdraw from the b2 to a fifth. A three-second reversed pp recording appears only every 110–210 seconds after its initial appearance. Snow/rain thin the piano body with a 350 Hz high-pass. Jo's `sneaking` flag smoothly ducks field tails and new notes toward -9.9 dB.
 
-Enemy notice plays its short rising piano cue immediately, with an eight-second
-retrigger cooldown. The field phrase stops scheduling new strikes and its
-sounding notes fade over **0.30 s**. Combat then enters at 55% score gain, reaching
-full gain over **0.113 s** (the 0.25 s full-range ramp). Every automated score gain
-uses a **20 ms sample ramp baked by game code into each voice's private unplayed
-samples**; interrupted ramps continue from their current gain, and outgoing handles
-survive their final release. Sloppy 0.6.0's live mixer is the unmodified release. The
-entry drum has a **4 ms attack / 25 ms terminal release**. Independent notice and
-story cues retain their natural tails. The interrupted field phrase does not
-finish its remaining melody; its already sounding notes receive the fade.
+The own leitmotif is D–E–A–G#: step, fourth, semitone sigh. The score exports include 2-, 4-, 8- and 16-bar family sketches. Wake uses its augmented shadow. The title develops a small question into a widened answer over about 20 seconds, with a genuine damper-bounded breath before the reveal. D minor's F becomes a borrowed F# for the glimmer of hope; Eb/Bb supplies the bII shadow. The last D/A/E voicing has no third. Cave exit uses this same reveal cue. Tower rises by spaced fragments and finite glass answers, releasing at about 19 seconds. Common item, discovery/puzzle and Orb cues occupy approximately 4, 6–7 and 8.6 seconds including their damper release.
 
-Combat begins in the sparse alert tier. Close threats or player strikes select
-engaged music on the **next beat**, at **152 BPM**, without restarting the cell or
-cutting notes. Engagement holds for four seconds after the last close threat.
-When combat ends, the score fades over **0.90 s**. Defeated pursuers trigger the
-victory cue; surviving pursuers beyond the combat radius count as escape and do
-not trigger victory. Field gain recovers over **1.20 s** during the ensuing rest.
+Shrine combines five compatible layers: high and low piano plus three finite glass voices. Each has three variations; optional layers enter around a floating six-pulse cycle, with the b7 lead excluding the ninth glass layer. Existing room/hum supplies the drone. Combat retains its original repeated-note/minor-third cell, staccato piano, skin drum, alert/engaged/low-health tiers, next-beat tier changes and clean-hit bar rests at 152 BPM. This piano/drum implementation retains 4/4 rather than pretending to reproduce orchestral 7/4 or brass.
 
-Escape leaves **seven seconds** after the combat fade before scheduling a new
-field phrase. Victory waits for the longer of that rest or the remaining cue
-tail plus **1.5 s of actual silence**. The fixed transition captures resume their
-first field note **7.017 s** (escape) and **10.700 s** (victory) after the handoff;
-ambient world sound remains free to continue throughout this musical rest.
+Every cue has a finite pedal and smooth 650 ms release. Context changes retain the 20 ms per-voice gain ramps and existing combat/field fades. Story voices keep their own tails. Victory/escape leave at least seven seconds before the fixed field opening; shorter victory tails now fit inside that rest. Prepared piano/SFX serialization remains lossless; weather/reverse samples derive identically after either load path. The extended extreme-register weather cache and reverse add 30.01 MB, keeping total piano storage at 182.19 MB under a 190 MB assertion. See [asset provenance and memory](ASSETS.md).
 
-`sloppy/bin/sloppy tools/music_transition_check.jo build/round89/music-after-clips`
-exports both 35-second production-sequencer/mixer clips and frame traces. It
-checks real pursuer survival, both combat tiers, the quiet gap, zero-ended drum
-samples, and the mixer at 127/400/800/1600-sample block sizes. State-induced
-sample-boundary gain steps must stay below **3 dB** above approximately -50 dBFS and absolute
-boundary error below **0.0001** full scale; the current clips measure zero for
-both. This isolates automation clicks from intentional note attacks and natural
-waveform motion; it is not a loudness-normalization rule for successive phrases.
+## Verification and reproduction
 
-## Sloppy 0.6.0 verification (2026-10-12)
+`tools/music_style_check.py` renders seven 20-minute production sequencer/mixer traces, one context per shared render lock. It checks non-vacuous high/low coverage, 2–7 strikes per fragment, 1.4–6 s onset spans, at least 60% notated silence, middle occupancy, absent thirds/tonic endings, b7, 180 s pitch-identity repeats, drifting hand phase and rare reverse events. **Notated silence** unions each gesture's first-to-last strike plus 1.25 s of pedal allowance; it does not claim digitally silent room tails or perceptual quality. `music_harmony_check` checks fragment shapes, shrine compatibility and lossless glass; `piano_storage_check` includes the derived bank. The style checker is in `run_all_checks.sh`'s CPU list and takes its own per-context locks.
 
-The eight 45 s listening contexts retain the existing LUFS targets: day **-24.6**, night **-25.1**,
-rain **-26.0**, engaged **-22.0**, low health **-22.9**, shrine **-27.2**, title
-**-20.4**, cave exit **-20.9**. Their worst true peak is **-3.3 dBTP**; the longer repeat/texture audits peak
-at **-2.8 dBTP**. Sample ramps
-at 127/400/800/1600-sample mixer blocks have maximum step **0.0001500** full scale;
-the full transition captures retain zero automation-boundary discontinuity and
-the same musical handoff times. The 60 Hz volume targets therefore remain smoothed.
+`tools/listen.py --out build/listen-final` checks actual gameplay mixes, true peaks, combat/insect textures and matching shrine stems. Combat loudness and the -1 dBTP ceiling retain their previous assertions. Field (`listen.py` and `mix_loudness_check.py`) now permits **-43 to -30 LUFS-I** instead of -26.5 to -23: extreme-register pp and empty turns should not be amplified to regain the old foreground score's level. The long authored-field walk now requires piano to sit 6–12 dB below the combined wind, footsteps and wildlife bed. The biome stress fixture intentionally injects middle-register test notes and is excluded from that role measurement. The original long walk put it 4.6 dB above footsteps; the field calibration is lowered 13.5 dB, with separate chamber/story gains and register/weather trims. Shrine remains at least 3 dB below combat; its chamber drone need not be quieter than the wind outside. The old requirement that title/cave be louder than combat is replaced with **-28.5 to -22 LUFS-I**: sparse pp/mp piano and wind should not need fanfare gain to pass. Full-mix shrine return checks add the independently constrained shrine bed in linear energy; the score-only +2 dB peak/+4 dB RMS margin is unchanged.
 
-The game-side soft-knee guard (knee 0.65, ceiling 0.84) remains on offline score
-exports. Live integration captures instead exercise the release mixer, which uses
-`tanh` only above full scale. They verify the reconstructed linear stem sum against
-that actual mixer to 0.000001. The 600 s field mix measures **-24.0 LUFS / -1.3 dBTP**;
-40 s engaged and low-health mixes measure **-21.2 / -3.6** and **-21.3 / -3.4**.
-The 180 s rain/fire/wildlife/combat/shelter scenario also passes. The worst live
-peak is **-1.3 dBTP**, below the **-1 dBTP** ceiling, without changing authored gains
-or adding a master trim. Results remain in `build/sloppy060/listen/` and
-`build/sloppy060/live-audio/`; reproduce with `tools/listen.py` and
-`tools/live_audio_check.py`, then `tools/mix_loudness_check.py --check`.
+`tools/music_audition.py --render-extras` refreshes the metered, self-contained audition after `listen.py` and preserves already embedded baseline clips without reading another checkout. `tools/music_score_export.py` turns production strike logs into named pitches with seconds and piano-roll PNGs. Final clips, scores, meters and the self-contained old/new audition are under `build/listen-final/`. [Composition review](MUSIC_REVIEW.md) records musical choices and their limits. Prepared asset equivalence, music transitions and `music_render.jo` retain their headroom checks. Transition CPU budgets use the same release optimization as `game/main.jo`, retaining the 1 ms p99 ceiling.
 
-The live cue analysis retains its raw onset metric and applies the unchanged
-**6 dB** margin to the settled 100 ms cue body, beginning at **33.3 ms** (two
-60 Hz rows, beyond the 20 ms ramp). At the engaged 13 s windup, the old patched
-mixer and game-side ramp give **-2.68671 / -2.68675 dB** over the immediate onset:
-a difference of only **0.000042 dB**. That older assertion also fails on master.
-The settled body clears music by **11.62 dB** and all background by **11.60 dB**;
-no cue or score gains change. Both windows remain in the CSV evidence.
+Piano samples are the University of Iowa MIS Steinway recordings; provenance and processing remain in `assets/audio/piano-import.json`, `tools/import_piano.py` and [audio credits](../assets/audio/LICENSE.txt).
 
-## Previous music and sound pass (2026-10-12)
+Score-rebuild evidence before the bank extension (2026-10-13): seven 1200 s production traces pass with **76.7–81.1% notated silence**, zero middle-register notes, zero thirds/tonic endings, and a minimum repeat interval of **180.95 s**. The 180 s score-only route is **80.8% audio silence at -60 dBFS**. The live 600 s forest walk places piano **9.28 dB below** the world/step bed. All final listening/stem/texture, live integration, mix loudness, harmony/storage, transition and prepared-equivalence checks pass; transition stress p99 is **0.441 ms** in release. Final listening exports peak at **-3.9 dBTP**, additional cue exports at **-5.4 dBTP**, and live scenarios at **-3.4 dBTP**. The title score has a digitally silent **7.8–10.3 s** breath and ends by **20.1 s**. Audition, 33 timed score/roll pairs and meters are in `build/listen-final/`.
 
-Field figures now occasionally add a quiet left-hand note or open fifth. Four
-bass colours rotate without consecutive reuse for the same figure; their gains
-are 0.30/0.23 of the normal piano strike. Independent, ordered rubato varies note
-gaps without changing melody identity. The 20-minute field capture has **34
-phrases / 133 melody notes**, with bass in **10 phrases**, all four colours, and
-at most **7.77 s** per gesture. Authored rests remain **22–40 s**.
 
-Both **20-minute production captures** pass the **180 s minimum melodic-repeat
-interval**: field **186.20 s**, shrine **202.30 s**. Shrine has **27 phrases / 91
-melody notes**. Identity ignores timing, velocity, bass, rolled dyads and glass;
-partial/single-note figures and the initial shrine handoff count. The source
-check also passes 20 minutes in all eight exploration/shrine contexts. These
-measurements establish the three-minute rule, not a blind-listener score of 100.
+## Extended piano bank verification (2026-10-13)
 
-The shrine hum moves **-45.4 → -29.4 LUFS-I**; hum plus room moves **-44.2 →
--29.4**. Sparse, finite inharmonic glass answers join the piano. Full shrine
-mix is **-27.2 LUFS**, below day field's **-24.6**, with **-7.1 dBTP** headroom.
-The Resurrection passage retains its quiet hum. [LISTEN](LISTEN.md) gives every
-context's measured before/after values. The separate 600 s forest capture is
-**-23.3 → -24.0 LUFS** after a 1 dB forest trim. All **65 music/SFX exports**
-pass the true-peak ceiling; the highest is **-1.2 dBTP**.
+Added 27 mono PCM16 WAVs, extending the imported bank from 21 to 30 keys per dynamic (90 recordings total). All 63 original recordings and their provenance entries remain unchanged. Source omissions/mislabels and actual per-layer pitches are recorded in [ASSETS](ASSETS.md); runtime selection covers C1–C8 within 1.50 semitones including measured tuning. Resident piano sample data is **121.85 → 182.19 MB**; including unchanged float cues is **184.20 MB**, below the 190 MB budget. PCM16 compaction and pitch-scaled active voice rings remain intact.
 
-Repeated creature encounters exposed identical boar/fox samples and a fixed crow
-caw rhythm. Each animal identity now has four prebuilt articulations; crow takes
-vary two/three caws, their gaps and pitch contours. Bonkoblin synthesis already
-varied its envelope/formants and is retained. Spatial pitch jitter now uses the
-audio RNG. All four species pass **12 encounters, four samples, zero adjacent
-sample repeats**, plus independent pitch and source-duration variation. Spectra
-retain low boar grunts, high fox contours, nasal crow harmonics and rough Bonkoblin
-formants. These are synthesized voices; no perceptual realism claim is inferred
-from spectral checks alone.
+Storage/import, harmony, combat, transitions, seven 1200-second style traces, live integration/loudness, prepared asset equivalence, and the actual web build/package checks pass. Transition stress p99 is **0.485 ms** against the 1 ms ceiling. The 600-second live field walk keeps piano **9.34 dB below** the world/step bed. No live capture clips or overloads the pre-limiter mix. All **37** listening/context/stem/audit/extra-cue WAVs meet ≤−1 dBTP: main listening worst **−3.9**, extra cues **−5.4**; the live captures peak at **−3.4**. A separate check meters all **42** music/transition exports, worst **−1.6 dBTP**. Day/night/rain are **−40.3 / −39.9 / −32.1 LUFS-I**, title/cave **−23.9 / −24.0**; original assertions and gains are retained.
 
-Combat retains the **152 BPM** cell, **8/8** changed source bars from the first
-round to the second in every tier, **7/7** changed non-entry rendered spectra,
-and a digitally silent whole-bar rest. Insects retain spectral variance
-**12.6064**, dominant-line occupancy **5.56%**, and **60.56%** silent windows.
+Current listening and extra-cue fixtures render sequential batches under one lock each, with no nested locks. Ten previously rendered individual gameplay/cue WAVs are byte-identical to their batch counterparts. Legacy baseline binaries retain the individual protocol. `build/listen-final/audition.html` is refreshed with **27 embedded Opus players**, preserved historical baseline audio, current level meters and updated score rolls. Browser QA confirms the title decodes as 45.0065 seconds, all media is embedded, and desktop/mobile layouts have no horizontal overflow.
 
-## Sources and reproduction
+```sh
+mkdir -p build/music-tmp
+export TMPDIR="$PWD/build/music-tmp"
+sloppy/bin/sloppy tools/piano_storage_check.jo
+python3 tools/piano_import_check.py
+sloppy/bin/sloppy tools/music_harmony_check.jo
+flock /tmp/botw-render.lock sloppy/bin/sloppy tools/combat_music_check.jo
+flock /tmp/botw-render.lock sloppy/bin/sloppy tools/music_transition_check.jo
+python3 tools/music_style_check.py --out build/piano-extension/style
+python3 tools/listen.py --out build/listen-final
+python3 tools/music_audition.py --render-extras
+```
 
-The 63 mono PCM16/48 kHz piano samples (pp/mf/ff, C2–C7) come from the University
-of Iowa MIS Steinway Model B recordings. URLs, hashes and processing are in
-`assets/audio/piano-import.json` and `tools/import_piano.py`; foley credits are
-in [audio credits](../assets/audio/LICENSE.txt). Piano/reverb, glass and creature
-takes are prepared at load, including lossless cache and spatial-filter paths.
-
-Run `python3 tools/listen.py` for WAVs, spectra, repeat traces and meters in
-`build/listen/`. Baseline evidence is in `build/music61-before/` and
-`build/music61-before-creatures/`; targeted checks/exports are in
-`build/music61-checks/` and `build/music61-tmp/`. See [LISTEN](LISTEN.md) for
-commands and validation scope. [Music history](rounds/MUSIC_HISTORY.md) retains
-earlier passes; this is a targeted audio pass, not a new whole-game evaluation.
+The Python render wrappers own their locks; do not wrap them in another flock. Full logs, memory/coverage reports, live mixer exports and archive verification are under `build/piano-extension/`. Raw sources and generated prepared packs remain ignored; only compact WAVs/provenance and code/docs are committed.

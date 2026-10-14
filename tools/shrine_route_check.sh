@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/shrine-routes
-sloppy/bin/sloppy build tools/shrine_route.jo -o build/shrine-route
+python3 tools/headless_build.py tools/shrine_route.jo -o build/shrine-route
 python3 - "$@" <<'PY'
 import os
 from pathlib import Path

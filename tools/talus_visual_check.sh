@@ -15,6 +15,7 @@ source = (game/'main.jo').read_text()
 for path in game.glob('*.jo'):
     source = source.replace(f"'{path.name}'", f"'{path}'")
 source = source.replace('update = (dt0: f64):','production_update = (dt0: f64):')
+source = source.replace('\ndraw = ():', '\nproduction_draw = ():')
 source += f"\nuse '{game/'talus.jo'}'\nfrom '{game/'input.jo'}' import __scr\n"
 source += '''
 visual_case = env("TALUS_VISUAL") ?? "reveal"
@@ -53,15 +54,7 @@ update = (dt: f64):
     e = enemies[visual_enemy]
     if pl.state == .climb: visual_climbed = true
     if pl.state == .mantle: visual_mantled = true
-    # A fixed documentary camera sees the rear ore and the climbing hero.
-    cam.override = true
-    cam.blend = 1.0
-    cam.o_pos = e.home + vec3(10,8,13)
-    cam.o_target = e.home + vec3(0,2.5,0)
-    if visual_case=="front":
-        cam.o_pos = e.pos+transform_dir(rotation_y(-e.face),vec3(7,6,-17))
-        cam.o_target = e.pos+vec3(0,3,0)
-    cam.o_fov = 43.0
+    assert(not cutscene_actors_hidden(), "Talus fixture runs visible exploration, outside the cinematic gate")
     cam.yaw = 0.0
     cam_yaw_global = 0.0
     if frame_number() == 85 and visual_case == "reveal":
@@ -132,6 +125,23 @@ update = (dt: f64):
     if visual_case=="defeat" and frame_number()==1800:
         assert(e.state==.gone and e.talus_drops.len()==6,"production shoulder strikes defeat Talus with ore drops")
         print("talus visual defeat: state={e.state} hp={e.hp:.2} drops={e.talus_drops.len()}")
+draw = ():
+    # Documentary framing belongs only to drawing. cam.override/blend are
+    # cinematic state: they intentionally hide actors and pause enemy AI.
+    # Restore the chase camera so gameplay and input retain production updates.
+    saved_cam = cam
+    saved_fov = aim_fov
+    e = enemies[visual_enemy]
+    cam.pos = e.home + vec3(10,8,13)
+    cam.target = e.home + vec3(0,2.5,0)
+    if visual_case=="front":
+        cam.pos = e.pos+transform_dir(rotation_y(-e.face),vec3(7,6,-17))
+        cam.target = e.pos+vec3(0,3,0)
+    aim_fov = 43.0
+    assert(not cutscene_actors_hidden(), "documentary capture keeps the Talus visible")
+    production_draw()
+    cam = saved_cam
+    aim_fov = saved_fov
 '''
 (out/'talus-visual.jo').write_text(source)
 PY

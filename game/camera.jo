@@ -9,6 +9,10 @@ use 'enemies.jo'
 use 'combat.jo'
 from 'physics.jo' import __to_local, __to_world_dir
 
+# Scripted shots and their return blend exclude incidental actors. Free-camera
+# inspection does not set override, so it still shows ordinary encounters.
+cutscene_actors_hidden = () -> bool: pl.state == .cutscene or cam.override or cam.blend > 0.01
+
 # The chase camera: orbits the player (mouse / right stick), follows gently behind while
 # running, pulls in against walls, and widens for sprinting and gliding. Defaults from the
 # original's CameraChase parameters: 50 degree vertical field of view, 5.3 m away.
@@ -279,8 +283,8 @@ __camera_step = (dt: f64):
             want_d = 6.6
             tgt_h = 1.2
         swim:
-            want_d = 3.4
-            tgt_h = 1.35
+            want_d = 4.2
+            tgt_h = SWIM_FOOT_DEPTH + 0.25
         _:
             if pl.sprinting: want_d = 5.9
             if pl.sneaking: tgt_h = 1.25
@@ -533,7 +537,7 @@ __camera_turn = (dt: f64):
         # drift the pitch back toward the default (walking out of the cave, level: the light at
         # the mouth opens on the view, not on the ground at his feet)
         out_ = not cam_open_ground and f64(length(pl.pos - cave_mouth)) < 18.0
-        cam.pitch = approach(cam.pitch, (if pl.state == .glide: 0.3 else: (if out_: 0.04 else: 0.22)), (if out_: 0.25 else: 0.4), dt)
+        cam.pitch = approach(cam.pitch, (if pl.state == .swim: 0.42 else: (if pl.state == .glide: 0.3 else: (if out_: 0.04 else: 0.22))), (if pl.state == .swim: 1.8 else: (if out_: 0.25 else: 0.4)), dt)
     if cam.locked:
         # face the lock-on target over the player's shoulder
         dv = cam.lock_pos - pl.pos

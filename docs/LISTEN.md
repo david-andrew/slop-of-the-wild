@@ -13,9 +13,9 @@ oversampled true peak (`ffmpeg ebur128=peak=true`). No normalization: master
 separate hum, room, footsteps/echoes and piano/glass, with a combined bed stem.
 Stems sum to the full shrine mix within **3 PCM counts**.
 
-The script owns one render lock and a 300 s game-process timeout; **do not wrap
+The script owns one render lock for the sequential current-fixture batch and a 300 s game-process timeout; **do not wrap
 it in another flock**. Each timeline resets the production mixer, sequencer,
-foley and RNGs (seed 70070). Walking clips emit steps at 0–12 s and 21–33 s.
+foley and RNGs (seed 70070). Legacy baseline binaries keep the individual-clip protocol. Ten gameplay/cue WAVs were checked byte-for-byte between individual and batch captures after the piano extension. Walking clips emit steps at 0–12 s and 21–33 s.
 The long captures maintain movement inputs; the scenario is scripted audio
 integration, not a claim of autonomous traversal.
 

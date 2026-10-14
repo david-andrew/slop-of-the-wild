@@ -196,7 +196,7 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
         post_sun_uv = sun_uv
         low = 1.0 - clamp((f64(env.light_dir.y) - 0.05) / 0.45, 0.0, 1.0)
         ahead = clamp(1.0 - f64(length(sun_uv - vec2(0.5, 0.5))) * 1.2, 0.0, 1.0)
-        post_rays = (0.25 + 0.75 * low) * ahead * (1.0 - env.dark) * 0.9
+        post_rays = (0.25 + 0.75 * low) * ahead * (1.0 - env.dark) * f64(shadow_direct(f32(env.clouds))) * 0.9
         post_ray_color = env.sun_color * 0.7
     cpu_mark("post_draw")
     gpu_mark("post")

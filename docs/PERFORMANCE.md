@@ -1,9 +1,133 @@
 # Performance — Sloppy 0.6.0, 2026-10-13
 
-Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland,
+Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland and XWayland,
 **2133×1200 physical pixels**, production dynamic scene scale. All outliers are
 retained. These are **producer/present-return intervals, not scanout timestamps**;
 the shared desktop is not an isolated hardware guarantee.
+
+## Round 66 critic follow-up: managed X11 launcher and swimming
+
+`tools/round66_sol_pacing.py prepare` freezes one observational executable;
+`compare` alternates native Wayland and X11 for the fast presentation preference,
+then FIFO. Every run has **120 active seconds after first-frame preparation**, the
+same real-dt forest waypoint/input route, seed 64, initial hour 11, clear weather,
+production dynamic scene scaling and **2133×1200 verified client pixels**. The
+first four active seconds are reported separately; all raw intervals remain in
+`build/round66-sol/`. X11 uses a managed fixed-size dialog, with size hints and
+fresh PNG/client validation; it is not an unmapped throughput-only benchmark.
+`SLOPPY_VSYNC=0` requests mailbox preference: this driver exposes **immediate
+(mode 0)** on X11 and **mailbox (mode 1)** on Wayland. FIFO is mode 2 on both.
+
+| Platform / actual mode | Return p50 / p99 / worst, ms | Frames >25 ms |
+|---|---|---|
+| Native Wayland / mailbox | 10.57 / 16.98 / 80.00 | 26 |
+| Managed X11 / immediate | 11.26 / 18.37 / 29.81 | 4 |
+| Native Wayland / FIFO | 16.67 / 36.08 / 264.21 | 459 |
+| Managed X11 / FIFO | 16.68 / 26.02 / 221.03 | 81 |
+
+Select **managed X11/XWayland when DISPLAY is advertised, Vulkan, fastest
+available presentation and BOTW_FPS=0** in both Linux launchers. Explicit
+`SLOPPY_PLATFORM=wayland` overrides the choice; with no DISPLAY the runtime keeps
+its normal platform selection. This decision reduces the large periodic tails,
+not every percentile: X11's dynamic-route p99 is higher than Wayland's and still
+misses 16.7 ms. The four X11 >25 ms returns are callback-dominated waits, with
+6.67–7.68 ms callback thread CPU versus 21.66–25.50 ms wall time; presentation is
+0.25–5.06 ms. Poll/geometry queries contribute up to 4.79 ms in two of those
+frames. These measurements do not identify a particular native wait by themselves.
+
+The initial full-scale stress pair used a remapped override-redirect X11 client.
+It retained ten-second presentation stalls on **both** backends (Wayland 23
+frames >25 ms, p99 21.36; X11 21, p99 21.73). Preserve those logs as a distinct
+window/scale protocol; they are not evidence that ordinary managed X11 fixes
+all compositor/driver loads. The later managed, dynamic-scale pair removes the
+periodic X11 presentation waits. No vendored runtime code was changed.
+
+Standalone `tools/upstream/presentation.jo`, with audio disabled, reproduces six
+post-warmup native Wayland waits in 65 seconds: **46.6–49.4 ms**, roughly ten
+seconds apart. Its X11 control has **zero >25 ms returns** and **13.04 ms worst**.
+Those clear-only outputs are 2133×1200 on Wayland and 1280×720 on X11, so the
+matched game matrix above is the size-controlled comparison. Logs are
+`build/round66-sol/upstream-{wayland,x11}.log`; raw game runs, environment and
+executable hashes, tail stages and PNG validation are in `pacing-summary.json`
+and `pacing-*.{log,environment.json,png}` in that directory.
+
+### Ten-minute source-launcher session
+
+The lightweight repeat completed **600.004 active seconds / 71,386 returns** in
+its ordinary managed **1280×720** X11 window, with Vulkan immediate fallback and
+production dynamic scale. All-active return **p50 / p99 / worst are
+8.188 / 13.826 / 82.897 ms**; **32 frames exceed 25 ms** (0.045%). The first-four-
+second exclusion gives essentially the same p99, 13.830 ms, and the same 32 tails.
+Thus the default-size p99 target passes, but **zero >25 ms frames does not**.
+This is not a ten-minute 2133×1200 result: the size-controlled matrix above still
+misses the 16.7 ms target on X11 at that size.
+
+Every late return has a stage record: **21 callback-dominated, 6 geometry-query-
+dominated, 5 presentation-dominated**. The worst frame has 78.616 ms callback wall
+time versus 8.549 ms thread CPU. A 52.861 ms frame includes a 37.405 ms synchronous
+XGetGeometry query in the observer; client dimensions stay constant. Only two
+presentation calls exceed 25 ms, **27.241 and 26.611 ms**, without the old repeating
+ten-second cadence. The lightweight run identifies callback waits/scheduling and
+observer-query stalls, but does not identify the exact native cause of every wait.
+
+A separately retained, fully traced ten-minute diagnostic has **189 >25 ms
+returns**, p99 **13.835 ms**, worst **388.158 ms**. Its tail categories are 158
+callback wall waits/preemption, 17 callback CPU work, 10 geometry queries and 4
+presentation. **165 late frames contain more than two simulation ticks**. The
+three worst callbacks have **50–61 involuntary context switches**; the worst has
+370.782 ms wall / 63.937 ms CPU and 41 simulation ticks. Individual nominally tiny
+stages show long wall delays with little CPU. This supports preemption followed
+by catch-up simulation (the game retains its existing 0.5 s loop cap). Full trace
+formatting can amplify such bursts, so use the lightweight run for default pacing,
+and retain the traced run as diagnostic evidence rather than pooling them.
+
+Both sessions preserve one game across four SIGSTOP scheduling pauses, releasing
+and reacquiring the same shared flock every 120 active seconds. Game/observer
+clock anchors exclude paused periods; resumed frames are retained. The final
+harness additionally drains the GPU before handing off the lock; a short lifecycle
+smoke test exercises that handoff. This drain was added after the recorded long
+sessions and changes only scheduling handoffs, not production game code.
+
+Evidence: `build/round66-sol/pacing-default-continuous.{log,environment.json,png}`,
+`pacing-default-traced.*`, `pacing-summary.json`, and
+`traced-session-attribution.json`. `session` uses lightweight timing;
+`session --trace` runs the separate diagnostic. Use a fresh `--output build/<name>`
+for a different executable/protocol, retaining older evidence. No strict claim of
+zero-tail performance is made. Wake anatomy/hair edits were deferred while this
+performance and swimming work took priority.
+
+### Swim surface and CPU evidence
+
+Swim clips are centered on the water surface, while collision and shore-grab
+probes use a standing foot anchor **1.25 m below it**. Raise the rendered origin
+by that depth, crossfade the origin correction with the animation, and lift the
+breaststroke chest/neck while counter-rotating the arms to retain their sweep.
+Keep the foot anchor for low-bank grabs. Exhaustion lowers the rendered lift
+along the existing drowning timer. The swim camera keeps its look point 25 cm
+above the surface, uses a 4.2 m boom, and settles to a 0.42 rad downward pitch.
+Movement speeds, stamina, drowning damage/return rules and reference rows remain
+unchanged.
+
+A **48.8-second contiguous locked batch** interleaves three before/after repeats
+at 1280×720, fixed scale 1, seed 64, initial hour 11 and clear weather. Moving
+frames 61–150 provide 270 samples per version; treading frames 241–720 provide
+1,440. Every sample in those windows is retained. Main-thread CPU p99 improves
+**6.305→4.795 ms moving** and **6.635→4.408 ms treading**. Callback wall p99
+improves **9.023→7.743 ms** and **9.348→7.733 ms**, respectively. Earlier repeats
+separated by other workers had more variable CPU spikes; they remain in the
+same evidence directory rather than replacing this paired batch.
+
+Matched captures were downscaled and viewed: `cpu-matched/{before,after}-1-960.png`
+(treading), and `swim-before-960.png` / `swim-after-final3-960.png` (moving).
+The final normal-swim appearance is unchanged by the subsequent exhaustion-only
+lift adjustment. Raw images, logs, binary hashes and batch summary are under
+`build/round66-sol/`; the CPU comparison is `cpu-matched/summary.json`.
+`swim_surface_check` is registered in the runner's CPU array and covers both
+models, 480 stroke/tread poses, clip-origin transitions, head/shoulder clearance,
+horizontal kick, float convergence, speed, camera, exhaustion/shore return,
+shallow exits and a low-bank grab. Related movement, camera, contact, input,
+architecture, opening and wake/title checks pass; prepared asset equivalence
+also passes. `build/round66-sol/checks-summary.json` records the checks and paths.
 
 ## Round 67: game-only pacing, piano storage and final head lanes
 

@@ -20,6 +20,13 @@ packs = [f'assets/prepared/{name}.bin' for name in args.packs.split(',') if name
 if 'assets/prepared/textures.bin' in packs:
     # The RGBA pack replaces all decoded startup images (including both UI atlases).
     paths = [p for p in paths if not p.endswith('.png')]
+# Reject a stale pre-extension trace rather than quietly omitting new recordings.
+# The default browser build synthesizes stereo room samples from compact WAVs.
+piano_report = json.loads(Path('assets/audio/piano-import.json').read_text())
+piano_paths = {f"assets/audio/{sample['output']}" for sample in piano_report['samples']}
+missing = sorted(piano_paths - set(paths))
+if missing:
+    raise SystemExit(f'Stale/incomplete piano asset trace; rerun tools/build_web.sh: {missing}')
 paths += packs
 for path in paths:
     if not path.startswith('assets/') or '..' in Path(path).parts or not Path(path).is_file():

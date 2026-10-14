@@ -22,7 +22,7 @@ p.write_text(p.read_text()+'\nuse_slot = (k: int):'+callback)
 if proposed:
     subprocess.run(['git','apply',f'--directory={root}','tools/element_journey_support.patch'],check=True)
 binary=root/'element-journey'
-subprocess.run(['sloppy/bin/sloppy','build',str(p),'-o',str(binary)],check=True)
+subprocess.run(['python3','tools/headless_build.py',str(p),'-o',str(binary)],check=True)
 log=Path(f'build/round57/element-journey-{mode}.log')
 with log.open('w') as f:
     result=subprocess.run([str(binary)],stdout=f,stderr=subprocess.STDOUT)

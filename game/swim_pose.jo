@@ -1,0 +1,26 @@
+use 'skel.jo'
+
+# Blend the difference between surface-centered swim clips and standing foot
+# origins with the same crossfade as the pose, including water entry and exit.
+swim_clip_weight = (animation: Animator, swim: int, tread: int) -> f64:
+    current = if animation.clip >= 0 and (animation.clip == swim or animation.clip == tread): 1.0 else: 0.0
+    if animation.prev < 0 or animation.fade <= 0.0: return current
+    previous = if animation.prev == swim or animation.prev == tread: 1.0 else: 0.0
+    blend = smoothstep(0.0, 1.0, 1.0 - animation.fade / max(animation.fade_len, 0.0001))
+    lerp(previous, current, blend)
+
+swim_render_lift = (weight: f64, foot_depth: f64, sink_time: f64) -> f64:
+    max(0.0, foot_depth - sink_time * 0.8) * weight
+
+# The imported breaststroke is surface-centered, unlike standing locomotion.
+# Keep its horizontal hips/kick and symmetric sweep, with the chest lifted to
+# breathe. Counter-rotate the shoulders so the authored sweep stays near the surface,
+# without solving both arms or changing the timing of the source stroke.
+swim_surface_pose = (lib: AnimLib, pose: mut Pose, moving: f64):
+    weight = clamp(moving, 0.0, 1.0)
+    if weight <= 0.0: return
+    rotate_bone(lib, pose, lib_bone(lib, "spine_01"), vec3(1, 0, 0), -0.75 * weight)
+    rotate_bone(lib, pose, lib_bone(lib, "neck_01"), vec3(1, 0, 0), -0.10 * weight)
+    loop side in [0..2):
+        suffix = if side == 0: "_l" else: "_r"
+        rotate_bone(lib, pose, lib_bone(lib, "upperarm" + suffix), vec3(1, 0, 0), 0.95 * weight)

@@ -22,7 +22,7 @@ PAGE = "https://theremin.music.uiowa.edu/MISpiano.html"
 PERMISSION = "https://theremin.music.uiowa.edu/MIS.html"
 BASE = "https://theremin.music.uiowa.edu/sound%20files/MIS/Piano_Other/piano/"
 RATE = 48000  # MIX_RATE in sloppy/lib/game/audio.jo
-KEYS = range(36, 97, 3)  # PIANO_LO .. PIANO_HI, PIANO_STEP = 3
+KEYS = range(21, 109, 3)  # PIANO_LO .. PIANO_HI, PIANO_STEP = 3
 
 
 def sha(path):
@@ -39,14 +39,14 @@ def fetch(url, path):
 
 
 def decode(path, filters=None):
-    cmd = ["ffmpeg", "-v", "error", "-i", str(path)]
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-protocol_whitelist", "file,pipe", "-i", str(path)]
     if filters:
         cmd += ["-af", filters]
     cmd += ["-ar", str(RATE), "-ac", "1", "-f", "f32le", "-"]
     return np.frombuffer(subprocess.check_output(cmd), dtype="<f4").copy()
 
 
-def attack(data):
+def attack(data, max_onset_ms=2000):
     # 1 ms RMS windows, sustained for 3 ms: rejects individual room-noise spikes.
     block = RATE // 1000
     rms = np.sqrt(np.mean(data[:len(data) // block * block].reshape(-1, block)**2, axis=1))
@@ -58,7 +58,7 @@ def attack(data):
     if not len(candidates):
         raise ValueError("No sustained piano attack")
     onset = int(candidates[0])
-    if onset > 2000:
+    if onset > max_onset_ms:
         raise ValueError(f"Unexpected attack at {onset} ms; inspect the source")
     # Find the quiet edge before the strike, preserving the hammer's softer start.
     edge = max(min(noise * 2.5, peak * .08), peak * .015)
@@ -84,6 +84,8 @@ def pitch_cents(data, midi):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--download", action="store_true", help="fetch missing AIFFs and credit pages")
+    parser.add_argument("--only-missing", action="store_true",
+                        help="preserve verified WAVs/provenance and import only new bank keys")
     args = parser.parse_args()
     # Worktrees sometimes symlink the source cache into the main checkout.
     if SOURCE.parent.is_symlink() or SOURCE.is_symlink():
@@ -93,26 +95,53 @@ def main():
     if args.download:
         for url in [PAGE, PERMISSION]:
             fetch(url, SOURCE / url.rsplit("/", 1)[1])
+    previous = {}
+    if args.only_missing:
+        report = json.loads((OUTPUT / "piano-import.json").read_text())
+        previous = {(e["dynamic"], e["midi"]): e for e in report["samples"]}
     entries = []
     for dynamic in ["pp", "mf", "ff"]:
         for midi in KEYS:
-            note = ["C", "Eb", "Gb", "A"][(midi % 12) // 3] + str(midi // 12 - 1)
+            # Iowa lacks pp A0 and mf A0/Bb0. The lowest slot uses the
+            # first available recording, with per-layer pitch correction in game.
+            recording_midi = {"pp": 22, "mf": 23, "ff": 22}[dynamic] if midi == 21 else midi
+            if dynamic == "pp" and midi == 24:
+                recording_midi = 25  # Iowa's pp C1 file actually sounds near B0.
+            note = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"][recording_midi % 12] + str(recording_midi // 12 - 1)
+            if dynamic == "ff" and midi == 21:
+                note = "A0"
+            # mf A7/C8 are mislabeled by one semitone, with normal positive
+            # treble stretch relative to Ab7/B7. Keep the actual source names.
+            if dynamic == "mf" and midi in (105, 108):
+                recording_midi = midi - 1
+            target = OUTPUT / f"piano-{dynamic}-{midi}.wav"
+            if (dynamic, midi) in previous:
+                entry = previous[(dynamic, midi)]
+                if sha(target) != entry["output_sha256"]:
+                    raise ValueError(f"{target}: does not match existing provenance")
+                entries.append(entry)
+                continue
             path = SOURCE / f"Piano.{dynamic}.{note}.aiff"
             if args.download:
                 fetch(BASE + path.name, path)
             if not path.exists():
                 raise SystemExit(f"Missing {path}; run with --download")
             # Measure attacks after removing DC/rumble; raw-file RMS can trigger early.
-            raw = decode(path, "highpass=f=25,lowpass=f=11000")
-            start, noise = attack(raw)
-            duration = min(8.0 - (midi - 36) / 20, len(raw) / RATE - start / RATE)
+            highpass = 15 if midi < 36 else 25
+            raw = decode(path, f"highpass=f={highpass},lowpass=f=11000")
+            start, noise = attack(raw, 8000 if midi < 36 else 2000)
+            duration = min(8.0 - max(0, midi - 36) / 20, len(raw) / RATE - start / RATE)
             fade = .8 if midi < 72 else .5
             filters = (f"atrim=start={start / RATE:.6f}:duration={duration:.6f},"
-                       "asetpts=PTS-STARTPTS,highpass=f=25,lowpass=f=11000,"
+                       f"asetpts=PTS-STARTPTS,highpass=f={highpass},lowpass=f=11000,"
                        f"afade=t=in:d=0.001,afade=t=out:st={duration - fade:.6f}:d={fade}")
             data = decode(path, filters)
-            tuning = pitch_cents(data, midi)
-            if abs(tuning) > 40:
+            tuning = pitch_cents(data, recording_midi)
+            # The Steinway's top octave has genuine stretched tuning.
+            # A7/C8 exceed the middle-register 40-cent guard; still reject a
+            # wrong key (>= one semitone) instead of hiding source mistakes.
+            tuning_limit = 50 if recording_midi >= 99 else 40
+            if abs(tuning) > tuning_limit:
                 raise ValueError(f"{path.name}: pitch {tuning:+} cents; inspect the note")
             # Normalize the first half-second RMS, retaining pp's gentler strike.
             # A peak cap keeps sparse chords safely below full scale before reverb.
@@ -130,7 +159,6 @@ def main():
             if (not len(nonzero) or nonzero[0] > RATE * .003 or audible[0] > RATE * .010
                     or musical_onset_ms > 10):
                 raise ValueError(f"{path.name}: leading silence after import")
-            target = OUTPUT / f"piano-{dynamic}-{midi}.wav"
             temporary = target.with_suffix(".wav.tmp")
             with wave.open(str(temporary), "wb") as wav:
                 wav.setnchannels(1)
@@ -138,7 +166,7 @@ def main():
                 wav.setframerate(RATE)
                 wav.writeframes(pcm.tobytes())
             temporary.replace(target)
-            entries.append({"midi": midi, "note": note, "dynamic": dynamic,
+            entries.append({"midi": midi, "recording_midi": recording_midi, "note": note, "dynamic": dynamic,
                             "source_url": BASE + path.name, "source_sha256": sha(path),
                             "source_duration_seconds": len(raw) / RATE,
                             "output": target.name, "output_sha256": sha(target),
@@ -156,13 +184,23 @@ def main():
               "source_page": PAGE, "permission_page": PERMISSION,
               "permission": "May be downloaded and used for any projects, without restrictions.",
               "format": "mono PCM16 WAV", "sample_rate": RATE,
-              "bank": {"low_midi": 36, "high_midi": 96, "step_semitones": 3},
+              "bank": {"low_midi": 21, "high_midi": 108, "step_semitones": 3},
+              "lowest_recordings": {"pp": "Bb0", "mf": "B0", "ff": "Bb0 (file named A0)"},
+              "source_substitutions": {"ff_21": "A0 file sounds Bb0",
+                                       "pp_24": "Db1; nominal C1 source sounds approximately B0",
+                                       "mf_105": "A7 file sounds Ab7 with treble stretch",
+                                       "mf_108": "C8 file sounds B7 with treble stretch"},
+              "missing_source_notes": ["Piano.pp.A0.aiff", "Piano.mf.A0.aiff", "Piano.mf.Bb0.aiff"],
               "source_layout": "One note per AIFF; no octave-range slicing required.",
               "ffmpeg_version": subprocess.check_output(["ffmpeg", "-version"], text=True).splitlines()[0],
               "numpy_version": np.__version__,
+              "versions_scope": "new imports; --only-missing preserves existing entries byte-for-byte",
               "credit_pages": [{"url": url, "sha256": sha(SOURCE / url.rsplit('/', 1)[1])}
                                for url in [PAGE, PERMISSION] if (SOURCE / url.rsplit('/', 1)[1]).exists()],
               "total_audio_bytes": sum(e["output_bytes"] for e in entries), "samples": entries}
+    if args.only_missing:
+        report["prior_credit_pages"] = json.loads((OUTPUT / "piano-import.json").read_text()).get("prior_credit_pages",
+            json.loads((OUTPUT / "piano-import.json").read_text()).get("credit_pages", []))
     (OUTPUT / "piano-import.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"{len(entries)} samples: {report['total_audio_bytes']:,} bytes")
 

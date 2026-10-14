@@ -50,9 +50,10 @@ source = (game / 'main.jo').read_text()
 source = re.sub(r"(?m)^(use|from) '([^']+)'", lambda m: f"{m[1]} '{(game / m[2]).resolve()}'", source)
 # The window back buffer at update start can contain an older frame. Read at
 # draw end after the current world and HUD, before presentation, for exact timing.
-source = re.sub(r'    if __capture_dir != none and __capture_every > 0 and frame_number\(\) > 0 and frame_number\(\) % __capture_every == 0:\n        save_png\(screenshot\(\), __capture_dir! \+ "/frame-\{frame_number\(\)\}.png"\)\n', '', source)
+source = re.sub(r'    if __capture_dir != none and __capture_every > 0 and frame_number\(\) > 0 and frame_number\(\) % __capture_every == 0:\n(?:        flush\(\)\n)?        save_png\(screenshot\(\), __capture_dir! \+ "/frame-\{frame_number\(\)\}.png"\)\n', '', source)
 checkpoint = '''
     if __capture_dir != none and (frame_number() == 299 or frame_number() == 300 or frame_number() == 302 or frame_number() == 305):
+        flush()
         save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")
         eprint("checkpoint frame={frame_number()} hp={pl.hp} state={pl.state} lightning={env.lightning:.4}")
 '''

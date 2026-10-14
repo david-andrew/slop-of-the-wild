@@ -38,6 +38,7 @@ struct Flame:
     render_center = vec3(0, 0, 0)
     render_seed = -1.0
     render_offset = 0.0
+    singe_stage = 0
 
 flames: Flame[]
 __burning: {int: bool} = {}
@@ -229,7 +230,8 @@ ignite_at = (p: vec3) -> bool:
     __burn_first = min(__burn_first, c)
     __burn_last = max(__burn_last, c)
     flames.push(Flame(c, life = random(4.0, 6.5), render_center = q, render_seed = hash2(f64(c),83.0), render_offset = hash2(f64(c),84.0)))
-    # Ignition is visible flame, not a scar in neighbouring unburned fuel.
+    # Live fuel singes in its own cell; settled charcoal still waits for expiry.
+    burn_cell_mark(f64(q.x), f64(q.z), 0.45, 2)
     true
 
 # One bounded crackle bed for nearby fire. Grass fires used to be silent because
@@ -659,6 +661,10 @@ elements_update = (dt: f64, cam: vec3):
         f = flames[i]
         f.t += dt
         p = cell_pos(f.cell)
+        stage = min(4, int(f.t * 2.0))
+        if stage > f.singe_stage:
+            burn_cell_mark(f64(p.x), f64(p.z), f64(stage - f.singe_stage) * 0.13, 2)
+            f.singe_stage = stage
         rained = env.rain > 0.3 and random() < dt * 2.0
         # spread to the neighbors (downwind first)
         if f.t > 0.4 and random() < dt * 2.2:
@@ -700,6 +706,7 @@ elements_update = (dt: f64, cam: vec3):
             elem_events.push(ElemEvent("douse", p))
             if length(p - cam) < 80.0: fx_steam(p + vec3(0, 0.15, 0), 8)
         if f.t >= f.life or rained:
+            burn_cell_mark(f64(p.x), f64(p.z), -1.0, 2)
             burn_cell_mark(f64(p.x), f64(p.z), 1.0)
             __scars.push(vec4(p.x, p.z, f32(elapsed()), 0.0))
             if not rained and f64(length(p - cam)) < 90.0:
@@ -1151,7 +1158,9 @@ player_torch_update = (dt: f64, lit: mut bool):
             drop_gear(.weapon, inv.weapon, tip, forward_of(pl.face) * -2.0 + vec3(0, 4.0, 0))
             before = pl.hp
             damage_player(2, pl.pos - forward_of(pl.face), 2.0)
-            if pl.hp < before: player_shock_t = 0.32
+            if pl.hp < before:
+                player_shock_t = 0.32
+                player_element_hit = true
             fx_sparks(tip, 30, rgba(0.7, 0.85, 1.0, 1))
         _: pass
     combat_revalidate_equipment()
@@ -1324,6 +1333,28 @@ draw_bonfires = (cam: vec3):
             tilt = if active: sin(t * 17.0) * 0.055 else: 0.0
             draw_prop(shape_mesh(.lid), translation(b.pos + v3(0.0, 0.55 + bounce, 0.0)) * rotation_z(tilt) * rotation_x(PI / 2.0) * scaling(v3(1.5, 1.5, 3.0)), rgba(0.25, 0.25, 0.27, 1), 0.0)
 
+# Persistent burnt timber keeps the original prop's construction readable.
+# Geometry uses deterministic offsets, with no gameplay RNG or colliders.
+camp_residue = (barrel: bool) -> MeshB:
+    b = MeshB()
+    if barrel:
+        loop k in [0..12):
+            a = f64(k) * TAU / 12.0
+            z = f64(k + 1) * TAU / 12.0
+            mb_cyl(b, v3(cos(a)*0.34,0.07,sin(a)*0.34), v3(cos(z)*0.34,0.07,sin(z)*0.34), 0.024, 0.024, rgb(0.18,0.15,0.11), 4)
+        loop k in [0..5):
+            a = f64(k) * 1.3
+            mb_box(b, v3(cos(a)*0.28,0.08+f64(k%2)*0.04,sin(a)*0.28), vec3(0.055,0.08,0.035), rgb(0.12+f64(k)*0.014,0.075,0.035), rotation_y(-a))
+    else:
+        loop k in [0..6):
+            col = rgb(0.105+f64(k%3)*0.035,0.067+f64(k%3)*0.020,0.035)
+            mb_box(b, v3(-0.34+f64(k)*0.135,0.045+f64(k%2)*0.018,sin(f64(k)*3.0)*0.14), vec3(0.048,0.023,0.33-f32(k%3)*0.035), col, rotation_y(sin(f64(k)*2.0)*0.28))
+        loop z in [-0.32,0.32]:
+            mb_box(b, v3(0,0.10,z), vec3(0.36,0.025,0.04), rgb(0.16,0.095,0.045))
+    b
+
+__barrel_residue: Mesh
+__crate_residue: Mesh
 barrel_mesh: Mesh
 __powder_wick: Mesh
 __puzzle_cracks: Mesh
@@ -1338,6 +1369,10 @@ draw_barrels = (cam: vec3):
         mb_cyl(b, v3(0.0, 0.2, 0.0), v3(0.0, 0.26, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
         mb_cyl(b, v3(0.0, 0.64, 0.0), v3(0.0, 0.7, 0.0), 0.345, 0.345, rgb(0.3, 0.3, 0.3), 12)
         barrel_mesh = mesh(b.vs, b.idx)
+        ring = camp_residue(true)
+        slats = camp_residue(false)
+        __barrel_residue = mesh(ring.vs, ring.idx)
+        __crate_residue = mesh(slats.vs, slats.idx)
         wick = MeshB()
         mb_cyl(wick, v3(0, 0.89, 0), v3(0.08, 1.10, 0.03), 0.018, 0.012, rgb(0.24, 0.17, 0.09), 5)
         mb_sphere(wick, v3(0.08, 1.10, 0.03), vec3(0.025, 0.02, 0.025), rgb(0.72, 0.46, 0.14), 4)
@@ -1362,8 +1397,14 @@ draw_barrels = (cam: vec3):
         if length(puzzle.pos - cam) > 70.0: continue
         if puzzle.thorn and puzzle.opened: draw_prop(__thorn_stubble, translation(puzzle.pos), rgb(1, 1, 1), 0.0)
         else if not puzzle.thorn and not puzzle.opened: draw_prop(__puzzle_cracks, translation(puzzle.pos), rgb(1, 1, 1), 0.0)
+    loop w in camp_wood:
+        if w.alive or w.char < 0.9 or length(w.pos-cam) > 70.0: continue
+        draw_prop((if w.key == "cabin_barrel": __barrel_residue else: __crate_residue), translation(w.pos) * rotation_y(f64(w.pos.x)*0.37), rgb(1,1,1), 0.0)
     loop b in barrels:
-        if not b.alive or f64(length(b.pos - cam)) > 100.0: continue
+        if f64(length(b.pos - cam)) > 100.0: continue
+        if not b.alive:
+            if not b.explosive and b.char > 0.9: draw_prop(__barrel_residue, translation(b.pos), rgb(1,1,1), 0.0)
+            continue
         col = if b.explosive: rgba(0.8, 0.22, 0.12, 1) else: rgba(0.5, 0.36, 0.22, 1)
         glow = if b.fuse > 0.0: 1.5 else: 0.0
         m = translation(b.pos)
@@ -1379,7 +1420,9 @@ draw_barrels = (cam: vec3):
 shock_player = (quarters: int, from: vec3, knock: f64):
     before = pl.hp
     hit_player(quarters, from, knock)
-    if pl.hp < before: player_shock_t = 0.32
+    if pl.hp < before:
+        player_shock_t = 0.32
+        player_element_hit = true
 
 # Contact burns use the same immediate flinch as electrical/combat wounds.
 # Only accepted damage starts body flames; repeated contacts cannot reset them.
@@ -1389,6 +1432,7 @@ burn_player = (from: vec3, knock: f64):
     combat_hit_reaction(before, from, false)
     if pl.hp < before:
         player_burn_t = 0.85
+        player_element_hit = true
         pl.events.push("burn")
 
 # Finite columns over live sources, blocked by a roof/overhang. Do not wrap

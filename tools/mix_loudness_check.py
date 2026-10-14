@@ -64,7 +64,9 @@ def main():
     for mode, reading in readings.items():
         print(mode, json.dumps(reading))
     if args.check:
-        assert -26 <= readings['field']['integrated_lufs'] <= -23, readings['field']
+        # Sparse extreme-register pp now leaves the world in front; match
+        # listen.py's documented exploration target, without master gain.
+        assert -43 <= readings['field']['integrated_lufs'] <= -30, readings['field']
         for mode in ['engaged', 'low_hp']:
             assert -22.5 <= readings[mode]['integrated_lufs'] <= -20.0, (mode, readings[mode])
             assert readings[mode]['integrated_lufs'] > readings['field']['integrated_lufs'], (mode, readings[mode])
@@ -72,7 +74,7 @@ def main():
         for mode, reading in readings.items():
             assert reading['true_peak_dbtp'] <= -1, (mode, reading)
             assert reading.get('pre_limiter_overloads', 0) == 0, (mode, reading)
-        print('PASS full-mix loudness: exploration -26 to -23 LUFS, combat -22.5 to -20 LUFS, close last-heart level, peaks <= -1 dBTP, no pre-limiter overloads')
+        print('PASS full-mix loudness: exploration -43 to -30 LUFS, combat -22.5 to -20 LUFS, close last-heart level, peaks <= -1 dBTP, no pre-limiter overloads')
 
 
 if __name__ == '__main__':

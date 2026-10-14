@@ -129,7 +129,8 @@ capture = ():
             signature = ""
             loop e in seq.events:
                 if not e.accompaniment: signature = "{signature}{e.midi}:"
-            line(events, "{t:.6},phrase,{signature},1\n")
+            # Empty timer turns are musical silence, not a repeated melody.
+            if len(signature) > 0: line(events, "{t:.6},phrase,{signature},1\n")
         pl.events.clear()
         enemy_events.clear()
         elem_events.clear()

@@ -29,7 +29,7 @@ pickup = ('field_pickup = ():\n'
 harness = Path('tools/defect_hunt.jo.in').read_text()
 harness = harness.replace('# @COOK_CALLBACK@', cook).replace('# @PICKUP_CALLBACK@', pickup)
 (OUT / 'harness.jo').write_text(harness)
-subprocess.run(['sloppy/bin/sloppy', 'build', str(OUT / 'harness.jo'), '-o', str(OUT / 'check')], check=True)
+subprocess.run(['python3', 'tools/headless_build.py', str(OUT / 'harness.jo'), '-o', str(OUT / 'check')], check=True)
 clean = {k: v for k, v in os.environ.items() if not k.startswith(('BOTW_', 'SLOPPY_'))}
 failed = []
 
@@ -54,7 +54,7 @@ print('PASS fresh-process defect hunt')
 # Permanent placement and elemental transactions, with process restart at each edge.
 third = harness.split('runtime = ():', 1)[0] + Path('tools/placement_gear_save.jo.in').read_text()
 (OUT / 'transactions.jo').write_text(third)
-subprocess.run(['sloppy/bin/sloppy', 'build', str(OUT / 'transactions.jo'), '-o', str(OUT / 'transactions')], check=True)
+subprocess.run(['python3', 'tools/headless_build.py', str(OUT / 'transactions.jo'), '-o', str(OUT / 'transactions')], check=True)
 with tempfile.TemporaryDirectory(prefix='transactions-', dir=OUT) as temp:
     for mode in ['write', 'read', 'repicked']:
         result = subprocess.run([str(OUT / 'transactions'), mode, temp], env=clean, text=True,
@@ -67,7 +67,7 @@ print('PASS placement/gear fresh-process transactions')
 # Round 66: isolated production cross-system probes share the established fixtures.
 second = harness.split('runtime = ():', 1)[0] + Path('tools/round66_session.jo.in').read_text() + Path('tools/round66_hunt.jo.in').read_text()
 (OUT / 'second.jo').write_text(second)
-subprocess.run(['sloppy/bin/sloppy', 'build', str(OUT / 'second.jo'), '-o', str(OUT / 'second')], check=True)
+subprocess.run(['python3', 'tools/headless_build.py', str(OUT / 'second.jo'), '-o', str(OUT / 'second')], check=True)
 for name in ['held-gear', 'arrow-water', 'skull-water', 'skull-fire', 'item-wall', 'guardian-cover', 'warm-expiry', 'element-physics', 'enemy-edge', 'enemy-bank', 'talus-edge', 'shrine-fight', 'blast', 'wind-river', 'rate-combat', 'camera-spaces', 'camera-water', 'long-session']:
     log = OUT / f'round66-{name}.log'
     rss_samples = []

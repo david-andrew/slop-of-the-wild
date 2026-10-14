@@ -22,7 +22,7 @@ camp_wood.clear()
 pl.pos=vec3(20,0,20)
 assert(ignite_at(vec3(0.5,0.1,0.5)))
 assert(ignite_at(vec3(1.5,0.1,0.5)))
-assert(burn_value(0.5,0.5,0)==0 and burn_value(0.5,0.5,2)==0,"ignition leaves fresh fuel green until consumed")
+assert(burn_value(0.5,0.5,0)==0 and burn_value(0.5,0.5,2)>0.4,"live fuel singes while settled charcoal waits for expiry")
 loop frame in [0..320):
     # Observe the actual renderer's instances without drawing or spawning particles.
     flames[0].t=f64(frame)/60.0

@@ -129,6 +129,16 @@ def main():
                     assert onset['body_to_all_background_db'] >= 6, (mode, onset)
                 elif mode == 'scenario':
                     assert onset['to_rain_fire_db'] >= 0, (mode, onset)
+        # Music is the commentary; world/steps supply the environmental bed.
+        # Sum their energies, not their dB values. Keep audible pp headroom
+        # beneath that bed, without changing the master or combat/cue gains.
+        # Biome intentionally injects a full-level middle-register note
+        # every two seconds to stress handoffs; it is not authored BGM.
+        for mode in ['field']:
+            levels = data[mode]['levels']
+            bed = 10 * math.log10(sum(10 ** (levels[k]['rms_dbfs'] / 10) for k in ['wind', 'footsteps', 'wildlife']))
+            margin = levels['music']['rms_dbfs'] - bed
+            assert -12 <= margin <= -6, (mode, 'field music below world/steps', margin)
         field = data['field']['repetition']
         assert field['step']['identical_consecutive'] == 0
         assert field['bird']['same_within20s'] == 0

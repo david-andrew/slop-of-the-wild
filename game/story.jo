@@ -22,6 +22,7 @@ use 'scene.jo'
 use 'shadows.jo'
 use 'build.jo'
 use 'wildlife.jo'
+use 'enemies.jo'
 use 'worldgen.jo'
 
 # The story of the plateau: waking in the Shrine of Resurrection, the first sight of the world
@@ -319,6 +320,15 @@ __roof = (dt: f64):
         pl.speed = 0.0
         pl.vel = vec3(0,0,0)
         old_man.face = yaw_of(vec3(d.x,0,d.z))
+        # Move airborne roof intruders out of this meeting and its handoff.
+        # Preserve living enemies; relocate their home beyond the meeting.
+        loop mut e in enemies:
+            if e.kind != .keese or e.state == .dead or e.state == .gone or length(e.pos-old_man.pos)>45.0: continue
+            away = normalize(e.pos-old_man.pos+vec3(0.01,0,0.01))
+            e.pos = old_man.pos+away*60.0
+            e.home = e.pos
+            e.state = .idle
+            e.alert = 0.0
         cam.override = true
         cam.handoff_duration = 0.8
         __ending(0.0) # initialize the first shot on the interaction frame
@@ -334,7 +344,7 @@ __ending = (dt: f64):
     cam.override = true
     # All lenses stay in the east aisle, clear of the central spire and parapet.
     focus = old_man.pos + vec3(0,1.15,0)
-    old_man.clip = if t < 3.0: "nod" else: "idle"
+    old_man.clip = "idle"
     old_man.spirit = smoothstep(2.0,4.0,t)
     old_man.opacity = (1.0 - old_man.spirit * 0.48) * (1.0-smoothstep(9.0,11.5,t))
     if t < 3.0:
@@ -349,6 +359,9 @@ __ending = (dt: f64):
         cam.o_pos = lp(TEMPLE,TEMPLE_ROT,5.5,45.0,38.4)
         cam.o_target = mix(focus,pl.pos+vec3(0,1,0),0.25)
         cam.o_fov = 43.0
+    # Keep the hood opening toward each held lens, with a restrained turn on
+    # cuts. The old facing tracked Jo, leaving the five-second close-up in profile.
+    old_man.face = turn_toward(old_man.face, yaw_of(cam.o_pos-old_man.pos), dt*3.0)
     if t >= 8.0 and not story.glider_given:
         story.glider_given = true
         pl.has_glider = true

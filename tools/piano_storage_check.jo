@@ -9,15 +9,38 @@ piano_init()
 bytes = 0
 hash = u64(1469598103934665603)
 loop bank in [piano.soft,piano.notes,piano.forte,piano.short_soft,piano.short_notes,piano.short_forte,piano.restrained_soft]:
-    assert(bank.len() == 21)
+    assert(bank.len() == PIANO_COUNT)
     loop s in bank:
         bytes += s.samples.len()*2
         scale_ptr = (&s.scale) as *u32
         scale_bits = scale_ptr[0]
         hash = (hash xor u64(scale_bits))*u64(1099511628211)
         loop v in s.samples: hash = (hash xor u64(int(v) & 65535))*u64(1099511628211)
-assert(bytes < 110000000, "resident piano samples stay below 110 MB")
-print("PASS PCM16 piano bank: {bytes} bytes ({f64(bytes)/1048576.0:.3} MiB), 147 finite stereo samples, hash {hash}")
+assert(bytes < 155000000, "resident piano samples stay below 155 MB")
+weather_bytes = 0
+loop i in [0..piano.weather_soft.len()):
+    if piano_weather_key(PIANO_LO + i * PIANO_STEP): weather_bytes += piano.weather_soft[i].samples.len() * 2
+assert(weather_bytes < 32000000, "weather cache includes only the MIDI-selected pp extreme keys")
+cue_bytes = 0
+loop cue in [drum_lo, drum_hi, combat_entry, shrine_glass]: cue_bytes += cue.samples.len() * 4
+assert(bytes + weather_bytes + reverse_piano.samples.len() * 4 + cue_bytes < 190000000, "all piano-pack samples including weather, reverse and cues remain below 190 MB")
+print("PASS unchanged float cues: {cue_bytes} bytes; total music sample payload {bytes + weather_bytes + reverse_piano.samples.len() * 4 + cue_bytes} bytes")
+print("PASS total resident piano: {bytes + weather_bytes + reverse_piano.samples.len() * 4} bytes ({f64(bytes + weather_bytes + reverse_piano.samples.len() * 4) / 1048576.0:.3} MiB)")
+coverage = "midi,dynamic,slot,recording_midi\n"
+loop midi in [24..109):
+    loop dynamic in ["pp", "mf", "ff"]:
+        k = piano_slot(midi, dynamic)
+        assert(abs(f64(midi - piano_recording_midi(k, dynamic))) <= 1.5, "every score register stays within 1.5 semitones of a recording")
+        base = PIANO_LO + k * PIANO_STEP
+        coverage += "{midi},{dynamic},{base},{piano_recording_midi(k, dynamic)}\n"
+        assert(file_exists("assets/audio/piano-{dynamic}-{base}.wav"), "no synthetic or stretched extreme fallback")
+# Callers may isolate the report from concurrently running storage checks.
+out = if args().len() > 1: args()[1] else: "build/piano-storage-check"
+assert(mkdir(out))
+assert(write_file("{out}/coverage.csv", coverage))
+print("PASS score recording coverage: C1-C8, max integer-note transposition 1 semitone")
+print("PASS derived weather/reverse samples: {weather_bytes + reverse_piano.samples.len() * 4} additional bytes")
+print("PASS PCM16 piano bank: {bytes} bytes ({f64(bytes)/1048576.0:.3} MiB), {7 * PIANO_COUNT} finite stereo samples, hash {hash}")
 
 # Per-note quantization error, including quiet tails and both signs.
 source = Sound([loop i in [0..MIX_RATE*4): f32(sin(f64(i)*0.017)*0.021*exp(-f64(i)/24000.0))])

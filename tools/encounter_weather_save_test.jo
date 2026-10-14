@@ -7,6 +7,7 @@ use '../game/gfx.jo'
 use '../game/items.jo'
 use '../game/worldgen.jo'
 use '../game/enemies.jo'
+use '../game/camera.jo'
 
 weather_signature = () -> str:
     "{env.hour:.9}|{env.day}|{env.weather}|{env.weather_t:.9}|{env.clouds:.9}|{env.rain:.9}|{env.wet:.9}|{env.storm_k:.9}|{env.gust:.9}|{env.wind}|{env.lightning:.9}|{env.storm_time:.9}|{env.bolt_wait:.9}|{env.dark:.9}|{env.zenith}|{env.horizon}|{env.sun_color}|{env.sky_amb}|{env.ground_amb}|{env.haze}|{env.density:.9}|{env.sun_dir}|{env.moon_dir}|{env.light_dir}|{env.night:.9}|{env.valley_mist:.9}"
@@ -45,6 +46,9 @@ run = ():
         s.activated = fill(false, 4)
         s.completed = fill(false, 4)
         s.pos = pl.pos
+        # This is another exploration checkpoint, not the default opening save.
+        s.awake = true
+        s.progress.title_done = true
         assert(save_write(path + "/timer", s))
     else:
         assert(enemies[defeated].hp == 13.0 and enemies[defeated].state == .idle)
@@ -57,6 +61,7 @@ run = ():
         assert(enemies[defeated].state == .gone and enemies[defeated].respawn_t == 600.0, "remaining near camp cannot respawn it")
         s = save_decode(read_file(path + "/timer")!)!
         save_apply(s)
+        assert(pl.state == .ground and not cutscene_actors_hidden(), "time-away fixture resumes exploration")
         assert(enemies[defeated].respawn_t == 231.5)
         pl.pos.x -= 300.0
         enemies_update(1.0, false)

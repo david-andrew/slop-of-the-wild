@@ -750,6 +750,29 @@ water_generate = ():
         loop other in feet:
             if length(vec3(landing.x - other.x, 0, landing.z - other.z)) < 12.0: duplicate = true
         if not duplicate: feet.push(landing)
+    # Use one actual receiving-mesh vertex for the west impact. The generic
+    # nearest-foot search left three plumes on the sloping approaches instead
+    # of the plunge pool, including sites above the visible landing.
+    target = vec3(-1494,104,1823)
+    landing = vec3(0,-10000,0)
+    score = f32(900)
+    loop v in vs:
+        p = v.pos
+        if v.mist > 0.0 or p.y < 100.0 or p.y > 107.0: continue
+        if p.x < -1510.0 or p.x > -1482.0 or abs(p.z-1823.0) > 12.0: continue
+        depth = f64(p.y)-height_at(f64(p.x),f64(p.z))
+        if depth < 1.0 or depth > 7.5: continue
+        d = dot(p-target,p-target)
+        if d < score:
+            score = d
+            landing = p
+    if landing.y > 0.0:
+        kept: vec3[]
+        loop foot in feet:
+            if foot.x > -1510.0 and foot.x < -1470.0 and foot.z > 1800.0 and foot.z < 1848.0 and foot.y < 120.0: continue
+            kept.push(foot)
+        kept.push(landing)
+        feet = kept
     fall_feet = feet
     # Cache perimeter distances along both grid axes for the falling-face shader.
     # Shared vertices keep the existing continuous water surface and its topology.

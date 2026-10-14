@@ -28,7 +28,7 @@ source=Path('game/main.jo').read_text()
 source=re.sub(r"(?m)^(use|from) '([^']+)'",lambda m:f"{m[1]} '{(Path('game')/m[2]).resolve()}'",source)
 # Observe completed draws and preserve the lighting camera when a patrol arrives.
 # Combat/damage are covered by their own probes; keep the AI and sun/moon handoff.
-capture='    if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:\n        save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")\n'
+capture='    if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:\n        flush()\n        save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")\n'
 assert source.count(capture)==1
 source=source.replace(capture,'').replace('update = (dt0: f64):','daylight_update = (dt0: f64):').replace('\ndraw = ():','\ndaylight_draw = ():')
 source+='\nupdate = (dt0: f64):\n    pl.invuln = max(pl.invuln, 1.0)\n    daylight_update(dt0)\n    assert(pl.hp > 0.0, "lighting probe stays alive")\n'

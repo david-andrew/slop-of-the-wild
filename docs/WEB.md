@@ -28,7 +28,7 @@ reads, including the referenced nature textures.
 
 The builder traces successful reads through startup and the first frame, so it
 includes animations and place-name metadata as well as models, audio, grids and
-nature files. With the selected packs, 166 files are shipped. Source PNGs are
+nature files. With the selected packs, 193 files are shipped (including all 90 piano WAVs). Source PNGs are
 replaced by their prepared RGBA records. Unused source downloads, normal maps,
 reference footage and unreferenced models are excluded.
 
@@ -42,7 +42,7 @@ samples are generated during startup.
 The world pack costs 15.86 MB for about three seconds saved; terrain costs
 14.47 MB for about two seconds; structures cost 34.92 MB for about two seconds.
 Prepared piano/SFX together cost 274.42 MB versus the much smaller source WAVs,
-for roughly six seconds saved. These packs are omitted. Timings vary with
+for roughly six seconds saved. These packs are omitted. The extended compact piano pack is 154.19 MB locally; the default package continues to use mono PCM16 WAVs and regenerate the bank. The packager verifies complete piano-manifest coverage so a stale trace cannot omit the added octaves. The extension build ships 95.51 MB of compressed assets across five archives (largest 30.24 MB); all archive bytes/hashes and 90 piano inputs were checked. Timings vary with
 other work on the host; the original complete generated CPU trace was 20.9 s,
 and selected-pack traces ranged around 16–26 s.
 

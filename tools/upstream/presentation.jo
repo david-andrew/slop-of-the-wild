@@ -8,11 +8,16 @@ presents: f64[]
 limit = to_int(env("PROBE_FRAMES") ?? "240") ?? 240
 seconds = to_float(env("PROBE_SECONDS") ?? "0") ?? 0.0
 started = time()
+tails = 0
+print("pacing start: {started:.9} platform={env("SLOPPY_PLATFORM") ?? "auto"} vsync={env("SLOPPY_VSYNC") ?? "default"}")
 draw = ():
     now = time()
     if previous > 0:
         intervals.push((now-previous)*1000)
         presents.push(__last_present*1000)
+        if now-started > 4.0 and (now-previous)*1000 > 25.0:
+            tails += 1
+            print("pacing tail: elapsed={now-started:.6} interval_ms={(now-previous)*1000:.3} present_ms={__last_present*1000:.3}")
     previous = now
     glClearColor(0.1, 0.2, 0.3, 1)
     glClear(GL_COLOR_BUFFER_BIT)
@@ -21,4 +26,5 @@ draw = ():
         presents.sort()
         n = intervals.len()
         print("interval p50/p99/worst ms: {intervals[(n+1)/2-1]:.3}/{intervals[(n*99+99)/100-1]:.3}/{intervals[n-1]:.3}; present worst ms: {presents[n-1]:.3}")
+        print("pacing complete: samples={n} elapsed_s={now-started:.6} post_warmup_over_25ms={tails} output={__win_w}x{__win_h} presentation={__present_how()}")
         exit(0)

@@ -11,6 +11,7 @@ use 'env.jo'
 
 const RADIUS = 0.35
 const HEIGHT = 1.6
+const SWIM_FOOT_DEPTH = 1.25       # collision/shore probes retain the standing foot plane
 const WALK_SPEED = 1.575
 const RUN_SPEED = 5.556
 const SPRINT_SPEED = 8.1
@@ -698,9 +699,11 @@ __swim = (dt: f64):
     pl.speed = approach(pl.speed, sp, 5.0, dt)
     pl.vel = vec3(f.x * f32(pl.speed), 0, f.z * f32(pl.speed))
     if stick > 0.1: use_stamina(SWIM_DRAIN * dt)
-    # float at the surface (shoulders under water)
+    # Shore grabs and the collision capsule use the standing foot plane. Swim
+    # clips center on the surface instead; chars raises their render origin by
+    # SWIM_FOOT_DEPTH, leaving the hips submerged and the breathing pose clear.
     pl.pos += pl.vel * f32(dt)
-    pl.pos.y = f32(approach(f64(pl.pos.y), pl.water_y - 1.25, 6.0, dt))
+    pl.pos.y = f32(approach(f64(pl.pos.y), pl.water_y - SWIM_FOOT_DEPTH, 6.0, dt))
     push_out(pl.pos, RADIUS, HEIGHT)
     # out of stamina: sink and come back to the shore with a heart lost
     if pl.exhausted:

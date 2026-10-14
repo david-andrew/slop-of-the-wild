@@ -219,3 +219,10 @@ cave_weathered_stone = (w: vec3) -> vec3:
     wash = vnoise(q*vec2(0.045,0.065))
     bed = vnoise(q*vec2(0.035,0.10)+vec2(7,3))
     mix(vec3(0.225,0.25,0.27),vec3(0.295,0.315,0.325),smoothstep(0.22,0.76,wash))*(0.90+bed*0.16)
+
+# Blade clearance includes tall tips whose roots lie below a swimming camera.
+# Modeled plants use their shared fragment-space foliage coverage.
+lens_plant_fade = (distance: f32) -> f32: smoothstep(1.4,0.85,distance)
+
+lens_plant_distance = (root: vec3, height: f32, eye: vec3) -> f32:
+    length(vec3(root.x,clamp(eye.y,root.y,root.y+height),root.z)-eye)

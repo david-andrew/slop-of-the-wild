@@ -440,7 +440,7 @@ arrows_draw = ():
         __arrow_ready = true
         arrow_mesh = shape_mesh(.arrows)
     loop a in arrows:
-        if not a.alive: continue
+        if not a.alive or (a.hostile and cutscene_actors_hidden()): continue
         d = normalize(a.vel + vec3(0, 0.0001, 0))
         m = translation(a.pos) * rotation(normalize(cross(vec3(0, 1, 0), d) + vec3(0.0001, 0, 0)), acos(clamp(f64(d.y), -1.0, 1.0)))
         draw_prop(arrow_mesh, m * translation(v3(0.0, -0.4, 0.0)), vec4(1, 1, 1, 1))
@@ -888,8 +888,6 @@ update = (dt0: f64):
     if __win_close:
         save_update(0.0)
         return
-    if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:
-        save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")
     # Menus own input before any simulation: inventory, map and options all pause
     # the clock, weather, lightning, hit-stop, cooking, fires and actor timers.
     map_known = story.tower_risen
@@ -1066,7 +1064,7 @@ simulation_step = (dt: f64):
     arrows_update(wdt)
     # hostile arrows hit the player
     loop mut a in arrows:
-        if a.alive and a.hostile and a.stuck <= 0.0 and f64(length(a.pos - (pl.pos + vec3(0, 1.0, 0)))) < 0.7:
+        if not cutscene_actors_hidden() and a.alive and a.hostile and a.stuck <= 0.0 and f64(length(a.pos - (pl.pos + vec3(0, 1.0, 0)))) < 0.7:
             hit_player(int(a.damage), a.pos - a.vel * 0.05, 2.0)
             a.alive = false
     cpu_mark("items_physics")
@@ -1311,6 +1309,10 @@ draw = ():
     cpu_mark("story_hud")
     if not invui.open: story_draw_2d()
     gpu_queue_submit()
+    # Inspection captures identify this completed frame, including a just-landed bolt.
+    if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:
+        flush()
+        save_png(screenshot(), __capture_dir! + "/frame-{frame_number()}.png")
     cpu_frame_end()
     frame_stats_end()
     if env("BOTW_DEBUG") != none and not invui.open: text("{fps():.0} fps  {pl.state}  {pl.speed:.1} m/s  {pl.pos.x:.0},{pl.pos.y:.0},{pl.pos.z:.0}", vec2(20, 690), 16, rgba(1, 1, 1, 0.7))

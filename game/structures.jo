@@ -83,9 +83,25 @@ __old_stone = (p: vec3) -> vec4:
     mix(stone(0.30, 0.325, 0.30), stone(0.53, 0.49, 0.405), f32(patch)) * vec4(f32(0.86 + chip * 0.25), f32(0.86 + chip * 0.25), f32(0.86 + chip * 0.25), 1)
 
 __old_block = (p: vec3, size: vec3, yaw: f64, col: vec4, mat: vec4, collide: bool = true, climb: bool = true):
+    if mat.w < -0.5:
+        # A single pigment/ivy value for an entire wall bay made six-metre
+        # rectangles beneath the procedural moss. Shared world-space vertex
+        # washes and constant coverage keep those construction seams quiet.
+        __begin(p)
+        first = cur.verts.len()
+        __end()
+        box(p,size,yaw,col,mat,collide,climb)
+        __begin(p)
+        loop k in [first..cur.verts.len()):
+            q = cur.verts[k].pos
+            wash = noise(f64(q.x)*0.085+f64(q.y)*0.13,f64(q.z)*0.085)
+            tint = mix(vec3(0.91,0.94,0.86),vec3(1.05,1.015,0.97),f32(wash))
+            cur.verts[k].color = vec4(col.xyz*tint,col.w)
+        __end()
+        return
     weather = __old_stone(p)
     wear = noise(f64(p.x) * 0.12, f64(p.z) * 0.12 + f64(p.y) * 0.19)
-    # Retain the authored coursing; damp and ivy vary from pier to pier.
+    # The smaller abbey fragments retain their individual stone tones.
     m = vec4(mat.x, mat.y * f32(0.25 + wear * 1.15), mat.z, mat.w)
     box(p, size, yaw, vec4(col.xyz * weather.xyz / GREY.xyz, col.w), m, collide, climb)
 
@@ -176,7 +192,7 @@ perimeter_wall = ():
 # A gothic church: steps up to a portal under a bell tower with a belfry and spire (the old man's
 # lookout at 43 m), a nave of tall pointed windows held by flying buttresses over low aisles, a
 # roof broken open in the middle, and a round apse where the goddess statue stands.
-ROOF_SLATE = stone(0.19, 0.23, 0.25)
+ROOF_SLATE = stone(0.235, 0.23, 0.205)
 # A roof skin with a timber soffit and a closed, exposed fracture edge. The
 # old solid gable end caps looked like suspended triangles from the nave floor.
 __temple_roof_panel = (a: vec3, b: vec3, c: vec3, d: vec3):
@@ -191,6 +207,30 @@ __temple_roof_panel = (a: vec3, b: vec3, c: vec3, d: vec3):
         j = (k+1)%4
         edge_n = normalize(cross(q[j]-q[k],down))
         __quad(cur,q[k],q[k]+down,q[j]+down,q[j],-edge_n,stone(0.31,0.29,0.25),WOODM)
+    __end()
+
+# Chipped ashlar facing, with a closed bevel and unequal broken corners. It
+# stays in the existing static chunk and never changes the structural collider.
+__temple_ashlar = (center: vec3, size: vec3, yaw: f64, seed: f64, col: vec4, mat: vec4):
+    frame = translation(center) * rotation_y(yaw)
+    corners = [vec2(-0.5,0.10),vec2(-0.40,0),vec2(0.37,0),vec2(0.5,0.13),vec2(0.5,0.84),vec2(0.34,1),vec2(-0.39,1),vec2(-0.5,0.88)]
+    back: vec3[]
+    front: vec3[]
+    __begin(center)
+    pigment = vec4(col.xyz * __old_stone(center).xyz / GREY.xyz,col.w)
+    loop k in [0..corners.len()):
+        q = corners[k]
+        h = hash2(seed,f64(k)+2.0)
+        x = f64(q.x)*f64(size.x)
+        y = f64(q.y)*f64(size.y)
+        back.push(transform_point(frame,v3(x,y,-f64(size.z)*0.50)))
+        front.push(transform_point(frame,v3(x*(0.89+h*0.07),y+(0.5-f64(q.y))*(0.035+h*0.045),f64(size.z)*(0.32+h*0.18))))
+    crown = transform_point(frame,v3(0,f64(size.y)*0.50,f64(size.z)*0.40))
+    loop k in [0..corners.len()):
+        next = (k+1)%corners.len()
+        __tri(cur,crown,front[k],front[next],pigment,mat)
+        n = normalize(cross(back[next]-back[k],front[k]-back[k]))
+        __quad(cur,back[k],back[next],front[next],front[k],n,darken(pigment,0.06),mat)
     __end()
 
 temple = ():
@@ -399,7 +439,7 @@ temple = ():
             x = side*(8.0-loss*0.4)
             # A deeper setback at the fault leaves the core visible beneath it.
             depth = if loss > 0.0: 2.5 else: 3.25
-            __old_block(p(x,y+0.025,30.45),v3(width,2.92,depth),r,col,temple_ivy,false)
+            __temple_ashlar(p(x,y+0.025,30.45),v3(width,2.92,depth),r,y+side*88.0,col,temple_ivy)
             if course == 3 or course == 6:
                 sor_split_stone(p(side*9.45,y+0.45,31.75),v3(0.66,0.78,0.53),r+side*0.17,y+side*83.0,GREY_DARK,temple_ivy)
         # Concentrated fallen courses leave the portal and stair clear.
@@ -455,16 +495,24 @@ temple = ():
         # Keep the structural core and original collision behind deep missing
         # facing stones; chipped proud courses make the blank wall read damaged.
         add_box(p(0.0,21.5,z),v3(3.4,5.25,0.75),r,true,.stone)
-        box(p(0.0,21.5,z-0.12),v3(6.8,10.5,1.1),r,darken(GREY_DARK,0.26),temple_block,false)
-        loop row in [0..4):
-            loop cell in [0..4):
-                if (row == 1 and cell == 1) or (row == 2 and cell == 2) or (row == 3 and cell == 2): continue
-                x = -2.55+f64(cell)*1.70
-                y = 21.6+f64(row)*2.55
-                wear = hash2(x+z,y+37.0)
-                __old_block(p(x+(wear-0.5)*0.12,y,z+0.48),v3(1.61-wear*0.12,2.42-wear*0.18,0.62),r,col,temple_ivy,false)
-                if row == 1 or row == 2:
-                    sor_split_stone(p(x-0.68,y+2.05,z+0.80),v3(0.34,0.37,0.26),r+wear*0.3,53.0+x+y,GREY_DARK,temple_ivy)
+        box(p(0.0,21.5,z-0.12),v3(6.8,10.5,1.1),r,darken(GREY_DARK,0.08),temple_block,false)
+        # Facing losses follow one narrow oblique fault, with chipped returns
+        # and varying course heights. They no longer form a 4x4 missing-tile patch.
+        loop row in [0..8):
+            y = 21.57+f64(row)*1.30
+            phase = hash2(f64(row),z+31.0)
+            fracture = row >= 2 and row <= 6
+            cut = -1.15+f64(row)*0.42+(phase-0.5)*0.36
+            gap = if fracture: 0.26+phase*0.56 else: 0.018
+            loop side in [-1.0,1.0]:
+                lo = if side<0.0: -3.40 else: cut+gap
+                hi = if side<0.0: cut-gap else: 3.40
+                count = max(1,int(ceil((hi-lo)/1.55)))
+                loop cell in [0..count):
+                    a = lerp(lo,hi,f64(cell)/f64(count))
+                    b = lerp(lo,hi,f64(cell+1)/f64(count))
+                    h = hash2(f64(row*13+cell),side+z)
+                    __temple_ashlar(p((a+b)*0.5,y+(h-0.5)*0.025,z+0.48),v3(b-a-0.022,1.26-h*0.045,0.62),r,53.0+a+y,col,temple_ivy)
         arch(p(0.0, 5.5, z), r, 6.8, 5.0, 0.65, 1.7, col, temple_block)
         oculus(p(0.0, 18.0, z), r, 2.7, 3.5, 1.5, col, temple_block)
         loop k in [0..12):
@@ -741,7 +789,11 @@ __cliff_depth = (p: vec3) -> f64:
     tilt = (noise(across*0.024+17.0,y*0.019)-0.5)*0.58
     block = fract((across + y*tilt + bend*0.25)/39.0)
     plane = clamp(min(block/0.24,(1.0-block)/0.13),0.0,1.0)
-    columns = lerp(columns,3.0+plane*15.0,angular)
+    columns = lerp(columns, 4.0 + plane * 8.0, angular * 0.48)
+    # Short dipping strata and unequal shallow flutes interrupt the remaining
+    # large fault planes without adding independent rocks or new mesh draws.
+    small = noise(across * 0.16 + y * 0.025, y * 0.13 + 9.0)
+    columns += (small - 0.5) * 2.2
     gullies = smooth01((noise((across + bend) * 0.079 + 7.0, y * 0.004) - 0.57) / 0.25) * 12.0
     broad = (noise(across * 0.022, y * 0.012) - 0.5) * 16.0
     # Split the long walls with unequal ribs, broken shelves and inclined
@@ -1957,9 +2009,8 @@ guardian_shell_panel = (o: vec3, frame: mat4, az: f64, el: f64, seed: f64):
             v0=f64(row)/2.0-1.0
             v1=f64(row+1)/2.0-1.0
             tone=0.84+hash2(seed,3.0)*0.17
-            moss=smoothstep(0.43,0.78,hash2(seed+floor(f64(col)/2.0),floor(f64(row)/2.0)))
-            c=mix(stone(0.36*tone,0.35*tone,0.285*tone),stone(0.19,0.265,0.135),f32(moss*0.65))
-            __quad_n(cur,point(u0,v0),point(u0,v1),point(u1,v1),point(u1,v0),normal(u0,v0),normal(u0,v1),normal(u1,v1),normal(u1,v0),c,vec4(-1,0.85,0,0))
+            c=stone(0.36*tone,0.35*tone,0.285*tone)
+            __quad_n(cur,point(u0,v0),point(u0,v1),point(u1,v1),point(u1,v0),normal(u0,v0),normal(u0,v1),normal(u1,v1),normal(u1,v0),c,vec4(0,0.80,0,-1))
     __end()
 
 # Open annulus and a recessed, flat dead lens. Generic capped tubes would
@@ -2076,11 +2127,12 @@ guardian_husks = ():
                 mid = (seg_.0 + seg_.1) * 0.5
                 yaw = atan2(-f64(d.z), f64(d.x))
                 pitch = asin(clamp(f64(d.y) / l, -1.0, 1.0))
-                # Ribs overlap the dark inner limb; the last collar holds the joint.
-                tube(seg_.0, seg_.1, seg_.2 * 0.95, seg_.2 * 0.8, 10, stone(0.16, 0.18, 0.2), vec4(-1.0, 0.8, 0.0, 0.4))
-                loop rib in [1..5):
-                    t = f32(rib) / 5.0
-                    tube(seg_.0 + d * (t - 0.055), seg_.0 + d * (t + 0.055), seg_.2 * 1.10, seg_.2 * 0.98, 8, stone(0.29, 0.29, 0.25), vec4(0.0, 0.4, 0.0, 0.0))
+                # Long seized armor sleeves read as a limb, with only two thin
+                # unequal collars. The former four fat bright ribs read as beads.
+                tube(seg_.0, seg_.1, seg_.2 * 0.98, seg_.2 * 0.78, 10, stone(0.25, 0.255, 0.215), vec4(0, 0.5, 0, -1))
+                loop rib in [1..3):
+                    t = f32(if rib == 1: 0.24 else: 0.73)
+                    tube(seg_.0 + d * (t - 0.027), seg_.0 + d * (t + 0.035), seg_.2 * 1.04, seg_.2 * 0.96, 8, stone(0.23, 0.24, 0.20), vec4(0, 0.4, 0, -1))
                 tube(seg_.1 - d * f32(0.08), seg_.1 + d * f32(0.04), seg_.2 * 1.05, seg_.2 * 1.05, 10, darken(metal, 0.35), PLAIN)
             loop jp in (if fate < 0.4: [hip, knee] else: [hip, knee, ankle]):
                 dome(jp - vec3(0, 0.1, 0), 0.5, 0.42, 10, 4, darken(metal, 0.3), vec4(-1.0, 0.8, 0.0, 0.4))

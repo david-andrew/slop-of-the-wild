@@ -1,0 +1,75 @@
+# CPU contracts for compact menus and bounded secondary motion.
+use '../game/inventory.jo'
+use '../game/items.jo'
+use '../game/input.jo'
+use '../game/options.jo'
+use '../game/gfx.jo'
+from '../game/options.jo' import __opt_row_x, __opt_row_y
+use '../game/enemies.jo'
+use '../game/wildlife.jo'
+
+inv.max_weapons=20
+loop count in [0..21):
+    cells=inventory_visible_cells(0,count)
+    assert(cells>=count and cells-count<=inventory_cols(0),"at most one row of empty weapon slots")
+assert(inventory_visible_cells(0,0)==4,"empty inventory shows one row")
+assert(inventory_visible_cells(0,1)==5,"one item adds only one empty row")
+assert(inventory_visible_cells(3,19)==19,"materials have no capacity placeholders")
+loop row in [0..OPT_KEY_ROW+input_action_ids.len()):
+    assert(options_row_visible(row),"all options visible without scrolling")
+    x=__opt_row_x(170.0,row)
+    y=__opt_row_y(170.0,row)
+    assert(x>=170.0 and x+244.0<1280.0,"options fit 720p width")
+    assert(y>=170.0 and y+34.0<650.0,"options fit above footer at 720p")
+print("PASS inventory empty-row bound; all 34 options fit at 1280x720")
+
+e=Enemy(.bokoblin,vec3(0,0,0),vec3(0,0,0))
+loop state in [EState.notice,EState.recover]:
+    e.state=state
+    prev=vec3(0,0,0)
+    peak=0.0
+    loop frame in [0..121):
+        e.t=f64(frame)/240.0
+        reaction=enemy_secondary_reaction(e)
+        assert(length(reaction-prev)<0.035,"reaction continuous at 240Hz")
+        assert(length(reaction)<0.20,"modest head/body reaction")
+        prev=reaction
+        peak=max(peak,f64(length(reaction)))
+    assert(peak>0.03 and length(prev)<0.000001,"readable reaction settles before state transition")
+e.state=.attack
+e.t=0.1
+assert(length(enemy_secondary_reaction(e))==0.0,"attack contact track unchanged")
+e.state=.notice
+e.frozen=1.0
+assert(length(enemy_secondary_reaction(e))==0.0,"frozen enemies do not flick")
+print("PASS bounded, continuous notice/recovery; attack/freeze exclusions")
+
+min_flap=1e9
+max_flap=-1e9
+loop seed in [0..24):
+    a=Animal(.sparrow,vec3(0,0,0),vec3(0,0,0),state=.fly,seed=f64(seed)*0.39,idle=1.1,t=1.1)
+    flap=bird_pose(a).flap
+    min_flap=min(min_flap,flap)
+    max_flap=max(max_flap,flap)
+    previous=flap
+    loop frame in [1..1201):
+        a.idle=1.1+f64(frame)/240.0
+        flap=bird_pose(a).flap
+        assert(abs(flap-previous)<0.18,"individual bird wing continuity")
+        previous=flap
+assert(max_flap-min_flap>0.8,"independent bird silhouettes in one flock")
+print("PASS independent continuous bird beats and glides")
+
+# The flight fast path must preserve the original pivot and posed bird surface.
+loop startle in [0.0,0.1]:
+    loop seed in [0..24):
+        a=Animal(.pigeon,vec3(0,0,0),vec3(0,0,0),state=.fly,seed=f64(seed)*0.39,idle=1.1,t=1.1,vy=-1.3,startle=startle)
+        clock=a.idle+a.seed
+        bank=rotation_z(sin(clock*1.1)*0.12)*rotation_x(clamp(-a.vy*0.035,-0.14,0.12))
+        perched=translation(v3(0.0,0.04,0.0))*rotation_x((if startle>0.0:-0.18 else:0.0))*translation(v3(0.0,-0.04,0.0))
+        expected=bank*perched
+        pose=bird_pose(a)
+        loop point in [vec3(0,0,0),vec3(1,0,0),vec3(0,1,0),vec3(0,0,1)]:
+            assert(length(transform_point(pose.body,point)-transform_point(expected,point))<0.000001,"flight fast path preserves body/pivot")
+            assert(length(transform_point(pose.head,point)-transform_point(expected,point))<0.000001,"flight fast path preserves head")
+print("PASS flight fast path: original body/head transforms within 1 micrometre")

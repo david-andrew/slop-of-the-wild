@@ -44,7 +44,9 @@ without imposing a hardware-independent timing threshold.
   incorrect opcode. [The earlier one-operation bisect](rounds/ROUND64_RENDERER_PARITY.md)
   removes the seam by decorating only that initial multiply with `NoContraction`.
 - **Workaround:** `game/spirv_helpers.jo:game_spirv_noise_precision`, applied by
-  `game/shader_load.jo:shader_load_submit`, decorates the hash scale multiplication.
+  `game/shader_load.jo:shader_load_submit` to both vertex and fragment modules,
+  decorates the hash scale multiplication. Vertex noise changes terrain/foliage
+  geometry and shadow silhouettes too; fencing only fragments leaves those unstable.
 - **Upstream:** emit `NoContraction` on float operations to uphold CPU-equivalent
   evaluation, or provide an explicit strict precision mode with a documented
   contract. Verify shared expressions across call sites on both shader backends.
@@ -74,13 +76,51 @@ without imposing a hardware-independent timing threshold.
   standalone probe does not reproduce those exact maxima. The ten-minute route
   had 191/297 FIFO windows over 20 ms, versus 4/297 with the older patched GL
   mailbox path; release GL and the current game are separately identified there.
-- **Workaround:** `tools/play.sh` selects release mailbox; `game/main.jo:render_warmup`
+- **Workaround:** the Linux launchers select managed X11/XWayland when DISPLAY is advertised, with fastest Vulkan presentation and an explicit platform override; `game/main.jo:render_warmup`
   and persistent render resources remove game first-use/allocation causes. No
   game workaround eliminates the remaining runtime waits.
 - **Upstream:** `__vk_present` acquires with infinite timeout before submitting
   recorded rendering; `__vk_begin_frame` waits on a fixed two-frame ring. Overlap
   rendering/acquire, expose paced queue depth and acquire/fence/submit telemetry;
   make the OpenGL Wayland path honor the public presentation setting too.
+
+### Round 66 critic follow-up: managed X11 versus native Wayland
+
+The unmodified release still reproduces the native Wayland ten-second hitch.
+The updated standalone [presentation probe](../tools/upstream/presentation.jo)
+prints elapsed time, interval and prior present duration for every post-warmup
+return over 25 ms, along with output/platform and final sample count. Run:
+
+```sh
+sloppy/bin/sloppy build tools/upstream/presentation.jo -o build/upstream-presentation
+flock /tmp/botw-render.lock env SLOPPY_PLATFORM=wayland SLOPPY_VULKAN=1 SLOPPY_VSYNC=0 SLOPPY_NO_AUDIO=1 PROBE_SECONDS=120 timeout 150 build/upstream-presentation
+flock /tmp/botw-render.lock env SLOPPY_PLATFORM=x11 SLOPPY_VULKAN=1 SLOPPY_VSYNC=0 SLOPPY_NO_AUDIO=1 PROBE_SECONDS=120 timeout 150 build/upstream-presentation
+```
+
+A 65-second Wayland clear-only repeat records **six 46.6–49.4 ms presentation
+waits**, ten seconds apart; its X11 repeat records **zero >25 ms returns**, worst
+13.04 ms. The outputs differ (2133×1200 versus 1280×720), so retain that caveat.
+The size-controlled two-minute production forest matrix at **2133×1200**, with
+dynamic scaling and a managed X11 client, records **26 >25 ms returns / 80.0 ms
+worst on Wayland mailbox**, versus **4 / 29.8 ms on X11 immediate fallback**.
+FIFO records **459 / 264.2 ms** and **81 / 221.0 ms**, respectively. The full
+matrix and callback/presentation attribution are in [PERFORMANCE.md](PERFORMANCE.md#round-66-critic-follow-up-managed-x11-launcher-and-swimming).
+
+X11 exposes immediate rather than mailbox on this driver: this is a comparison
+of the release's requested fast modes, not a claim that both WSI surfaces support
+mailbox. A remapped override-redirect full-scale X11 stress run still has periodic
+waits; window management and load matter. The launcher workaround applies to
+ordinary managed X11 with production dynamic scaling. It does not establish that
+the runtime has fixed native Wayland, or guarantee zero tails on X11. Earlier
+native-call traces below identify the cadence with acquisition; upstream should
+investigate the Wayland WSI/acquire path and expose comparable telemetry for both
+surfaces. A ten-minute normal managed X11 run at 1280×720 has p99 13.826 ms,
+32 >25 ms returns, and only two >25 ms presentation calls without the repeating
+cadence. Callback waits/scheduling dominate its remaining tails. A separate traced
+repeat confirms substantial involuntary preemption and catch-up simulation; this
+is not evidence that all remaining pauses originate in Wayland WSI. The strict
+zero-tail target remains unmet. Raw repeat evidence is `build/round66-sol/`, including the standalone
+logs and `pacing-summary.json`. The vendored Sloppy tree is unchanged.
 
 ### Round 66: the ten-second presentation stall
 
