@@ -1,0 +1,40 @@
+# Terrain-seated husk limbs must retain a continuous silhouette without
+# internal cap teeth. Inspect the actual rendered triangles, without a device.
+use '../game/structures.jo'
+use '../game/terrain.jo'
+from '../game/build.jo' import __bchunks
+hf.n=4
+hf.cell=4.0
+hf.x0= -4.0
+hf.z0= -4.0
+hf.h=fill(f32(0),16)
+loop k in [0..16): hf.h[k]=if k%4==2: f32(35.0) else: f32(0)
+a=vec3(-3,0.5,0)
+c=vec3(9,0.5,0)
+axis=normalize(c-a)
+guardian_sleeve(a,c,0.5)
+triangles=0
+interior=0
+volume=0.0
+loop key,b in __bchunks:
+    loop k in [0..b.idx.len()/3):
+        va=b.verts[int(b.idx[k*3])]
+        vb=b.verts[int(b.idx[k*3+1])]
+        vc=b.verts[int(b.idx[k*3+2])]
+        face=cross(vb.pos-va.pos,vc.pos-va.pos)
+        assert(length(face)>0.000001,"non-degenerate sleeve surface")
+        assert(dot(face,va.normal+vb.normal+vc.normal)>0.0,"outward sleeve winding")
+        loop v in [va,vb,vc]:
+            assert(abs(length(v.normal)-1.0)<0.0001,"finite unit sleeve normals")
+            # A cliff sample must not inflate a half-metre sleeve into a slab.
+            assert(abs(v.pos.y-0.5)<=0.7251,"limb cross-section stays within its bounded chord envelope")
+        center=(va.pos+vb.pos+vc.pos)/3.0
+        along=dot(center-a,axis)/length(c-a)
+        if along>0.15 and along<0.85:
+            assert(abs(dot(normalize(face),axis))<0.70,"interior station has a transverse cap tooth")
+            interior+=1
+        volume+=f64(dot(va.pos,cross(vb.pos,vc.pos)))/6.0
+        triangles+=1
+assert(volume>0.0,"closed outward sleeve volume")
+assert(triangles>50 and interior>30,"audit a full bounded sleeve, including its interior")
+print("PASS terrain-seated sleeve: {triangles} triangles, {interior} interior faces, bounded thickness over a 35m terrain spike, no cap teeth, unit normals and outward winding")

@@ -1,0 +1,26 @@
+# Inspect the cleared lawn roots and the unchanged ordinary forest shrub population.
+use '../game/gfx.jo'
+use '../game/vegetation.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+temple()
+vegetation_place()
+roots=[vec3(-789.13416,219.60077,1952.4242),vec3(-787.9929,218.34602,1948.4215),vec3(-788.37933,217.98676,1947.0315)]
+loop root in roots:
+    loop p in places:
+        assert(length(p.pos-root)>0.001,"problematic lawn crown must be absent, leaving lit turf")
+forest_shrubs=0
+loop p in places:
+    if not starts_with(vmodels[p.model].name,"Bush_Common"):continue
+    if length(p.pos.xz-vec2(-1000,1620))>70.0:continue
+    assert(max(p.tint.x,max(p.tint.y,p.tint.z))<1.5,"forest shrubs keep their authored tint")
+    forest_shrubs+=1
+assert(forest_shrubs>10,"inspect the real forest shrub population")
+print("PASS lawn: three problematic crowns removed, leaving lit turf; {forest_shrubs} ordinary forest shrubs retain their tint")

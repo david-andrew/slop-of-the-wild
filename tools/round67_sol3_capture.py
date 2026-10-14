@@ -59,12 +59,15 @@ def binary_for(phase, scene):
 
 def run(phase, scene, repeat=None, force=False, readonly=False):
     frame, flags = capture.SCENES[scene]
+    bench_frames = int(os.environ.get('R66_BENCH_FRAMES', '1440'))
+    warmup = int(os.environ.get('R66_BENCH_WARMUP', '360'))
+    assert 0 <= warmup < bench_frames
     folder = capture.OUT / scene if repeat is None else capture.OUT / os.environ.get('R66_TIMINGS_NAME','performance-after')
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / phase if repeat is None else folder / f'{scene}-{phase}-{repeat}'
     binary = binary_for(phase,scene)
     settings = {k:v for k,v in os.environ.items() if not k.startswith(('BOTW_', 'SLOPPY_', 'ROUND82_', 'R66_'))}
-    settings.update(BOTW_NO_PREPARED_ASSETS='1', BOTW_SCALE='1', BOTW_HOUR='11', BOTW_WEATHER='clear', BOTW_NOVSYNC='1', BOTW_FRAME_LOG='1', SLOPPY_VSYNC='0', SLOPPY_PLATFORM='x11', SLOPPY_WINDOW='1280x720', SLOPPY_FRAMES=str(frame if repeat is None else 1440), SLOPPY_SCREENSHOT=str(dest.with_suffix('.png')), ROUND82_SCENE=scene)
+    settings.update(BOTW_NO_PREPARED_ASSETS='1', BOTW_SCALE='1', BOTW_HOUR='11', BOTW_WEATHER='clear', BOTW_NOVSYNC='1', BOTW_FRAME_LOG='1', SLOPPY_VSYNC='0', SLOPPY_PLATFORM='x11', SLOPPY_WINDOW='1280x720', SLOPPY_FRAMES=str(frame if repeat is None else bench_frames), SLOPPY_SCREENSHOT=str(dest.with_suffix('.png')), ROUND82_SCENE=scene)
     settings.update(flags)
     settings['R66_CONTEXT_DRAIN_SECONDS'] = '3'
     if repeat is not None:
@@ -110,12 +113,12 @@ def run(phase, scene, repeat=None, force=False, readonly=False):
     print('PASS', scene, phase, repeat, 'retained' if valid and not force else 'rendered', flush=True)
     if repeat is None: return
     rows = [list(map(float,line.split()[2:])) for line in dest.with_suffix('.log').read_text().splitlines() if line.startswith('frame sample:')]
-    assert len(rows)==1440
-    selected=[r for r in rows if r[0]>=361]
+    assert len(rows)==bench_frames
+    selected=[r for r in rows if r[0]>warmup]
     p99=lambda col: sorted(r[col] for r in selected)[math.ceil(len(selected)*.99)-1]
     draws=[int(line.split()[3]) for line in dest.with_suffix('.log').read_text().splitlines() if line.startswith('draw sample:')]
-    assert len(draws)>=1440 and max(draws)>100, 'measure full production draw workload'
-    return dict(thread_p99_ms=p99(4),wall_p99_ms=p99(2),frame_p99_ms=p99(1),samples=len(selected),draws_min=min(draws[-1080:]),draws_max=max(draws[-1080:]))
+    assert len(draws)>=bench_frames and max(draws)>100, 'measure full production draw workload'
+    return dict(thread_p99_ms=p99(4),wall_p99_ms=p99(2),frame_p99_ms=p99(1),samples=len(selected),draws_min=min(draws[-(bench_frames-warmup):]),draws_max=max(draws[-(bench_frames-warmup):]))
 
 def compare(scene, benchmark=False, repeats=3):
     global pair_deadline
@@ -133,7 +136,7 @@ def compare(scene, benchmark=False, repeats=3):
         for phase in ['before','after']:
             runs[phase].append(run(phase,scene,repeat,readonly=True))
     report={p:{k:statistics.median(r[k] for r in runs[p]) for k in runs[p][0]} for p in runs}
-    report.update(runs=runs,protocol=f'1440 fixed production frames; 360 warmup; {repeats} alternating paired run(s); {"production CPU affinity" if os.environ.get("R66_PRODUCTION_AFFINITY")=="1" else "main thread pinned to core 2 after first production frame"}; nearest-rank CPU p99; tolerance 3% + 0.10 ms',binary_sha256={p:hashlib.sha256(binary_for(p,scene).read_bytes()).hexdigest() for p in runs})
+    report.update(runs=runs,protocol=f'{os.environ.get("R66_BENCH_FRAMES","1440")} fixed production frames; {os.environ.get("R66_BENCH_WARMUP","360")} warmup; {repeats} alternating paired run(s); {"production CPU affinity" if os.environ.get("R66_PRODUCTION_AFFINITY")=="1" else "main thread pinned to core 2 after first production frame"}; nearest-rank CPU p99; tolerance 3% + 0.10 ms',binary_sha256={p:hashlib.sha256(binary_for(p,scene).read_bytes()).hexdigest() for p in runs})
     report['passed']=report['after']['thread_p99_ms']<=report['before']['thread_p99_ms']*1.03+.1
     (capture.OUT/os.environ.get('R66_TIMINGS_NAME','performance-after')/f'{scene}-report.json').write_text(json.dumps(report,indent=2)+'\n')
     print('PASS' if report['passed'] else 'FAIL',scene,'CPU p99',report['before']['thread_p99_ms'],report['after']['thread_p99_ms'],flush=True)

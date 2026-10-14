@@ -1,0 +1,57 @@
+use 'input.jo'
+use 'shrines.jo'
+use 'elements.jo'
+use 'player.jo'
+use 'save.jo'
+use 'combat.jo'
+use 'camera.jo'
+use 'fx.jo'
+use 'ui.jo'
+use 'scene.jo'
+
+# Let the non-looping collapse finish before the card takes over input/time.
+const DEATH_COLLAPSE_SECONDS = 1.6
+death_card_visible = () -> bool: pl.state == .dead and pl.st_t >= DEATH_COLLAPSE_SECONDS
+
+death_respawn = ():
+    if not death_card_visible(): return
+    p = respawn_checkpoint ?? pl.last_safe
+    face = if respawn_checkpoint != none: respawn_face else: pl.face
+    if shr_cur >= 0:
+        p = srec[shr_cur].checkpoint + vec3(0, 0.1, 0)
+        face = srec[shr_cur].check_face
+    pl = Player(pos = p, last_safe = p, face = face, hp = pl.hp_max,
+        hp_max = pl.hp_max, stamina = pl.stamina_max, stamina_max = pl.stamina_max,
+        has_glider = pl.has_glider, warm = pl.warm, invuln = 2.0, air_peak = f64(p.y))
+    fight = Fight()
+    lock_hops = false
+    combat_moving = false
+    cam.locked = false
+    cam.aiming = false
+    player_burn_t = 0.0
+    player_shock_t = 0.0
+    cold_dmg_t = 0.0
+    lightning_warn = 0.0
+
+death_draw = ():
+    if pl.state != .dead: return
+    r = visible_rect()
+    # The body stays visible throughout its collapse and beneath the card.
+    a = f32(smoothstep(1.4, DEATH_COLLAPSE_SECONDS, pl.st_t))
+    rect(f64(r.x), f64(r.y), f64(r.z), f64(r.w), rgba(0.025, 0.025, 0.03, a * 0.52))
+    if not death_card_visible(): return
+    cx = f64(r.x + r.z * 0.5)
+    body = sc.vp * vec4(pl.pos, 1)
+    # The prone-body camera can frame Jo below centre. Use the opposite third
+    # so neither the heading nor the Continue row covers the collapse.
+    card_y = if body.w > 0 and body.y / body.w < 0: f32(0.24) else: f32(0.81)
+    cy = f64(r.y + r.w * card_y)
+    text_centered("Game Over", vec2(f32(cx), f32(cy - 42)), 46, rgba(0.78, 0.16, 0.13, 1))
+    label = if act.using_pad: "B" else: "Enter"
+    badge_w = if act.using_pad: 24.0 else: max(24.0, text_width(label, 13.8) + 12.0)
+    word_w = text_width("Continue", 24)
+    row_w = badge_w + 14.0 + word_w
+    left = cx - row_w * 0.5
+    rect(left - 16, cy - 24, row_w + 32, 48, rgba(0.92, 0.9, 0.82, 0.12))
+    button_glyph(label, vec2(f32(left + badge_w * 0.5), f32(cy)), 12, 1)
+    text_centered("Continue", vec2(f32(left + badge_w + 14 + word_w * 0.5), f32(cy)), 24, rgba(0.96, 0.95, 0.91, 1))

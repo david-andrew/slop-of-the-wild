@@ -233,6 +233,49 @@ __temple_ashlar = (center: vec3, size: vec3, yaw: f64, seed: f64, col: vec4, mat
         __quad(cur,back[k],back[next],front[next],front[k],n,darken(pigment,0.06),mat)
     __end()
 
+# Worn stair noses roll into each tread instead of alternating hard flat
+# riser/top lighting. The walking collider keeps the established shallow step.
+__temple_tread = (base: vec3, size: vec3, yaw: f64):
+    frame=translation(base)*rotation_y(yaw)
+    h=f64(size.y)
+    half=f64(size.z)*0.5
+    bevel=min(0.14,h*0.45)
+    section=[vec2(f32(half),0),vec2(f32(half),f32(h-bevel)),vec2(f32(half-0.14),f32(h)),vec2(f32(half-0.32),f32(h)),vec2(f32(-half),f32(h)),vec2(f32(-half),0)]
+    # A rounded, weathered nose has a broad upward light response. Preserve
+    # side/bottom normals and the shadow silhouette of the closed solid.
+    normals=[vec3(0,0.62,0.78),vec3(0,0.62,0.78),vec3(0,0.93,0.37),vec3(0,1,0),vec3(0,1,0),vec3(0,-1,0)]
+    # Broad vertex gradients give each nose a soft underside shadow and a
+    # slight tread value change, without subpixel mortar or repeated thin lines.
+    values=[0.78,0.80,0.91,1.0,0.98,0.78]
+    tone=0.97+hash2(f64(base.x),f64(base.z))*0.04
+    point=(side: f32,k: int) -> vec3: transform_point(frame,vec3(side*size.x*0.5,section[k].y,section[k].x))
+    __begin(base)
+    mat=vec4(0,0,0,-1)
+    loop k in [0..section.len()):
+        j=(k+1)%section.len()
+        n0=transform_dir(frame,normalize(normals[k]))
+        n1=transform_dir(frame,normalize(normals[j]))
+        # The back is buried behind its adjoining tread; the bottom faces down.
+        if k==4:n0=transform_dir(frame,vec3(0,0,-1));n1=n0
+        if k==5:n0=vec3(0,-1,0);n1=n0
+        first=cur.verts.len()
+        __quad_n(cur,point(-1,k),point(1,k),point(1,j),point(-1,j),n0,n0,n1,n1,GREY_DARK,mat)
+        loop v in [0..4):
+            pigment=GREY_DARK
+            pigment.x*=f32(values[if v<2:k else:j]*tone)
+            pigment.y*=f32(values[if v<2:k else:j]*tone)
+            pigment.z*=f32(values[if v<2:k else:j]*tone)
+            cur.verts[first+v].color=pigment
+    loop side in [-1.0,1.0]:
+        n=transform_dir(frame,vec3(f32(side),0,0))
+        center=transform_point(frame,vec3(f32(side)*size.x*0.5,size.y*0.5,0))
+        loop k in [0..section.len()):
+            j=(k+1)%section.len()
+            if side<0.0:__tri(cur,center,point(f32(side),k),point(f32(side),j),GREY_DARK,mat)
+            else:__tri(cur,center,point(f32(side),j),point(f32(side),k),GREY_DARK,mat)
+    __end()
+    add_box(base,size*0.5,yaw,false,.stone)
+
 temple = ():
     o = TEMPLE
     r = TEMPLE_ROT
@@ -292,7 +335,7 @@ temple = ():
         uphill = p(0.0, 0.0, z - 0.4)
         g = gy(f64(q.x), f64(q.z))
         top = max(g, gy(f64(uphill.x), f64(uphill.z))) + 0.09
-        __old_block(v3(f64(q.x), g - 0.25, f64(q.z)), v3(8.6 + f64(zi) * 0.12, top - g + 0.25, 0.8), r, GREY_DARK, temple_ivy, true, false)
+        __temple_tread(v3(f64(q.x), g - 0.25, f64(q.z)), v3(8.6 + f64(zi) * 0.12, top - g + 0.25, 0.8), r)
         # (paved: no grass growing up through the treads)
         if zi % 2 == 0:
             loop side in [-1.0, 0.0, 1.0]:
@@ -1470,6 +1513,10 @@ cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     # The displaced shelves own bedding edges. Triplanar minerals and local
     # fractures replace repeated horizontal ink bands on every exposed plane.
     n = canyon_rock_normal(w, n, dist)
+    if w.x > -1600.0 and w.x < -1480.0 and abs(w.z-1823.0)<20.0 and w.y<107.0:
+        tide=104.0+(vnoise(w.xz*0.85)-0.5)*0.65
+        damp=1.0-smoothstep(tide-0.25,tide+1.1,w.y)
+        alb*=1.0-damp*0.28
     alb = alb * (1.0 - u.wet * 0.25)
     l = normalize(u.sun_dir)
     v = normalize(u.cam - w)
@@ -2090,6 +2137,49 @@ guardian_dead_eye = (eye: vec3, axis: vec3, right: vec3):
     disk(eye-axis*0.040-right*0.13+up*0.14,0.043,stone(0.40,0.52,0.48))
     __end()
 
+# One continuous terrain-seated sleeve, with shared cross sections and only
+# terminal caps. Separate capped tubes made teeth at every interior station.
+guardian_sleeve = (a: vec3, c: vec3, radius: f64):
+    axis=normalize(c-a)
+    right=normalize(cross(axis,if abs(axis.y)<0.9:vec3(0,1,0) else:vec3(1,0,0)))
+    up=cross(axis,right)
+    center = (t: f32) -> vec3:
+        q=mix(a,c,t)
+        q.y+=clamp(f32(gy(f64(q.x),f64(q.z))+radius*0.55)-q.y,0.0,f32(radius*0.45))*sin(t*f32(PI))
+        q
+    normal = (k: int) -> vec3:
+        angle=TAU*f64(k)/10.0
+        right*f32(cos(angle))+up*f32(sin(angle))
+    stations: f32[] = [0.0,0.12,0.21,0.29,0.48,0.69,0.77,0.9,1.0]
+    radii = [0.70,0.85,0.98,0.86,0.79,0.94,0.84,0.74,0.62]
+    point = (j: int, k: int) -> vec3:
+        center(stations[j])+normal(k)*f32(radius*radii[j])
+    __begin(a)
+    # A rounded armor profile carries its shallow cuffs in shared cross sections.
+    # No separate rib can float away from this exact centerline.
+    loop part in [0..8):
+        loop k in [0..10):
+            __quad_n(cur,point(part,k),point(part,k+1),point(part+1,k+1),point(part+1,k),normal(k),normal(k+1),normal(k+1),normal(k),stone(0.34,0.33,0.27),vec4(0,0.5,0,-1))
+    loop k in [0..10):
+        __tri(cur,center(1.0)+axis*f32(radius*0.76*0.35),point(8,k),point(8,k+1),stone(0.34,0.33,0.27),vec4(0,0.5,0,-1))
+        __tri(cur,center(0.0)-axis*f32(radius*0.76*0.35),point(0,k+1),point(0,k),stone(0.34,0.33,0.27),vec4(0,0.5,0,-1))
+    __end()
+
+# Correct the terminal normals on the legacy tube before the husk's winding
+# audit. Its side normals are outward; its conical cap normals face inward.
+guardian_solid_tube = (a: vec3, c: vec3, r0: f64, r1: f64, sides: int, col: vec4, mat: vec4):
+    __begin(a)
+    first=cur.verts.len()
+    __end()
+    tube(a,c,r0,r1,sides,col,mat)
+    __begin(a)
+    middle=(a+c)*0.5
+    loop i in [first..cur.verts.len()):
+        v=cur.verts[i]
+        if dot(v.normal,v.pos-middle)<0.0:v.normal=-v.normal
+        cur.verts[i]=v
+    __end()
+
 guardian_husks = ():
     # Track only geometry appended by this builder; adjoining ruins keep their paint.
     starts: {int: int} = {}
@@ -2122,8 +2212,8 @@ guardian_husks = ():
                 guardian_shell_panel(o,frame,ang,elevation,x+f64(k)*7.0+f64(row)*51.0)
         column(o + v3(0.0, -0.6, 0.0), 2.95, 3.2, 0.7, 18, darken(metal, 0.25), vec4(0.0, 0.7, 0.0, 0.0), false)
         # the head's rim: a heavy ring round the base of the dome, and a small crown on top
-        tube(o + transform_dir(frame, v3(0.0, -0.05, 0.0)), o + transform_dir(frame, v3(0.0, 0.4, 0.0)), 3.45, 3.35, 20, darken(metal, 0.3), vec4(0.0, 0.5, 0.0, 0.0))
-        tube(o + transform_dir(frame,v3(0.0,1.95,0.0)), o + transform_dir(frame,v3(0.0,2.4,0.0)),1.25,1.30,24,darken(metal,0.2),PLAIN)
+        guardian_solid_tube(o + transform_dir(frame, v3(0.0, -0.05, 0.0)), o + transform_dir(frame, v3(0.0, 0.4, 0.0)), 3.45, 3.35, 20, darken(metal, 0.3), vec4(0.0, 0.5, 0.0, 0.0))
+        guardian_solid_tube(o + transform_dir(frame,v3(0.0,1.95,0.0)), o + transform_dir(frame,v3(0.0,2.4,0.0)),1.25,1.30,24,darken(metal,0.2),PLAIN)
         dome(o + transform_dir(frame, v3(0.0, 2.28, 0.0)), 1.46, 1.08, 28, 8, stone(0.29,0.30,0.255), PLAIN, frame)
         # the great eye: a deep round socket standing out of the shell, a heavy rim, the dead
         # lens dark with a dull ember of light deep in it
@@ -2139,7 +2229,7 @@ guardian_husks = ():
             loop j in [0..7):
                 q = point(f64(j) / 7.0)
                 end = point(f64(j + 1) / 7.0)
-                tube(q, end, 0.032, 0.023, 4, stone(0.17, 0.24, 0.10), PLAIN)
+                guardian_solid_tube(q, end, 0.032, 0.023, 4, stone(0.17, 0.24, 0.10), PLAIN)
                 # Small paired leaves hug the armor instead of forming a freestanding bush.
                 loop side in [-1.0, 1.0]:
                     leaf = q + transform_dir(frame, v3(cos(angle + PI / 2.0) * side * 0.11, 0.025, sin(angle + PI / 2.0) * side * 0.11))
@@ -2148,9 +2238,9 @@ guardian_husks = ():
             ang = TAU * f64(k) / 8.0
             tangent = transform_dir(frame, v3(-cos(ang), sin(ang) * 0.987, sin(ang) * 0.16))
             bolt = eye + en * 0.13 + tangent * 0.49
-            tube(bolt, bolt + en * 0.035, 0.045, 0.035, 8, metal, PLAIN)
+            guardian_solid_tube(bolt, bolt + en * 0.035, 0.045, 0.035, 8, metal, PLAIN)
         # a darker band of plates round the dome's middle
-        tube(o + transform_dir(frame, v3(0.0, 0.75, 0.0)), o + transform_dir(frame, v3(0.0, 1.1, 0.0)), 3.12, 2.95, 20, darken(metal, 0.2), vec4(0.0, 0.4, 0.0, 0.0))
+        guardian_solid_tube(o + transform_dir(frame, v3(0.0, 0.75, 0.0)), o + transform_dir(frame, v3(0.0, 1.1, 0.0)), 3.12, 2.95, 20, darken(metal, 0.2), vec4(0.0, 0.4, 0.0, 0.0))
         # six legs: each a thigh up from the hip, a long shin down, a clawed foot; tubes with knuckles
         loop k in [0..6):
             # (collapsed long ago: legs splayed flat and sunk in the turf, one or two gone, one snapped)
@@ -2163,34 +2253,25 @@ guardian_husks = ():
             ankle = o + out_ * random(8.0, 9.5) + v3(0.0, random(0.9, 1.6), 0.0)
             # Ground each collapsed limb on its own patch of slope. Keep the
             # random stream/leg fates so other husks and fauna stay deterministic.
-            knee.y = f32(gy(f64(knee.x),f64(knee.z))+0.30)
-            ankle.y = f32(gy(f64(ankle.x),f64(ankle.z))-0.10)
-            foot = ankle + out_ * 0.7 + v3(0.0, -0.25, 0.0)
-            segs = if fate < 0.4: [(hip, knee, 0.55)] else: [(hip, knee, 0.55), (knee, ankle, 0.4), (ankle, foot, 0.28)]
+            knee.y = f32(gy(f64(knee.x),f64(knee.z))+0.34)
+            ankle.y = f32(gy(f64(ankle.x),f64(ankle.z))+0.25)
+            foot = ankle + out_ * 0.7
+            foot.y = f32(gy(f64(foot.x),f64(foot.z))+0.18)
+            segs = if fate < 0.4: [(hip, knee, 0.40)] else: [(hip, knee, 0.40), (knee, ankle, 0.30), (ankle, foot, 0.22)]
             loop seg_ in segs:
-                d = seg_.1 - seg_.0
-                l = f64(length(d))
-                mid = (seg_.0 + seg_.1) * 0.5
-                yaw = atan2(-f64(d.z), f64(d.x))
-                pitch = asin(clamp(f64(d.y) / l, -1.0, 1.0))
-                # Long seized armor sleeves read as a limb, with only two thin
-                # unequal collars. The former four fat bright ribs read as beads.
-                tube(seg_.0, seg_.1, seg_.2 * 0.98, seg_.2 * 0.78, 10, stone(0.25, 0.255, 0.215), vec4(0, 0.5, 0, -1))
-                loop rib in [1..3):
-                    t = f32(if rib == 1: 0.24 else: 0.73)
-                    tube(seg_.0 + d * (t - 0.027), seg_.0 + d * (t + 0.035), seg_.2 * 1.04, seg_.2 * 0.96, 8, stone(0.23, 0.24, 0.20), vec4(0, 0.4, 0, -1))
-                tube(seg_.1 - d * f32(0.08), seg_.1 + d * f32(0.04), seg_.2 * 1.05, seg_.2 * 1.05, 10, darken(metal, 0.35), PLAIN)
-            loop jp in (if fate < 0.4: [hip, knee] else: [hip, knee, ankle]):
-                dome(jp - vec3(0, 0.1, 0), 0.5, 0.42, 10, 4, darken(metal, 0.3), vec4(-1.0, 0.8, 0.0, 0.4))
-                axle = v3(-sin(ang), 0.0, cos(ang))
-                tube(jp - axle * 0.52, jp + axle * 0.52, 0.27, 0.27, 10, stone(0.14, 0.17, 0.17), PLAIN)
-                loop side in [-1.0, 1.0]:
-                    cap = jp + axle * f32(side * 0.53)
-                    tube(cap, cap + axle * f32(side * 0.04), 0.16, 0.14, 8, stone(0.33, 0.30, 0.22), PLAIN)
+                guardian_sleeve(seg_.0,seg_.1,seg_.2)
+            # Joint hardware scales with the adjoining armor, and shares its pigment.
+            joints = if fate < 0.4: [(hip,0.40),(knee,0.30)] else: [(hip,0.40),(knee,0.30),(ankle,0.22)]
+            loop joint in joints:
+                jp=joint.0
+                r=joint.1
+                dome(jp-vec3(0,f32(r*0.08),0),r*0.96,r*0.92,10,4,stone(0.34,0.33,0.27),PLAIN)
+                axle=v3(-sin(ang),0.0,cos(ang))
+                guardian_solid_tube(jp-axle*f32(r*0.84),jp+axle*f32(r*0.84),r*0.48,r*0.48,10,stone(0.34,0.33,0.27),PLAIN)
             if fate < 0.4:
                 loop wire in [-0.15, 0.0, 0.15]:
                     end = knee + v3(wire, 0.0, -wire)
-                    tube(end, end + out_ * 0.5 + v3(0.0, -0.2, 0.0), 0.045, 0.02, 5, stone(0.09, 0.12, 0.12), PLAIN)
+                    guardian_solid_tube(end, end + out_ * 0.5 + v3(0.0, -0.2, 0.0), 0.045, 0.02, 5, stone(0.09, 0.12, 0.12), PLAIN)
         # Turf follows the ground at the buried rim, instead of brown freestanding lumps.
         loop k in [0..9):
             # Preserve the old earth mounds' random draws so later shells keep their poses.
@@ -2238,6 +2319,22 @@ guardian_husks = ():
             v.mat=vec4(0,0,0,-3)
             v.light=vec3(0.18,0.17,0.13)
             b.verts[i]=v
+        # Legacy collar tubes have inward triangle winding despite outward
+        # normals. Cull their interiors instead of exposing nested armor/caps.
+        loop triangle in [0..b.idx.len()/3):
+            j=triangle*3
+            ia=int(b.idx[j])
+            ib=int(b.idx[j+1])
+            ic=int(b.idx[j+2])
+            if ia<first or ib<first or ic<first: continue
+            va=b.verts[ia]
+            vb=b.verts[ib]
+            vc=b.verts[ic]
+            face=cross(vb.pos-va.pos,vc.pos-va.pos)
+            if dot(face,va.normal+vb.normal+vc.normal)<0.0:
+                swap=b.idx[j+1]
+                b.idx[j+1]=b.idx[j+2]
+                b.idx[j+2]=swap
         __bchunks[key]=b
 
 # set by main: the shrines' chambers are added to the same build

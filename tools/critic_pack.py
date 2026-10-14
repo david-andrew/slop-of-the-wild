@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _capture_lock = None
 _capture_lock_started = 0.0
 _capture_lock_count = 0
+_capture_batch_limit = 4
 
 
 def release_capture_lock():
@@ -236,7 +237,7 @@ def command_run(command, log, env=None, capture_batch=False):
                                 pass_fds=(_capture_lock.fileno(),) if capture_batch else ())
     if capture_batch:
         _capture_lock_count += 1
-        if _capture_lock_count >= 4 or time.monotonic()-_capture_lock_started >= 60 or result.returncode:
+        if _capture_lock_count >= _capture_batch_limit or time.monotonic()-_capture_lock_started >= 60 or result.returncode:
             release_capture_lock()
     if result.returncode:
         raise RuntimeError(f'exit {result.returncode}: {shlex.join(command)}; see {log}')
@@ -312,7 +313,7 @@ def capture(out, manifest):
             continue
         env = clean_env() | BASE | flags | dict(CP_SCENE=name, CP_FRAMES=','.join(str(f) for f, _ in frames), CP_OUT=str(folder),
             SLOPPY_FRAMES=str(run_frames), SLOPPY_SCREENSHOT=str(folder / 'final.png'), BOTW_FRAME_LOG='1', BOTW_LOADTIME='1')
-        # Four ordinary captures take about 25–45 seconds. Release after 60 s;
+        # Release after the configured short batch or 60 seconds;
         # the 90 s child timeout bounds a slow final render to about 150 s total.
         command = ['flock', '/tmp/botw-render.lock', 'python3', 'tools/performance_window.py', '1280x720', 'timeout', '90', str(binary)]
         settings = {k: v for k, v in env.items() if k.startswith(PREFIXES)}
@@ -554,18 +555,22 @@ def indexes(out, manifest):
 
 
 def main():
+    global _capture_batch_limit
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('out_dir', type=Path)
     parser.add_argument('--only', nargs='+', choices=['captures','performance','audio','checks'], help='partial diagnostic pack; default includes everything')
+    parser.add_argument('--capture-batch-scenes', type=int, choices=range(1,9), default=4, help='scenes per short render-lock batch; always release after 60 seconds')
     parser.add_argument('--resume', action='store_true', help='retain complete matching capture/performance sections after a tooling interruption')
     # Accept the brief's `--only captures OUT` spelling as well as `OUT --only captures`.
     argv = sys.argv[1:]
     if argv and argv[0] == '--only':
         for i, value in enumerate(argv[1:], 1):
+            if argv[i-1] == "--capture-batch-scenes": continue
             if not value.startswith('-') and value not in ['captures','performance','audio','checks']:
                 argv = [value, *argv[:i], *argv[i+1:]]
                 break
     args = parser.parse_args(argv)
+    _capture_batch_limit = args.capture_batch_scenes
     os.chdir(ROOT)
     out = args.out_dir.resolve()
     if not out.is_relative_to(ROOT / 'build') or out == ROOT / 'build': parser.error('OUT_DIR must be a new directory under this checkout\'s build/')

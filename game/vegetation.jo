@@ -81,6 +81,7 @@ struct VegU:
     impostor = 0.0
     lod_mode = 0.0
     crown_normal = Texture(0, 1, 1)
+    radius = 0.0         # whole-model clearance, shared by leaves and bark
     wood = 0.0           # bark material, including bare/dead trees and bush stems
 
 # Flat uniform prefix matches VegU; only low plants bind the scorch sampler.
@@ -119,6 +120,7 @@ struct PlantU:
     impostor = 0.0
     lod_mode = 0.0
     crown_normal = Texture(0, 1, 1)
+    radius = 0.0         # whole-model clearance, shared by leaves and bark
     wood = 0.0           # bark material, including bare/dead trees and bush stems
     burn = Texture(0, 1, 1)
     burn_origin = vec2(0, 0)
@@ -142,11 +144,25 @@ struct VegO:
     h: f32
     openness: f32
     lod_distance: f32
+    clearance: f32
+
+# A single capsule per instance clears its complete silhouette. This runs on
+# the GPU, with no per-frame CPU instance updates and no translucent leaf rim.
+vegetation_unit_fade[U] = (base: vec3, height: f32, radius: f32, u: U) -> f32:
+    if u.low < 0.5 and u.wood < 0.5 and u.tree < 0.5: return 0.0
+    top = base + vec3(0, height, 0)
+    lens = vec3(base.x, clamp(u.cam.y, base.y, top.y), base.z)
+    distance = max(0.0, length(lens - u.cam) - radius * 0.65)
+    smoothstep(5.5, (if u.low > 0.5: f32(2.2) else: f32(3.0)), distance)
+
+vegetation_unit_scale = (fade: f32) -> f32: 1.0 - smoothstep(0.03, 0.5, fade)
 
 __veg_vertex[U] = (v: Vertex3D, inst: VInst, u: U, charred: f32) -> VegO:
     p = v.pos
     hn = clamp(p.y / u.height, 0.0, 1.0)
     base = inst.model[3].xyz
+    fade = vegetation_unit_fade(base, u.height * length(inst.model[1].xyz), f32(u.radius) * length(inst.model[0].xyz), u)
+    scale = vegetation_unit_scale(fade)
     # a crown's lobes spread differently on every tree; the lower trunk stays rooted
     if u.tree > 0.5:
         shape = hash12(base.xz + vec2(19.0, 3.0))
@@ -156,14 +172,15 @@ __veg_vertex[U] = (v: Vertex3D, inst: VInst, u: U, charred: f32) -> VegO:
     if charred > 0.0:
         wilt = vec2(sin(base.x * 2.1 + base.z), cos(base.z * 1.7 + base.x))
         p = vec3(p.x + wilt.x * p.y * charred * 0.6, p.y * (1.0 - charred * 0.96), p.z + wilt.y * p.y * charred * 0.6)
+    p *= scale
     # sway: the whole crown bends with the wind, leaves flutter
     ph = u.time * 1.1 + base.x * 0.13 + base.z * 0.11
     gk = clamp(length(u.wind), 0.5, 3.5)
     ph = ph * (0.7 + 0.3 * gk)
     # (in a gale the crowns lean away downwind and toss harder)
-    sway = ((sin(ph) * 0.6 + sin(ph * 2.3) * 0.25) * gk + (gk - 1.0) * 0.6) * hn * hn * 0.35
+    sway = ((sin(ph) * 0.6 + sin(ph * 2.3) * 0.25) * gk + (gk - 1.0) * 0.6) * hn * hn * 0.35 * scale
     wdir = normalize(u.wind + vec2(0.0001, 0))
-    flutter = sin(u.time * 6.0 * (0.6 + 0.4 * gk) + p.x * 3.0 + p.z * 2.0 + base.x) * 0.05 * u.leaves * gk
+    flutter = sin(u.time * 6.0 * (0.6 + 0.4 * gk) + p.x * 3.0 + p.z * 2.0 + base.x) * 0.05 * u.leaves * gk * scale
     w = inst.model * vec4(p, 1)
     # Distant foliage spreads horizontally; preserve shelf heights and branch openings.
     if u.leaves > 0.5 and u.low < 0.5:
@@ -184,7 +201,7 @@ __veg_vertex[U] = (v: Vertex3D, inst: VInst, u: U, charred: f32) -> VegO:
     tint = inst.tint * tv
     # Negative snow is the low-plant char signal; healthy snow stays untouched.
     if charred > 0.0: tint.w = -charred
-    VegO(u.vp * w, w.xyz, n, v.uv, v.color, tint, hn, (th - 0.45) * 0.20 * u.tree, length(base - u.cam))
+    VegO(u.vp * w, w.xyz, n, v.uv, v.color, tint, hn, (th - 0.45) * 0.20 * u.tree, length(base - u.cam), fade)
 
 veg_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
     __veg_vertex(v, inst, u, f32(0))
@@ -252,7 +269,7 @@ crown_view_vs = (v: Vertex3D, inst: VInst, u: VegU) -> VegO:
     w += vec3(wd.x * sway, 0, wd.y * sway)
     th = hash12(base.xz + vec2(3.1, 7.7))
     tv = vec4(0.73 + 0.43 * th, 0.79 + 0.34 * th, 0.88 - 0.08 * th, 1.0)
-    VegO(u.vp * vec4(w, 1), w, back, uv, vec4(1, 1, 1, 1), inst.tint * tv, hn, 0.0, length(base - u.cam))
+    VegO(u.vp * vec4(w, 1), w, back, uv, vec4(1, 1, 1, 1), inst.tint * tv, hn, 0.0, length(base - u.cam), 0.0)
 
 crown_bake = (vm: mut VModel):
     if not vm.has_low: return
@@ -316,10 +333,12 @@ __veg_shadow_fs[U] = (i: VegO, u: U) -> vec4:
     if u.low > 0.5: cut = 0.5 + 0.3 * smoothstep(15.0, 50.0, dcam)
     if u.leaves > 0.5: glsl_discard(ta < cut)
     # Camera-faded fronds and trunks must lose their shadow coverage too.
-    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_dither(i.pos.xy))
+    if u.low < 0.5 and u.wood < 0.5 and u.tree < 0.5:
+        glsl_discard(vegetation_clearance_coverage(veg_occluder_fade(i, u)) > glsl_occluder_noise(i.pos.xy, u.time))
     vec4(1, 1, 1, 1)
 
 veg_occluder_fade[U] = (i: VegO, u: U) -> f32:
+    if u.low > 0.5 or u.wood > 0.5 or u.tree > 0.5: return i.clearance
     # Low plants include opaque stems and solid leaf geometry, not only alpha
     # cards tagged as leaves. Fade every part consistently near the camera.
     foliage = u.leaves > 0.5 or u.low > 0.5
@@ -359,7 +378,8 @@ __veg_depth_fs[U] = (i: VegO, u: U) -> vec4:
         if u.low < 0.5 and (u.shadow_pass < 0.5 or u.shadow_pass > 1.5): glsl_leaf_edge(ta, cut, i.pos.xy)
         else: glsl_discard(ta < cut)
     if u.shadow_pass > 0.5 and u.shadow_pass < 1.5: return vec4(1, 1, 1, 1)
-    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_patch_dither(i.pos.xy))
+    if u.low < 0.5 and u.wood < 0.5 and u.tree < 0.5:
+        glsl_discard(vegetation_clearance_coverage(veg_occluder_fade(i, u)) > glsl_occluder_noise(i.pos.xy, u.time))
     vec4(1, 1, 1, 1)
 
 __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
@@ -480,9 +500,9 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
         c = max(c, alb * u.sky * 0.6)
         c = c + u.sky * material_wet * pow(1.0 - abs(dot(n, v)), 4.0) * (0.025 + 0.035 * gap)
     c = atmos(c, i.world, u.cam, l, u.haze, u.sun_color, u.density, 0.004)
-    fade = veg_occluder_fade(i, u)
-    # Response 32 asks watercolor to preserve opaque patches and their holes.
-    vec4(c, (if fade > 0.001: 32.0 else: (if leaves > 0.5: 0.65 else: (if u.wood > 0.5: 1.0 else: 0.85))))
+    fade = if u.low < 0.5 and u.wood < 0.5 and u.tree < 0.5: veg_occluder_fade(i, u) else: f32(0)
+    # Resolve only the fine clearance rim; fully removed fragments write no pigment.
+    vec4(c, (if fade > 0.03: -16.0 else: (if leaves > 0.5: 0.65 else: (if u.wood > 0.5: 1.0 else: 0.85))))
 
 # ---------------- loading ----------------
 
@@ -906,6 +926,10 @@ place = (name: str, pos: vec3, rot: f64, height: f64, tint: vec4, collide: bool 
     # Round the moss-grown field boulders, leaving authored cliff/snow rocks
     # on their existing meshes. Both variants retain identical collision bounds.
     rounded = starts_with(name, "Rock_Medium_") and tint.y - tint.x > 0.15 and tint.w < 0.1
+    # Reject the three tiny crowns on the open Temple lawn. Replacement fern
+    # cards also collapsed into flat stars at this distance; keep lit turf here.
+    # Arguments already consumed the original scatter RNG.
+    if starts_with(name,"Bush_Common") and height<1.3 and hypot(f64(pos.x)+789.0,f64(pos.z)-1950.0)<6.0: return
     mi = model_id(if rounded: "Moss_" + name else: name)
     vm = vmodels[mi]
     s = treeheight / max(vm.height, 0.1)
@@ -1223,10 +1247,13 @@ vegetation_place = ():
                 # Consume the original scatter RNG before filtering. Decorative
                 # stones collect in unequal pockets; later world placements and
                 # colliders retain their exact random sequence.
-                pocket = noise(f64(k)*0.23,sd*7.0+43.0)
-                if pocket < 0.38: continue
+                pocket = noise(f64(k)*0.37,sd*7.0+43.0)
+                # Separate unequal, one-sided talus pockets with clear stretches.
+                # Consume all original scatter draws before selecting a pocket.
+                if pocket < 0.56: continue
+                if not ((sd < 0.0 and (k < 10 or k > 37)) or (sd > 0.0 and k > 22 and k < 27)): continue
                 drift = hash2(f64(k)*3.7,sd+71.0)-0.5
-                shifted = clamp(t+drift*0.055,0.46,0.99)
+                shifted = clamp(t+drift*0.12,0.46,0.99)
                 q += cd_*f32(shifted-t)+cside*f32((pocket-0.5)*0.25)
                 place(rock_name,q,rock_yaw,rock_size*(0.65+pocket*0.65),vec4(0.62,0.56,0.52,0.0),false)
         if t > 0.85 and random() < 0.7:
@@ -1868,6 +1895,7 @@ __veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
         b = buckets[__bk(vpass, i)]
         if b.items.len() == 0: continue
         vm = vmodels[i]
+        u.radius = vm.radius
         u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
         u.tree = if vm.has_low: 1.0 else: 0.0
         u.wood = if contains(vm.name, "Tree") or starts_with(vm.name, "Pine_") or starts_with(vm.name, "Bush_"): 1.0 else: 0.0
@@ -1890,6 +1918,7 @@ __veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
         b = far_buckets[__bk(vpass, i)]
         if b.items.len() == 0: continue
         vm = vmodels[i]
+        u.radius = vm.radius
         u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
         u.tree = if vm.has_low: 1.0 else: 0.0
         u.wood = if contains(vm.name, "Tree") or starts_with(vm.name, "Pine_") or starts_with(vm.name, "Bush_"): 1.0 else: 0.0
@@ -1919,6 +1948,7 @@ __veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
             b = shadow_buckets[__bk(vpass, i)]
             if b.items.len() == 0: continue
             vm = vmodels[i]
+            u.radius = vm.radius
             u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
             u.tree = 1.0
             u.wood = 1.0
@@ -1941,6 +1971,7 @@ __veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
             b = crown_buckets[__bk(vpass, i)]
             if b.items.len() == 0: continue
             vm = vmodels[i]
+            u.radius = vm.radius
             u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
             u.tree = 1.0
             u.leaves = 1.0
@@ -1961,6 +1992,7 @@ __veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
             b = crown_buckets[__bk(vpass, i)]
             if b.items.len() == 0: continue
             vm = vmodels[i]
+            u.radius = vm.radius
             u.fir = if starts_with(vm.name, "Pine_"): 1.0 else: 0.0
             u.height = f32(vm.height)
             u.tex = vm.bark_tex
@@ -2020,6 +2052,7 @@ vegetation_warmup = ():
     # cull always uploads its exact ordered instances, even for a singleton.
     loop i in [0..vmodels.len()):
         vm = vmodels[i]
+        u.radius = vm.radius
         loop k in [0..VEG_PASSES):
             b = __bk(k, i)
             buckets[b].items.push(VInst(mat4(), vec4(1, 1, 1, 1)))

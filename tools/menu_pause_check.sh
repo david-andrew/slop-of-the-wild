@@ -12,7 +12,7 @@ source = Path('game/main.jo').read_text()
 source = re.sub(r"(?m)^(use|from) '([^']+)'", lambda m: f"{m[1]} '{(Path('game') / m[2]).resolve()}'", source)
 source = source.replace('update = (dt0: f64):', 'production_update = (dt0: f64):')
 source = re.sub(r'(?m)^draw = \(\):', 'production_draw = ():', source)
-source = source.replace('    if not invui.open: story_draw_2d()', '    if not invui.open:\n        story_draw_2d()')
+source = re.sub(r'(?m)^( +)(if [^\n:]+): story_draw_2d\(\)$', lambda m: m[1] + m[2] + ':\n' + m[1] + '    story_draw_2d()', source)
 # Count actual production layer submissions while every tab is open.
 for call in ['combat_hud()', 'hud_draw(slot_views(), (if len(w) > 0: item(w).name else: ""))', 'shrines_draw_2d()', 'story_draw_2d()']:
     source = re.sub(r'(?m)^( +)' + re.escape(call) + r'$', lambda m: m[1] + 'menu_world_layers += 1\n' + m[1] + call, source)

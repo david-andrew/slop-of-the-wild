@@ -105,23 +105,27 @@ water_wade_color = (sun: vec3, horizon: vec3) -> vec3:
 
 # Flow-aligned pigment field, shared by CPU coverage checks and the shader.
 water_impact_brush = (p: vec2, t: f32) -> f32:
-    vnoise(p*vec2(0.30,0.88)+vec2(t*0.23,-t*0.09))
+    # Warped, rotated flow breaks the regular noise cells into unequal rafts.
+    drift=vnoise(p*vec2(0.13,0.19)+vec2(-t*0.035,t*0.021))
+    q=vec2(p.x+p.y*0.21,p.y-p.x*0.12)
+    vnoise(q*vec2(0.30,0.88)+vec2(drift*2.4+t*0.23,drift*1.7-t*0.09))
 
-water_fs = (i: WaterO, u: WaterU) -> vec4:
+water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
     w = i.world
     # Low drifting impact veils share the water mesh and draw. Two small layers per
     # receiving pool join the existing billows without adding a pass or particle count.
     if i.mist > 0.0:
         cloud = vnoise(w.xz * 0.24 + vec2(u.time * 0.14, u.time * 0.06))
-        west_pool = w.x > -1505.0 and w.x < -1450.0 and w.z > 1800.0 and w.z < 1848.0 and w.y < 120.0
-        west_spray = w.x > -1505.0 and w.x < -1400.0 and w.z > 1800.0 and w.z < 1848.0 and w.y >= 120.0
+        # Interpolated centre-to-rim density supplies a radial feather. No
+        # world-space rectangle or height cutoff may clip a drifting veil.
         spray = vnoise(vec2(w.z*1.4+sin(w.y*0.17)*0.8,(w.y+u.time*18.0)*0.32))
-        alpha = i.mist * smoothstep(0.20, 0.78, if west_spray: spray else: cloud) * (if west_pool: 0.46 else if west_spray: 0.45 else: 0.30)
+        rising = smoothstep(112.0,132.0,w.y)
+        alpha = smoothstep(0.001,1.0,i.mist) * smoothstep(0.20,0.78,mix(cloud,spray,rising)) * 0.32
         # Forward-scattered sun gives dawn spray a warm rim; skylight keeps
         # the plume visible in rain without making the cloud emissive.
         light = pow(max(dot(normalize(w - u.cam), normalize(u.sun_dir)), 0.0), 4.0)
         col = vec3(0.80, 0.90, 0.91) * (u.sun_color * (0.38 + light * 0.35) + u.horizon * 0.85)
-        if west_spray: col = vec3(0.92,0.98,1.0)*(u.sun_color*0.60+u.horizon*1.05)
+        col = mix(col,vec3(0.92,0.98,1.0)*(u.sun_color*0.60+u.horizon*1.05),rising)
         return vec4(atmos(col, w, u.cam, normalize(u.sun_dir), u.haze, u.sun_color, u.density, u.falloff), alpha)
     # The falling face has its own moving whitewater, before shoreline rejection and
     # horizontal-water reflection. World-anchored strands never turn with the camera.
@@ -129,11 +133,11 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
     steep = smoothstep(0.85, 0.5, abs(fn.y))
     # Carry aerated strands across the west fall's two shallow benches. Their
     # horizontal surface used to reflect a dark bar between each falling cell.
-    west_course = w.x > -1496.0 and w.x < -1404.0 and w.z > 1805.0 and w.z < 1844.0
+    west_course = w.x > -1600.0 and w.x < -1404.0 and w.z > 1805.0 and w.z < 1844.0
     # One authored flow coordinate spans all three drops and the intervening
     # shallow benches. Local cell top/bottom and facet orientation must never
     # restart a lip, pinch the sheet or rotate its streaks at those contacts.
-    if west_course and w.x < -1412.0 and w.y > 108.0 and w.y < 255.0:
+    if west_course and w.x < -1412.0 and w.y > 100.0 and w.y < 255.0:
         across = w.z - 1823.0
         travel = w.y + u.time * 22.0
         broad = vnoise(vec2(across * 0.30 + sin(w.y * 0.037 + across * 0.19) * 0.38, travel * 0.036))
@@ -179,7 +183,36 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         # No alpha notch at a ledge: translucent fringes surround a continuous
         # aerated core, including the shallow faces between vertical drops.
         thickness = mix(0.72,0.30+thick*0.46,aeration)
-        return vec4(c, margin * clamp((thickness + core * 0.10 + white * 0.18) * (1.0-split*0.65),0.12,0.94))
+        # Carry this one flow field into the receiving channel. Switching to
+        # the grid's horizontal-water material exposed a straight transverse
+        # edge. The plunge now becomes quiet teal water through a broad,
+        # uneven height envelope, with open, advected foam rafts.
+        plunge = 1.0-smoothstep(105.0,127.0,w.y+(broad-0.5)*5.0)
+        rafts = water_impact_brush(w.xz,u.time)
+        contact = length((w.xz-vec2(-1495.0,1823.0))/vec2(20.0,13.0))
+        churn = smoothstep(0.52,0.80,rafts)*(1.0-smoothstep(0.25,1.0,contact))*0.52
+        pool_light = u.sun_color*0.35+u.horizon*0.5
+        quiet = vec3(0.035,0.16,0.20)*pool_light+min(u.horizon,vec3(0.5,0.58,0.66))*0.08
+        pool = mix(quiet*(0.92+rafts*0.12),vec3(0.64,0.78,0.74)*lit,churn)
+        pool = atmos(pool,w,u.cam,normalize(u.sun_dir),u.haze,u.sun_color,u.density,u.falloff)
+        c = mix(c,pool,plunge)
+        opacity = clamp((thickness+core*0.10+white*0.18)*(1.0-split*0.65),0.12,0.94)
+        coverage=margin
+        if depth_contact and plunge>0.01:
+            # Intersect the visible rock, including the overhanging authored skin.
+            # Reconstruct only the depth gap; the existing scene texture is already bound.
+            clip=u.vp*vec4(w,1)
+            uv=clip.xy/clip.w*0.5+vec2(0.5,0.5)
+            z=sample(u.scene_depth,uv).x*2.0-1.0
+            behind=2.0*u.near*u.far/(u.far+u.near-z*(u.far-u.near))
+            gap=max(behind-clip.w,0.0)*abs(normalize(w-u.cam).y)
+            ripple=(rafts-0.5)*0.65+(broad-0.5)*0.35
+            contact=smoothstep(0.02,1.1,gap+ripple)
+            # Neutral broken foam stays in the contact strip; deep water keeps its blue.
+            foam_bank=(1.0-smoothstep(0.25,1.4,gap))*contact*smoothstep(0.55,0.78,rafts)*0.20
+            c=mix(c,vec3(0.80,0.84,0.85)*pool_light,foam_bank*plunge)
+            coverage=mix(margin,contact,plunge)
+        return vec4(c,coverage*mix(opacity,0.76+rafts*0.06,plunge))
     # The benches slope through 141..144 m and 192..194 m, rather than
     # lying exactly at their upper lip. Keep whitewater over their full width.
     bench_height = (w.y > 140.6 and w.y < 144.6) or (w.y > 191.6 and w.y < 194.6)
@@ -289,7 +322,7 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         g2 = exp(-r2 * r2 * 900.0) * pow(max(0.0, 1.0 - p2), 2.0) * (0.25 + 0.6 * b2) * step(0.3, a2)
         # Brief drop crowns and thin outward rings; no uniform pale coverage.
         crowns = exp(-dot(f1, f1) * 950.0) * (1.0 - smoothstep(0.02, 0.16, p1))
-        rain_foam = clamp((g1 + g2) * 0.42 + crowns * 0.75, 0.0, 0.7) * rk
+        rain_foam = clamp((g1 + g2) * 0.60 + crowns * 0.75, 0.0, 0.7) * rk
         n = normalize(n + (vec3(f1.x, 0, f1.y) * (g1 / (length(f1) + 0.02)) + vec3(f2.x, 0, f2.y) * (g2 / (length(f2) + 0.02))) * 1.1 * rk)
     v = normalize(u.cam - w)
     l = normalize(u.sun_dir)
@@ -376,7 +409,13 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         # Keep the opaque bed's shaded relief and silhouettes. A small mineral-grain
         # modulation adds underwater detail without replacing it with a pale sand sheet.
         grain = vnoise(bedp.xz * 4.0)
-        opaque = sample(u.scene, uv + n.xz * 0.0007 * smoothstep(0.05, 0.5, depth))
+        # Classify at the same unwarped pixel as the reconstructed depth.
+        # Refracting a figure while sampling the bed's depth leaked mineral grain
+        # along limbs. Keep body transmission continuous; only refract the bed.
+        opaque = sample(u.scene, uv)
+        figure = smoothstep(0.02,0.12,opaque.w)*(1.0-smoothstep(0.45,0.60,opaque.w))
+        bed_sample = sample(u.scene, uv + n.xz * 0.0007 * smoothstep(0.05,0.5,depth)*(1.0-figure))
+        opaque = vec4(bed_sample.xyz,opaque.w)
         transmitted = opaque.xyz
         figure_behind = smoothstep(0.02, 0.12, opaque.w) * (1.0 - smoothstep(0.45, 0.60, opaque.w))
         # The existing opaque alpha marks characters, including fish. Even a foot
@@ -443,24 +482,31 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
     # Churn at the actual foot, feathered into the pool. The mesh carries the radial
     # envelope; existing moving wave noise breaks it into drifting foam islands.
     impact = i.impact
-    west_plunge = w.x > -1510.0 and w.x < -1474.0 and w.z > 1803.0 and w.z < 1843.0 and w.y > 99.0 and w.y < 109.0
-    if west_plunge:
-        # Spread the churn away from the sheet into its receiving pool. A
-        # flattened footprint avoids a small white disc hidden under the mist.
-        contact = length((w.xz-vec2(-1488.0,1823.0))/vec2(19.0,16.0))
-        impact = max(impact,1.0-smoothstep(0.15,1.0,contact))
+    # The receiving pool has open, flow-aligned rafts. Soft support covers
+    # the entire field; no rectangle or bright central oval sits below the fall.
+    contact = length((w.xz-vec2(-1495.0,1823.0))/vec2(20.0,13.0))
+    landing = (1.0-smoothstep(0.35,1.0,contact))*(1.0-smoothstep(4.0,8.0,abs(w.y-104.0)))
+    impact = max(impact,landing*0.80)
     if impact > 0.01:
         # Advected, unequal brush islands run away from the fall. Their
         # gaps cross the whole impact envelope; no radial phase closes a ring.
         rafts = water_impact_brush(w.xz,u.time)
-        froth = smoothstep(0.38,0.74,rafts) * impact
-        streaks = smoothstep(0.48,0.80,h0) * smoothstep(0.23,0.63,rafts) * impact
+        froth = smoothstep(0.50,0.78,rafts) * impact * (1.0-landing*0.35)
+        streaks = smoothstep(0.48,0.80,h0) * smoothstep(0.36,0.70,rafts) * impact * (1.0-landing*0.25)
         c = mix(c,vec3(0.77,0.86,0.81)*(u.sun_color*0.4+u.horizon*0.7),froth*0.78)
         c = mix(c,vec3(0.64,0.78,0.74)*(u.sun_color*0.4+u.horizon*0.7),streaks*0.36)
         a = max(a,max(froth*0.86,streaks*0.72))
     c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
-    vec4(c, a)
+    vec4(c,a)
 
+# Specialize the contact lookup away from every ordinary water fragment.
+water_fs = (i: WaterO, u: WaterU) -> vec4: water_surface_fs(i,u,false)
+water_pool_fs = (i: WaterO, u: WaterU) -> vec4: water_surface_fs(i,u,true)
+
+water_pool_sh: Shader
+water_pool_mesh: Mesh
+water_pool_lo = vec3(0,0,0)
+water_pool_hi = vec3(0,0,0)
 water_sh: Shader
 struct FallShelf:
     pos: vec3
@@ -565,17 +611,52 @@ water_indices: u32[]
 water_levels: f32[]
 water_prepared_hit = false
 
+# Partition only at load/bake time. Keep each triangle's original winding;
+# the localized pool shader cannot affect distant ponds or their GPU occupancy.
+water_partition = (vs: WVert[], indices: u32[]) -> (u32[],u32[]):
+    ordinary: u32[]
+    pool: u32[]
+    loop triangle in [0..indices.len()/3):
+        ids=[indices[triangle*3],indices[triangle*3+1],indices[triangle*3+2]]
+        a=vs[int(ids[0])]
+        b=vs[int(ids[1])]
+        c=vs[int(ids[2])]
+        lo=min(a.pos,min(b.pos,c.pos))
+        hi=max(a.pos,max(b.pos,c.pos))
+        contact=a.mist==0.0 and b.mist==0.0 and c.mist==0.0 and hi.x> -1600.0 and lo.x< -1412.0 and hi.y>100.0 and lo.y<127.0 and hi.z>1805.0 and lo.z<1844.0
+        if contact: pool.extend(ids)
+        else: ordinary.extend(ids)
+    (ordinary,pool)
+
 water_build = ():
     water_prepared_hit = water_asset_load()
     if not water_prepared_hit:
         water_generate()
     water_sh = make_sh(shader(water_vs, water_fs))
+    water_pool_sh = make_sh(shader(water_vs, water_pool_fs))
     if env("BOTW_BAKE_ASSETS") == none and env("BOTW_ASSET_CHECK") == none:
         # Separate scalar streams preserve the existing four terrain fetches
         # and their bandwidth; grass/water still read the original exact levels.
         water_tex = float_texture(hf.n, hf.n, water_levels)
         water_bed_tex = float_texture(hf.n, hf.n, water_bed_levels(water_vertices, water_indices, water_levels))
-    water_mesh = static_mesh(water_vertices, water_indices)
+    parts=water_partition(water_vertices,water_indices)
+    water_mesh = static_mesh(water_vertices, parts.0)
+    pool_vs: WVert[]
+    pool_idx: u32[]
+    remap: {u32:u32} = {}
+    loop id in parts.1:
+        mapped=remap.get(id)
+        if mapped==none:
+            mapped=u32(pool_vs.len())
+            remap[id]=mapped!
+            pool_vs.push(water_vertices[int(id)])
+        pool_idx.push(mapped!)
+    water_pool_mesh = static_mesh(pool_vs,pool_idx)
+    water_pool_lo=vec3(1e9,1e9,1e9)
+    water_pool_hi=vec3(-1e9,-1e9,-1e9)
+    loop id in parts.1:
+        water_pool_lo=min(water_pool_lo,water_vertices[int(id)].pos)
+        water_pool_hi=max(water_pool_hi,water_vertices[int(id)].pos)
     if env("BOTW_ASSET_CHECK") == none and env("BOTW_BAKE_ASSETS") == none:
         water_vertices = []
         water_indices = []
@@ -867,7 +948,10 @@ water_generate = ():
         loop layer in [0..2):
             # Mist belongs to the landing pool, not a broad horizontal card
             # floating at a mid-height cell's inferred foot.
-            if foot.x > -1505.0 and foot.x < -1400.0 and foot.z > 1800.0 and foot.z < 1848.0 and foot.y >= 120.0: continue
+            # The west pool already has fourteen drifting radial billows in
+            # the shared particle batch. Horizontal fans stack into a bright
+            # oval from this low camera, so let those billows own its mist.
+            if foot.x > -1505.0 and foot.x < -1400.0 and foot.z > 1800.0 and foot.z < 1848.0: continue
             radius = 6.0 + f64(layer) * 3.0
             center = foot + vec3(0, f32(0.65 + f64(layer) * 0.8), 0)
             loop k in [0..12):
@@ -947,6 +1031,9 @@ water_draw = (u0: WaterU):
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA)
     glEnable(GL_DEPTH_TEST)
     glDisable(GL_CULL_FACE)
+    # Pool body precedes the ordinary mesh's transparent spray fans.
+    if box_visible(frustum_from(u.vp),water_pool_lo,water_pool_hi):
+        draw_fast(water_pool_sh,water_pool_mesh,u)
     draw_fast(water_sh, water_mesh, u)
     glDepthMask(1)
     glDisable(GL_BLEND)

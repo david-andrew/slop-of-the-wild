@@ -8,8 +8,8 @@ use 'scene.jo'
 # Negative alpha still marks faded occluders. The paint pass reserves (1,2] for
 # distant fine structure, where preserving the silhouette overrides material grain.
 # (2,3] carries the same protection for foliage while retaining its softer rim.
-# Response 32 marks opaque vegetation dissolve patches before painting; -16
-# preserves their coverage through composition without ink or pigment bleed.
+# Fine vegetation clearance uses -16 to resolve its rim through composition
+# without depth ink or pigment bleed.
 # Sky is identified by depth and has wet washes but no paper tooth. No extra target.
 paint_foliage = (a: f32) -> f32: if a > 2.0: 1.0 else: 1.0 - smoothstep(0.055, 0.17, abs(a - 0.65))
 paint_stone = (a: f32) -> f32: 1.0 - smoothstep(0.045, 0.14, abs(a - 0.85))
@@ -74,18 +74,14 @@ pp_paint_fs = (i: PostO, u: PostU) -> vec4:
     # fragment can expose sky or stone: both sides need the same filter footprint,
     # independent of their depth/material. Otherwise the holes remain visible dots.
     # Four bilinear taps cover every texel of a contiguous 4x4 box, matching
-    # glsl_occluder_dither's balanced tile. Any window integrates the full tile,
-    # so camera motion cannot reveal a diagonal stipple. Reuse the probes below.
+    # the fine masonry tile and temporal foliage noise. Reuse the probes below;
+    # the narrow foliage rim resolves without preserving opaque square patches.
     # u.texel is the enlarged watercolor brush, not the source pixel spacing.
     pixel = glsl_texel_size(u.src)
     coverage_a = sample(u.src, i.uv + vec2(-0.5, -0.5) * pixel)
     coverage_b = sample(u.src, i.uv + vec2(1.5, -0.5) * pixel)
     coverage_c = sample(u.src, i.uv + vec2(-0.5, 1.5) * pixel)
     coverage_d = sample(u.src, i.uv + vec2(1.5, 1.5) * pixel)
-    # Vegetation uses opaque patches rather than a blended ghost. A strong
-    # positive marker survives these bilinear probes on the exposed side too.
-    patches = max(center.w, max(max(coverage_a.w, coverage_b.w), max(coverage_c.w, coverage_d.w)))
-    if patches > 3.5: return vec4(center.xyz, -16)
     coverage = max(-center.w, max(max(-coverage_a.w, -coverage_b.w), max(-coverage_c.w, -coverage_d.w)))
     if coverage > 0.001:
         # Half-texel taps and equal weights avoid material-dependent dot contrast.
@@ -127,7 +123,6 @@ pp_paint_fs = (i: PostO, u: PostU) -> vec4:
             c = c4.xyz
             d4 = if x == 0: c4 else: (if y == 0: b4 else: sample(u.src, i.uv + vec2(fx, fy) * t))
             d = d4.xyz
-            patches = max(patches, max(max(a4.w, b4.w), max(c4.w, d4.w)))
             # Four existing nearby taps detect coverage; a strong negative marker
             # survives bilinear sampling even through sparse retained fragments.
             if x == 1 and y == 1: occluder = max(max(-a4.w, -b4.w), max(-c4.w, -d4.w))
@@ -139,8 +134,6 @@ pp_paint_fs = (i: PostO, u: PostU) -> vec4:
             s2 = s2 + c * c
             m3 = m3 + d
             s3 = s3 + d * d
-    # Preserve background pixels reached by the wider brush as well.
-    if patches > 3.5: return vec4(center.xyz, -16)
     m0 = m0 / 9.0
     m1 = m1 / 9.0
     m2 = m2 / 9.0
@@ -234,6 +227,9 @@ pp_grain = (px: vec2) -> vec4:
 
 pp_grain_fs = (i: PostO, u: PostU) -> vec4: pp_grain(i.uv / u.texel)
 
+flame_emission = (c: vec3) -> f32:
+    smoothstep(1.10,1.65,c.x)*(1.0-smoothstep(0.10,0.22,c.z/max(c.x,0.001)))*smoothstep(0.16,0.32,c.y/max(c.x,0.001))
+
 pp_comp_fs = (i: PostO, u: PostU) -> vec4:
     px = i.uv / u.texel
     # pigment bleeding: the image wobbles a little, like wet paint spreading
@@ -288,7 +284,11 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
         leaf_rim = max(leaf_rim, paint_foliage(sample(u.src, i.uv - vec2(u.texel.x, 0)).w))
         leaf_rim = max(leaf_rim, paint_foliage(sample(u.src, i.uv + vec2(0, u.texel.y)).w))
         leaf_rim = max(leaf_rim, paint_foliage(sample(u.src, i.uv - vec2(0, u.texel.y)).w))
-    ink = ink * (1.0 - leaf_rim * 0.94)
+    # Transparent fire leaves opaque shoulder/terrain depth underneath it.
+    # Those depth seams must not be inked through the hot yellow interior.
+    # The HDR red/yellow envelope excludes ordinary lit cloth and grass.
+    emissive_fire = flame_emission(c)
+    ink = ink * (1.0 - leaf_rim * 0.94)*(1.0-emissive_fire)
     if ink > 0.001: ink = ink * ink_surface(d0, dl, dr, du, dd, i.uv, u.texel, u.projection_scale, u.view_up)
     # edge darkening: pigment pools where the image steps from light to dark
     ed = clamp(luma(soft) - luma(c), 0.0, 1.0)

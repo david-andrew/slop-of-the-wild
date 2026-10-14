@@ -87,6 +87,24 @@ loop shelf in fall_shelves:
 assert(west_shelves > 0 and low_bench and high_bench, "reviewed west waterfall has visible shelf spray anchors")
 print("PASS waterfall shelves: {fall_shelves.len()} surface contacts, {west_shelves} at reviewed west fall; unit directions, dry-rock exclusion")
 
+# The isolated receiving shader owns exactly the original local triangles.
+# Audit loss/duplication and winding against the full actual generated mesh.
+parts=water_partition(water_vertices,water_indices)
+assert(parts.0.len()+parts.1.len()==water_indices.len(),"partition preserves total index count")
+assert(parts.1.len()>300 and parts.1.len()<parts.0.len(),"localized receiving mesh retains a full pool")
+counts: {str:int} = {}
+loop ids in [water_indices,parts.0,parts.1]:
+    sign=if ids.len()==water_indices.len():1 else:-1
+    loop tri in [0..ids.len()/3):
+        a=ids[tri*3]
+        b=ids[tri*3+1]
+        c=ids[tri*3+2]
+        key="{a}/{b}/{c}"
+        counts[key]=(counts.get(key) ?? 0)+sign
+loop key,count in counts:assert(count==0,"no missing, duplicated or rewound water triangle")
+loop id in parts.1:assert(water_vertices[int(id)].mist==0.0,"spray retains its final transparent draw order")
+print("PASS isolated pool: {parts.1.len()/3} local triangles, no loss/duplication/winding change; spray stays separate")
+
 # Synthetic controls: a leaking flat sheet, a descending waterfall, and a
 # contained pond. The render mask must never mutate the gameplay water levels.
 hf.n = 9

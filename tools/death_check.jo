@@ -1,0 +1,83 @@
+# Headless lifecycle regression: collapse, explicit Continue, checkpoint and save.
+use '../game/death.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/save.jo'
+from '../game/save.jo' import __save_file, __save_anchor, __save_face
+use '../game/items.jo'
+use '../game/combat.jo'
+use '../game/camera.jo'
+use '../game/fx.jo'
+use '../game/elements.jo'
+use '../game/shrines.jo'
+use '../game/terrain.jo'
+
+items_init()
+hf.n=4
+hf.cell=1000.0
+hf.x0=-2000.0
+hf.z0=0.0
+hf.h=fill(f32(200),16)
+hf.mat=fill(u8(0),64)
+checkpoint=vec3(-900,200,1800)
+pl=Player(pos=checkpoint,last_safe=checkpoint,hp=16,hp_max=20,stamina=1200,stamina_max=1200,has_glider=true)
+fixture_save = (p: vec3):
+    __save_anchor=p
+    __save_face=1.2
+    __save_file="build/death-check-{time_ns()}"
+fixture_save(checkpoint)
+save_enabled=true
+save_now()
+assert(respawn_checkpoint! == checkpoint,"successful save establishes checkpoint")
+original=read_file(__save_file)!
+pl.pos=vec3(-955,238,1964)
+pl.last_safe=pl.pos
+pl.stamina=0
+pl.exhausted=true
+pl.frozen=1
+pl.surfing=true
+fight=Fight(act=.swing,t=10,slowmo=2,weapon_out=true,target=2)
+cam.locked=true
+cam.aiming=true
+player_burn_t=1
+player_shock_t=1
+cold_dmg_t=4.9
+lightning_warn=1
+# Lethal damage starts one collapse and cannot be overwritten by cleanup.
+damage_player(99,pl.pos)
+assert(pl.state==.dead and pl.hp==0 and pl.st_t==0)
+set_state(.hurt)
+assert(pl.state==.dead)
+death_respawn()
+assert(pl.state==.dead,"Continue cannot interrupt collapse")
+pl.st_t=DEATH_COLLAPSE_SECONDS-0.01
+assert(not death_card_visible())
+pl.st_t=DEATH_COLLAPSE_SECONDS
+assert(death_card_visible())
+pl.st_t=30
+assert(death_card_visible(),"death waits for input instead of auto-respawning")
+save_update(181)
+save_now()
+assert(read_file(__save_file)! == original,"death and close-save preserve live save")
+death_respawn()
+assert(pl.state==.ground and pl.pos==checkpoint and pl.last_safe==checkpoint and abs(pl.face-1.2)<0.00001)
+assert(pl.hp==20 and pl.stamina==1200 and pl.stamina_max==1200 and pl.has_glider)
+assert(not pl.exhausted and pl.frozen==0 and not pl.surfing and pl.invuln==2)
+assert(fight.act==.idle and fight.target==-1 and fight.slowmo==0 and not cam.locked and not cam.aiming)
+assert(player_burn_t==0 and player_shock_t==0 and cold_dmg_t==0 and lightning_warn==0)
+assert(not death_card_visible())
+# A successful post-Continue save is healthy and can be loaded.
+save_now()
+healthy=save_decode(read_file(__save_file)!)!
+assert(healthy.hp==20 and healthy.frozen==0 and healthy.pos==checkpoint)
+assert(delete_file(__save_file))
+# Shrine deaths use the puzzle checkpoint even if the disk save is outdoors.
+shr_cur=0
+srec[0].checkpoint=vec3(10,20,30)
+srec[0].check_face=0.7
+pl.state=.dead
+pl.hp=0
+pl.st_t=3
+death_respawn()
+assert(pl.pos==vec3(10,20.1,30) and pl.face==0.7 and pl.hp==20)
+print("PASS death: completed collapse, waits for Continue, live-save preservation, healthy checkpoint and shrine respawn")

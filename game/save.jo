@@ -83,6 +83,9 @@ __save_mark = ""
 __save_anchor = vec3(0, 0, 0)
 __save_face = 0.0
 __save_file = ""
+# Last successfully persisted checkpoint, distinct from the moving save anchor.
+respawn_checkpoint: vec3?
+respawn_face = 0.0
 save_path = () -> str: "{env("HOME") ?? "."}/.botw-clone-save"
 
 save_allowed = () -> bool:
@@ -649,6 +652,8 @@ save_init = (path: str = ""):
         if let text_ = text_:
             if let s = save_decode(text_):
                 save_apply(s)
+                respawn_checkpoint = pl.pos
+                respawn_face = pl.face
                 eprint("Resumed plateau progress")
             else: eprint("Save unreadable; starting a new journey")
     __save_anchor = pl.last_safe
@@ -656,14 +661,19 @@ save_init = (path: str = ""):
     __save_mark = __milestones()
 
 save_now = ():
-    if not save_enabled: return
-    if save_write(__save_file, save_capture()):
+    # Closing a death screen must preserve the last live save, not write one HP
+    # and a lethal status at the location where Jo died.
+    if not save_enabled or pl.state == .dead: return
+    snapshot = save_capture()
+    if save_write(__save_file, snapshot):
+        respawn_checkpoint = snapshot.pos
+        respawn_face = snapshot.face
         __save_age = 0.0
         __save_mark = __milestones()
     else: eprint("Could not write plateau save")
 
 save_update = (dt: f64):
-    if not save_enabled: return
+    if not save_enabled or pl.state == .dead: return
     if pl.state == .ground and pl.hp > 0 and (not use_terrain or water_depth(f64(pl.pos.x), f64(pl.pos.z)) < 0.3):
         __save_anchor = pl.pos
         __save_face = pl.face

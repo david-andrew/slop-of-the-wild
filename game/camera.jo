@@ -688,7 +688,36 @@ camera_aim_blend = (a: vec3, at: vec3, b: vec3, bt: vec3, k: f64) -> vec3:
     mix(a, b, f32(k)) + direction * f32(lerp(f64(length(av)), f64(length(bv)), k))
 
 # the camera actually used this frame (player camera blended with a cutscene camera)
-view_pos = () -> vec3: if cam.override: mix(cam.from_pos, cam.o_pos, f32(smooth01(cam.blend))) else: mix(cam.pos, cam.from_pos, f32(smooth01(cam.blend)))
+# A climbing view must stay on Jo's side of foreground masonry, including
+# scripted camera placements. Keep the held wall and shadow geometry intact.
+camera_climb_masonry_view = (pos: vec3, target: vec3) -> vec3:
+    delta = pos - target
+    dist = f64(length(delta))
+    if dist < 0.8: return pos
+    back = normalize(delta)
+    hit = raycast(target, back, dist, true, false)
+    if hit.hit and hit.collider != pl.climb_col and colliders[hit.collider].surf == .stone:
+        return target + back * f32(max(0.8, hit.dist - 0.45))
+    pos
+
+# Rendering asks for the same view many times. Sweep foreground masonry once
+# per frame/pose, rather than repeating a collider query for each draw path.
+__masonry_frame = -1
+__masonry_pos = vec3()
+__masonry_target = vec3()
+__masonry_held = -1
+__masonry_view = vec3()
+view_pos = () -> vec3:
+    pos = if cam.override: mix(cam.from_pos, cam.o_pos, f32(smooth01(cam.blend))) else: mix(cam.pos, cam.from_pos, f32(smooth01(cam.blend)))
+    if pl.state == .climb and not cam.override and cam.blend < 0.01:
+        if __masonry_frame != frame_number() or __masonry_pos != pos or __masonry_target != cam.target or __masonry_held != pl.climb_col:
+            __masonry_frame = frame_number()
+            __masonry_pos = pos
+            __masonry_target = cam.target
+            __masonry_held = pl.climb_col
+            __masonry_view = camera_climb_masonry_view(pos, cam.target)
+        pos = __masonry_view
+    pos
 view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, mix(cam.target,cam.paired_target,f32(cam.lock_frame)), cam.from_pos, cam.from_target, smooth01(cam.blend))
 view_fov = () -> f64: if cam.override: lerp(cam.from_fov, cam.o_fov, smooth01(cam.blend)) else: lerp(aim_fov, cam.from_fov, smooth01(cam.blend))
 __camdbg = env("BOTW_CAMDBG") != none

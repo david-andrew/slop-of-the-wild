@@ -80,7 +80,7 @@ update = (dt: f64):
             __key_event(int(Key.w),false)
             # The focus-safe scripted input also owns a held-key record. Release
             # on actual shoulder arrival, independent of the scaled climb duration.
-            __scr.push((frame_number(),"w",false))
+            __scr.push((frame_number(),Key.w,false))
             visual_attacked=true
             assert(visual_climbed and visual_mantled,"production inputs mantle onto shoulder")
             # Turn from the safe shoulder apron toward the back-mounted ore.

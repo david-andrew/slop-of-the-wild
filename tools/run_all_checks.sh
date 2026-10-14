@@ -215,8 +215,10 @@ cpu_checks=(
     fire_query_check
     fire_scan_check
     fire_test
+    task68_fire_check
     named_bounds_check
     input_check
+    script_keys_check
     integration_test
     journey_controller_check
     landscape_check
@@ -266,6 +268,8 @@ cpu_checks=(
     waiting_pose_check
     cutscene_actor_check
     lens_plant_check
+    death_check
+    climb_masonry_check
     round92_lightning_check
     title_panorama_check
     tree_test
@@ -291,9 +295,12 @@ cpu_checks=(
     round82_character_check
     task66b_presentation_check
     task67b_character_check
+    task68_readability_check
     round88_material_check
     round66_stone_check
     round67_art_surface_check
+    round68_sleeve_check
+    round68_lawn_check
     round67_cliff_ground_check
     camp_alert_check
     wildlife_observation_check
@@ -347,6 +354,7 @@ for name in production_loop_check menu_pause_check opening_check title_rise_visu
 done
 # A real placed-camp approach; keep it explicit so --only can reproduce a miss.
 check self camp_sword_visual_check env COMBAT_SCENES=camp_sword tools/combat_visual_check.sh "$out/camp-sword"
+check self death_visual_check python3 tools/death_visual_check.py
 check self prepared_frame_check python3 tools/prepared_frame_check.py
 check self element_input_check python3 tools/element_input_check.py
 check self renderer_structure_check python3 tools/renderer_structure_check.py

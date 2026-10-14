@@ -81,7 +81,7 @@ checked=0
 loop index in [17, 823, 6201, 7357]:
     last=rain_drop_offset(vec3(3,13,-5),index,0,vec2(1,0.35),2.8)
     span=if index<6200: 30.0 else: 6.0
-    top=if index<6200: 22.0 else: 10.0
+    top=if index<6200: 22.0 else: 4.0
     loop frame in [1..1201):
         next=rain_drop_offset(vec3(3,13,-5),index,f64(frame)/120.0,vec2(1,0.35),2.8)
         assert(next.y>=-6 and next.y<=f32(top) and abs(next.x)<=f32(span) and abs(next.z)<=f32(span))

@@ -1,0 +1,20 @@
+use '../game/input.jo'
+
+# Native focus changes can clear real keys; the script still owns its held keys.
+events=script_keys_parse("20:w+,50:w-,30:e+,31:e-,bogus,10:bogus+,40:w+,40:w-,bad:a+,1:x?,80:space+")
+assert(events.len()==9,"unknown names and malformed entries stay inert")
+assert(not script_key_held(events,.w,19))
+assert(script_key_held(events,.w,20) and script_key_held(events,.w,39))
+assert(not script_key_held(events,.w,40),"last event wins when frames are equal")
+assert(not script_key_held(events,.w,50),"latest frame wins even with out-of-order entries")
+assert(script_key_held(events,.e,30) and not script_key_held(events,.e,31))
+assert(script_key_held(events,.a,0),"malformed frame retains legacy frame-zero fallback")
+assert(not script_key_held(events,.x,1),"non-plus event retains legacy release semantics")
+assert(not script_key_held(events,.space,79) and script_key_held(events,.space,80))
+# Every native key retains exactly its original enum spelling.
+loop i in [0..int(Key.grave)+1):
+    key=i as Key
+    ev=script_keys_parse("2:{key}+,3:{key}-")
+    assert(ev.len()==2 and ev[0].1==key and ev[1].1==key)
+    assert(script_key_held(ev,key,2) and not script_key_held(ev,key,3))
+print("PASS scripted keys: one-time enum decoding, held/released keys, all key spellings, ordering and legacy malformed-input behavior")

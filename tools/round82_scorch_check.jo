@@ -45,7 +45,10 @@ loop direction in [vec3(-0.42,-0.12,0.1),vec3(0.28,0.18,-0.2),vec3(0,0,0)]:
         neutral.color=vec4(0,0,0,0.9)
         upright=body_fire_vs(QuadV(vec2(0,1)),neutral,u)
         assert(length(root.pos.xyz-flame.pos.xyz)<0.00001,"trail never detaches a flame root")
-        assert(length(top.pos.xyz-upright.pos.xyz-direction)<0.00001,"tip bends with the animated limb/locomotion wake")
+        drift=top.pos.xyz-upright.pos.xyz
+        assert(abs(drift.y-direction.y)<0.00001,"upper flame follows vertical limb motion")
+        assert(dot(drift.xz,direction.xz)>=0 and length(drift.xz)<=length(direction.xz)+0.00001,"bounded upper curl follows the limb wake direction")
+        assert(length(drift.xz)<=flame.data.w*0.32+0.00001,"horizontal limb wake is bounded by flame height")
         assert(top.pos.y>root.pos.y,"bent limb fire retains buoyant rise")
 print("PASS body trails: 18 lengths/directions, fixed roots and moving upper tongues")
 

@@ -192,9 +192,9 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
         # Vertical and inward planes keep their stone value through daylight
         # adaptation; the existing light separates exposed lips from recesses.
         plane = smoothstep(-0.35, 0.65, n.y)
-        seam = abs(sin(q.y*3.4+q.x*0.16+wash*2.0))
-        tooth = 1.0-smoothstep(0.025,0.11,seam)
-        alb = alb * (0.88 + bed * 0.28) * (0.84 + plane * 0.16) * (1.0-tooth*0.24)
+        # Broad mineral washes have no periodic line shared by floor and walls.
+        # Relief already supplies local cracks, lips and shaded recesses.
+        alb = alb * (0.88 + bed * 0.28) * (0.84 + plane * 0.16)
         exposed = clamp(i.mat.w-6.0,0.0,1.0)
         if exposed > 0.0:
             mineral = cave_weathered_stone(w) * (0.82 + i.color.x * 0.65)
@@ -271,7 +271,7 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
             # with soft broken margins. Four noise taps, as in the old ivy path.
             damp = painted_stone_wash(w)
             ivy = smoothstep(0.26, 0.76, damp.x) * i.mat.y * (1.0 - abs(n.y))
-            pigment = mix(vec3(0.21, 0.255, 0.145), vec3(0.29, 0.32, 0.195), damp.x) * damp.y
+            pigment = mix(vec3(0.29, 0.285, 0.23), vec3(0.40, 0.375, 0.29), damp.x) * damp.y
             alb = mix(alb, pigment, clamp(ivy * 0.82, 0.0, 0.70))
         else:
             ivy = smoothstep(0.42, 0.6, fbm3(vec2(w.x + w.z, w.y) * 0.25 + vec2(w.y * 0.05, 0))) * i.mat.y
@@ -293,6 +293,10 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
     stone_sky = mix(u.sky,luma(u.sky)*vec3(1.03,1.0,0.94),neutral)
     stone_sun = mix(u.sun_color,luma(u.sun_color)*vec3(1.03,1.0,0.95),neutral*0.8)
     c = paint_light(alb, n, l, v, stone_sun, stone_sky, u.ground, sh, (if i.mat.w > 5.5: 0.1+exterior*0.16 else if i.mat.w > 3.5: 0.45 else: 0.1)) * i.color.w
+    # Dressed masonry receives warm diffuse sky bounce on sheltered vertical
+    # faces. Retain the direct-light shadows and the stone's painted weathering.
+    if i.mat.w < -0.5 and i.mat.w > -1.5:
+        c += alb * stone_sky * vec3(1.12, 1.04, 0.90) * 0.55 * (1.0 - abs(n.y)) * (1.0 - clamp(dot(n,l),0.0,1.0)*sh)
     # Daylight reflected from the meadow joins the exposed brow to its host cliff.
     c = c + alb*stone_sun*vec3(0.98,1.0,1.02)*0.10*exterior*clamp(1.0-n.y*1.4,0.0,1.0)*(1.0-clamp(dot(n,l),0.0,1.0)*sh)
     if i.mat.w > 3.5 and i.mat.w < 4.5:

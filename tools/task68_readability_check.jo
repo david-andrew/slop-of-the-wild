@@ -1,0 +1,69 @@
+# Continuous underwater pigment and value-preserving blue-light correction.
+# Near rain uses the production seed volume and fall offsets, without a window.
+use '../game/charshade.jo'
+use '../game/gfx.jo'
+use '../game/shade.jo'
+use '../game/fx.jo'
+use '../game/env.jo'
+use '../game/water.jo'
+from '../game/fx.jo' import __rain_fill
+
+loop pigment in [vec3(0.72,0.64,0.34),vec3(0.65,0.36,0.22)]:
+    lit=pigment*vec3(0.25,0.65,1.2)
+    previous=lit
+    loop k in [0..101):
+        amount=f32(k)/100.0
+        c=ch_natural_pigment(lit,pigment,amount)
+        assert(abs(luma(c)-luma(lit))<0.000001,"pigment correction cannot brighten colored light")
+        assert(length(c-previous)<0.004,"no hue jump across the fill envelope")
+        previous=c
+    neutral=ch_natural_pigment(lit,pigment,1)
+    assert(abs(neutral.x/neutral.y-pigment.x/pigment.y)<0.00001,"blond and skin pigment retain their warm hue")
+    assert(ch_natural_pigment(lit,pigment,0)==lit,"unaffected lighting is exact")
+
+water_grid_set(fill(f32(1),16),4,-2,-2,1)
+swim=character_waterline(vec3(0,1,0),1)
+assert(swim.x==1 and swim.y==1,"surface-centered swim origin enables underwater shading")
+assert(submerged_scatter(0.98,swim.x,swim.y)==1,"shallow submerged limbs have fully scattered shadow receivers")
+assert(submerged_scatter(1.02,swim.x,swim.y)==0,"above-water shadows remain intact")
+assert(submerged_pigment(vec3(0.5,0.3,0.2),1.1,swim.x,swim.y)==vec3(0.5,0.3,0.2),"dry upper body remains untinted")
+color=vec3(0.5,0.3,0.2)
+last=color
+loop k in [0..401):
+    y=1.1-f32(k)/1000.0
+    tint=submerged_pigment(color,y,1,1)
+    assert(tint.x<=last.x+0.000001 and tint.y<=last.y+0.000001 and tint.z<=last.z+0.000001,"continuous monotonic underwater absorption")
+    assert(length(tint-last)<0.003,"no stipple or step at the surface")
+    assert(submerged_pigment(color,y,1,0)==color,"dry fragments unchanged")
+    last=tint
+assert(last.z/last.x>color.z/color.x,"underwater pigment absorbs red before blue")
+
+rain_streaks.clear()
+seed_random(64)
+__rain_fill()
+assert(rain_streaks.len()==8200,"denser rain preserves the original parcel budget")
+# A 54-degree field camera above a flat shore; every heading samples its own
+# random parcels. Require real density at the lens, rather than more far rain.
+loop yaw in [0.0,1.57,3.14,4.71]:
+    forward=v3(sin(yaw),-0.2,-cos(yaw))
+    right=v3(cos(yaw),0,sin(yaw))
+    near=0
+    loop k in [6200..8200):
+        p=rain_drop_offset(rain_streaks[k],k,5,vec2(1,0.35),1.7)
+        depth=dot(p,forward)
+        if depth<1 or length(p)>12 or p.y < -1.4: continue
+        if abs(dot(p,right))<depth*0.88 and abs(p.y+depth*0.2)<depth*0.50: near+=1
+    assert(near>=100,"near rain fills every camera heading with at least 100 thin streaks")
+    print("PASS rain heading {yaw}: {near} near parcels in the field camera")
+
+# Fill and ground bounce vary continuously throughout the closed daytime deck.
+last_sky=0.0
+loop k in [0..101):
+    env=Env(hour=11,time_scale=0,weather=.rain,weather_t=1e9,clouds=0.86,rain=f64(k)/100.0,wet=1)
+    env_update(0,false)
+    sky=f64(luma(env.sky_amb))
+    assert(sky>=last_sky,"rain diffuse fill cannot reverse into darkness")
+    if k>0: assert(sky-last_sky<0.003,"rain fill changes without a lighting jump")
+    assert(luma(env.ground_amb)>0.32,"daytime overcast retains ground bounce")
+    last_sky=sky
+print("PASS round68 readability: pigment luminance/hue, continuous dry/submerged tint, fixed rain parcel budget/near coverage and smooth daylight bounce")

@@ -264,6 +264,10 @@ wake_settle_pose = (m: Model, lib: AnimLib, p: mut Pose, t: f64):
     wrist_parent = pose_rot(lib, p, lib.parent[m.canon[h]])
     p.r[m.canon[h]] = normalize(quat_mul(quat_conj(wrist_parent), wrist))
 
+hero_respawn_reset = ():
+    hero_anim = Animator()
+    hero_motion = HeroMotion()
+
 hero_animate = (dt: f64, waking: f64):
     pl.body_delta = mat4()
     if not chars_ready: return
@@ -324,6 +328,7 @@ hero_animate = (dt: f64, waking: f64):
         dead:
             clip = "die"
             loop_ = false
+            fade = 0.08
     # Waking is sampled as one supported rise, independent of locomotion playback.
     if len(hero_busy_clip) > 0 and pl.state == .cutscene: clip = hero_busy_clip
     if hero_wake_t >= 0.0:
@@ -406,7 +411,7 @@ hero_animate = (dt: f64, waking: f64):
         else if fight.act == .swing or fight.act == .spin or fight.act == .flurry:
             weapon_layer(hero_m, human, pose, top, upper_mask)
         else: layer_into(pose, top, upper_mask, (if fight.act == .guard: __guard_weight else: 1.0))
-    if fight.act == .swing or fight.act == .jump_attack or fight.act == .flurry or fight.act == .spin:
+    if st != .dead and (fight.act == .swing or fight.act == .jump_attack or fight.act == .flurry or fight.act == .spin):
         d = item(equipped_weapon())
         attack_key_pose(hero_m, human, pose, attack_clip(d), attack_phase(d, fight.t))
         if fight.act == .spin:
@@ -414,7 +419,7 @@ hero_animate = (dt: f64, waking: f64):
             attack_key_pose(hero_m, human, pose, 4, 0.84, smoothstep(0.44, 0.57, fight.t))
     if fight.act == .charge:
         attack_key_pose(hero_m, human, pose, 4, 0.0, 0.7 + fight.charge * 0.3)
-    if fight.act == .idle and __guard_weight > 0.0:
+    if st != .dead and fight.act == .idle and __guard_weight > 0.0:
         layer_into(pose, sample_clip(human, ci("shield_idle"), fight.t, true), upper_mask, __guard_weight)
     # An exposed idle body hunches and trembles before the first cold damage tick.
     # Apply above the pelvis before foot planting; weapon contacts remain unchanged.
@@ -440,6 +445,8 @@ hero_animate = (dt: f64, waking: f64):
         hero_dressed = want
         hero_m = if want or not hero_bare_m.ok: ranger_m else: hero_bare_m
         weapon_tracks_init(hero_m, human)
+    # Interrupted combat layers cannot lift the arms or twist the collapse.
+    if st == .dead: pose = anim_pose(human, hero_anim)
     height_offset = swim_render_lift(swim_weight, SWIM_FOOT_DEPTH, if pl.exhausted: pl.drown_t else: 0.0) + (if pl.state == .surf: 0.1 else: 0.0)
     hero_world = facing_mat(pl.pos + vec3(0, f32(height_offset), 0), pl.face)
     if not hero_dressed and hero_bare_m.ok: hero_world = hero_world * scaling(v3(0.86, 1.0, 0.88))
@@ -723,7 +730,7 @@ hero_shield_matrix = () -> mat4:
 # visible body colour. Neither mode changes animation, physics or the scene.
 __hero_capture = env("BOTW_LINK_CAPTURE") ?? ""
 hero_draw = ():
-    if not chars_ready or pl.state == .dead and fight.t > 4.0: return
+    if not chars_ready: return
     if not sc.shadow and __hero_capture == "hidden": return
     p = CharParams(hero_material = 1.0)
     if hero_wake_t>=0.0 and not hero_dressed: p.wake_shape=wake_deformation_weight(hero_wake_t)
@@ -1431,32 +1438,49 @@ monsters_draw = ():
 __body_fire_roots = ["lowerarm_l","lowerarm_r","calf_l","calf_r","spine_01","spine_02"]
 __body_fire_ends = ["hand_l","hand_r","foot_l","foot_r","spine_02","Head"]
 
+# A flat pair table avoids retaining nested arrays for every tongue. Populate
+# it once with the same immutable per-socket widths and rise multipliers.
+__body_fire_shapes: vec2[]
+__monster_fire_instances: PInst[]
+
 monsters_fire_draw = ():
     if cutscene_actors_hidden(): return
     if sc.shadow: return
-    flames: PInst[]
+    if __body_fire_shapes.len()==0:
+        loop j in [0..6):
+            loop k in [0..(if j<4: 1 else: 3)):
+                __body_fire_shapes.push(vec2(f32((if j<4: 0.20 else: 0.27)+0.045*sin(f64(j*7+k*11))),f32(0.82+0.27*sin(f64(j*3+k*7)))))
+    # Keep the instance capacity across draws, including an empty burn frame.
+    __monster_fire_instances.clear()
     right = vec3(sc.view[0].x,sc.view[1].x,sc.view[2].x)
     loop i in 0.. and e in enemies:
         if e.burning <= 0.0 or not enemy_alive(e) or i >= eanims.len(): continue
         if e.kind != .bokoblin and e.kind != .blue_bokoblin and e.kind != .stalkoblin: continue
         if length(e.pos-sc.cam)>80.0: continue
+        world = eanims[i].world
+        skin = eanims[i].skin
+        spine_end = vec3()
         loop j in [0..6):
-            root = (eanims[i].world * bone_world(boko_m,eanims[i].skin,__body_fire_roots[j]))[3].xyz
-            end = (eanims[i].world * bone_world(boko_m,eanims[i].skin,__body_fire_ends[j]))[3].xyz
+            root = if j==5: spine_end else: (world * bone_world(boko_m,skin,__body_fire_roots[j]))[3].xyz
+            end = (world * bone_world(boko_m,skin,__body_fire_ends[j]))[3].xyz
+            if j==4: spine_end=end
             limb = normalize(end-root+vec3(0,0.0001,0))
             wake = limb * (if j < 4: f32(0.28) else: f32(0.12)) - e.vel * f32(0.13)
             wake.y = clamp(wake.y,-0.12,0.18)
-            toward = normalize(vec3(sc.cam.x-root.x,0,sc.cam.z-root.z))
-            root += toward * (if j < 4: f32(0.15) else: f32(0.27))
+            root = body_fire_surface(root,sc.cam,(if j<4: f32(0.45) else: f32(0.70)))
             seed = f32(i*17+j*7)
             height = f32((if j < 4: 0.34 + 0.055 * f64(j) else: 0.70) + 0.24 * (0.5+0.5*sin(e.anim_t*11.0+f64(j)*2.3)))
             strength = f32(smoothstep(0.0,0.30,e.burning)*0.90)
-            # Torso tongues overlap at their roots and share the limb flow.
-            loop k in [0..(if j < 4: 1 else: 2)):
-                offset = if j < 4: 0.0 else: (f64(k)-0.5)*0.16
-                width = if j < 4: f32(0.14 + 0.025 * sin(f64(j)*2.7)) else: f32(0.19)
-                flames.push(PInst(vec4(root+right*f32(offset),width),vec4(wake+right*f32(offset*0.45),strength),vec4(0,0,seed+f32(k*11),height-f32(k)*0.22)))
-    body_fire_draw(flames,elapsed())
+            # Overlapping sheets surround the limbs and chest, with low broad
+            # roots and taller narrow licks rather than a few isolated wisps.
+            loop k in [0..(if j < 4: 1 else: 3)):
+                offset = if j < 4: 0.0 else: (f64(k)-1.0)*0.20
+                shape = __body_fire_shapes[if j<4: j else: 4+(j-4)*3+k]
+                width = shape.x
+                rise = height*shape.y+(if j < 4: f32(0.22) else: f32(0.40))
+                q = root+right*f32(offset)+vec3(0,f32(k%2)*0.07,0)
+                __monster_fire_instances.push(PInst(vec4(q,width),vec4(wake+right*f32(offset*0.30),strength),vec4(0,1,seed+f32(k*11),rise)))
+    body_fire_draw(__monster_fire_instances,elapsed())
 
 
 # the guardian's red sight line (additive, after the opaque scene)

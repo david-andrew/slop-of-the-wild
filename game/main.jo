@@ -59,6 +59,7 @@ use 'slate_map.jo'
 use 'options.jo'
 use 'trail.jo'
 use 'save.jo'
+use 'death.jo'
 use 'architecture_assets.jo'
 use 'terrain_assets.jo'
 
@@ -892,6 +893,18 @@ update = (dt0: f64):
     if __win_close:
         save_update(0.0)
         return
+    if death_card_visible():
+        if not act.confirm:
+            act = Actions(using_pad = act.using_pad)
+            return
+        death_respawn()
+        hero_respawn_reset()
+        camera_snap()
+        act = Actions(using_pad = act.using_pad)
+    if pl.state == .dead:
+        act = Actions(using_pad = act.using_pad)
+        fight = Fight()
+        pl.frozen = 0.0
     # Menus own input before any simulation: inventory, map and options all pause
     # the clock, weather, lightning, hit-stop, cooking, fires and actor timers.
     map_known = story.tower_risen
@@ -942,8 +955,8 @@ simulation_step = (dt: f64):
     cpu_mark("world_sync")
     inside = zone_at(pl.pos + vec3(0, 1, 0)) != ""
     use_terrain = not inside
-    # (up the cave toward the mouth the daylight comes in gradually, over the last 75 m of the climb)
-    indoor_want = if inside: smoothstep(6.0, 75.0, f64(length(pl.pos - SOR_MOUTH_IN))) else: 0.0
+    # Daylight builds over the final forty metres; the deeper cave keeps its silhouette.
+    indoor_want = if inside: smoothstep(6.0, 40.0, f64(length(pl.pos - SOR_MOUTH_IN))) else: 0.0
     if inside and zone_at(pl.pos + vec3(0, 1, 0)) != "sor": indoor_want = 1.0
     env.indoor = approach(env.indoor, indoor_want, 1.5, dt)
     roof_hidden = hooks.named_hidden
@@ -1182,15 +1195,6 @@ simulation_step = (dt: f64):
     sfx_room_size = if shr_cur >= 0: 1.0 else: 0.5
     cpu_mark("ambient_update")
     ambient_update(dt, env.indoor, f64(pl.pos.y), near_fire, water_snd, not rain_exposed(pl.pos + vec3(0, 1.6, 0)))
-    if pl.state == .dead and pl.st_t > 3.5:
-        # back to the last safe place, hearts restored
-        pl.hp = pl.hp_max
-        pl.pos = pl.last_safe
-        pl.vel = vec3(0,0,0)
-        pl.air_peak = f64(pl.pos.y)
-        pl.state = .ground
-        pl.st_t = 0.0
-        camera_snap()
     hooks.grass_player = pl.pos
     # cooking: kneel at the pot a moment, the prompt away until done
     if __cook_t > 0.0:
@@ -1231,25 +1235,19 @@ simulation_step = (dt: f64):
             # (by night the fire is all the light there is: a wide warm pool round it)
             sc_lp = vec4(b.pos.x, b.pos.y + f32(lerp(1.3, 3.2, env.night)), b.pos.z, f32(lerp(9.0, 13.0, env.night) * fl))
             sc_lc = vec3(1.6, 0.66, 0.3) * f32(fl * lerp(1.0, 1.65, env.night))
-    # a grass fire: from the middle of the burning near by, as wide as it has spread
-    if flames.len() > 3:
-        fc = vec3(0, 0, 0)
-        fnum = 0
-        loop fm in flames:
-            q = cell_pos(fm.cell)
-            if f64(length(q - pl.pos)) < 40.0:
-                fc += q
-                fnum += 1
-        if fnum > 3:
-            fc = fc / f32(fnum)
-            spread = 0.0
-            loop fm in flames:
-                q = cell_pos(fm.cell)
-                if f64(length(q - pl.pos)) < 40.0: spread = max(spread, f64(length(q - fc)))
-            if f64(length(fc - pl.pos)) < best:
-                fl = 1.0 + 0.1 * sin(elapsed() * 11.0) + 0.06 * sin(elapsed() * 29.0)
-                sc_lp = vec4(fc.x, fc.y + 1.2, fc.z, f32(min(8.0 + spread * 1.1, 30.0) * fl))
-                sc_lc = vec3(1.8, 0.8, 0.3) * f32(fl * min(f64(fnum) / 12.0, 1.0) * lerp(1.0, 2.6, env.night))
+    # Only a nearby live flame lights Jo. A broad averaged fire centre used
+    # to wash spent ground and clothing peach long after its own fuel died down.
+    loop fm in flames:
+        heat = grass_flame_heat(f32(fm.t))
+        if heat <= 0.05: continue
+        q = fm.render_center
+        if fm.render_seed < 0.0: q = cell_pos(fm.cell)
+        distance = f64(length(q-pl.pos))
+        if distance >= min(best,7.0): continue
+        best = distance
+        fl = f32(1.0+0.1*sin(elapsed()*11.0)+0.06*sin(elapsed()*29.0))
+        sc_lp = vec4(q.x,q.y+1.2,q.z,7.0)
+        sc_lc = vec3(1.8,0.8,0.3)*fl*heat*f32(lerp(0.7,2.6,env.night))
     if zone_at(pl.pos + vec3(0, 1, 0)) == "sor":
         # the restoration pool lights the room
         sc_lp = vec4(SOR_BED.x, SOR_BED.y + 1.4, SOR_BED.z, 8.0)
@@ -1302,7 +1300,7 @@ draw = ():
     cpu_mark("hud")
     # (no HUD for the free camera: it is for looking)
     ui.hide = ui.hide or free_cam
-    if not invui.open:
+    if not invui.open and pl.state != .dead:
         combat_hud()
         w = equipped_weapon()
         hud_gear.clear()
@@ -1316,7 +1314,8 @@ draw = ():
     cpu_mark("inventory_hud")
     inventory_draw()
     cpu_mark("story_hud")
-    if not invui.open: story_draw_2d()
+    if not invui.open and pl.state != .dead: story_draw_2d()
+    death_draw()
     gpu_queue_submit()
     # Inspection captures identify this completed frame, including a just-landed bolt.
     if __capture_dir != none and __capture_every > 0 and frame_number() > 0 and frame_number() % __capture_every == 0:

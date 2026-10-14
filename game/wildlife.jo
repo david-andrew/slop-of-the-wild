@@ -1325,6 +1325,24 @@ __bird_fan = (b: mut MeshB, points: vec3[], col: vec4, m: mat4 = mat4()):
             c = base + 1 + u32((k + 1) % points.len())
             loop v in (if side * area > 0.0: [base, c, a] else: [base, a, c]): b.idx.push(v)
 
+# Two-sided wing outline, visible from its shoulder triangulation origin.
+# Twelve connected vertices retain the old 20-triangle wing budget. Cached
+# geometry keeps the wrist bend and primaries inside the same draw batch.
+__bird_surface = (b: mut MeshB, points: vec3[], col: vec4):
+    area = 0.0
+    loop i in [0..points.len()):
+        a=points[i]
+        c=points[(i+1)%points.len()]
+        area+=f64(a.x*c.z-a.z*c.x)
+    loop side in [-1.0,1.0]:
+        base=u32(b.vs.len())
+        loop q in points:
+            b.vs.push(Vertex3D(q+v3(0,side*0.0015,0),v3(0,side,0),vec2(0,0),col))
+        loop i in [1..points.len()-1):
+            a=base+u32(i)
+            c=base+u32(i+1)
+            loop v in (if side*area>0.0:[base,c,a] else:[base,a,c]): b.idx.push(v)
+
 __bird_details: Mesh[]
 __bird_feet: Mesh[]
 __bird_m: Mesh[]
@@ -1358,16 +1376,18 @@ __bird = (kind: int, pose: int) -> Mesh:
                             loop z in [-0.025, -0.004]:
                                 mb_cyl(b, v3(sx * 0.037, 0.091, z), v3(sx * 0.044, 0.071, z - 0.014), 0.003, 0.003, rgb(0.22, 0.25, 0.29), 4)
                 if pose_ == 2:
-                    # A single tapered feather plane, mirrored at the shoulder.
-                    # Its chord is narrow enough to remain a bird at vista scale.
+                    # A wrist bend leads into three short overlapping primaries.
+                    # The continuous web keeps their shallow notches filled at
+                    # the roots; one pigment and plane avoids floating white tips.
                     b = MeshB()
                     span = if k == 2: 1.18 else: 1.0
                     points: vec3[]
-                    loop q in [vec2(0.0, 0.022), vec2(0.045, 0.034), vec2(0.095, 0.024),
-                        vec2(0.142, 0.002), vec2(0.161, -0.018), vec2(0.143, -0.033),
-                        vec2(0.109, -0.048), vec2(0.075, -0.048), vec2(0.030, -0.035), vec2(0.0, -0.023)]:
-                        points.push(v3(f64(q.x) * span, 0.0, f64(q.y)))
-                    __bird_fan(b, points, wing)
+                    loop q in [vec2(0,0.022),vec2(0.050,0.032),vec2(0.090,0.025),
+                        vec2(0.156,0.003),vec2(0.146,-0.014),vec2(0.150,-0.026),
+                        vec2(0.134,-0.033),vec2(0.131,-0.047),vec2(0.115,-0.050),
+                        vec2(0.109,-0.065),vec2(0.087,-0.059),vec2(0,-0.023)]:
+                        points.push(v3(f64(q.x)*span,0,f64(q.y)))
+                    __bird_surface(b,points,wing)
                 __bird_m.push(mesh(b.vs, b.idx))
             b = MeshB()
             mb_sphere(b, v3(0.0, 0.123, 0.057), v3(0.023, 0.026, 0.026), head, 12)

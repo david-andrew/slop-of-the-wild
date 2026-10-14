@@ -14,6 +14,17 @@ sor_pads()
 worldgen_finish()
 guardian_husks()
 count=0
+faces=0
+loop key,b in __bchunks:
+    loop triangle in [0..b.idx.len()/3):
+        a=b.verts[int(b.idx[triangle*3])]
+        c=b.verts[int(b.idx[triangle*3+1])]
+        d=b.verts[int(b.idx[triangle*3+2])]
+        face=cross(c.pos-a.pos,d.pos-a.pos)
+        if length(face)<0.000001:continue
+        assert(dot(face,a.normal+c.normal+d.normal)>=-0.000001,"husk surfaces and collar caps face outward")
+        faces+=1
+assert(faces>10000,"audit all real husk shells, collars, limbs and eyes")
 loop key,b in __bchunks:
     loop v in b.verts:
         assert(v.mat.x==0 and v.mat.w== -3,"round husks have no wall-grid path at any distance")

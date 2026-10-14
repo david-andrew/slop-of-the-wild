@@ -24,8 +24,13 @@ glsl_occluder_dither = (p: vec2) -> f32:
     lo = ((x & 1) xor (y & 1)) * 2 + (y & 1)
     hi = ((x >> 1) xor (y >> 1)) * 2 + (y >> 1)
     (f32(lo * 4 + hi) + 0.5) / 16.0
-# Four-pixel opaque patches survive the watercolor footprint as solid fragments.
-glsl_occluder_patch_dither = (p: vec2) -> f32: glsl_occluder_dither(p / 4.0)
+# Per-pixel interleaved gradient coverage. Shift the sample each simulation frame;
+# depth and colour share the same uniform, with no repeating enlarged tile.
+glsl_occluder_noise = (p: vec2, time: f32) -> f32:
+    phase = mod(floor(time * 60.0), 64.0)
+    glsl_dither(floor(p) + vec2(phase * 5.588238, phase * 5.588238))
+# Keep a short smooth clearance edge; large near-lens shapes clear completely.
+vegetation_clearance_coverage = (fade: f32) -> f32: smoothstep(0.03, 0.25, fade)
 glsl_instance = (z: f32) -> f32: f32(instance_id()) + z
 glsl_vertex = (z: f32) -> f32: f32(vertex_id()) + z
 # 0.6 exposes fwidth but no signed derivatives. Tagged helper functions are

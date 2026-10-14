@@ -15,46 +15,40 @@ print("PASS near-lens foliage: fully hidden at 85cm, >80% removed at 1m, unchang
 
 use '../game/vegetation.jo'
 use '../game/gfx.jo'
-struct LensPlantU:
-    player=vec3(0,-1000,0)
-    cam=vec3(0,0,0)
-    leaves=f32(0)
-    low=f32(1)
-    wood=f32(0)
-    fade_width=f32(1)
-u=LensPlantU()
-i=VegO(vec4(),vec3(0,0,2),vec3(),vec2(),vec4(),vec4(),0,0,0)
-solid=veg_occluder_fade(i,u)
-u.leaves=1
-assert(solid==veg_occluder_fade(i,u) and solid>0.99,"solid fern blades/stems fade with leaf cards")
+u=VegU(cam=vec3(),low=1,height=2,radius=1)
+base=vec3(0,0,2)
+assert(vegetation_unit_fade(base,2,1,u)==1,"near fern clears completely")
 u.low=0
-u.leaves=0
-assert(veg_occluder_fade(i,u)==0,"rocks retain their narrow lens clearance")
 u.wood=1
-assert(veg_occluder_fade(i,u)==1,"fallen branches crossing the lens are fully hidden")
-i.world=vec3(0,0,4.25)
-assert(abs(veg_occluder_fade(i,u)-0.5)<0.00001,"bark coverage eases into view")
-i.world=vec3(0,0,5.5)
-assert(veg_occluder_fade(i,u)==0,"distant trunks retain their silhouette")
-# Keep the whole ramp for both bark and foliage, including solid plant stems.
-loop foliage in [0..2):
-    u.low=f32(foliage)
-    u.wood=f32(1-foliage)
-    inner=if foliage==1: f32(2.2) else: f32(3.0)
-    previous=f32(1)
-    previous_removed=256
-    loop k in [0..251):
-        i.world=vec3(0,0,inner+(5.5-inner)*f32(k)/250.0)
-        fade=veg_occluder_fade(i,u)
-        assert(fade>=0 and fade<=previous+0.000001,"modeled coverage must ease monotonically with distance")
-        assert(previous-fade<0.007,"modeled bark/foliage cannot hard-pop at the outer radius")
-        removed=0
-        loop y in [0..16):
-            loop x in [0..16):
-                if fade>glsl_occluder_patch_dither(vec2(f32(x)+0.5,f32(y)+0.5)): removed+=1
-        assert(removed<=previous_removed,"opaque patches must ease into view with distance")
-        assert(abs(f32(removed)/256.0-fade)<=1.0/32.0+0.000001,"opaque coverage tracks the smooth fade")
-        previous_removed=removed
-        previous=fade
-    assert(previous==0.0 and previous_removed==0,"outer edge restores full coverage")
-print("PASS modeled plants: solid stems and leaves fade together; near branches fade; rocks unchanged")
+u.tree=1
+assert(vegetation_unit_fade(base,2,1,u)==1,"bark and canopy clear as one tree")
+a=vegetation_unit_fade(vec3(0,0,5.5),8,1,u)
+u.leaves=1
+assert(vegetation_unit_fade(vec3(0,0,5.5),8,1,u)==a,"leaf cards share the bark's clearance")
+u.cam=vec3(0,6,0)
+assert(vegetation_unit_fade(vec3(0,0,2),8,1,u)==1,"raised camera clears the whole crown")
+u.wood=0
+u.tree=0
+assert(vegetation_unit_fade(base,2,1,u)==0,"rocks retain their narrow fragment clearance")
+loop low in [0..2):
+    u.low=f64(low)
+    u.wood=f64(1-low)
+    u.cam=vec3()
+    previous=f32(0)
+    loop k in [0..501):
+        fade=vegetation_unit_fade(vec3(0,0,f32(k)*0.02),2,1,u)
+        scale=vegetation_unit_scale(fade)
+        assert(scale>=previous-0.00001 and scale<=1,"whole silhouette grows monotonically into view")
+        assert(scale-previous<0.06,"clearance eases without a hard size switch")
+        previous=scale
+    assert(previous==1,"distant models retain their size")
+# Different vertices and materials of one instance use the same root capsule.
+v=Vertex3D(pos=vec3(0,1,0),normal=vec3(0,1,0))
+inst=VInst(translation(vec3(0,0,5.5)),vec4(1,1,1,1))
+u=VegU(cam=vec3(),wood=1,tree=1,height=8,radius=1)
+bark=veg_vs(v,inst,u)
+u.leaves=1
+v.pos=vec3(2,7,1)
+leaves=veg_vs(v,inst,u)
+assert(bark.clearance==leaves.clearance,"trunk and distant crown card clear as one unit")
+print("PASS modeled clearance: whole trees/plants scale smoothly; no fragment transparency; rocks retained")

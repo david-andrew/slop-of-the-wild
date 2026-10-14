@@ -19,15 +19,19 @@ loop hour in [18.4,18.6,18.9]:
     assert(env.sun_color.y>env.sun_color.x*0.50 and env.sun_color.y<env.sun_color.x*0.65,"gold light retains green instead of red/magenta")
     assert(env.sky_amb.y>env.sky_amb.z*1.15,"shade ambient cannot turn cloth lavender")
     assert(env.haze.y>env.haze.z*1.4,"gold atmosphere")
-# Exercise the same lens/line-of-sight fade with both pass uniforms. A fern
-# immediately beside the camera must not leave a fully opaque caster.
-i=VegO(world=vec3(0.2,0,0))
-u=VegU(cam=vec3(),player=vec3(0,0,-5),low=1)
-visible=veg_occluder_fade(i,u)
+# Camera and shadow passes use the same whole-instance clearance. A fern
+# beside the lens has zero silhouette/caster, rather than transparent cards.
+u=VegU(cam=vec3(),player=vec3(0,0,-5),low=1,height=2,radius=1)
+inst=VInst(translation(vec3(0.2,0,0)),vec4(1,1,1,1))
+v=Vertex3D(pos=vec3(1,1,0),normal=vec3(0,1,0))
+visible=veg_vs(v,inst,u)
 u.shadow_pass=1
-assert(visible>0.99 and abs(veg_occluder_fade(i,u)-visible)<0.00001)
-i.world=vec3(8,0,0)
-assert(veg_occluder_fade(i,u)==0,"remote vegetation retains its shadow")
+caster=veg_vs(v,inst,u)
+assert(visible.clearance>0.99 and caster.world==visible.world,"cleared plant casts no separate silhouette")
+assert(visible.world==inst.model[3].xyz,"near fern scales entirely to its root")
+inst.model=translation(vec3(8,0,0))
+remote=veg_vs(v,inst,u)
+assert(remote.clearance==0 and remote.world.y==1,"remote vegetation retains its full caster")
 # Face features survive every intermediate transformation and still disappear
 # completely with the final departure (no detached opaque head).
 loop k in [0..101):

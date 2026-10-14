@@ -1,0 +1,29 @@
+use '../game/camera.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+
+# A foreground wall must shorten the view instead of requiring a masonry hole.
+held=add_box(vec3(0,0,-1),vec3(5,10,0.2),0,true,.stone)
+wall=add_box(vec3(0,0,4),vec3(5,10,0.2),0,true,.stone)
+pl=Player(pos=vec3(0,2,0),state=.climb,climb_col=held)
+target=vec3(0,3,0)
+p=camera_climb_masonry_view(vec3(0,5,10),target)
+assert(p.z>0.8 and p.z<3.8,"lens remains on player's side of foreground masonry")
+assert(not raycast(target,p-target,f64(length(p-target)),true,false).hit,"climbing body is visible without a cutaway")
+assert(colliders[held].active and colliders[wall].active,"camera correction retains held wall and shadows")
+cam.pos=vec3(0,5,10)
+cam.target=target
+assert(view_pos()==p,"all player render paths apply masonry clearance")
+pl.state=.ground
+assert(view_pos()==cam.pos,"ground cameras retain their ordinary framing")
+pl.state=.climb
+cam.pos=vec3(0,5,2)
+assert(view_pos()==cam.pos,"a pose change within one frame invalidates the blocked view")
+cam.pos=vec3(0,5,10)
+cam.target=target+vec3(0.7,0,0)
+assert(view_pos()==camera_climb_masonry_view(cam.pos,cam.target),"moving target refreshes clearance before rendering")
+cam.override=true
+cam.blend=1
+cam.o_pos=vec3(0,5,10)
+assert(view_pos()==cam.o_pos,"cinematic overrides retain their authored view")
+print("PASS climbing masonry: lens retracts before foreground wall; held wall and cinematics retained")

@@ -138,27 +138,40 @@ __input_released = (i: int) -> bool: key_released(input_key(i))
 # a scripted run's held keys (SLOPPY_INPUT with a screenshot): the window system lets go of every
 # key when the window loses focus, which stopped a scripted walk dead when another window took
 # it; here a key the script holds stays held
-__scr: (int, str, bool)[]
+# Decode key names once. Formatting an enum for every key poll needlessly
+# allocates strings even when the script is empty (including ordinary play).
+script_keys_parse = (s: str) -> (int, Key, bool)[]:
+    names: {str: Key} = {}
+    loop i in [0..int(Key.grave)+1):
+        k=i as Key
+        names["{k}"]=k
+    events: (int, Key, bool)[]
+    loop item in split(s, ","):
+        c=find(item, ":")
+        if c<0 or len(item)<c+3: continue
+        if let k=names.get(item[c+1..len(item)-1)):
+            events.push((to_int(item[..c)) ?? 0,k,item[len(item)-1]=='+'))
+    events
+
+script_key_held = (events: (int, Key, bool)[], key: Key, frame: int) -> bool:
+    held=false
+    at=-1
+    loop e in events:
+        if e.1==key and e.0<=frame and e.0>=at:
+            at=e.0
+            held=e.2
+    held
+
+__scr: (int, Key, bool)[]
 __scr_read = false
-__script_held = (name: str) -> bool:
+__script_held = (key: Key) -> bool:
     if not __scr_read:
         __scr_read = true
         if env("SLOPPY_SCREENSHOT") != none:
-            if let s = env("SLOPPY_INPUT"):
-                loop item in split(s, ","):
-                    c = find(item, ":")
-                    if c < 0 or len(item) < c + 3: continue
-                    __scr.push((to_int(item[..c)) ?? 0, item[c + 1..len(item) - 1), item[len(item) - 1] == '+'))
-    if __scr.len() == 0: return false
-    f = frame_number()
-    held = false
-    at = -1
-    loop e in __scr:
-        if e.1 == name and e.0 <= f and e.0 >= at:
-            at = e.0
-            held = e.2
-    held
-__kd = (k: Key) -> bool: key_down(k) or __script_held("{k}")
+            if let s = env("SLOPPY_INPUT"): __scr=script_keys_parse(s)
+    if __scr.len()==0: return false
+    script_key_held(__scr,key,frame_number())
+__kd = (k: Key) -> bool: key_down(k) or __script_held(k)
 
 struct Actions:
     move = vec2(0, 0)             # x right, y forward (-1..1, analog)

@@ -66,7 +66,7 @@ print("PASS collapsed props: bounded charred ring/staves and separate crate slat
 
 u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,0,10),vec3(),0,near=0,time=0.4)
 loop seed in [0.2,1.3,2.7,4.1]:
-    root=part_fs(PartO(vec4(),vec2(0.5,0),vec4(1,0.5,0.1,1),vec4(0,-6,f32(seed),-1.6),vec4(0,0,0,10),0.5),u)
-    heart=part_fs(PartO(vec4(),vec2(0.5,0.23),vec4(1,0.5,0.1,1),vec4(0,-6,f32(seed),-1.6),vec4(0,0,0,10),0.5),u)
+    root=part_fs(PartO(vec4(),vec2(0.5,0),vec4(1,0.5,0.1,1),vec4(0.8,-6,f32(seed),-1.6),vec4(0,0,0,10),0.5),u)
+    heart=part_fs(PartO(vec4(),vec2(0.5,0.23),vec4(1,0.5,0.1,1),vec4(0.8,-6,f32(seed),-1.6),vec4(0,0,0,10),0.5),u)
     assert(root.w==0 and heart.w>0.2,"continuous flame has a feathered base and bright connected body")
 print("PASS varied flame sheets: transparent ground seam, continuous roots across four silhouettes")

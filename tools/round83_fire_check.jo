@@ -2,6 +2,7 @@
 use 'tree_checks.jo'
 from 'tree_checks.jo' import __tree_course
 use '../game/elements.jo'
+from '../game/elements.jo' import __burning, __cell_of
 use '../game/fx.jo'
 use '../game/body_fire.jo'
 use '../game/structures.jo'
@@ -37,14 +38,16 @@ loop frame in [0..320):
         u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,2,10),vec3(),0,near=0)
         u.time=f32(frame)/60.0
         color=part_fs(PartO(vec4(),vec2(0.5,0.23),tongue.color,tongue.data,vec4(0,0,0,10),tongue.pos.w),u)
-        assert(color.w>0.10,"continuous roots stay visibly lit across every flow phase")
+        if tongue.data.x >= 0.65 and tongue.data.x < 3.0: assert(color.w>0.10,"continuous roots stay visibly lit through the fresh and settling front")
+        if tongue.data.x <= 0.199: assert(color.w==0.0,"new fuel smoulders before it grows standing crowns")
+        if tongue.data.x >= 5.0: assert(color.w==0.0,"spent fuel cannot draw a lingering ghost tongue")
     assert(burn_value(0.5,0.5,0)==0,"rendering never pre-scorches a live cell")
 flames[0].life=0
 elements_update(1.0/60.0,pl.pos)
 assert(burn_value(0.5,0.5,0)>0.99,"expired cell becomes charcoal")
 assert(burn_value(1.5,0.5,0)==0,"adjacent live cell remains uncharred")
 assert(burn_value(-0.5,0.5,0)==0,"scar never runs ahead into untouched fuel")
-print("PASS fuel: ignition, 320 uninterrupted rendered phases and RNG; scorch only in expired cell")
+print("PASS fuel: ignition, 320 fuel-owned rendered phases and RNG; scorch only in expired cell")
 
 # The production 2048-cell / 2048-texel map has one texel per fuel cell.
 hf.n=BURN_N
@@ -140,14 +143,17 @@ particles.clear()
 assert(ignite_at(vec3(0.5,0.1,0.5)))
 loop frame in [0..120): elements_update(1.0/60.0,pl.pos)
 tagged=0
+distant=0
 loop particle in particles:
     if particle.fuel_cell<0: continue
     tagged+=1
     assert(particle.kind==.flame,"only grass flame births receive fuel ownership")
     assert(not grass_particle_visible(particle,particle.pos+vec3(0,0,10)),"near grass uses the continuous tongue instead of old cones and lingering cards")
-    assert(grass_particle_visible(particle,particle.pos+vec3(0,0,61)),"distant grass retains its old particles")
+    if grass_particle_visible(particle,particle.pos+vec3(0,0,61)):
+        distant+=1
+        assert(__burning.has(particle.fuel_cell) and __burning.has(__cell_of(f64(particle.pos.x),f64(particle.pos.z))),"distant cues retain live owners and roots instead of drifting ahead")
     untagged=particle
     untagged.fuel_cell=-1
     assert(grass_particle_visible(untagged,particle.pos+vec3(0,0,10)),"ordinary bonfire/wood/body sources retain their particles")
-assert(tagged>0,"real production grass emission carries fuel ownership")
+assert(tagged>0 and distant>0,"real production grass emission retains owned distant flame cues")
 print("PASS grass ownership: {tagged} actual flame births; near cone/remnant suppression, distant and non-grass sources preserved")

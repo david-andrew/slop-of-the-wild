@@ -330,6 +330,26 @@ mapping/activation work in initialization, or expose an explicit preparation API
   device feature, clamp to device limits and retain a non-anisotropic fallback.
   This is a quality/API request, not a correctness requirement for all games.
 
+## 14. Empty vector constructors emit invalid GLSL ES
+
+- **Repro:** [empty_vector_shader.jo](../tools/upstream/empty_vector_shader.jo)
+  returns `vec4()` after `discard()` in a fragment shader. Sloppy accepts
+  the source and Vulkan compiles it, but the GLSL backend emits `return vec4();`.
+  GLSL ES 3.00 requires constructor arguments, so OpenGL shader creation panics
+  with `syntax error, unexpected ')'`. WebGL 2 uses the same invalid GLSL path.
+  The discarded branch still has to compile, even when it is never taken.
+- **Control/workaround:** replace the return with `vec4(0, 0, 0, 0)`. The explicit
+  constructor compiles on both backends. `game/fx.jo:part_fs` and
+  `game/body_fire.jo:body_fire_fs` use it for all seven early discard returns.
+- **Upstream:** lower empty vector constructors to explicit zero components in
+  GLSL, preserving their accepted CPU/SPIR-V semantics. Cover vector constructor
+  defaults in GLSL ES shader compilation tests, including discarded branches.
+
+```sh
+flock /tmp/botw-render.lock env SLOPPY_PLATFORM=x11 SLOPPY_NO_AUDIO=1 SLOPPY_VULKAN=1 sloppy/bin/sloppy tools/upstream/empty_vector_shader.jo
+flock /tmp/botw-render.lock env SLOPPY_PLATFORM=x11 SLOPPY_NO_AUDIO=1 SLOPPY_VULKAN=0 sloppy/bin/sloppy tools/upstream/empty_vector_shader.jo
+```
+
 ## Candidates not retained
 
 The historical all-zero literal-array FFI write problem passes on this release

@@ -1,0 +1,287 @@
+# Production flame geometry/colour through fresh, dying and spent fuel.
+use '../game/fx.jo'
+use '../game/body_fire.jo'
+use '../game/gfx.jo'
+use '../game/post.jo'
+use '../game/elements.jo'
+use '../game/terrain.jo'
+from '../game/elements.jo' import __burning
+
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,0,10),vec3(),0,near=0)
+shapes: vec3[]
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop wind in [vec2(),vec2(1,0.35),vec2(12,-8)]:
+        u.wind=wind
+        loop age in [0.8,3.0,4.5,5.0,6.0]:
+            loop tick in [0..60):
+                u.time=f32(tick)/60.0
+                probe=PInst(vec4(0,0,0,1.6),vec4(1.55,0.45,0.055,0.88),vec4(f32(age),-6,f32(seed),1))
+                root=part_vs(QuadV(vec2(0,-1)),probe,u)
+                tip=part_vs(QuadV(vec2(0,1)),probe,u)
+                rise=tip.pos.y-root.pos.y
+                assert(rise>0,"rooted fire never inverts at fuel expiry")
+                assert(length(tip.pos.xz-root.pos.xz)<=rise*0.4664,"wind and upper curl stay within 25 degrees even as fuel dies")
+                if age==0.8 and wind==vec2() and tick==0: shapes.push(tip.pos.xyz)
+                color=part_fs(PartO(vec4(),vec2(0.5,0.23),probe.color,vec4(f32(age),-6,f32(seed),-1.6),vec4(0,0,0,10),1.6),u)
+                if age>=5.0: assert(color.w==0,"spent live cells leave no ghost flame")
+loop i in [1..shapes.len()): assert(length(shapes[i]-shapes[0])>0.05,"cell seeds vary crown heights and curvature")
+print("PASS 3600 grass vertices: live/settling/spent fuel; calm/storm wind; <=25 degree lean; unequal crowns; no ghost")
+
+# A hot interior changes smoothly in both axes; its blue stays far below yellow.
+previous=flame_ink(0,1,1)
+loop tick in [1..101):
+    y=f32(tick)/100.0
+    color=flame_ink(y,pow(1.0-y,3.0),1)
+    assert(length(color-previous)<0.06,"continuous vertical heat gradient without a rectangular core")
+    assert(color.z<color.y*0.30,"yellow/orange/red fire never grades to white")
+    previous=color
+assert(previous.x>previous.y*4,"upper sheet cools to red")
+print("PASS graded fire: 100 continuous yellow/orange/red interior samples, no white core")
+
+bu=BodyFireU(mat4(),vec3(1,0,0),0)
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop tick in [0..120):
+        bu.time=f32(tick)/60
+        probe=PInst(vec4(0,0,0,0.24),vec4(8,0,4,0.9),vec4(0,0,f32(seed),0.9))
+        root=body_fire_vs(QuadV(vec2(0,-1)),probe,bu)
+        tip=body_fire_vs(QuadV(vec2(0,1)),probe,bu)
+        assert(length(root.pos.xyz)<0.00001,"body flame roots stay on their articulated sockets")
+        assert(length(tip.pos.xz-root.pos.xz)<(tip.pos.y-root.pos.y)*0.4664,"fast limb motion cannot turn body flames into comets")
+        edge=body_fire_fs(BodyFireO(vec4(),vec2(1,0.3),f32(seed),0.9),bu)
+        tip_color=body_fire_fs(BodyFireO(vec4(),vec2(0,1),f32(seed),0.9),bu)
+        assert(edge.w==0 and tip_color.w==0,"body flame card edges and tips are transparent")
+print("PASS 480 articulated body flames: attached roots, motion bound, feathered card edges")
+
+# Exercise the real perspective limiter: each tongue must keep its root-to-tip
+# direction when a large sheet is bounded at the gameplay camera.
+vp=perspective(radians(50.0),16.0/9.0,0.1,1000.0)
+inv=inverse(vp)
+loop distance in [4.5,8.0,15.0]:
+    loop age in [0.8,3.0,4.5]:
+        u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0,wind=vec2(3,-2))
+        probe=PInst(vec4(0,0,f32(-distance),1.6),vec4(1.55,0.45,0.055,0.88),vec4(f32(age),-6,2.7,-1.6))
+        anchor=vp*vec4(probe.pos.xyz,1)
+        loop x in [-0.6,0.0,0.6]:
+            bottom=part_vs(QuadV(vec2(f32(x),-1)),probe,u)
+            top=part_vs(QuadV(vec2(f32(x),1)),probe,u)
+            world_bottom=inv*bottom.pos
+            world_top=inv*top.pos
+            delta=world_top.xyz/world_top.w-world_bottom.xyz/world_bottom.w
+            left=inv*part_vs(QuadV(vec2(-1,-1)),probe,u).pos
+            right=inv*part_vs(QuadV(vec2(1,-1)),probe,u).pos
+            span=length(right.xyz/right.w-left.xyz/left.w)
+            assert(abs(-top.data.w-delta.y/span)<0.001,"fragment crown aspect follows actual bounded height and cell-wide roots")
+            assert(length(delta.xz)<delta.y*0.4664,"projection limiting cannot squeeze side crowns into comets")
+        loop corner in [vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(1,1)]:
+            vertex=part_vs(QuadV(corner),probe,u)
+            delta=vertex.pos.xy/vertex.pos.w-anchor.xy/anchor.w
+            assert(abs(delta.x)<=0.3001 and abs(delta.y)<=0.3001,"whole-sheet limit retains the existing <=9% screen-area gate")
+print("PASS perspective grass fire: upright side crowns at three camera distances and fuel ages; original screen-area bound")
+
+# Enemy close-ups retain the surrounding sheets; Jo keeps the original lens gate.
+flame=PInst(vec4(0,0,-2.6,0.27),vec4(0,0,0,0.9),vec4(0,0,3,1.0))
+vp=perspective(radians(50),16.0/9.0,0.1,100)
+hero=body_fire_vs(QuadV(vec2(0,1)),flame,BodyFireU(vp,vec3(1,0,0),0,vec3()))
+flame.data.y=1
+enemy=body_fire_vs(QuadV(vec2(0,1)),flame,BodyFireU(vp,vec3(1,0,0),0,vec3()))
+assert(hero.strength==0 and enemy.strength>0.8,"enemy near limbs stay engulfed; hero lens clipping stays intact")
+print("PASS actor lens gates: visible enemy fire around near limbs, unchanged Jo clipping")
+
+loop width in [0.085,0.14,0.20]:
+    loop taper in [0.65,0.90,1.20]:
+        assert(flame_tongue(0,0.2,f32(width),f32(taper))>0.9,"unequal crowns retain connected roots")
+        assert(flame_tongue(f32(width)*0.55,0.90,f32(width),f32(taper))==0,"each short crown narrows to a point instead of a rounded cap")
+        assert(flame_tongue(0,1,f32(width),f32(taper))==0,"every crown has a feathered transparent tip")
+print("PASS nine independent crown tapers: connected roots, narrowing sides, transparent pointed tips")
+
+cam=vec3(2.6,1.65,3.3)
+vp=perspective(radians(50),16.0/9.0,0.1,100)*look_at(cam,vec3(0,0.9,0),vec3(0,1,0))
+loop root in [vec3(0,0.55,0),vec3(-0.4,0.2,0.1),vec3(0.4,0.8,0.15)]:
+    projected=vp*vec4(root,1)
+    surface=body_fire_surface(root,cam,0.7)
+    pulled=vp*vec4(surface,1)
+    assert(length(projected.xy/projected.w-pulled.xy/pulled.w)<0.00001,"surface flames retain the animated socket's screen position")
+    assert(abs(length(surface-root)-0.7)<0.00001,"surface pull clears opaque body depth without losing pose attachment")
+print("PASS body surface roots: raised chest and limb sockets keep their screen attachment")
+
+# Grounded roots follow the terrain tangent instead of a floating horizontal card.
+loop right in [vec3(1,0,0),normalize(vec3(1,0,1)),vec3(0,0,1)]:
+    side=flame_root_side(right,1.6,vec3(0,0.4,-0.2))
+    loop x in [-1.0,0.0,1.0]:
+        foot=side*f32(x)
+        assert(abs(foot.y-(foot.x*0.4-foot.z*0.2))<0.00001,"both sheet roots remain on a sloped terrain plane")
+print("PASS terrain flame roots: nine tangent-plane feet, no lifted horizontal base")
+
+# A camera-bounded low sheet keeps narrow tongues, rather than a cell-wide bar.
+short=PInst(vec4(0,0,0,1.6),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,2.7,-0.10))
+short_coverage=0
+loop sample in [0..100):
+    x=(f32(sample)+0.5)/100.0
+    color=part_fs(PartO(vec4(),vec2(x,0.10),short.color,short.data,vec4(0,0,0,10),1.6),PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0))
+    if color.w>0.008: short_coverage+=1
+assert(short_coverage>5 and short_coverage<40,"camera-shortened sheets retain individual roots rather than a broad horizontal bar")
+print("PASS short sheet roots: no broad horizontal bar when camera height is bounded")
+
+# Sample the real nearest/linear burn textures at the edge of a live cell.
+# Linear heat spills into the neighbour, but its standing tongue must be absent.
+pixels=fill(u8(0),BURN_N*BURN_N*4)
+pixels[(100*BURN_N+100)*4+2]=u8(255)
+tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+u.live_burn=tex
+u.burn_grid=vec4(0,0,f32(BURN_N),1)
+loop age in [0.0,0.033,0.20,0.8,3.0,4.0,5.0]:
+    loop foot in [vec2(99.99,100.5),vec2(100.01,100.5),vec2(100.5,100.5),vec2(100.99,100.5),vec2(101.01,100.5),vec2(100.5,99.99),vec2(100.5,101.01)]:
+        result=part_fs(PartO(vec4(),vec2(0.5,0.23),vec4(1.55,0.45,0.055,0.88),vec4(f32(age),-6,2.7,-1.6),vec4(0,0,0,10),1.6,foot),u)
+        live=foot.x>=100 and foot.x<101 and foot.y>=100 and foot.y<101
+        if not live or age<=0.20 or age>=4.0: assert(result.w<0.008,"no tongue on an unlit neighbour, at first ignition, or in the rear ember bed")
+        if live and age==0.8: assert(result.w>0.1,"accepted fresh cell keeps its broad connected sheet")
+assert(sample(tex,vec2(99.99,100.5)/f32(BURN_N)).z>0,"regression actually exercises bilinear heat leaking into an unlit neighbour")
+pixels[(100*BURN_N+100)*4+2]=u8(0)
+u.live_burn=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+expired=part_fs(PartO(vec4(),vec2(0.5,0.23),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,2.7,-1.6),vec4(0,0,0,10),1.6,vec2(100.5,100.5)),u)
+assert(expired.w==0,"a stale card cannot outlive its exact cell's live map")
+print("PASS 49 root/age samples: no interpolated neighbour fire, newborn ghost stubs, rear standing crowns or expired-cell cards")
+
+hf.n=8
+hf.cell=2
+hf.x0=0
+hf.z0=0
+__burning.clear()
+__burning[27]=true
+p=Particle(.flame,vec3(7,0,7),vec3(),life=1,size=0.5,color=vec4(1,0.5,0,1),fuel_cell=27)
+assert(grass_particle_visible(p,vec3(100,0,100)),"distant grass retains a live owned root")
+p.pos=vec3(9,0,7)
+assert(not grass_particle_visible(p,vec3(100,0,100)),"a drifting grass particle cannot stand ahead on an unlit cell")
+p.pos=vec3(7,0,7)
+__burning.clear()
+assert(not grass_particle_visible(p,vec3(100,0,100)),"distant instances cannot leave expired owner stubs")
+assert(flame_emission(vec3(2,1.2,0.08))>0.99,"hot flame interior suppresses opaque shoulder depth ink")
+loop color in [vec3(0.9,0.8,0.6),vec3(0.3,0.2,0.1),vec3(1.8,1.9,2.2),vec3(0.1,0.3,0.8)]:
+    assert(flame_emission(color)==0,"ordinary warm ground, pale highlights and cloth keep depth ink")
+print("PASS particle ownership and emission ink: live roots, no ahead/stale flames, hot interiors without changing ordinary material ink")
+
+# Exercise the instance source, independently of the fragment ownership guard.
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+burn_cell_mark(7,7,0.45,2)
+__burning[27]=true
+flames.clear()
+flames.push(Flame(27,t=0.8,render_center=vec3(7,0,7),render_seed=0.3))
+owned: PInst[]
+grass_fire_instances(vec3(7,2,17),Frustum(),owned)
+assert(owned.len()==1,"live owned fuel creates a rooted tongue")
+flames[0].render_center=vec3(9,0,7)
+misplaced: PInst[]
+grass_fire_instances(vec3(7,2,17),Frustum(),misplaced)
+assert(misplaced.len()==0,"a cached root in an unburning neighbour creates no tongue or glow")
+flames[0].render_center=vec3(7,0,7)
+__burning.clear()
+stale: PInst[]
+grass_fire_instances(vec3(7,2,17),Frustum(),stale)
+assert(stale.len()==0,"expired owners cannot create persistent fire instances")
+__burning[27]=true
+burn_cell_mark(7,7,-1,2)
+unlit: PInst[]
+grass_fire_instances(vec3(7,2,17),Frustum(),unlit)
+assert(unlit.len()==0,"an unlit fuel texel creates no persistent fire instance")
+print("PASS instance-source ownership: accepted live root, rejected neighbour/stale/unlit roots")
+
+# Four neighbouring spent/live cells move this owner behind the burning edge.
+# Clearing one neighbour exposes a fresh edge again without CPU scans or RNG.
+pixels=fill(u8(0),BURN_N*BURN_N*4)
+loop cell in [vec2(99,100),vec2(101,100),vec2(100,99),vec2(100,101)]:
+    pixels[(int(cell.y)*BURN_N+int(cell.x))*4]=u8(255)
+tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+assert(flame_cell_front(tex,vec2(100,100))==0,"surrounded rear fuel cannot draw a row of standing stubs")
+pixels[(100*BURN_N+101)*4]=u8(0)
+tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+assert(flame_cell_front(tex,vec2(100,100))==1,"an exposed burning edge keeps its tall overlapping sheets")
+print("PASS vertex frontier map: rear fuel keeps glow/smoke; exposed edge keeps flame sheets")
+
+loop cell in [vec2(99,100),vec2(101,100),vec2(100,99),vec2(100,101)]:
+    pixels[(int(cell.y)*BURN_N+int(cell.x))*4]=u8(0)
+    pixels[(int(cell.y)*BURN_N+int(cell.x))*4+2]=u8(255)
+tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+assert(flame_cell_front(tex,vec2(100,100))==0,"enclosed live fuel is rear fire too, even before neighbouring charcoal settles")
+print("PASS enclosed live fuel: no fresh standing stubs inside the burning band")
+
+# Ignition must grow in world space, rather than reveal a full-size faint card.
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+previous_height=f32(0)
+previous_width=f32(0)
+loop age in [0.20,0.23,0.30,0.45,0.65,0.80]:
+    probe=PInst(vec4(0,0,0,1.6),vec4(1.55,0.45,0.055,0.88),vec4(f32(age),-6,2.7,1))
+    bottom=part_vs(QuadV(vec2(0,-1)),probe,u)
+    top=part_vs(QuadV(vec2(0,1)),probe,u)
+    left=part_vs(QuadV(vec2(-1,-1)),probe,u)
+    right=part_vs(QuadV(vec2(1,-1)),probe,u)
+    height=top.pos.y-bottom.pos.y
+    width=length(right.pos.xyz-left.pos.xyz)
+    assert(height>=previous_height and width>=previous_width,"new flame grows continuously in height and width")
+    assert(abs(bottom.pos.y-0.025)<0.00001,"ignition stays on its fuel root")
+    if age==0.20: assert(height==0 and width==0,"newborn flame has no full-size ghost geometry")
+    if age==0.23: assert(height<0.15 and width<0.4,"first visible tongue is a small dense lick")
+    previous_height=height
+    previous_width=width
+print("PASS ignition geometry: six ages grow from a small grounded tongue without a full-size opacity fade")
+
+# A detached ignition or single-cell tendril must not draw three candles ahead
+# of the band; two neighbours let the cell join its overlapping flame wall.
+pixels=fill(u8(0),BURN_N*BURN_N*4)
+loop count in [0..5):
+    if count>0:
+        cell=[vec2(99,100),vec2(101,100),vec2(100,99),vec2(100,101)][count-1]
+        pixels[(int(cell.y)*BURN_N+int(cell.x))*4+2]=u8(220)
+    tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+    front=flame_cell_front(tex,vec2(100,100))
+    assert(front==(if count==2 or count==3: 1.0 else: 0.0),"standing fire belongs to the connected edge, never a detached cell or spur")
+print("PASS five frontier neighbourhoods: detached cells/spurs retain glow and smoke until they join the wall")
+
+# Actual grass-260 spur: east/north aged, west newborn, south unlit.
+# All three cells count as occupied, but only one is established enough to
+# connect standing fire to the wall; this used to draw the stray cone group.
+pixels=fill(u8(0),BURN_N*BURN_N*4)
+loop cell,live in [(vec2(99,100),114),(vec2(101,100),180),(vec2(100,99),213)]:
+    pixels[(int(cell.y)*BURN_N+int(cell.x))*4+2]=u8(live)
+tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+assert(flame_cell_front(tex,vec2(100,100))==0,"grass-260 spur cannot draw detached standing cones ahead of the established band")
+pixels[(100*BURN_N+101)*4+2]=u8(213)
+tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+assert(flame_cell_front(tex,vec2(100,100))==1,"spur joins the wall once its second adjoining root matures")
+print("PASS captured grass-260 spur: no three-crown island before adjoining fuel establishes the band")
+
+# Weakly supported older edge cells must recover full wall height. Check the
+# measured spur through maturation, without replacing its chemistry/RNG.
+pixels[(100*BURN_N+101)*4+2]=u8(180)
+tex=bytes_texture(BURN_N,BURN_N,pixels,false,false)
+assert(flame_cell_front(tex,vec2(100,100),0.7167)==0,"captured young tendril remains free of detached cones")
+previous_support=f32(0)
+loop age in [0.80,0.85,0.95,1.05,1.15,1.20,2.0]:
+    support=flame_cell_front(tex,vec2(100,100),f32(age))
+    assert(support>=previous_support,"tendril joins the wall by growing continuously")
+    previous_support=support
+assert(previous_support==1,"older exposed fuel retains full sheets instead of thinning the wall")
+print("PASS supported wall maturation: young cone group absent, older edge cells recover full sheets")
+
+# The camera cap must not cancel ignition growth. Compare a 0.30-second
+# tongue to its mature projected sheet at three gameplay camera distances.
+vp=perspective(radians(50),16.0/9.0,0.1,1000.0)
+u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+loop distance in [4.5,8.0,15.0]:
+    probe=PInst(vec4(0,0,f32(-distance),1.6),vec4(1.55,0.45,0.055,0.88),vec4(0.80,-6,2.7,-1.6))
+    bottom=part_vs(QuadV(vec2(0,-1)),probe,u).pos
+    tip=part_vs(QuadV(vec2(0,1)),probe,u).pos
+    left=part_vs(QuadV(vec2(-1,-1)),probe,u).pos
+    right=part_vs(QuadV(vec2(1,-1)),probe,u).pos
+    full_rise=tip.y/tip.w-bottom.y/bottom.w
+    full_span=right.x/right.w-left.x/left.w
+    probe.data.x=0.30
+    bottom=part_vs(QuadV(vec2(0,-1)),probe,u).pos
+    tip=part_vs(QuadV(vec2(0,1)),probe,u).pos
+    left=part_vs(QuadV(vec2(-1,-1)),probe,u).pos
+    right=part_vs(QuadV(vec2(1,-1)),probe,u).pos
+    rise_ratio=(tip.y/tip.w-bottom.y/bottom.w)/full_rise
+    span_ratio=(right.x/right.w-left.x/left.w)/full_span
+    assert(rise_ratio>0.12 and rise_ratio<0.14,"camera-bounded ignition keeps its small projected height")
+    assert(span_ratio>0.35 and span_ratio<0.37,"camera-bounded ignition keeps its small projected root width")
+print("PASS projected ignition: three camera distances retain 13% birth height and 36% root width after the size cap")

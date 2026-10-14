@@ -9,6 +9,7 @@ import argparse, re, subprocess
 root=Path(__file__).resolve().parents[1]
 out=root/'build/round68';out.mkdir(parents=True,exist_ok=True)
 ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--baseline');args=ap.parse_args()
+budgets={}
 for label,source in ([('before',subprocess.check_output(['git','show',f'{args.baseline}:game/wildlife.jo'],cwd=root,text=True))] if args.baseline else [])+[('after',(root/'game/wildlife.jo').read_text())]:
     boar=source[source.index('__boar_m:'):source.index('__boar_hips =')]
     start=source.index('__bird_fan =') if '__bird_fan =' in source else source.index('__bird_details:')
@@ -22,6 +23,7 @@ audit_mesh = (vs: Vertex3D[], idx: u32[]) -> Mesh:
     loop v in vs:
         assert(length(v.normal) > 0.99 and length(v.normal) < 1.01, "finite unit normals")
         assert(length(v.pos) < 3.0, "finite bounded animal geometry")
+        assert(abs(v.color.w - 1.0) < 0.00001, "opaque wildlife pigment must preserve its material alpha")
     Mesh(count = vs.len(), index_count = idx.len())
 '''+meshcode+'''
 parts = audit_boar_parts()
@@ -45,3 +47,7 @@ print("PASS production mesh normals, indices, bounds and draw budgets")
     (out/f'{label}-mesh-check.log').write_text(result.stdout+result.stderr)
     if result.returncode: print(result.stderr);result.check_returncode()
     print(label+'\n'+result.stdout)
+    budgets[label]={(int(k),int(pose)):int(n) for k,pose,n in re.findall(r'bird (\d+) pose (\d+): (\d+) triangles',result.stdout)}
+if args.baseline:
+    assert all(n<=budgets['before'][key] for key,n in budgets['after'].items()), 'bird silhouettes must retain the baseline triangle budget'
+    print('PASS baseline bird triangle budgets')
