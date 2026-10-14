@@ -1,5 +1,5 @@
 #!/bin/bash
-# CPU-only terrain/upload/water/farland/architecture/physics/audio/RGBA texture preparation.
+# CPU-only terrain/upload/water/farland/architecture/physics/audio/RGBA texture/socket preparation.
 # No window, GPU context, or playback device is opened.
 set -euo pipefail
 cd "$(dirname "$0")/.."

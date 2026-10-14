@@ -243,7 +243,9 @@ bytes_texture = (w: int, h: int, px: u8[], mip: bool = true, repeat: bool = true
     if mip:
         glGenerateMipmap(GL_TEXTURE_2D)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(GL_LINEAR_MIPMAP_LINEAR))
-        if not game_vulkan_backend(): glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0)
+        # This direct GLES entry point bypasses the runtime's software wrappers.
+        # CPU model fixtures retain texture bytes without loading a GL library.
+        if not game_vulkan_backend() and not soft_rendering(): glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0)
     game_upload_checkpoint()
     Texture(id, w, h)
 

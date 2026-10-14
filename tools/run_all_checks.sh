@@ -325,7 +325,7 @@ for name in save_check status_save_check encounter_weather_save_check \
 done
 check cpu journey_keyboard_check tools/journey_check.sh --keyboard
 for name in defect_hunt_check enemy_model_check hero_model_check wildlife_mesh_check \
-    weather_silhouette_test environment_visuals_check round70_heat_check round92_lightning_target_check; do
+    weather_silhouette_test environment_visuals_check round70_heat_check round92_lightning_target_check headless_assets_check; do
     check cpu "$name" python3 "tools/$name.py"
 done
 check cpu movement_source_audit python3 docs/ref/verify_movement_response_sources.py
