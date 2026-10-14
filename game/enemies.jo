@@ -781,6 +781,19 @@ __enemy_step = (e: mut Enemy, dt: f64, night: bool, alarm: mut bool):
     e.throw_cooldown = max(0.0, e.throw_cooldown - dt)
     e.retreat_t = max(0.0, e.retreat_t - dt)
     dist = f64(length(pl.pos - e.pos))
+    # Keese roost by day; dusk wakes them without a ground-monster emergence.
+    # Dawn cancels a swoop even when Jo is climbing beside the roost.
+    if e.kind == .keese:
+        if not night and e.state != .dead and e.state != .gone:
+            e.state = .buried
+            e.pos = e.home
+            e.speed = 0.0
+            e.alert = 0.0
+            return
+        if night and e.state == .buried:
+            e.state = .idle
+            e.pos = e.home
+            e.t = 0.0
     if dist > 220.0 and e.state != .dead and e.state != .gone: return
     if e.kind == .talus:
         talus_update(e, dt, dist)

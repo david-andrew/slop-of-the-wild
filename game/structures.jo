@@ -450,24 +450,44 @@ temple = ():
             q = p(x,0.0,z)
             q.y = f32(max(gy(f64(q.x),f64(q.z)),f64(o.y))+0.3)
             sor_split_stone(q,v3(0.60+h*0.85,0.42+h*0.38,0.62+h*0.70),r+h*1.8,side*91.0+f64(k),GREY,temple_ivy)
-        # Rooted ivy sprays climb two fractured courses in irregular clusters.
-        # Leaves join the existing static chunk; no transparent foliage pass.
+        # Lobed, folded leaves overlap around rooted trailing stems. Their
+        # shaded shoulders and pale ridges are painted into the static mesh.
         __begin(p(side*8.0,0.0,32.14))
         loop stem in [0..5):
             origin = side*(7.1+hash2(side,f64(stem))*1.9)
             height = 2.0+hash2(f64(stem),side+73.0)*7.5
+            previous=p(origin,0.05,32.17)
             loop leaf in [0..14):
                 t = f64(leaf)/14.0
                 x = origin+sin(t*6.0+f64(stem))*0.31
                 y = 0.35+t*height
-                z = 32.12+hash2(f64(stem),f64(leaf))*0.10
-                spread = 0.13+hash2(y,x)*0.18
-                a = p(x-spread,y,z)
-                b = p(x,y+spread*0.70,z+0.045)
-                c = p(x+spread,y+spread*0.15,z)
-                d = p(x,y-spread*0.65,z+0.025)
-                n = transform_dir(rotation_y(r),vec3(0,0,1))
-                __quad(cur,a,d,c,b,n,stone(0.17,0.255,0.115),PLAIN)
+                z = 32.17+hash2(f64(stem),f64(leaf))*0.10
+                root=p(x,y,z)
+                edge=transform_dir(rotation_y(r),vec3(0.017,0,0))
+                nn=transform_dir(rotation_y(r),vec3(0,0,1))
+                __quad(cur,previous-edge,previous+edge,root+edge,root-edge,nn,stone(0.20,0.25,0.10),PLAIN)
+                previous=root
+                loop sprig in [-1.0,1.0]:
+                    h=hash2(f64(stem*31+leaf),sprig+19.0)
+                    spread=0.11+h*0.12
+                    angle=sprig*(0.55+h*0.55)
+                    outline: vec2[]=[vec2(0,-0.75),vec2(-0.65,-0.30),vec2(-1.0,0.16),vec2(-0.48,0.38),vec2(0,1.0),vec2(0.42,0.35),vec2(0.92,0.05),vec2(0.52,-0.38)]
+                    center=p(x+sprig*spread*0.65,y+sprig*0.045,z+0.045)
+                    ridge=center+nn*0.042
+                    loop k in [0..outline.len()):
+                        point=(j:int)->vec3:
+                            q=outline[j%outline.len()]
+                            center+transform_dir(rotation_y(r),v3((f64(q.x)*cos(angle)-f64(q.y)*sin(angle))*spread,(f64(q.x)*sin(angle)+f64(q.y)*cos(angle))*spread,0))
+                        leaf_col=if k<4:stone(0.19+h*0.05,0.29+h*0.06,0.105) else:stone(0.25+h*0.04,0.34+h*0.06,0.14)
+                        # Leaf folds are pigment geometry, not structural rain roofs.
+                        leaf_a=point(k+1)
+                        leaf_b=point(k)
+                        leaf_n=normalize(cross(leaf_a-ridge,leaf_b-ridge))
+                        leaf_base=u32(cur.verts.len())
+                        cur.verts.push(BVert(ridge,leaf_n,leaf_col,PLAIN))
+                        cur.verts.push(BVert(leaf_a,leaf_n,leaf_col,PLAIN))
+                        cur.verts.push(BVert(leaf_b,leaf_n,leaf_col,PLAIN))
+                        loop leaf_i in [leaf_base,leaf_base+1,leaf_base+2]:cur.idx.push(leaf_i)
         __end()
         column(p(side * 11.5, 0.0, 31.0), 1.8, 1.3, (if side < 0.0: 28.0 else: 24.0), 8, col, m)
         if side < 0.0: spire(p(side * 11.5, 28.0, 31.0), 1.8, 7.0, 8, 0.0, ROOF_SLATE, PLAIN)
@@ -801,7 +821,7 @@ __cliff_depth = (p: vec3) -> f64:
     rib = noise((across + bend * 1.8) * 0.103 + 11.0, y * 0.016)
     secondary = smoothstep(0.28, 0.70, rib) * 7.0
     bed_height = y + (across - 1320.0) * 0.045
-    bed_height += (noise(f64(p.x) * 0.018 + 7.0, f64(p.z) * 0.018 + 3.0) - 0.5) * 9.0
+    bed_height += (noise(across * 0.012 + 7.0, 3.0) - 0.5) * 2.5
     upper = smoothstep(210.0, 222.0, bed_height) * (1.0 - smoothstep(228.0, 235.0, bed_height))
     lower = smoothstep(149.0, 160.0, bed_height) * (1.0 - smoothstep(166.0, 174.0, bed_height))
     mid = smoothstep(180.0, 188.0, bed_height) * (1.0 - smoothstep(193.0, 200.0, bed_height))
@@ -815,7 +835,7 @@ __cliff_depth = (p: vec3) -> f64:
     split_mid = clamp((bed_height-185.0)/1.6,0.0,1.0)*(1.0-clamp((bed_height-196.0)/1.8,0.0,1.0))
     upper = lerp(upper,split_upper,angular)
     mid = lerp(mid,split_mid,angular)
-    shelf = (upper*10.0+lower*6.0+mid*9.0+high*5.0+toe*3.0*poolside)*max(presence,poolside*0.45)
+    shelf = (upper*6.0+lower*4.0+mid*5.0+high*3.5+toe*3.0*poolside)*(0.65+presence*0.35)
     # Deliberate diagonal fault bays break the tall north buttress and the
     # south pool shoulder. Their broad returns are resolved by all three LODs.
     fault = 1.0 - smoothstep(1.8, 5.5, abs(across - 1339.0 + (y - 190.0) * 0.11))
@@ -852,11 +872,11 @@ __cliff_point = (s: CliffStation, row: int) -> vec3:
     # Clearance can consume the authored relief on the steep south bank.
     # Add projecting beds after it, rather than flattening them against the
     # same terrain contour. Positive relief only: never bury the exposed skin.
-    ledge = clamp((__cliff_depth(p)-__cliff_depth(p+vec3(0,18,0)))*0.75,0.0,7.0)
+    ledge = 0.0
     toe_y = y + (f64(p.z)-1860.0)*0.045
     toe = smoothstep(111.0,118.0,toe_y)*(1.0-smoothstep(120.0,125.0,toe_y))
     poolside = 1.0-smoothstep(28.0,65.0,abs(f64(p.z)-1870.0))
-    ledge = max(ledge,toe*poolside*(4.0+noise(f64(p.z)*0.12,5.0)*2.5))
+    ledge = max(ledge,toe*poolside*2.0)
     d += ledge*smoothstep(0.01,0.035,t)*(1.0-smoothstep(0.90,0.98,t))
     p + v3(-d, 0, 0)
 
@@ -1146,10 +1166,36 @@ __cliff_push = (p: mut vec3, radius: f64, height: f64) -> vec3:
                 d = f64(length(gap))
                 if d > 0.00001 and d < radius and dot(gap, t.n) > -0.01: push = gap * f32((radius - d) / d)
             if length(push) > 0.00001:
+                # A grounded capsule cannot escape an undercut through the
+                # solid heightfield below it. Resolve along the exposed face
+                # instead; snapping feet back up would bury the head again.
+                across=f64(length(t.n.xz))
+                if push.y<0.0 and across>0.05 and f64(p.y)<=height_at(f64(p.x),f64(p.z))+0.10:
+                    push=v3(f64(t.n.x)/across,0,f64(t.n.z)/across)*f32(f64(length(push))/across)
                 p += push
                 moved = true
         if not moved: break
     p - start
+
+# Place ground-level actors on the exterior of the closed rock mass. The
+# heightfield continues beneath the skin, so it cannot alone supply a spawn.
+# An underside encountered from below marks an open overhang, which stays open.
+cliff_place_ground = (p: vec3, height: f64 = 1.6) -> vec3:
+    if p.x < -1720.0 or p.x > -1370.0 or p.z < 1550.0 or p.z > 1980.0 or p.y > 490.0: return p
+    q=p
+    loop attempt in [0..65):
+        top=__cliff_ray(vec3(q.x,500,q.z),vec3(0,-1,0),500.0-f64(q.y))
+        candidate=q
+        if top.hit and top.pos.y>q.y+0.05:
+            open=__cliff_ray(q+vec3(0,0.08,0),vec3(0,1,0),f64(top.pos.y-q.y))
+            if not open.hit or open.dist<height+0.12: candidate=vec3(q.x,top.pos.y+0.05,q.z)
+        ceiling=__cliff_ray(candidate+vec3(0,0.08,0),vec3(0,1,0),height+0.05)
+        if not ceiling.hit: return candidate
+        # Overlapping shoulder returns can leave a low ceiling above one
+        # strip's crown. Retreat toward the open west face to find a complete
+        # standing space, rather than placing a head between those surfaces.
+        q=v3(f64(p.x)-f64(attempt+1)*2.0,height_at(f64(p.x)-f64(attempt+1)*2.0,f64(p.z)),f64(p.z))
+    v3(-1030,height_at(-1030,1805),1805)
 
 __cliff_install_collision = ():
     if __cliff_collision_installed: return
@@ -2008,7 +2054,7 @@ guardian_shell_panel = (o: vec3, frame: mat4, az: f64, el: f64, seed: f64):
             u1=f64(col+1)/3.0-1.0
             v0=f64(row)/2.0-1.0
             v1=f64(row+1)/2.0-1.0
-            tone=0.84+hash2(seed,3.0)*0.17
+            tone=0.94
             c=stone(0.36*tone,0.35*tone,0.285*tone)
             __quad_n(cur,point(u0,v0),point(u0,v1),point(u1,v1),point(u1,v0),normal(u0,v0),normal(u0,v1),normal(u1,v1),normal(u1,v0),c,vec4(0,0.80,0,-1))
     __end()
@@ -2185,8 +2231,12 @@ guardian_husks = ():
             wash=0.73+0.20*patch+0.10*up+0.05*grain
             oxide=(1.0-up)*patch*(1.0-green)*0.12
             c=mix(c,vec3(0.13,0.12,0.085),f32(oxide))
-            v.color=vec4(c*f32(wash),v.color.w)
-            v.mat.y*=0.48
+            # One continuous patina covers armor, joints and pipes. Round relics
+            # never inherit the rectangular Sheikah wall grid at any distance.
+            c=max(c*f32(wash),vec3(0.18,0.185,0.155))
+            v.color=vec4(c,max(v.color.w,f32(0.82)))
+            v.mat=vec4(0,0,0,-3)
+            v.light=vec3(0.18,0.17,0.13)
             b.verts[i]=v
         __bchunks[key]=b
 

@@ -14,6 +14,7 @@ loop k in [0..201):
 print("PASS near-lens foliage: fully hidden at 85cm, >80% removed at 1m, unchanged past 1.4m")
 
 use '../game/vegetation.jo'
+use '../game/gfx.jo'
 struct LensPlantU:
     player=vec3(0,-1000,0)
     cam=vec3(0,0,0)
@@ -35,4 +36,25 @@ i.world=vec3(0,0,4.25)
 assert(abs(veg_occluder_fade(i,u)-0.5)<0.00001,"bark coverage eases into view")
 i.world=vec3(0,0,5.5)
 assert(veg_occluder_fade(i,u)==0,"distant trunks retain their silhouette")
+# Keep the whole ramp for both bark and foliage, including solid plant stems.
+loop foliage in [0..2):
+    u.low=f32(foliage)
+    u.wood=f32(1-foliage)
+    inner=if foliage==1: f32(2.2) else: f32(3.0)
+    previous=f32(1)
+    previous_removed=256
+    loop k in [0..251):
+        i.world=vec3(0,0,inner+(5.5-inner)*f32(k)/250.0)
+        fade=veg_occluder_fade(i,u)
+        assert(fade>=0 and fade<=previous+0.000001,"modeled coverage must ease monotonically with distance")
+        assert(previous-fade<0.007,"modeled bark/foliage cannot hard-pop at the outer radius")
+        removed=0
+        loop y in [0..16):
+            loop x in [0..16):
+                if fade>glsl_occluder_patch_dither(vec2(f32(x)+0.5,f32(y)+0.5)): removed+=1
+        assert(removed<=previous_removed,"opaque patches must ease into view with distance")
+        assert(abs(f32(removed)/256.0-fade)<=1.0/32.0+0.000001,"opaque coverage tracks the smooth fade")
+        previous_removed=removed
+        previous=fade
+    assert(previous==0.0 and previous_removed==0,"outer edge restores full coverage")
 print("PASS modeled plants: solid stems and leaves fade together; near branches fade; rocks unchanged")

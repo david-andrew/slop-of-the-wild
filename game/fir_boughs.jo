@@ -75,7 +75,7 @@ fir_crown = (source: Vertex3D[], indices: u32[]) -> FirCrown:
             finish = min(1.0,start + 0.38 + phase * 0.07)
             child_base = mix(base, tip, f32(start))
             child_tip = mix(base, tip, f32(finish)) + side * f32(sign * width * (if tuft == 2: 0.20 else: 0.48+phase*0.18)) - up * f32(reach * (0.01+phase*0.018))
-            __fir_spray(out, child_base, child_tip, width * (0.26 + phase * 0.08), reach * (0.045 + phase * 0.016))
+            __fir_spray(out, child_base, child_tip, width * (0.17 + phase * 0.10), reach * (0.030 + phase * 0.013))
 
     out
 
@@ -86,12 +86,12 @@ __fir_spray = (out: mut FirCrown, base: vec3, tip: vec3, width: f64, thickness: 
     side = if length(direction.xz) > 0.001: normalize(cross(direction, vec3(0, 1, 0))) else: vec3(1, 0, 0)
     up = normalize(cross(side, direction))
     first = out.vertices.len()
-    # Short terminal tapers surround a blunt, irregular middle, with no long
-    # spear tip. Four rings per cushion keep the existing three-spray budget;
+    # A broad inner knot opens into thin peripheral needle tips. Four rings
+    # per spray keep the existing three-spray budget;
     # eight sides preserve the green underside and irregular snow cap.
-    stations = [0.0, 0.18, 0.78, 1.0]
+    stations = [0.0, 0.28, 0.59, 1.0]
     loop u in stations:
-        bulge = if u == 0.0 or u == 1.0: 0.0 else: (0.92 + 0.12 * sin(u * 13.0 + f64(base.y) * 5.0))
+        bulge = if u == 0.0 or u == 1.0: 0.0 else: (if u < 0.5: 0.94 else: 0.46) * (0.90 + 0.18 * sin(u * 13.0 + f64(base.y) * 5.0))
         spine = mix(base, tip, f32(u)) + up * f32(reach * 0.025 * sin(PI * u))
         loop k in [0..8):
             angle = TAU * f64(k) / 8.0

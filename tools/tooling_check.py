@@ -18,8 +18,8 @@ def main():
     assert 38 <= len(shots) <= 46 and len(shots) == len(set(shots))
     names = {name for _, name, _ in shots}
     assert {f'shrine-{n}' for n in range(1,5)} <= names
-    assert {'wake','passage','title','forest','waterfall','pool','temple','roof','husks','snow','firs','dawn','golden','night','storm','rain','camp','grass-fire','tent-fire','body-fire','boar','bird','swim','climb','glide','map','inventory','options'} <= names
-    assert [f for _,n,f in shots if n=='camp'] == [300,420,640]
+    assert {'wake','passage','title','forest','waterfall','pool','temple','roof','husks','snow','firs','dawn','golden','night','storm','rain','camp','grass-fire','tent-fire','body-fire','boar','bird','swim','climb','temple-climb','glide','map','inventory','options'} <= names
+    assert [f for _,n,f in shots if n=='camp'] == [180,300,420,640]
     assert [f for _,n,f in shots if n=='tent-fire'] == [900]
     assert note_name(60)=='C4' and note_name(61)=='C#4' and note_name(21)=='A0'
     assert percentiles([1,2,3,26]) == dict(p50=2,p99=26,worst=26,frames_over_25ms=1,samples=4)

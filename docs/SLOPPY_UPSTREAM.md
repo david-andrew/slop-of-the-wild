@@ -122,6 +122,45 @@ is not evidence that all remaining pauses originate in Wayland WSI. The strict
 zero-tail target remains unmet. Raw repeat evidence is `build/round66-sol/`, including the standalone
 logs and `pacing-summary.json`. The vendored Sloppy tree is unchanged.
 
+### Round 67 continued: GPU zones versus producer intervals
+
+Full-1080p forest diagnostics on the unmodified release distinguish CPU submission
+and frame-slot waits from command-buffer GPU timestamps. The before/reduced-tree
+controls in `build/task67b-sol/native-attribution.json` retain frame-level game
+wall/thread clocks, neighboring native calls, instance uploads and every selected
+tail. Frames 241–720 record **468 / 480 `vkWaitForFences` calls over 2 ms**, totaling
+**4.390 / 4.240 s**, worst **13.421 / 11.190 ms**. Neither control has acquire or
+queue-present calls over 2 ms in this window. There is no steady graphics-pipeline,
+buffer, image or device-memory creation. These controls precede the final terrain
+streaming change; use the final matched results in
+[PERFORMANCE_ROUND67B.md](PERFORMANCE_ROUND67B.md) for the delivered performance.
+
+Runtime `__vk_begin_frame` waits the current two-frame slot's fence. The first
+terrain instance upload reaches that function, so the game trace's
+`terrain_select` wall time includes the wait. It is not all CPU quadtree math.
+For example, a baseline **23.822 ms** producer interval has **21.418 ms callback
+wall / 11.559 ms callback thread**, **0.809 ms presentation**, and **1.595 ms
+residual runtime gap**. Neighboring frame fences take about **9–11 ms**. Other
+frames have much smaller callback CPU costs. A GPU-zone p99 and a producer p99
+can select different frames; their difference is not an isolated missing stage.
+The game-side full-note piano allocation was separately identified and removed;
+remaining posed combat and draw-submission work must not be attributed to WSI.
+
+The game also replaces the terrain node buffer's per-frame persistent-buffer
+overwrite with the release's existing immutable stream path. This avoids the
+compatibility layer's all-reader transfer barriers while preserving the selected
+nodes and draw order. Instance counters are only about 15 KB/frame in the fixed
+forest and 45 KB/frame in camp (camp p99 about 125 KB); they exclude uniforms and
+other arena writes. Native tracing does not support a claim of recurring large
+resource allocation, shader compilation or synchronous screenshot readback in
+these measured windows. Screenshots occur after the timing windows.
+
+**Upstream:** expose nonblocking frame-slot fence readiness/wait duration,
+acquire/submit/present wall and thread costs, upload bytes/barrier counts, and
+queue-depth telemetry alongside GPU zones. A long wait for legitimately queued
+GPU work is not by itself a runtime bug. These measurements do not establish an
+additional universal 8 ms runtime overhead or an idle-machine 60 Hz guarantee.
+
 ### Round 66: the ten-second presentation stall
 
 `build/round66/forest-before.log` retains 18,000 present-return intervals over

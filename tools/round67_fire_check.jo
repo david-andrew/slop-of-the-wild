@@ -1,0 +1,91 @@
+# Actual fuel expiry/renderer ownership and flame value separation, headless.
+use 'tree_checks.jo'
+from 'tree_checks.jo' import __tree_course
+use '../game/fx.jo'
+use '../game/elements.jo'
+use '../game/body_fire.jo'
+use '../game/charshade.jo'
+use '../game/structures.jo'
+use '../game/items.jo'
+use '../game/env.jo'
+use '../game/player.jo'
+use '../game/terrain.jo'
+
+__audio_state=2
+items_init()
+__tree_course()
+camp_wood.clear()
+pl.pos=vec3(20,0,20)
+seed_random(6702)
+source=vec3(0.5,0.1,0.5)
+assert(ignite_at(source))
+cell=flames[0].cell
+assert(flames[0].life>=4.0 and flames[0].life<=6.5,"real ignition preserves the original spread/fuel budget")
+spread=false
+loop frame in [0..420):
+    elements_update(1.0/60.0,pl.pos)
+    instances: PInst[]
+    grass_fire_instances(vec3(0,2,10),Frustum(),instances)
+    assert(instances.len()==flames.len(),"each burning cell keeps a tongue until its own expiry")
+    loop flame in flames:
+        assert(flame.t<flame.life and flame.life<=6.5,"finite original fuel lifetime")
+        if flame.cell!=cell: spread=true
+    if frame>=390:
+        loop flame in flames: assert(flame.cell!=cell,"original fuel is spent by 6.5 seconds")
+# Production tongues cover a whole 2m cell and lose height rather than
+# extinguishing the propagation budget behind the advancing front.
+probe=PInst(vec4(0,0,0,1.6),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,2.7,1))
+u0=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,2,10),vec3(),0,near=0)
+front=part_vs(QuadV(vec2(0,1)),probe,u0)
+left=part_vs(QuadV(vec2(-1,-1)),probe,u0)
+right=part_vs(QuadV(vec2(1,-1)),probe,u0)
+assert(front.pos.y-left.pos.y>1.8 and right.pos.x-left.pos.x>3.0,"tall overlapping fresh sheets span the production fuel cell")
+probe.data=vec4(4,-6,2.7,1)
+rear=part_vs(QuadV(vec2(0,1)),probe,u0)
+probe.data=vec4(5,-6,2.7,1)
+coal=part_vs(QuadV(vec2(0,1)),probe,u0)
+assert(rear.pos.y-left.pos.y<(front.pos.y-left.pos.y)*0.3 and coal.pos.y-left.pos.y<0.4,"rear cells fade through low licks into near-ground coals")
+# Exercise production instance ageing, including width/opacity rather than
+# just shader height: old cells must not leave broad orange ground sheets.
+flames[0].t=0.8
+fresh: PInst[]
+grass_fire_instances(vec3(0,2,10),Frustum(),fresh)
+flames[0].t=5
+spent: PInst[]
+grass_fire_instances(vec3(0,2,10),Frustum(),spent)
+assert(spent[0].pos.w<fresh[0].pos.w*0.13 and spent[0].color.w<fresh[0].color.w*0.31,"rear cells settle into small faint embers, not wide ground sheets")
+seed_random(671)
+expected=random()
+seed_random(671)
+instances: PInst[]
+grass_fire_instances(vec3(0,2,10),Frustum(),instances)
+assert(random()==expected,"rooted visual fire never consumes gameplay RNG")
+assert(spread,"original fuel still ignites neighbouring live grass")
+assert(burn_value(0.5,0.5,0)>0.99 and burn_value(0.5,0.5,2)==0,"spent ground retains charcoal without live heat")
+assert(not ignite_at(source),"spent fuel cannot reignite as scattered rear flames")
+print("PASS moving fire: original real expiry, spread, uninterrupted roots, no rear reignition or lingering heat")
+
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,0,10),vec3(),0,near=0)
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop frame in [0..120):
+        u.time=f32(frame)/60.0
+        # Sample the advected centre at a connected, low core height.
+        y=f32(0.075)
+        shape=fract(f32(seed)*2.17)
+        bend=sin(y*7.0-u.time*9.0+f32(seed))*y*(0.10+shape*0.14)
+        center=part_fs(PartO(vec4(),vec2(0.48-bend,y),vec4(1.55,0.45,0.055,0.88),vec4(0,-6,f32(seed),-1.6),vec4(0,0,0,10),0.5),u)
+        assert(center.w>0.10,"hot core remains connected through every flow phase")
+        assert(center.x>2.4 and center.y>1.8 and center.z>0.8,"low core is pale yellow-white HDR rather than orange")
+        root=part_fs(PartO(vec4(),vec2(0.5,0),vec4(1.55,0.45,0.055,0.88),vec4(0,-6,f32(seed),-1.6),vec4(0,0,0,10),0.5),u)
+        assert(root.w==0,"broken bases retain a transparent ground seam")
+assert(grass_flame_heat(1.4)==1 and grass_flame_heat(3)>0.5 and grass_flame_heat(5)==0,"fresh front stays tall; rear settles over 3–5 seconds")
+assert(flame_ink(0.9,0,1).y<0.12,"tips cool to red-orange")
+assert(length(flame_ink(0.3,0,0))<length(flame_ink(0.3,0,1))*0.25,"soft smoky shoulders are darker than the flame body")
+print("PASS flame values: 480 flowing hot cores, red tips, smoky edges and feathered roots")
+
+cloth=vec3(0.14,0.20,0.28)
+view=vec3(0,0,1)
+heat=vec4(1,0.23,0.035,0.37)
+assert(ch_status_light(cloth,normalize(vec3(0.94,0,0.34)),view,heat,0)==cloth,"grazing tunic panels retain their pigment during recoil")
+assert(length(ch_status_light(cloth,vec3(1,0,0),view,heat,0)-cloth)>0.1,"heat still catches the silhouette")
+print("PASS burn status: no orange panel fill; silhouette heat remains visible")

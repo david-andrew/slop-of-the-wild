@@ -55,6 +55,7 @@ struct GrassU:
     wet = 0.0
     clouds = 0.0
     canopy = Texture(0, 1, 1)    # where tree crowns stand (the forest floor is only under them)
+    opponent = vec3(0, -1000, 0)
 
 struct GrassO:
     pos: vec4
@@ -152,6 +153,10 @@ grass_vs = (v: GrassV, p: GPatch, u: GrassU) -> GrassO:
     # root below a swimming camera. Vertex clearance preserves early depth tests
     # for the dense meadow instead of adding a discard to every grass fragment.
     hgt = hgt * (1.0-lens_plant_fade(lens_plant_distance(vec3(base.x,h0,base.y),hgt,u.cam)))
+    # Short grass around the locked opponent keeps legs and weapons visible.
+    # Elevated/distant targets retain the meadow below them.
+    target_clear = (1.0 - smoothstep(1.0, 2.6, length(base - u.opponent.xz))) * (1.0 - smoothstep(0.6, 1.5, abs(h0 - u.opponent.y)))
+    hgt = mix(hgt, min(hgt, 0.035), target_clear)
     ang = blade.y * 6.2832
     fdir = vec2(cos(ang), sin(ang))
     sdir = vec2(-fdir.y, fdir.x)

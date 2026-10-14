@@ -34,6 +34,7 @@ struct RenderHooks:
     named_lift: {str: f64} = {}     # pieces rising out of the ground (the shrines)
     swirl = 1.0
     grass_player = vec3(0, -1000, 0)
+    lock_target = vec3(0, -1000, 0)
 
 __noop = (): pass
 # a cave mouth: from inside within 45 m of it the world outside is drawn (the daylight at the end)
@@ -101,6 +102,12 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
         if not shadow_due(k): continue
         gpu_mark("shadow{k}")
         shadow_begin(k)
+        # Closed decks have no cast shadows. Keep valid cleared maps for
+        # specialized receivers, but omit their unused caster submissions.
+        # As the deck opens, ordinary cascade scheduling resumes smoothly.
+        if shadow_direct(f32(env.clouds)) <= 0.0:
+            shadow_end()
+            continue
         sc.shadow = true
         sc.shadow_k = k
         svp = cascades.vps[k]
@@ -171,7 +178,7 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
     if not under: grass_draw(GrassU(vp, cam_pos, vec2(f32(hf.x0), f32(hf.z0)), f32(hf.cell), f32(hf.n), height_tex, mat_tex, burn_tex, normal_tex, water_tex,
         env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), 0.004,
         cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), f32(elapsed()),
-        env.wind * f32(env.gust), f32(0.6 + env.rain * 0.8), hooks.grass_player, 600.0, 1.0, sc_lp, sc_lc, f32(env.wet), f32(env.clouds), canopy_tex))
+        env.wind * f32(env.gust), f32(0.6 + env.rain * 0.8), hooks.grass_player, 600.0, 1.0, sc_lp, sc_lc, f32(env.wet), f32(env.clouds), canopy_tex, opponent = hooks.lock_target))
     cpu_mark("sky_draw")
     gpu_mark("sky")
     if not under: draw_sky(inverse(vp), cam_pos)

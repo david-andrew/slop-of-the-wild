@@ -1,0 +1,94 @@
+# CPU geometry contracts for the close-up ascetic and hero budgets. Validate the actual
+# generated surfaces, including welded normals and continuous elbow sections.
+use '../game/shrine_monk.jo'
+use '../game/items.jo'
+use '../game/skel.jo'
+use '../game/charshade.jo'
+check_surface = (b: MeshB, minimum: int):
+    assert(b.vs.len()>=minimum,"surface has curved longitudinal sections")
+    sums: {str: vec3} = {}
+    seams=0
+    loop v in b.vs:
+        assert(abs(length(v.normal)-1.0)<0.001,"finite unit surface normal")
+        k="{int(round(f64(v.pos.x)*100000))},{int(round(f64(v.pos.y)*100000))},{int(round(f64(v.pos.z)*100000))}"
+        if let n=sums.get(k):
+            assert(length(n-v.normal)<0.0001,"coincident skin/cloth vertices share normals")
+            seams+=1
+        sums[k]=v.normal
+    assert(seams>minimum/2,"surface shares enough normal seams")
+    loop i in [0..b.idx.len()/3):
+        a=b.vs[int(b.idx[i*3])].pos
+        c=b.vs[int(b.idx[i*3+1])].pos
+        d=b.vs[int(b.idx[i*3+2])].pos
+        assert(length(cross(c-a,d-a))>0.00000001,"no collapsed triangles")
+torso=MeshB()
+monk_torso(torso,vec4(1,1,1,1))
+check_surface(torso,2600)
+head=MeshB()
+monk_head(head,vec4(1,1,1,1))
+check_surface(head,2500)
+loop side in [-1.0,1.0]:
+    arm=MeshB()
+    monk_arm(arm,side,vec4(1,1,1,1))
+    check_surface(arm,1400)
+    loop v in arm.vs:
+        assert(v.pos.y>0.33 and v.pos.y<0.90,"arm remains between lap and shoulder")
+        assert(abs(v.pos.x)<0.33,"elbow remains inside seated silhouette")
+cloth=MeshB()
+monk_drape(cloth,[vec4(-0.14,0.865,0.018,0.075),vec4(-0.10,0.74,0.095,0.075),vec4(-0.035,0.52,0.095,0.085),vec4(0.025,0.38,0.18,0.12),vec4(0,0.24,0.3,0.22)],vec4(1,1,1,1))
+check_surface(cloth,1000)
+# Interpolation passes through every authored station, including endpoints.
+rows=[vec4(0,0,0,1),vec4(1,2,3,4),vec4(3,4,5,6)]
+loop i in [0..rows.len()): assert(length(monk_curve(rows,f64(i))-rows[i])<0.000001)
+print("PASS close-up ascetic: curved head/arms/cloth, seam-continuous unit normals, nondegenerate triangles and bounded silhouette")
+
+# Original release-bake budgets: more separated locks must not add vertices,
+# draw calls or joints to either hero. Headless runner keeps meshes in RAM.
+loop spec in [("hero",29978,7),("hero_bare",49727,4)]:
+    model=load_model("assets/models/{spec.0}.mdl")
+    assert(model.ok and model.bones.len()==66,"original contact skeleton")
+    assert(model.parts.len()==spec.2,"original character draw budget")
+    vertices=0
+    loop part in model.parts: vertices+=part.verts
+    assert(vertices<=spec.1,"layered hair stays inside original vertex budget")
+    print("PASS {spec.0}: {vertices}/{spec.1} vertices, {model.parts.len()} draws, 66 joints")
+
+# Frozen pre-optimization oracle: early rejection must preserve the complete
+# corrective field, including derivatives sampled on its support boundary.
+reference_wake_point = (p: vec3, weight: f32) -> vec3:
+    q=p
+    x=abs(p.x)
+    band=smoothstep(1.12,1.21,p.y)*(1.0-smoothstep(1.39,1.49,p.y))*weight
+    shoulder=smoothstep(0.09,0.16,x)*(1.0-smoothstep(0.25,0.34,x))*band
+    elbow=(1.0-smoothstep(0.020,0.125,abs(x-0.4122)))*band
+    # The refined deltoid loops need less compression, retaining a round arm
+    # while it bends. A broader scapular correction softens the folded back.
+    q.y+=(1.29585-p.y)*(shoulder*0.14-elbow*0.06)
+    q.z+=(-0.060-p.z)*(shoulder*0.24-elbow*0.06)
+    back=(1.0-smoothstep(0.13,0.22,x))*smoothstep(1.10,1.21,p.y)*(1.0-smoothstep(1.34,1.41,p.y))
+    back*=1.0-smoothstep(-0.04,-0.01,p.z)
+    q.z+=(-0.085-p.z)*back*weight*0.12
+    # The temple-reaching right humerus presses into the rib cage after the
+    # contact solve. Lift its middle section off the chest in bind space;
+    # taper to zero at the shoulder origin and elbow so sockets stay exact.
+    upper=smoothstep(0.16,0.24,-p.x)*(1.0-smoothstep(0.30,0.54,-p.x))*band
+    q.y+=0.015*upper
+    q.z-=0.012*upper
+    # Restore a rounded humerus cross-section in this compressed pose. Bound
+    # the surface adjustment to 8 mm, clear of shoulder origin and wrist.
+    round_arm=smoothstep(0.22,0.27,-p.x)*(1.0-smoothstep(0.37,0.43,-p.x))*band
+    radial=vec3(0,q.y-1.29585,q.z+0.062)
+    radius=length(radial)
+    round_arm*=1.0-smoothstep(0.055,0.080,radius)
+    q+=radial/max(radius,0.001)*clamp(0.036-radius,-0.008,0.008)*round_arm
+    q
+
+count=0
+loop ix in [-80..81):
+    loop iy in [0..181):
+        loop z in [-0.15,-0.07,0.0,0.07,0.15]:
+            p=vec3(f32(ix)*0.01,f32(iy)*0.01,f32(z))
+            loop weight in [0.0,0.35,1.0]:
+                assert(ch_wake_point(p,f32(weight))==reference_wake_point(p,f32(weight)),"wake shader identity-region equivalence")
+                count+=1
+print("PASS {count} wake deformation points: exact float equality with baseline, including shoulder/elbow and all excluded regions")

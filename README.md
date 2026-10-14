@@ -2,7 +2,7 @@
 
 **[Play in the browser](https://david-andrew.github.io/slop-of-the-wild/)** (desktop browser with WebGL 2; about 95 MB to load).
 
-[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **170 PASS / 0 FAIL**
+[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **180 PASS / 0 FAIL**
 ([evidence](docs/EVALUATE.md#whole-regression-suite)).
 [Compact performance summary](docs/PERFORMANCE.md), [current listening evidence](docs/MUSIC.md),
 and [Round 81 targeted findings and evidence](docs/ROUND81_SOL.md).

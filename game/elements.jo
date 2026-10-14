@@ -229,6 +229,8 @@ ignite_at = (p: vec3) -> bool:
     __burning[c] = true
     __burn_first = min(__burn_first, c)
     __burn_last = max(__burn_last, c)
+    # Preserve the original fuel/spread budget. The renderer settles older cells
+    # into embers over 3–5 seconds independently of the chemistry.
     flames.push(Flame(c, life = random(4.0, 6.5), render_center = q, render_seed = hash2(f64(c),83.0), render_offset = hash2(f64(c),84.0)))
     # Live fuel singes in its own cell; settled charcoal still waits for expiry.
     burn_cell_mark(f64(q.x), f64(q.z), 0.45, 2)

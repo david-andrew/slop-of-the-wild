@@ -5,28 +5,96 @@ use 'skel.jo'
 
 __ascetic = Model()
 
+# Smooth row interpolation is shared by skin and linen, evaluated only when
+# the cached monk mesh is built. No per-frame procedural geometry.
+monk_curve = (rows: vec4[], t: f64) -> vec4:
+    i=min(int(floor(t)),rows.len()-2)
+    u=f32(t-f64(i))
+    a=rows[max(0,i-1)]
+    b=rows[i]
+    c=rows[i+1]
+    d=rows[min(rows.len()-1,i+2)]
+    (b*2.0+(c-a)*u+(a*2.0-b*5.0+c*4.0-d)*u*u+(-a+b*3.0-c*3.0+d)*u*u*u)*0.5
+
+monk_smooth = (b: mut MeshB, start: int):
+    sums: {str: vec3} = {}
+    key = (p: vec3) -> str: "{int(round(f64(p.x)*100000))},{int(round(f64(p.y)*100000))},{int(round(f64(p.z)*100000))}"
+    loop i in [start..b.vs.len()):
+        v=b.vs[i]
+        k=key(v.pos)
+        sums[k]=(sums.get(k) ?? vec3(0,0,0))+v.normal
+    loop i in [start..b.vs.len()):
+        n=sums[key(b.vs[i].pos)]
+        if length(n)>0.000001: b.vs[i].normal=normalize(n)
+
+# A swept arm includes the shoulder, elbow and wrist in one skin surface.
+monk_arm = (b: mut MeshB, side: f64, skin_: vec4):
+    rows=[vec4(f32(side*0.15),0.837,-0.018,0.045),vec4(f32(side*0.215),0.803,-0.010,0.066),vec4(f32(side*0.248),0.69,0.044,0.047),vec4(f32(side*0.285),0.51,0.120,0.032),vec4(f32(side*0.267),0.459,0.153,0.034),vec4(f32(side*0.16),0.394,0.236,0.028),vec4(f32(side*0.065),0.366,0.280,0.021)]
+    start=b.vs.len()
+    steps=(rows.len()-1)*4
+    point = (j: int, k: int) -> vec3:
+        t=f64(j)/4.0
+        row=monk_curve(rows,t)
+        tangent=normalize(monk_curve(rows,min(f64(rows.len()-1),t+0.03)).xyz-monk_curve(rows,max(0.0,t-0.03)).xyz)
+        right=normalize(cross(tangent,vec3(0,0,1)))
+        up=normalize(cross(right,tangent))
+        a=TAU*f64(k%16)/16.0
+        row.xyz+(right*f32(cos(a))+up*f32(sin(a)*0.88))*row.w
+    loop j in [0..steps):
+        loop k in [0..16):
+            ps=[point(j,k),point(j,k+1),point(j+1,k+1),point(j+1,k)]
+            n=normalize(cross(ps[3]-ps[0],ps[1]-ps[0]))
+            base=u32(b.vs.len())
+            loop p in ps: b.vs.push(Vertex3D(p,n,vec2(0,0),skin_))
+            loop index in [base,base+3,base+2,base,base+2,base+1]: b.idx.push(index)
+    monk_smooth(b,start)
+
+# The bowed rib cage rises into the neck through the same surface. Low relief
+# ribs belong to the chest instead of cylinders laid over a separate torso.
+monk_torso = (b: mut MeshB, skin_: vec4):
+    rows=[vec4(0.38,0.11,0.085,-0.05),vec4(0.53,0.145,0.092,-0.055),vec4(0.71,0.154,0.095,-0.063),vec4(0.82,0.173,0.080,-0.035),vec4(0.862,0.137,0.068,-0.019),vec4(0.90,0.056,0.044,0.003),vec4(0.98,0.043,0.046,0.036),vec4(1.025,0.043,0.046,0.055)]
+    start=b.vs.len()
+    point = (j: int, k: int) -> vec3:
+        r=monk_curve(rows,f64(j)/3.0)
+        a=TAU*f64(k%32)/32.0
+        ribs=sin((f64(r.x)-0.56)*TAU/0.047)*0.003
+        ribs*=smoothstep(0.53,0.59,f64(r.x))*(1.0-smoothstep(0.77,0.82,f64(r.x)))*max(0.0,sin(a))
+        v3(cos(a)*f64(r.y),f64(r.x),f64(r.w)+sin(a)*(f64(r.z)+ribs))
+    loop j in [0..(rows.len()-1)*3):
+        loop k in [0..32):
+            ps=[point(j,k),point(j,k+1),point(j+1,k+1),point(j+1,k)]
+            n=normalize(cross(ps[3]-ps[0],ps[1]-ps[0]))
+            base=u32(b.vs.len())
+            loop p in ps: b.vs.push(Vertex3D(p,n,vec2(0,0),skin_))
+            loop index in [base,base+3,base+2,base,base+2,base+1]: b.idx.push(index)
+    monk_smooth(b,start)
+
 # A continuous cloth surface with shallow pleats, rather than separate round cords.
 monk_drape = (b: mut MeshB, rows: vec4[], col: vec4):
-    loop r in [1..rows.len()):
+    start=b.vs.len()
+    loop r in [1..(rows.len()-1)*4+1):
         loop k in [0..16):
             ps: vec3[]
             loop q in [(r - 1, k), (r - 1, k + 1), (r, k + 1), (r, k)]:
-                row = rows[q.0] # centre x, y, z, half-width
+                row = monk_curve(rows,f64(q.0)/4.0) # centre x, y, z, half-width
                 u = f64(q.1) / 16.0
-                pleat = sin(u * TAU * 4.0 + f64(row.y) * 3.0) * (0.006 + (1.0 - f64(row.y)) * 0.018)
+                pleat = sin(u * TAU * 4.0 + f64(row.y) * 3.0) * (0.004 + (1.0 - f64(row.y)) * 0.012)
                 ps.push(v3(f64(row.x) + (u * 2.0 - 1.0) * f64(row.w), f64(row.y), f64(row.z) + pleat))
             normal = normalize(cross(ps[1] - ps[0], ps[3] - ps[0]))
             base = u32(b.vs.len())
-            shade_ = col * f32(0.72 + 0.28 * sin((f64(k) + 0.5) / 16.0 * TAU * 4.0 + f64(rows[r].y) * 3.0))
+            shade_ = col * f32(0.87 + 0.13 * sin((f64(k) + 0.5) / 16.0 * TAU * 4.0 + f64(monk_curve(rows,f64(r)/4.0).y) * 3.0))
             loop p in ps: b.vs.push(Vertex3D(p, normal, vec2(0, 0), shade_))
             loop j in [base, base + 1, base + 2, base, base + 2, base + 3]: b.idx.push(j)
+
+    monk_smooth(b,start)
 
 # One sculpted surface joins the cranium, hollow temples, cheekbones and tapered
 # jaw. Narrow closed lids sit in recessed sockets; no separate round eye objects.
 monk_head = (b: mut MeshB, skin_: vec4):
+    start=b.vs.len()
     rings = [vec4(0.955, 0.034, 0.045, 0.105), vec4(0.980, 0.059, 0.058, 0.100), vec4(1.015, 0.083, 0.068, 0.085), vec4(1.060, 0.116, 0.088, 0.070), vec4(1.105, 0.105, 0.105, 0.060), vec4(1.145, 0.117, 0.114, 0.055), vec4(1.200, 0.122, 0.111, 0.048), vec4(1.255, 0.087, 0.080, 0.045), vec4(1.282, 0.008, 0.009, 0.045)]
     point = (ring: int, k: int) -> vec3:
-        r = rings[ring]
+        r = monk_curve(rings,f64(ring)/3.0)
         angle = f64(k % 32) * TAU / 32.0
         x = cos(angle) * f64(r.y)
         y = f64(r.x)
@@ -36,7 +104,7 @@ monk_head = (b: mut MeshB, skin_: vec4):
         cheek = exp(-pow((abs(x) - 0.088) / 0.034, 2.0) - pow((y - 1.063) / 0.03, 2.0))
         z += front * (cheek * 0.019 - eye * 0.025)
         v3(x, y, z)
-    loop ring in [0..rings.len() - 1):
+    loop ring in [0..(rings.len() - 1)*3):
         loop k in [0..32):
             ps = [point(ring, k), point(ring, k + 1), point(ring + 1, k + 1), point(ring + 1, k)]
             nn = normalize(cross(ps[3] - ps[0], ps[1] - ps[0]))
@@ -44,6 +112,8 @@ monk_head = (b: mut MeshB, skin_: vec4):
             col = skin_ * f32(0.95 + 0.05 * sin(f64(k) * TAU / 32.0))
             loop point_ in ps: b.vs.push(Vertex3D(point_, nn, vec2(0, 0), col))
             loop index in [base, base + 3, base + 2, base, base + 2, base + 1]: b.idx.push(index)
+
+    monk_smooth(b,start)
 
 shrine_monk_model = () -> Model:
     if __ascetic.ok: return __ascetic
@@ -56,22 +126,24 @@ shrine_monk_model = () -> Model:
     # The folded legs support a narrow, bowed torso; the hands rest together in the lap.
     # Continuous pleated robe spreads over crossed knees. The angular lower
     # hem and long folds read from the side as well as from the talking camera.
+    robe_start=b.vs.len()
     rows = [vec4(0, 0.07, 0.03, 0.62), vec4(0, 0.14, 0.02, 0.65), vec4(0, 0.28, 0.0, 0.52), vec4(0, 0.43, -0.015, 0.27), vec4(0, 0.54, -0.025, 0.15)]
     point = (j: int, row: int) -> vec3:
         a = TAU * f64(j % 48) / 48.0
-        rr = rows[row]
+        rr = monk_curve(rows,f64(row)/4.0)
         fold = cos(a * 7.0 + f64(rr.y) * 4.0) * (0.012 + (0.54 - f64(rr.y)) * 0.031)
         knee = pow(abs(cos(a)), 5.0) * (1.0 - smoothstep(0.14, 0.43, f64(rr.y)))
         sag = (sin(a * 3.0 + 0.6) * 0.009 + sin(a * 5.0) * 0.004) * (1.0 - smoothstep(0.14, 0.45, f64(rr.y)))
         v3(cos(a) * (f64(rr.w) + fold + knee * 0.036), f64(rr.y) + sag, f64(rr.z) + sin(a) * (f64(rr.w) * 0.64 + fold))
-    loop row in [0..4):
+    loop row in [0..16):
         loop j in [0..48):
             ps = [point(j, row), point(j + 1, row), point(j + 1, row + 1), point(j, row + 1)]
             nn = normalize(cross(ps[3] - ps[0], ps[1] - ps[0]))
             base = u32(b.vs.len())
-            col = (if row == 0: hem else: cloth) * f32(0.72 + 0.28 * cos((f64(j) + 0.5) * TAU / 48.0 * 7.0 + f64(rows[row].y) * 4.0))
+            col = mix(hem,cloth,f32(smoothstep(0.0,4.0,f64(row)))) * f32(0.88 + 0.12 * cos((f64(j) + 0.5) * TAU / 48.0 * 7.0 + f64(monk_curve(rows,f64(row)/4.0).y) * 4.0))
             loop p in ps: b.vs.push(Vertex3D(p, nn, vec2(0, 0), col))
             loop k in [base, base + 3, base + 2, base, base + 2, base + 1]: b.idx.push(k)
+    monk_smooth(b,robe_start)
     loop s in [-1.0, 1.0]:
         mb_cyl(b, v3(s * 0.48, 0.15, 0.25), v3(-s * 0.13, 0.1, 0.4), 0.105, 0.06, hem, 12)
         mb_sphere(b, v3(-s * 0.18, 0.13, 0.4), v3(0.14, 0.055, 0.07), skin_, 10)
@@ -79,17 +151,13 @@ shrine_monk_model = () -> Model:
         loop toe in [0..4):
             x = -s * (0.11 + f64(toe) * 0.034)
             mb_cyl(b, v3(x, 0.125, 0.42), v3(x, 0.11, 0.47 - f64(toe) * 0.012), 0.013, 0.009, skin_, 6)
-    mb_sphere(b, v3(0.0, 0.52, -0.05), v3(0.155, 0.34, 0.105), skin_, 14)
-    mb_cyl(b, v3(0.0, 0.57, -0.11), v3(0.0, 0.87, -0.035), 0.14, 0.15, skin_, 18)
+    monk_torso(b,skin_)
     loop s in [-1.0, 1.0]:
-        mb_cyl(b, v3(0.0, 0.87, 0.035), v3(s * 0.21, 0.83, -0.015), 0.027, 0.035, bone, 8)
-        mb_sphere(b, v3(s * 0.22, 0.8, -0.015), v3(0.078, 0.088, 0.078), skin_, 18)
-        mb_cyl(b, v3(s * 0.23, 0.79, 0.0), v3(s * 0.29, 0.49, 0.13), 0.052, 0.032, skin_, 10)
-        mb_sphere(b, v3(s * 0.29, 0.48, 0.13), v3(0.042, 0.046, 0.041), bone, 8)
-        mb_cyl(b, v3(s * 0.29, 0.48, 0.13), v3(s * 0.07, 0.35, 0.28), 0.037, 0.025, skin_, 10)
+        mb_cyl(b, v3(0.0, 0.87, 0.035), v3(s * 0.17, 0.838, 0.009), 0.010, 0.008, skin_, 12)
+        monk_arm(b,s,skin_)
         # Dhyana mudra: cupped palms overlap and the thumbs touch above them.
         yhand = if s < 0.0: 0.345 else: 0.367
-        mb_sphere(b, v3(s * 0.023, yhand, 0.28), v3(0.071, 0.018, 0.051), skin_, 16)
+        mb_sphere(b, v3(s * 0.023, yhand, 0.28), v3(0.066, 0.022, 0.048), skin_, 16)
         loop f in [0..4):
             x = s * (0.012 + f64(f) * 0.017)
             mb_cyl(b, v3(x, yhand, 0.29), v3(x, yhand + 0.01, 0.34 - f64(f) * 0.006), 0.0075, 0.006, skin_, 8)
@@ -99,20 +167,16 @@ shrine_monk_model = () -> Model:
         loop f in [0..4):
             x = s * (0.012 + f64(f) * 0.017)
             z = 0.34 - f64(f) * 0.006
-            mb_sphere(b, v3(x, yhand + 0.011, z), v3(0.008, 0.006, 0.009), bone, 8)
+            mb_sphere(b, v3(x, yhand + 0.011, z), v3(0.008, 0.006, 0.009), skin_, 10)
             mb_cyl(b, v3(x - s * 0.004, yhand + 0.024, z + 0.005), v3(x - s * 0.010, yhand + 0.026, z + 0.007), 0.002, 0.002, bone, 6)
-        mb_cyl(b, v3(s * 0.06, yhand + 0.018, 0.27), v3(s * 0.03, 0.414, 0.294), 0.008, 0.006, skin_, 7)
-        mb_cyl(b, v3(s * 0.03, 0.414, 0.294), v3(0.0, 0.424, 0.297), 0.009, 0.007, skin_, 7)
-        loop k in [0..5):
-            y = 0.57 + f64(k) * 0.047
-            mb_cyl(b, v3(s * 0.015, y, 0.073), v3(s * (0.135 + f64(k) * 0.004), y + 0.018, 0.024), 0.008, 0.006, skin_, 7)
+        mb_cyl(b, v3(s * 0.06, yhand + 0.018, 0.27), v3(s * 0.03, 0.414, 0.294), 0.010, 0.008, skin_, 10)
+        mb_cyl(b, v3(s * 0.03, 0.414, 0.294), v3(0.0, 0.424, 0.297), 0.008, 0.005, skin_, 10)
     # One continuous robe falls from the shoulder, across the hollow torso and
     # into the lap; its widening hem meets the cloth draped over crossed knees.
     monk_drape(b, [vec4(-0.14, 0.865, 0.018, 0.075), vec4(-0.10, 0.74, 0.095, 0.075), vec4(-0.035, 0.52, 0.095, 0.085), vec4(0.025, 0.38, 0.18, 0.12), vec4(0.0, 0.24, 0.3, 0.22)], cloth)
     monk_drape(b, [vec4(-0.20, 0.855, -0.025, 0.075), vec4(-0.24, 0.73, 0.045, 0.083), vec4(-0.22, 0.59, 0.083, 0.068), vec4(-0.13, 0.43, 0.15, 0.095), vec4(-0.10, 0.28, 0.28, 0.17)], cloth * f32(0.85))
     mb_cyl(b, v3(-0.22, 0.86, 0.014), v3(-0.095, 0.53, 0.102), 0.009, 0.008, hem, 6)
     mb_cyl(b, v3(-0.095, 0.53, 0.102), v3(-0.12, 0.24, 0.31), 0.008, 0.011, hem, 6)
-    mb_cyl(b, v3(0.0, 0.85, -0.025), v3(0.0, 1.02, 0.055), 0.046, 0.045, skin_, 10)
     monk_head(b, skin_)
     loop s in [-1.0, 1.0]:
         mb_sphere(b, v3(s * 0.128, 1.045, 0.06), v3(0.032, 0.096, 0.038), bone, 10)

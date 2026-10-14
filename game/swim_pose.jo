@@ -24,3 +24,45 @@ swim_surface_pose = (lib: AnimLib, pose: mut Pose, moving: f64):
     loop side in [0..2):
         suffix = if side == 0: "_l" else: "_r"
         rotate_bone(lib, pose, lib_bone(lib, "upperarm" + suffix), vec3(1, 0, 0), 0.95 * weight)
+
+# Explicit symmetric hand paths keep the corrected breathing pose from reading
+# as a T. Two-bone arms retain authored hand orientation and the original kick.
+swim_arm_turn = (lib: AnimLib, pose: mut Pose, bone: int, from: vec3, to: vec3):
+    axis = cross(from, to)
+    if length(axis) < 0.00001 or length(from) < 0.00001 or length(to) < 0.00001: return
+    angle = acos(clamp(f64(dot(normalize(from), normalize(to))), -1.0, 1.0))
+    rotate_bone(lib, pose, bone, normalize(axis), angle)
+
+swim_arm_pose = (m: Model, lib: AnimLib, pose: mut Pose, moving: f64, phase: f64, weight: f64):
+    stroke = fract(phase)
+    sweep = smoothstep(0.0, 0.32, stroke) * (1.0 - smoothstep(0.35, 0.65, stroke))
+    reach = if stroke < 0.35: lerp(0.40, 0.15, smoothstep(0.0, 0.35, stroke)) else: (if stroke < 0.65: lerp(0.15, -0.08, smoothstep(0.35, 0.65, stroke)) else: lerp(-0.08, 0.40, smoothstep(0.65, 1.0, stroke)))
+    width = lerp(0.10, 0.48, sweep)
+    tread_width = 0.29 + 0.05 * sin(phase * PI * 2.0)
+    tread_reach = 0.07 + 0.08 * cos(phase * PI * 2.0)
+    loop side in [0..2):
+        suffix = if side == 0: "_l" else: "_r"
+        u = bone_index(m, "upperarm" + suffix)
+        l = bone_index(m, "lowerarm" + suffix)
+        h = bone_index(m, "hand" + suffix)
+        if u < 0 or l < 0 or h < 0: continue
+        a = transform_point(bone_world(m, pose, u), vec3(0, 0, 0))
+        b = transform_point(bone_world(m, pose, l), vec3(0, 0, 0))
+        c = transform_point(bone_world(m, pose, h), vec3(0, 0, 0))
+        hand_rot = pose_rot(lib, pose, m.canon[h])
+        target = vec3(f32((if side == 0: 1.0 else: -1.0) * lerp(tread_width, width, moving)), -0.06, a.z + f32(lerp(tread_reach, reach, moving)))
+        target = lerp(c, target, f32(weight))
+        upper = f64(length(b - a))
+        lower = f64(length(c - b))
+        d = clamp(f64(length(target - a)), abs(upper - lower) + 0.001, upper + lower - 0.001)
+        axis = normalize(target - a + vec3(0, 0.000001, 0))
+        pole = vec3(f32(if side == 0: 1.0 else: -1.0), -0.4, -0.2)
+        pole = normalize(pole - axis * dot(pole, axis))
+        along = (upper * upper - lower * lower + d * d) / (2.0 * d)
+        elbow = a + axis * f32(along) + pole * f32(sqrt(max(upper * upper - along * along, 0.0)))
+        swim_arm_turn(lib, pose, m.canon[u], b - a, elbow - a)
+        b = transform_point(bone_world(m, pose, l), vec3(0, 0, 0))
+        c = transform_point(bone_world(m, pose, h), vec3(0, 0, 0))
+        swim_arm_turn(lib, pose, m.canon[l], c - b, a + axis * f32(d) - b)
+        parent_rot = pose_rot(lib, pose, lib.parent[m.canon[h]])
+        pose.r[m.canon[h]] = normalize(quat_mul(quat_conj(parent_rot), hand_rot))

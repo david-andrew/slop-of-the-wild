@@ -1,0 +1,63 @@
+build:
+    opt = release
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/structures.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/interiors.jo'
+use '../game/water_render.jo'
+from '../game/build.jo' import __bchunks
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+guardian_husks()
+count=0
+loop key,b in __bchunks:
+    loop v in b.verts:
+        assert(v.mat.x==0 and v.mat.w== -3,"round husks have no wall-grid path at any distance")
+        assert(min(v.color.x,min(v.color.y,v.color.z))>=0.154,"painted armor/joints/pipes retain a mineral shadow floor")
+        assert(v.light.x>=0.17 and v.light.z>=0.12,"husk reflected light keeps small parts readable")
+        count+=1
+assert(count>10000)
+print("PASS husk patina: {count} vertices; continuous materials and lifted painted values")
+loop key in __bchunks.keys(): __bchunks.remove(key)
+temple()
+leaves=0
+wall_faces=0
+outward=transform_dir(rotation_y(TEMPLE_ROT),vec3(0,0,1))
+loop key,b in __bchunks:
+    loop tri in [0..b.idx.len()/3):
+        a=b.verts[int(b.idx[tri*3])]
+        c=b.verts[int(b.idx[tri*3+1])]
+        d=b.verts[int(b.idx[tri*3+2])]
+        local=transform_dir(rotation_y(-TEMPLE_ROT),(a.pos+c.pos+d.pos)/3.0-TEMPLE)
+        if local.y>13.0 and local.y<29.0 and abs(local.x)<7.0 and local.z>29.0 and local.z<42.5 and a.mat.x>0.0:
+            assert(a.color.y<a.color.x*1.20,"ivy pigment cannot overwrite the surviving Temple wall palette")
+            wall_faces+=1
+        if local.y<0.4 or local.y>10.0 or abs(local.x)<6.5 or abs(local.x)>10.7 or local.z<32.15 or local.z>32.45:continue
+        if a.mat!=PLAIN or a.color.y<a.color.x*1.2 or a.color.z>0.20:continue
+        normal=cross(c.pos-a.pos,d.pos-a.pos)
+        assert(dot(normal,outward)>0.0,"leaf lobes and trailing stems face the approach, not into the pier")
+        leaves+=1
+assert(leaves>1000 and wall_faces>100,"audit real Temple ivy and surviving wall triangles")
+print("PASS ivy: {leaves} painted leaf/stem triangles face out of the stone")
+loop i in [0..100):
+    station=5.0+f64(i)*0.28
+    loop angle in [0.1,0.6,1.3,2.0,2.8,3.05]:
+        p=sor_passage_surface(v3(-1128,237,1884),v3(-1067,247.5,1844),36,station,angle)
+        q=sor_passage_surface(v3(-1128,237,1884),v3(-1067,247.5,1844),36,station+0.002,angle)
+        assert(length(p-q)<0.012,"irregular lining has no station seams")
+print("PASS cave lining: 600 adjacent samples across asymmetric shoulders")
+# The foam field must have gaps and unequal coverage at the same impact radius.
+lo=1.0
+hi=0.0
+loop i in [0..120):
+    a=TAU*f64(i)/120.0
+    p=vec2(-1488,1823)+vec2(f32(cos(a)*8),f32(sin(a)*8))
+    f=water_impact_brush(p,5.0)
+    lo=min(lo,f64(f))
+    hi=max(hi,f64(f))
+assert(lo<0.32 and hi>0.68,"pool brush breaks the circumference into open patches")
+print("PASS pool foam: equal-radius pigment spans {lo:.3}..{hi:.3}; broken advected flow")

@@ -336,7 +336,11 @@ hero_animate = (dt: f64, waking: f64):
     anim_update(hero_anim, dt)
     pose = anim_pose(human, hero_anim)
     swim_weight = swim_clip_weight(hero_anim, __swim_clip, __swim_tread_clip)
-    if swim_weight > 0.0: swim_surface_pose(human, pose, swim_weight * smoothstep(0.05, 0.35, pl.speed))
+    if swim_weight > 0.0:
+        moving_swim = smoothstep(0.05, 0.35, pl.speed)
+        swim_surface_pose(human, pose, swim_weight * moving_swim)
+        phase_swim = hero_anim.t / max(clip_duration(human, hero_anim.clip), 0.001)
+        swim_arm_pose(hero_m, human, pose, moving_swim, phase_swim, swim_weight)
     # The imported sword idle drops the hips 14 cm below ordinary standing.
     # Keep a loaded fighting stance without carrying that deep squat through
     # every shield raise and slash. Heavy weapons retain more knee compression.
@@ -535,8 +539,8 @@ character_weather_look = (pos: vec3, p: CharParams) -> CharParams:
     look = p
     look.environment = p.hero_material * (1.0-smoothstep(0.0,0.5,env.indoor))
     canopy = character_storm_fill(pos, p.hero_material > 0.0) - 1.0
-    # Dense forest favors the darker end of the bounded overcast response.
-    # Use habitat and weather, continuously, without a separate skylight boost.
+    # Preserve the wet cloth silhouette inside the diffuse environment
+    # envelope. Habitat/weather ramps keep the transition continuous.
     if p.hero_material > 0.0:
         look.environment_shade = p.hero_material * smoothstep(0.5,0.9,character_forest_cover(pos)) * smoothstep(0.05,0.35,env.dark)
     look.fill += canopy * 1.2
@@ -810,11 +814,15 @@ old_man_update = (dt: f64):
             vec3(0,-1,-0.3))
     old_man.skin = skin(ranger_m, pose)
 
-# Every piece shares opacity; the transparent pass blends the spirit after
-# the sky, while shadow coverage fades without leaving a solid hood or staff.
-old_man_prop = (m: Mesh, model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64 = 0.2):
+# The face retains readable features during the spectral hold, then shares
+# the body's final disappearance. All pieces still use one depth resolve.
+old_man_face_opacity = () -> f64:
+    hold = 1.0 - old_man.spirit * 0.48
+    old_man.opacity / hold * (1.0 - old_man.spirit * 0.08)
+
+old_man_prop = (m: Mesh, model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64 = 0.2, face: bool = false):
     tint = mix(color.xyz,vec3(0.34,0.95,1.75),f32(old_man.spirit))
-    draw_prop(m,model,vec4(tint,color.w),emissive*(1.0-old_man.spirit*0.45)+old_man.spirit*0.18,rim,opacity=old_man.opacity)
+    draw_prop(m,model,vec4(tint,color.w),emissive*(1.0-old_man.spirit*0.45)+old_man.spirit*0.18,rim,opacity=(if face: old_man_face_opacity() else: old_man.opacity))
 
 old_man_draw = (transparent: bool = false, depth_only: bool = false):
     if not chars_ready or not old_man.visible or old_man.opacity <= 0.001: return
@@ -870,8 +878,8 @@ old_man_draw = (transparent: bool = false, depth_only: bool = false):
         # uncovered. Separate fill retains grey in the hood's deep self-shadow.
         hair = old_man_beard_mesh()
         __old_meshes.push(mesh(hair.vs, hair.idx))
-    old_man_prop(__old_meshes[6], hm, vec4(1, 1, 1, 1), 0.50, 0.0)
-    old_man_prop(__old_meshes[7], hm, vec4(1, 1, 1, 1), 0.35, 0.0)
+    old_man_prop(__old_meshes[6], hm, vec4(1, 1, 1, 1), 0.50, 0.0, face=true)
+    old_man_prop(__old_meshes[7], hm, vec4(1, 1, 1, 1), 0.35, 0.0, face=true)
     if not sc.shadow:
         # a lantern at his hip
         hip = world * bone_world(ranger_m, old_man.skin, "pelvis")
@@ -1553,6 +1561,34 @@ struct CombatLocalPose:
     palette: f32[]
     points: vec3[]
 __combat_local_poses: {int: CombatLocalPose} = {}
+__combat_world_points: vec3[]
+# Hard-normal/UV seams duplicate source positions. Transform each skinned
+# position once, then restore the exact surface order used by triangle queries.
+__combat_scatter_world = (body: CombatBody, local: vec3[], world: mat4, points: mut vec3[]):
+    # Production actor worlds are affine. The generic transform_point computes
+    # a fourth row and divides by W for every vertex; here W is exactly one.
+    affine = world[0].w==0.0 and world[1].w==0.0 and world[2].w==0.0 and world[3].w==1.0
+    x=world[0].xyz
+    y=world[1].xyz
+    z=world[2].xyz
+    t=world[3].xyz
+    points.reserve(body.skin_index.len())
+    if local.len()*4 < body.skin_index.len()*3:
+        __combat_world_points.clear()
+        __combat_world_points.reserve(local.len())
+        if affine:
+            loop p in local: __combat_world_points.push(x*p.x+y*p.y+z*p.z+t)
+        else:
+            loop p in local: __combat_world_points.push(transform_point(world,p))
+        loop index in body.skin_index: points.push(__combat_world_points[index])
+    else:
+        # Mostly unique bare skin does not benefit from an extra scatter pass.
+        if affine:
+            loop index in body.skin_index:
+                p=local[index]
+                points.push(x*p.x+y*p.y+z*p.z+t)
+        else:
+            loop index in body.skin_index: points.push(transform_point(world,local[index]))
 __posed_body_points = (model_: Model, palette: Skin, world: mat4, points: mut vec3[]):
     cpu_mark("combat_skin")
     points.clear()
@@ -1561,7 +1597,7 @@ __posed_body_points = (model_: Model, palette: Skin, world: mat4, points: mut ve
     body = combat_bodies[model_.name]
     if let cached = __combat_local_poses.get(key):
         if cached.model == model_.name:
-            loop index in body.skin_index: points.push(transform_point(world,cached.points[index]))
+            __combat_scatter_world(body,cached.points,world,points)
             cpu_mark("combat_solve")
             return
     a = palette.mats
@@ -1586,7 +1622,7 @@ __posed_body_points = (model_: Model, palette: Skin, world: mat4, points: mut ve
     # Retain the palette with its pointer key: COW animation writes cannot
     # mutate a cached pose or recycle its storage during recursive repairs.
     __combat_local_poses[key] = CombatLocalPose(model_.name,a,local)
-    loop index in body.skin_index: points.push(transform_point(world,local[index]))
+    __combat_scatter_world(body,local,world,points)
     cpu_mark("combat_solve")
 
 # Indices into the retained posed body points. Select the same head-weighted

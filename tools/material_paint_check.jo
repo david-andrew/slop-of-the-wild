@@ -10,9 +10,12 @@ struct PaintFixtureU:
 fixture_vs = (v: FsVert, u: PaintFixtureU) -> PostO: PostO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
 fixture_fs = (i: PostO, u: PaintFixtureU) -> vec4:
     if u.pattern < 0.0:
-        # The production one-pixel dissolve, with bright sky exposed at the holes.
-        retained = glsl_occluder_dither(i.pos.xy) > -u.pattern
-        return if retained: vec4(0.1, 0.1, 0.1, -8) else: vec4(0.7, 0.7, 0.7, 0)
+        # Architecture resolves fine coverage; vegetation keeps opaque patches.
+        patches = u.value.w > 3.5
+        threshold = if patches: glsl_occluder_patch_dither(i.pos.xy) else: glsl_occluder_dither(i.pos.xy)
+        retained = threshold > -u.pattern
+        patch_response = if patches: f32(32) else: f32(-8)
+        return if retained: vec4(0.1, 0.1, 0.1, patch_response) else: vec4(0.7, 0.7, 0.7, 0)
     stripe = (step(0.5, fract(i.uv.x * 24.0)) - 0.5) * u.pattern
     vec4(u.value.xyz + vec3(stripe, stripe, stripe), u.value.w)
 
@@ -119,6 +122,37 @@ loop level in [1..16):
     assert(error < 0.000001, "balanced coverage resolves without visible dot variance")
 print("material paint: all 15 sky/foreground dissolve levels, worst variance {worst_error:.8} PASS")
 u.texel = u.texel / 1.3
+# Vegetation's opaque dissolve retains solid foreground/background values at
+# all 15 intermediate coverage levels, against both sky and painted ground.
+loop background in [0.991,1.0]:
+    bind_target(depth)
+    draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(f32(background),0,0,1)))
+    loop level in [1..16):
+        fade=f32(level)/16.0
+        bind_target(src)
+        draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0,0,0,32),-fade))
+        bind_target(painted)
+        u.src=src.color
+        u.texel=u.texel*1.3
+        draw_fast(paint_sh, fullscreen_mesh(), u)
+        game_read_pixels_f32(0,0,192,128,data(values) as *u8)
+        retained=0
+        loop pixel in [0..192*128):
+            value=values[pixel*4]
+            solid=abs(value-0.1)<0.002
+            assert(solid or abs(value-0.7)<0.002,"vegetation watercolor must retain opaque patches, never a translucent overlay")
+            if solid: retained+=1
+        assert(retained==(16-level)*192*128/16,"paint preserves vegetation coverage at every dissolve level")
+        bind_target(out)
+        u.src=painted.color
+        u.texel=u.texel/1.3
+        draw_fast(comp_sh,fullscreen_mesh(),u)
+        game_read_pixels_f32(0,0,192,128,data(values) as *u8)
+        loop pixel in [0..192*128):
+            value=values[pixel*4]
+            assert(value<0.30 or value>0.55,"composition must not bleed opaque patches into a ghost")
+print("material paint: 30 opaque vegetation fade/sky/ground cases, exact coverage and no ghost through paint/composition PASS")
+u.src=src.color
 # Distant high-contrast mineral cuts still acquire fine-structure protection.
 bind_target(src)
 draw_fast(fill_sh, fullscreen_mesh(), PaintFixtureU(vec4(0.22, 0.25, 0.19, 0.85), 0.3))

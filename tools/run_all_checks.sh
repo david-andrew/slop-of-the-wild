@@ -198,8 +198,11 @@ cpu_checks=(
     clutter_check
     collision_query_check
     combat_check
+    combat_assets_check
+    combat_scatter_check
     combat_music_check
     music_transition_check
+    piano_hold_check
     combat_reach_check
     committed_lane_check
     contact_check
@@ -242,6 +245,7 @@ cpu_checks=(
     story_approach_check
     stride_check
     swim_surface_check
+    round67_clarity_check
     talus_mesh_check
     talus_skin_check
     talus_test
@@ -253,8 +257,10 @@ cpu_checks=(
     round82_scorch_check
     round83_fire_check
     round66_fire_material_check
+    round67_fire_check
     round91_weather_check
     round96_weather_check
+    round67_atmosphere_check
     round95_story_check
     herd_spacing_check
     waiting_pose_check
@@ -265,6 +271,7 @@ cpu_checks=(
     tree_test
     vegetation_reach_check
     vegetation_tail_check
+    vegetation_lod_check
     fir_bough_check
     wake_contact_check
     wading_check
@@ -283,8 +290,11 @@ cpu_checks=(
     round81_art_check
     round82_character_check
     task66b_presentation_check
+    task67b_character_check
     round88_material_check
     round66_stone_check
+    round67_art_surface_check
+    round67_cliff_ground_check
     camp_alert_check
     wildlife_observation_check
     wildlife_path_check

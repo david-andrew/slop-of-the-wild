@@ -551,7 +551,9 @@ save_apply = (s: PlateauSave):
     map_pins = s.pins
     inv = s.inventory
     story = s.progress
-    pl = Player(pos = s.pos, face = s.face, last_safe = s.pos, hp = s.hp, hp_max = s.hp_max,
+    # Older terrain anchors may now lie beneath the authored closed cliff.
+    restored_pos = cliff_place_ground(s.pos)
+    pl = Player(pos = restored_pos, face = s.face, last_safe = restored_pos, hp = s.hp, hp_max = s.hp_max,
         stamina_max = s.stamina_max, stamina = s.stamina_max, has_glider = s.progress.glider_given or s.inventory.keys.contains("paraglider"))
     warm_t = s.warm_t
     pl.frozen = s.frozen

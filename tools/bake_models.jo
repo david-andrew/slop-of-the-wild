@@ -997,13 +997,29 @@ hero_form_point = (p: vec3, shoulder: vec3, elbow: vec3, wrist: vec3, bare: bool
             q.z=fc.z+f32(fz*taper)
         # A shallow clavicular ridge catches the chamber's broad light. Its
         # centre falls into the sternum notch; the shoulder/contact rig is exact.
-        clavicle=exp(-pow((f64(p.y)-1.365+0.12*x)/0.014,2.0))
+        clavicle=exp(-pow((f64(p.y)-1.505+0.22*x)/0.018,2.0))
         clavicle*=smoothstep(0.015,0.05,x)*(1.0-smoothstep(0.14,0.20,x))*smoothstep(0.01,0.055,f64(p.z))
-        q.z+=f32(clavicle*0.0035)
+        q.z+=f32(clavicle*0.006)
         # Relax the superhero asset's carved scapula ridges into a broad back.
         back=(1.0-smoothstep(0.12,0.22,x))*smoothstep(1.04,1.19,f64(p.y))*(1.0-smoothstep(1.46,1.55,f64(p.y)))
         back*=1.0-smoothstep(-0.04,-0.015,f64(p.z))
-        q.z=f32(lerp(f64(q.z),-0.095+0.018*pow(x/0.20,2.0),back*0.86))
+        q.z=f32(lerp(f64(q.z),-0.095+0.035*pow(x/0.20,2.0),back*0.72))
+        # A continuous rib cage narrows into the waist. Round the lateral
+        # back onto the flank instead of leaving the imported scapular shelf.
+        trunk=smoothstep(1.02,1.09,f64(p.y))*(1.0-smoothstep(1.38,1.44,f64(p.y)))
+        trunk*=1.0-smoothstep(0.17,0.23,x)
+        waist=exp(-pow((f64(p.y)-1.19)/0.15,2.0))
+        q.x*=f32(1.0-trunk*waist*0.12)
+        flank=smoothstep(0.075,0.15,x)*trunk
+        q.z*=f32(1.0-flank*0.24)
+        # Bridge the proximal deltoid into the upper arm with an oval cap.
+        # Keep the established distal envelope and contact anchors unchanged.
+        capblend=exp(-pow((x-0.205)/0.040,2.0))*smoothstep(f64(shoulder.y)-0.09,f64(shoulder.y)-0.03,f64(p.y))
+        capblend*=1.0-smoothstep(f64(shoulder.y)+0.06,f64(shoulder.y)+0.11,f64(p.y))
+        radial=v3(0,f64(q.y-shoulder.y),f64(q.z-shoulder.z)*1.10)
+        rr=f64(length(radial))
+        adjustment=clamp(0.046-rr,-0.012,0.009)*capblend
+        q+=normalize(radial+vec3(0,0.000001,0))*f32(adjustment)
     # Softer jaw and cheek planes; preserve eyes, brow and the neck attachment.
     jaw = smoothstep(1.54,1.59,f64(p.y))*(1.0-smoothstep(1.64,1.69,f64(p.y)))
     q.x *= f32(1.0-jaw*0.12)
@@ -1402,7 +1418,7 @@ hero_hand_point = (p: vec3, joints: vec4, weights: vec4, sk: Skel) -> vec3:
             if contains(name,"thumb"):
                 # The dorsal thumb clears the finger group, tapering to zero at
                 # the supporting palm so the wake contact remains unchanged.
-                delta.z-=f32(0.003*smoothstep(1.278,1.295,f64(p.y)))*w
+                delta.z-=f32(0.007*smoothstep(1.278,1.295,f64(p.y)))*w
         else if starts_with(name,"hand_"):
             # Fade shaping off toward the underside at wrist.y - 22 mm.
             back=smoothstep(-0.022,0.014,f64(p.y-origin.y))
@@ -1444,6 +1460,14 @@ hero_form = (bm: mut BModel, sk: Skel, bare: bool):
                 ha=hero_hand_point(hp+ht*0.0005,v.jnt,v.wgt,sk)-hero_hand_point(hp-ht*0.0005,v.jnt,v.wgt,sk)
                 hc=hero_hand_point(hp+hb*0.0005,v.jnt,v.wgt,sk)-hero_hand_point(hp-hb*0.0005,v.jnt,v.wgt,sk)
                 v.nrm=normalize(cross(ha,hc))
+            if skin_part and bare:
+                # Soft paint follows the back into the flank and the underside
+                # of the shoulder. Keep a broad lit centre and a cool side wash.
+                torso=smoothstep(1.02,1.13,f64(p.y))*(1.0-smoothstep(1.48,1.55,f64(p.y)))
+                torso*=1.0-smoothstep(0.23,0.35,abs(f64(p.x)))
+                side=smoothstep(0.05,0.16,abs(f64(p.x)))
+                shade=1.0-torso*side*0.16
+                v.col=vec4(v.col.xyz*vec3(f32(shade*(1.0+torso*0.055)),f32(shade),f32(shade*(1.0-torso*0.035))),v.col.w)
             if skin_part and not bare:
                 # A warm face core and neck occlusion, painted into existing vertices.
                 side=1.0-smoothstep(-0.15,0.65,f64(v.nrm.z))
@@ -1460,7 +1484,7 @@ hero_form = (bm: mut BModel, sk: Skel, bare: bool):
                     if contains(name,"index") or contains(name,"middle") or contains(name,"ring") or contains(name,"pinky") or contains(name,"thumb"):
                         dx = abs(f64(p.x-sk.gm[j][3].x))
                         crease += f64(vcomp(v.wgt,k))*exp(-pow(dx/0.007,2.0))
-                light = 1.0-0.18*crease+0.04*max(0.0,f64(v.nrm.y))
+                light = 1.0-0.24*crease+0.06*max(0.0,f64(v.nrm.y))
                 v.col = vec4(v.col.xyz*f32(light),v.col.w)
         if skin_part and bare:
             hero_surface_fair(part)
@@ -2139,8 +2163,8 @@ hair_tail = (bm: mut BModel, sk: Skel, head_parts: BPart[], brow: f64):
     crown: vec3[][]
     loop row in [0..9):
         ring: vec3[]
-        loop k in [0..32):
-            a = TAU*f64(k)/32.0
+        loop k in [0..28):
+            a = TAU*f64(k)/28.0
             front = max(0.0,cos(a))
             t = f64(row)/8.0
             low = brow-0.025+0.060*front
@@ -2149,40 +2173,48 @@ hair_tail = (bm: mut BModel, sk: Skel, head_parts: BPart[], brow: f64):
             ring.push(v3(sin(a)*0.093*radius-0.008*t,y,-0.023+cos(a)*0.116*radius))
         crown.push(ring)
     loop row in [0..8):
-        loop k in [0..32):
-            k2=(k+1)%32
+        loop k in [0..28):
+            k2=(k+1)%28
             col=gold*0.79
             __xp_tri(bp,crown[row][k],crown[row][k2],crown[row+1][k],col,jh,w1,jh,w1,jh,w1)
             __xp_tri(bp,crown[row][k2],crown[row+1][k2],crown[row+1][k],col,jh,w1,jh,w1,jh,w1)
-    # Two staggered layers leave a narrow off-centre part and taper into
-    # separate tips. The underlayer is recessed below each convex clump.
-    loop lock in [0..11):
-        a=TAU*(f64(lock)+0.32)/11.0+0.07*sin(f64(lock)*2.3)
+    # Overlapping swept clumps have a convex ridge, recessed edges and pointed
+    # ends. The shorter crown layer crosses the longer nape layer; neither
+    # follows a parallel strip from crown to hem. Five longitudinal spans
+    # and four transverse spans keep the full hero below its original budget.
+    loop lock in [0..18):
+        layer=if lock<10:0 else:1
+        count=if layer==0:10 else:8
+        index=if layer==0:lock else:lock-10
+        a=TAU*(f64(index)+0.22+f64(layer)*0.41)/f64(count)
+        a+=0.09*sin(f64(index)*2.3)
         front=max(0.0,cos(a))
-        side=abs(sin(a))
-        tip=brow-0.100+front*0.132+side*0.016+0.025*sin(f64(lock)*2.7)
+        tip=brow-0.120+front*0.157+0.023*sin(f64(index)*2.7)
+        if layer==1: tip+=0.065
         rows: vec3[][]
-        loop row in [0..9):
-            t=f64(row)/8.0
-            angle=a+0.22*sin(t*PI)+0.27*t*(if sin(a)<0.0:-1.0 else:1.0)
-            y=lerp(brow+0.110,tip,pow(t,1.30))
+        loop row in [0..6):
+            t=f64(row)/5.0
+            sweep=if sin(a)<0.0:-1.0 else:1.0
+            angle=a+sweep*(0.30*sin(t*PI)+0.19*t)+0.09*sin(f64(index))*t*t
+            y=lerp(brow+0.110-f64(layer)*0.012,tip,pow(t,1.10))
             low=brow-0.025+0.060*front
             crown_t=clamp((y-low)/(brow+0.111-low),0.0,1.0)
             radius=sqrt(max(0.001,1.0-pow(crown_t,2.1)))*0.96+0.025
-            radius*=1.0-0.17*smoothstep(low,tip,y)
-            width=max(0.004,0.36*sin(pow(t,0.48)*PI))* (0.94+0.15*sin(f64(lock)*1.8))
+            radius*=1.0-0.12*smoothstep(low,tip,y)
+            width=max(0.001,0.27*pow(sin(PI*t),0.72))*(0.87+0.18*sin(f64(index)*1.8))
             ring: vec3[]
             loop cross_section in [0..5):
                 u=f64(cross_section)/2.0-1.0
                 aa=angle+u*width
-                lift=0.014*(1.0-u*u)*sin(PI*t)
-                ring.push(v3(sin(aa)*(0.093*radius+lift)-0.008*(1.0-t),y+0.002*(1.0-u*u),-0.023+cos(aa)*(0.116*radius+lift)))
+                ridge=pow(max(0.0,1.0-u*u),0.70)
+                lift=(0.021*ridge+f64(layer)*0.008)*sin(PI*t)
+                ring.push(v3(sin(aa)*(0.093*radius+lift)-0.008*(1.0-t),y+0.005*ridge*sin(PI*t),-0.023+cos(aa)*(0.116*radius+lift)))
             rows.push(ring)
-        loop row in [0..8):
+        loop row in [0..5):
             loop k in [0..4):
-                value=0.85+0.15*(0.5+0.5*cos(a-0.7))
-                value*=0.90+0.10*sin(PI*(f64(k)+0.5)/4.0)
-                value*=0.91+0.09*sin(PI*(f64(row)+0.5)/8.0)
+                value=0.78+0.16*(0.5+0.5*cos(a-0.7))+f64(layer)*0.035
+                value*=0.78+0.22*sin(PI*(f64(k)+0.5)/4.0)
+                value*=0.90+0.10*sin(PI*(f64(row)+0.5)/5.0)
                 col=gold*f32(value)
                 __xp_tri(bp,rows[row][k],rows[row+1][k],rows[row][k+1],col,jh,w1,jh,w1,jh,w1)
                 __xp_tri(bp,rows[row][k+1],rows[row+1][k],rows[row+1][k+1],col,jh,w1,jh,w1,jh,w1)

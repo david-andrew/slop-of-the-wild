@@ -18,6 +18,7 @@ python3 - "$out" "$exe" <<'PY'
 import os
 import hashlib
 import json
+import re
 from pathlib import Path
 from PIL import Image
 import subprocess
@@ -31,7 +32,9 @@ views = {
     'snow': {'BOTW_SKIP': '1', 'BOTW_CAM': '-1560,320,1850,2.6,-0.35'},
     'top': {'BOTW_SKIP': '1', 'BOTW_CAM': '-1501,282,1740,-1.57,-0.75'},
     'waterfall': {'BOTW_SKIP': '1', 'BOTW_CAM': '-1660,175,1888,1.24,-0.05'},
-    'climbing': {'BOTW_SKIP': '1', 'BOTW_AT': os.environ.get('CLIFF_CLIMB_AT', '-1530.537,1777.210,0.79650,207.335'),
+    # Exterior start on cliff_climb_check's z=1777 route. The former point is
+    # inside the current rock skin; face the current collision normal.
+    'climbing': {'BOTW_SKIP': '1', 'BOTW_AT': os.environ.get('CLIFF_CLIMB_AT', '-1536.0233,1777.120,1.77357889,206.9465'),
                  'SLOPPY_INPUT': '1:w+', 'BOTW_CAMDBG': '1'},
     'passage600': {'BOTW_PASSAGE': '1', 'SLOPPY_INPUT': '20:w+'},
     'overlook-control': {'BOTW_SKIP': '1', 'BOTW_AT': '-1030,1805,1.57'},
@@ -58,6 +61,10 @@ for name, flags in views.items():
     if name == 'climbing':
         trail = [line for line in (out / f'{name}.log').read_text().splitlines() if line.startswith('cam ')]
         assert trail and ' st=climb ' in trail[-1], 'climbing capture must end attached to the wall'
+        heights = [float(re.search(r'pl=vec3\([^,]+, ([^,]+),', line)[1]) for line in trail]
+        start_y = float(flags['BOTW_AT'].split(',')[3])
+        assert abs(heights[0] - start_y) < 1.0, 'airborne climbing start must preserve its requested height'
+        assert heights[-1] > heights[0] + 2.0, 'climbing capture must climb the wall, gaining real height'
     captures[name] = {k: v for k, v in settings.items() if k.startswith(('BOTW_', 'SLOPPY_'))}
     print(f'PASS capture {name}: {target}', flush=True)
 assert hashlib.sha256(exe.read_bytes()).hexdigest() == binary_hash, 'capture binary changed during the batch'

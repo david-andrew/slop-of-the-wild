@@ -18,7 +18,7 @@ glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,u32(rt.
 assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
 u = BuildU(cam = vec3(0,2,5),player = vec3(0,0,0),fade_width = 2.4,keep_center = vec2(-3,0),keep_radius = 1.0)
 values = fill(f32(0),128*128*4)
-loop mode in [0..7):
+loop mode in [0..8):
     bind_target(rt)
     glDisable(GL_DEPTH_TEST)
     glDisable(GL_BLEND)
@@ -31,14 +31,26 @@ loop mode in [0..7):
     if mode == 4: u.lift = vec3(0,2,4.5)
     if mode == 5: u.lift = vec3(0.5,1.5,2.5)
     if mode == 6: u.lift = vec3(6,1,0)
+    if mode == 7:
+        u.keep_radius=0.0
+        u.fade_width=2.6
+        u.lift=vec3(3,2,4)
     u.keep_center = if mode == 1: vec2(0,0) else: vec2(-3,0)
     u.shadow_pass = if mode == 2: 1.0 else: 0.0
     draw_fast(sh,fullscreen_mesh(),u)
     game_read_pixels_f32(0,0,128,128,data(values) as *u8)
     loop pixel in [0..128*128):
         alpha = values[pixel*4+3]
+        if mode == 7: continue # masonry edge is checked for intermediate coverage below
         if mode == 0 or (mode >= 3 and mode <= 5): assert(alpha == 0.0,"climbing support leaves no ghost pigment or depth fragments")
         else: assert(alpha >= 0.85,"held shaft and support shadow retain full coverage")
+    if mode == 7:
+        removed=0
+        retained=0
+        loop pixel in [0..128*128):
+            if values[pixel*4+3]==0.0: removed+=1
+            else: retained+=1
+        assert(removed>0 and retained>0,"masonry must soften its clearance edge")
 print("PASS climb occluder: 65536 fully cleared support/body/lens/approach pixels; held stone, distant stone and shadows fully opaque")
 glBindFramebuffer(GL_FRAMEBUFFER,0)
 free_target(rt)

@@ -10,3 +10,5 @@ sloppy/bin/sloppy build tools/bake_audio.jo -o build/asset-bake/audio
 BOTW_BAKE_ASSETS=1 build/asset-bake/world
 BOTW_BAKE_ASSETS=1 build/asset-bake/audio
 BOTW_BAKE_ASSETS=1 build/asset-bake/textures
+python3 tools/headless_build.py tools/bake_combat.jo -o build/asset-bake/combat
+BOTW_BAKE_ASSETS=1 build/asset-bake/combat

@@ -29,4 +29,6 @@ for pack in terrain water farland structures; do
     cmp "build/prepared-check/generated/$pack.bin" "build/prepared-check/prepared/$pack.bin"
     cmp "build/prepared-check/mixed/$pack.bin" "build/prepared-check/prepared/$pack.bin"
 done
+python3 tools/headless_build.py tools/combat_assets_check.jo -o build/prepared-check/combat
+build/prepared-check/combat
 echo 'PASS prepared assets: complete audio/world/mesh/collision/roof/ownership/RNG/texture RGBA byte equivalence and named draw order'

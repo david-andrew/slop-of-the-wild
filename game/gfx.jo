@@ -24,6 +24,8 @@ glsl_occluder_dither = (p: vec2) -> f32:
     lo = ((x & 1) xor (y & 1)) * 2 + (y & 1)
     hi = ((x >> 1) xor (y >> 1)) * 2 + (y >> 1)
     (f32(lo * 4 + hi) + 0.5) / 16.0
+# Four-pixel opaque patches survive the watercolor footprint as solid fragments.
+glsl_occluder_patch_dither = (p: vec2) -> f32: glsl_occluder_dither(p / 4.0)
 glsl_instance = (z: f32) -> f32: f32(instance_id()) + z
 glsl_vertex = (z: f32) -> f32: f32(vertex_id()) + z
 # 0.6 exposes fwidth but no signed derivatives. Tagged helper functions are

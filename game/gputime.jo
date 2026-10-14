@@ -1,5 +1,6 @@
 use 'gfx.jo'
 use 'cputime.jo'
+use 'vulkan_timing.jo'
 
 # Where the GPU's time goes, pass by pass (BOTW_GPU=1): timer queries around each part of the
 # frame, read back a few frames later (no stall), averaged and printed every two seconds.
@@ -60,8 +61,7 @@ gpu_mark = (name: str):
     cpu_mark(name)
     if not gpu_timing: return
     if game_vulkan_backend():
-        eprint("gpu timing: use Vulkan frame intervals; GLES pass queries unavailable")
-        gpu_timing = false
+        when TARGET != "wasm": game_gpu_mark(name)
         return
     if __gq_ids.len() == 0:
         g = __q_proc("glGenQueriesEXT")
@@ -94,6 +94,9 @@ gpu_mark = (name: str):
 
 gpu_frame_end = ():
     gpu_vsync_check()
+    if gpu_timing and game_vulkan_backend():
+        when TARGET != "wasm": game_gpu_end()
+        return
     if not gpu_timing or __gq_ids.len() == 0: return
     if __gq_open: __q_end(__GL_TIME_ELAPSED)
     __gq_open = false

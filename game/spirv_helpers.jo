@@ -82,3 +82,23 @@ game_spirv_noise_precision = (src: str) -> str:
     bytes = fill(u8(0), out.len() * 4)
     mem_copy(data(bytes), data(out) as *u8, bytes.len())
     str_from_bytes(bytes)
+
+# Debug names include compiler-global numeric suffixes from unrelated imports.
+# Remove only nonsemantic debugging records, leaving IDs, arithmetic, entry
+# points, bindings and layout unchanged so identical shaders reuse driver keys.
+game_spirv_cache_source = (src: str) -> str:
+    if src == "": return src
+    words = fill(u32(0), src.len() / 4)
+    mem_copy(data(words) as *u8, data(src), src.len())
+    out = words[..5)
+    at = 5
+    loop at < words.len():
+        n = int(words[at] >> 16)
+        op = int(words[at] & 65535)
+        assert(n > 0 and at + n <= words.len())
+        if op != 2 and op != 3 and op != 4 and op != 5 and op != 6 and op != 7 and op != 8 and op != 317 and op != 330:
+            loop k in [at..at + n): out.push(words[k])
+        at += n
+    bytes = fill(u8(0), out.len() * 4)
+    mem_copy(data(bytes), data(out) as *u8, bytes.len())
+    str_from_bytes(bytes)

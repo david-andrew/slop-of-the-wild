@@ -9,6 +9,7 @@ use 'talus.jo'
 use 'shadows.jo'
 use 'dome.jo'
 use 'shader_load.jo'
+use 'pipeline_cache.jo'
 from 'shadows.jo' import shadow_frame
 use 'cputime.jo'
 use 'gputime.jo'
@@ -376,10 +377,13 @@ if let s = env("BOTW_AT"):
     p = split(s, ",")
     pl.pos = v3(to_float(p[0]) ?? 0.0, 0.0, to_float(p[1]) ?? 0.0)
     pl.pos.y = f32(height_at(f64(pl.pos.x), f64(pl.pos.z)))
+    # Explicit heights start in the air; only ground starts need cliff placement.
     if p.len() > 3:
         pl.pos.y = f32(to_float(p[3]) ?? 0.0)
         pl.state = .air
         pl.air_peak = f64(pl.pos.y)
+    else:
+        pl.pos = cliff_place_ground(pl.pos)
     pl.last_safe = pl.pos
     if p.len() > 2: pl.face = to_float(p[2]) ?? 0.0
     cam.yaw = pl.face
@@ -866,7 +870,7 @@ update = (dt0: f64):
             __res_late = 0
     __ft_last = now_
     __res_t += min(dt0, 0.1)
-    large = pixel_size().x > 1700.0
+    large = pixel_size().x * pixel_size().y > 1920.0 * 1080.0
     if not __res_fixed and __res_t > 3.0 and not __low_res and (__ft_avg > 0.0171 or (large and __res_tail)):
         __low_res = true
         __res_t = 0.0
@@ -1225,7 +1229,7 @@ simulation_step = (dt: f64):
             best = d
             fl = 1.0 + 0.12 * sin(elapsed() * 13.0 + f64(b.pos.x)) + 0.08 * sin(elapsed() * 31.0)
             # (by night the fire is all the light there is: a wide warm pool round it)
-            sc_lp = vec4(b.pos.x, b.pos.y + 1.3, b.pos.z, f32(lerp(9.0, 20.0, env.night) * fl))
+            sc_lp = vec4(b.pos.x, b.pos.y + f32(lerp(1.3, 3.2, env.night)), b.pos.z, f32(lerp(9.0, 13.0, env.night) * fl))
             sc_lc = vec3(1.6, 0.66, 0.3) * f32(fl * lerp(1.0, 1.65, env.night))
     # a grass fire: from the middle of the burning near by, as wide as it has spread
     if flames.len() > 3:
@@ -1274,13 +1278,18 @@ simulation_step = (dt: f64):
 
 draw = ():
     gpu_queue_wait()
-    # big windows: the 3D scene renders at 80% (the paint filter hides it), stepping down to 72%
+    # Outputs above 1080p start at 80%; 1080p and smaller start at full scale.
+    # Large outputs can step down to 72%
     # for a while when frames keep running late (both warmed target sets are retained)
-    post.scale = if pixel_size().x > 1700.0: (if __low_res: 0.72 else: 0.8) else: (if __low_res: 0.9 else: 1.0)
+    post.scale = if pixel_size().x * pixel_size().y > 1920.0 * 1080.0: (if __low_res: 0.72 else: 0.8) else: (if __low_res: 0.9 else: 1.0)
     when TARGET == "wasm": post.scale = if __low_res: 0.65 else: 0.8
     if let scale = env("BOTW_SCALE"): post.scale = clamp(to_float(scale) ?? post.scale, 0.5, 1.0)
     # (things between the camera and the player dissolve, but not in cutscenes)
     veg_player = if free_cam or cam.override or cam.blend > 0.05: v3(0.0, -1000.0, 0.0) else: pl.pos
+    hooks.lock_target = vec3(0, -1000, 0)
+    if not free_cam and cam.locked and fight.target >= 0 and fight.target < enemies.len():
+        if enemy_alive(enemies[fight.target]): hooks.lock_target = enemies[fight.target].pos
+    fx_lock_target = hooks.lock_target
     exposure = post.exposure
     # Exposure lifts the entire strike frame while retaining the hue-preserving light flash.
     if env.lightning > 0.88 and env.indoor < 0.5: post.exposure = exposure * (1.0 + env.lightning * 0.45)
@@ -1372,7 +1381,7 @@ render_warmup = ():
     saved_sc = sc
     saved_shrine = shr_cur
     saved_alpha = story.title_alpha
-    post.scale = if pixel_size().x > 1700.0: 0.8 else: 1.0
+    post.scale = if pixel_size().x * pixel_size().y > 1920.0 * 1080.0: 0.8 else: 1.0
     when TARGET == "wasm": post.scale = if __low_res: 0.65 else: 0.8
     if let scale = env("BOTW_SCALE"): post.scale = clamp(to_float(scale) ?? post.scale, 0.5, 1.0)
     story_assets_init()
@@ -1449,7 +1458,7 @@ render_warmup = ():
     # Return to the original scale so startup and the controller agree.
     saved_scale = post.scale
     if not __res_fixed:
-        post.scale = if pixel_size().x > 1700.0: 0.72 else: 0.9
+        post.scale = if pixel_size().x * pixel_size().y > 1920.0 * 1080.0: 0.72 else: 0.9
         render_world(view_pos(), view_target(), view_fov())
         bind_target(post.scene)
         fx_warmup(sc.cam, sc.vp, sc.view)
@@ -1466,6 +1475,7 @@ render_warmup = ():
             __vg_end_pass()
             if __vk_recording: __vk_submit_and_wait()
             if __vk_pcache_dirty: __vk_save_pipeline_cache()
+            game_pipeline_cache_commit()
             # Offscreen draws do not create the swapchain, prime acquire/present,
             # or exercise both native frame slots. Do that behind a black loading
             # surface, then wait for completion before timing the first game frame.

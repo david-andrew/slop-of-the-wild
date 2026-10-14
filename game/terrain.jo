@@ -138,6 +138,13 @@ terr_height = (u: TerrU, xz: vec2) -> f32:
     t = (xz - u.origin) / u.cell
     glsl_fetch(u.heights, int(t.x + 0.5), int(t.y + 0.5)).x
 
+# The west wall has an authored render/collision skin. Camera-dependent
+# heightfield extrusion beneath it can bury a player on otherwise open ground.
+# Keep its source vertices on the same surface queried by feet and the camera.
+terrain_rim_relief = (w: vec3) -> f32:
+    if w.x >= -1720.0 and w.x <= -1370.0 and w.z >= 1550.0 and w.z <= 1980.0: return 0.0
+    1.0-cave_cliff_cover(w)
+
 terrain_vs = (v: GridV, n: TNode, u: TerrU) -> TerrO:
     size = n.offs.z
     g = v.pos * 32.0
@@ -152,7 +159,7 @@ terrain_vs = (v: GridV, n: TNode, u: TerrU) -> TerrO:
     w = vec3(p.x, h, p.y)
     # far cliffs: buttresses and recesses pushed in and out of the face, so a rim reads as rock,
     # not a smooth wall (only far off: up close the face is where Link's hands are)
-    far = smoothstep(28.0, 90.0, d)
+    far = smoothstep(28.0, 90.0, d)*terrain_rim_relief(w)
     if far > 0.0:
         e = u.cell * 2.0
         gx = (terr_height(u, p + vec2(e, 0)) - terr_height(u, p - vec2(e, 0))) / (2.0 * e)
@@ -168,7 +175,7 @@ terrain_vs = (v: GridV, n: TNode, u: TerrU) -> TerrO:
             shelf = smoothstep(0.48, 0.78, bed) - smoothstep(0.84, 0.99, bed)
             # The authored mouth owns its overhang. Displacing nearby turf
             # sideways had left a lone green triangle across its seated jamb.
-            w = w + vec3(out.x, 0.0, out.y) * ((bump * 24.0 + shelf * (1.0 + bump * 2.0)) * steep * far * (1.0-cave_cliff_cover(w)))
+            w = w + vec3(out.x, 0.0, out.y) * ((bump * 24.0 + shelf * (1.0 + bump * 2.0)) * steep * far)
     TerrO(u.vp * vec4(w, 1), w, (p - u.origin) / (u.cell * u.nsamp))
 
 # The west skin and its exposed shoulders share this finish. Keep the
@@ -625,6 +632,15 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
         # wash. Pale ash grains and exposed soil stop spent fuel reading as tar.
         chr = alb * vec3(0.16, 0.14, 0.12) + mix(vec3(0.022, 0.016, 0.012), vec3(0.090, 0.059, 0.033), smoothstep(0.20, 0.85, drift))
         chr *= 0.75 + grain * 0.50
+        # Small angular chips and broken stalks sharpen the spent soil close
+        # up without turning its broad brown wash into hard mottled patches.
+        detail = 1.0-smoothstep(12.0,28.0,dist)
+        if detail > 0.0:
+            q = w.xz*11.0
+            seed = hash12(floor(q))
+            f = fract(q)-vec2(0.5,0.5)
+            chip = 1.0-smoothstep(0.18,0.28,abs(f.x+f.y*(seed-0.5))*2.5+abs(f.y)*0.8)
+            chr = mix(chr,vec3(0.12,0.087,0.048),chip*step(0.65,seed)*detail*0.50)
         alb = mix(alb, chr, be)
     # under water: the bed darkens to silt and weed with depth
     if u.has_water > 0.5:
@@ -744,10 +760,14 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
             g = hash13(vec3(gx.x, floor(w.y * 12.0), gx.y))
             # (glints only close by and small: far off the paint pass spreads them into white scraps)
             c = c + u.sun_color * smoothstep(0.98, 1.0, g) * pow(max(dot(n, normalize(l + v)), 0.0), 8.0) * sh * snk * 0.35 * glitter
-    c = c + point_light(alb, n, w, u.lp, u.lc)
+    # The fire pool follows the broad ground plane, not each painted grass ridge.
+    c = c + point_light(alb, ng, w, u.lp, u.lc)
     # Sparse centimetre-sized embers in the hottest char, with soft shoulders.
     # Stable world cells keep their positions fixed as the heat cools away.
     if bt.z > 0.05:
+        # Only live fuel carries heat; expiry clears this channel immediately.
+        # A local warm bounce roots each tongue even across a wide fire front.
+        c += vec3(0.24,0.065,0.009)*bt.z*(0.85+0.15*sin(u.time*11.0+w.x+w.z))
         cell = floor(w.xz * 2.5)
         seed = hash13(vec3(cell.x, 71.0, cell.y))
         offset = vec2(hash13(vec3(cell.x, 13.0, cell.y)), hash13(vec3(cell.y, 39.0, cell.x))) * 0.7 + vec2(0.15, 0.15)
@@ -1107,7 +1127,10 @@ terrain_select = (cam: vec3, vp: mat4, detail: f64 = 1.0):
     loop k in [0..LOD_LEVELS): __ranges[k] = base * pow(2.0, f64(k))
     root = hf.cell * f64(hf.n)
     __select(hf.x0, hf.z0, root, LOD_LEVELS - 1, cam, frustum_from(vp), false)
-    inst_update(tnode_buf, tnodes)
+    # Every world frame selects before all terrain draws. Stream immutable
+    # frame-local nodes instead of overwriting a persistent device buffer,
+    # which forces transfer barriers against both frames' previous readers.
+    inst_stream(tnode_buf, tnodes)
 
 # One tightly packed rectangle per frame, shared by every terrain pass. Saturated pixels
 # do not dirty the map; CPU burn_value still sees each mark immediately.

@@ -381,15 +381,23 @@ __ending = (dt: f64):
         pl.state = .ground
         ui.hide = false
 
+# The authored west cliff and its open toe reach beyond the old actor box.
+# Keep the rescue boundary outside that physical skin, including its climb routes.
+plateau_outside = (p: vec3) -> bool:
+    p.x < -1720.0 or p.x > -350.0 or p.z < 1400.0 or p.z > 2400.0
+
 # outside the plateau without a glider: back to safety; with it, the end of the journey here
 __bounds = (dt: f64):
     x = f64(pl.pos.x)
     z = f64(pl.pos.z)
-    out = x < -1600.0 or x > -350.0 or z < 1400.0 or z > 2400.0
+    out = plateau_outside(pl.pos)
     if out and not pl.has_glider and story.title_done:
         post.fade = min(1.0, post.fade + dt * 2.0)
         if post.fade >= 1.0:
-            pl.pos = pl.last_safe
+            # A debug placement or an old save can carry an invalid rescue
+            # anchor. Recover once instead of fading forever at that anchor.
+            if plateau_outside(pl.last_safe): pl.last_safe=v3(-1030,height_at(-1030,1805),1805)
+            pl.pos = cliff_place_ground(pl.last_safe)
             pl.vel = vec3(0, 0, 0)
             pl.state = .ground
             camera_snap()

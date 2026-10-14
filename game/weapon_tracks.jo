@@ -2,6 +2,8 @@ use 'gfx.jo'
 use 'skel.jo'
 use 'clips.jo'
 use 'items.jo'
+use 'mesh_assets.jo'
+use 'asset_stream.jo'
 
 # Socket paths baked once from the same attack clips used by the hero. A unit blade
 # direction lets every weapon use its own mesh length, without reskinning four times a frame.
@@ -18,9 +20,39 @@ const BLADE_CLIPS = ["slash1", "slash2", "slash3", "attack", "heavy", "punch", "
 # Long source clips include extra swings or a long held recovery; play the first blow.
 const BLADE_TIMES = [0.433333, 0.533333, 0.80, 0.75, 1.25, 0.40, 1.20, 0.90]
 
-weapon_tracks_init = (m: Model, lib: AnimLib):
+weapon_tracks_key = (model: str) -> int:
+    asset_key(["game/weapon_tracks.jo", "game/skel.jo", "game/clips.jo", "game/mesh_assets.jo", "assets/models/{model}.mdl", "assets/models/humanoid.anim"])
+
+weapon_tracks_io = (s: mut AssetStream, paths: mut BladePose[][], writing: bool):
+    count = paths.len()
+    pack_count(s,count,writing)
+    if count != BLADE_CLIPS.len(): s.ok = false
+    if not s.ok: return
+    if not writing: paths.resize(count)
+    loop i in [0..count):
+        path=paths[i]
+        pack_array(s,path,writing)
+        if path.len()!=121: s.ok=false
+        if not s.ok: return
+        paths[i]=path
+
+weapon_tracks_write = () -> bool:
+    s=pack_create("assets/prepared/blade-{weapon_tracks.model}.bin",weapon_tracks_key(weapon_tracks.model))
+    weapon_tracks_io(s,weapon_tracks.paths,true)
+    pack_publish(s, "assets/prepared/blade-{weapon_tracks.model}.bin")
+
+weapon_tracks_init = (m: Model, lib: AnimLib, prepared: bool = true):
     if weapon_tracks.model == m.name: return
     weapon_tracks = WeaponTracks(model = m.name)
+    if prepared and env("BOTW_NO_PREPARED_ASSETS") == none and env("BOTW_BAKE_ASSETS") == none:
+        s=pack_open("assets/prepared/blade-{m.name}.bin",weapon_tracks_key(m.name))
+        paths: BladePose[][]
+        if s.ok: weapon_tracks_io(s,paths,false)
+        asset_close(s)
+        if s.ok and s.left==0:
+            weapon_tracks.paths=paths
+            if env("BOTW_LOADTIME") != none: eprint("prepared blade tracks: hit {m.name}")
+            return
     mask = bone_mask(lib, "spine_01")
     loop k in [0..BLADE_CLIPS.len()):
         path: BladePose[]

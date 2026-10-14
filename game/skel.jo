@@ -1,3 +1,4 @@
+use 'asset_stream.jo'
 use 'gfx.jo'
 use 'shade.jo'
 use 'charshade.jo'
@@ -491,9 +492,21 @@ __white_tex = () -> Texture:
     if __white.id == 0: __white = bytes_texture(1, 1, [u8(255), 255, 255, 0], false, true)
     __white
 
+# Read model bytes directly into their single CPU array on native Linux.
+# read_bytes converts the complete file through a second string buffer.
+model_bytes = (path: str) -> u8[]:
+    when TARGET == "linux":
+        stream=asset_open(path)
+        if stream.ok:
+            bytes=fill(u8(0),stream.left)
+            asset_read(stream,data(bytes),bytes.len())
+            asset_close(stream)
+            if stream.ok: return bytes
+    read_bytes(path) ?? []
+
 load_model = (path: str) -> Model:
     m = Model()
-    r = BinR(read_bytes(path) ?? [])
+    r = BinR(model_bytes(path))
     if r_u32(r) != MDL_MAGIC or r_u32(r) != MDL_VERSION:
         eprint("load_model: {path} is not a model (version {MDL_VERSION})")
         return m
@@ -731,6 +744,9 @@ draw_character = (m: Model, world: mat4, sk: Skin, scene: CharScene, p: CharPara
     glDepthMask(1)
     glDisable(GL_BLEND)
     var_ = clamp(p.variant, 0, m.variants - 1)
+    # Lighting, skin palette, waterline and status are constant for every
+    # part of this actor. Query/build them once; only the material varies.
+    u = ch_uniforms(scene, p, world, bones, row, Texture(), false)
     loop k in [0..m.parts.len()):
         if (p.hide >> k) & 1 != 0: continue
         pt = m.parts[k]
@@ -738,8 +754,9 @@ draw_character = (m: Model, world: mat4, sk: Skin, scene: CharScene, p: CharPara
         else:
             glEnable(GL_CULL_FACE)
             glCullFace(GL_BACK)
-        tex = m.textures[var_ * m.slots + pt.slot]
-        draw_fast(ch_shaders.lit, pt.mesh, ch_uniforms(scene, p, world, bones, row, tex, pt.two_sided))
+        u.tex = m.textures[var_ * m.slots + pt.slot]
+        u.two_sided = if pt.two_sided: 1.0 else: 0.0
+        draw_fast(ch_shaders.lit, pt.mesh, u)
     glEnable(GL_CULL_FACE)
 
 # depth only, for the shadow maps (call between shadow_begin(k) and shadow_end())

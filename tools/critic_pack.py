@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fixed critic evidence. Owns one flock per render; never wrap in another flock."""
+"""Fixed critic evidence. Owns bounded render-lock batches; never wrap in a flock."""
 import argparse
 import concurrent.futures
 import csv
+import fcntl
 import hashlib
 import html
 import json
@@ -20,6 +21,20 @@ sys.dont_write_bytecode = True
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
+_capture_lock = None
+_capture_lock_started = 0.0
+_capture_lock_count = 0
+
+
+def release_capture_lock():
+    global _capture_lock, _capture_lock_count
+    if _capture_lock is not None:
+        fcntl.flock(_capture_lock, fcntl.LOCK_UN)
+        _capture_lock.close()
+        _capture_lock = None
+    _capture_lock_count = 0
+
+
 PREFIXES = ('BOTW_', 'SLOPPY_', 'ROUND', 'PROBE_', 'CP_', 'LISTEN_')
 BASE = dict(BOTW_HOUR='11', BOTW_TIMESCALE='0', BOTW_WEATHER='clear', BOTW_SCALE='1',
             SLOPPY_PLATFORM='x11', SLOPPY_VULKAN='1', SLOPPY_VSYNC='0', SLOPPY_WINDOW='1280x720')
@@ -49,7 +64,7 @@ SCENES = [
     ('weather', 'storm', [(299, 'Storm without strike'), (300, 'Forced lightning strike')],
      dict(BOTW_SKIP='1', BOTW_AT='-1000,1620,3.14', BOTW_WEATHER='storm', BOTW_BOLT='300'), 'round93_capture.py forest-bolt'),
     ('weather', 'rain', [(300, 'Rain near camera and wet surfaces')], dict(BOTW_SKIP='1', BOTW_AT='-1000,1620,3.14', BOTW_WEATHER='rain'), 'round96_capture.py'),
-    ('combat', 'camp', [(300, 'Camp combat framing'), (420, 'Camp combat recovery'), (640, 'Camp combat aftermath')],
+    ('combat', 'camp', [(180, 'Camp foreground vegetation clearance'), (300, 'Camp combat framing'), (420, 'Camp combat recovery'), (640, 'Camp combat aftermath')],
      dict(BOTW_SKIP='1', BOTW_AT='-1439,1606,0', BOTW_GIVE='travelers_sword,travelers_shield', SLOPPY_INPUT=CAMP_INPUT), 'README.md / combat_framing_check.py camp'),
     ('fire', 'grass-fire', [(150, 'Grass ignition'), (260, 'Advancing flame front'), (600, 'Burn aftermath')], dict(BOTW_SKIP='1', BOTW_FIRE='1'), 'round83_fire_capture.py'),
     ('fire', 'tent-fire', [(900, 'Tent fire and crowd')], dict(BOTW_SKIP='1', BOTW_TENTFIRE='5', BOTW_AT='-955,1964,0'), 'round83_fire_capture.py'),
@@ -59,6 +74,7 @@ SCENES = [
     ('wildlife', 'bird-flight', [(120, 'Bird flight pose')], dict(BOTW_SKIP='1', BOTW_CAM='-818,195,1950,0,0'), 'round88_closeup_capture.py bird-pigeon-flight'),
     ('traversal', 'swim', [(180, 'Swim surface, stroke and camera')], dict(BOTW_SKIP='1', BOTW_AT='-1161,1684,-0.9', SLOPPY_INPUT='10:w+'), 'Hopper Pond depth scan / swim_surface_check.jo'),
     ('traversal', 'climb', [(180, 'Real cliff climb')], dict(BOTW_SKIP='1'), 'cliff_climb_capture.jo'),
+    ('traversal', 'temple-climb', [(180, 'Temple wall climb and soft masonry clearance')], dict(BOTW_SKIP='1', SLOPPY_INPUT='1:w+'), 'round67 temple inner-wall climb; fixed opposing-wall camera'),
     ('traversal', 'glide', [(90, 'Paraglider pose over the Plateau')], dict(BOTW_SKIP='1', BOTW_AT='-1050,1828,-2.36', BOTW_GIVE='paraglider', SLOPPY_INPUT='10:space+,11:space-'), 'overlook fixture / production glider input'),
     *[('shrines', f'shrine-{n}', [(180, f'Shrine {n} interior')], dict(BOTW_SKIP='1', BOTW_TOWER='1', BOTW_SHRINE=str(n)), 'BOTW_SHRINE interior fixture') for n in range(1, 5)],
     ('interface', 'map', [(120, 'Slate map')], dict(BOTW_SKIP='1', BOTW_TOWER='1', SLOPPY_INPUT='20:m+,21:m-'), 'slate_map_view.jo / production map input'),
@@ -79,6 +95,14 @@ cp_climb_y = 0.0
 cp_climb_normal = vec3(0,0,1)
 update = (dt: f64):
     if not cp_ready:
+        if cp_scene == "temple-climb":
+            origin=lp(TEMPLE,TEMPLE_ROT,0.0,6.0,-20.0)
+            hit=raycast(origin,transform_dir(rotation_y(TEMPLE_ROT),vec3(1,0,0)),18.0,true,false)
+            assert(hit.hit,"temple wall fixture")
+            p=hit.pos+hit.normal*0.45-vec3(0,1,0)
+            pl=Player(pos=p,last_safe=p,state=.climb,grounded=false,climb_n=hit.normal,climb_col=hit.collider,face=yaw_of(hit.normal*-1.0))
+            cam.yaw=pl.face
+            camera_snap()
         if cp_scene == "roof":
             story.orbs = 4
             pl.pos = lp(TEMPLE,TEMPLE_ROT,4.0,43.05,34.5)
@@ -121,6 +145,11 @@ update = (dt: f64):
         act=Actions(move=vec2(0,1))
         if frame_number()<180: player_update(dt)
         act=Actions()
+    if cp_scene == "temple-climb":
+        cam.pos=lp(TEMPLE,TEMPLE_ROT,-12.8,10.0,-22.0)
+        cam.target=pl.pos+vec3(0,1.0,0)
+        cam.blend=0.0
+        assert(pl.state==.climb,"temple climb left wall")
     if cp_scene == "options": invui=InvUI(open=true,tab=6,t=1.0,tab_t=1.0)
     if cp_scene == "boar":
         animals.clear()
@@ -185,16 +214,30 @@ def clean_env():
     return {k: v for k, v in os.environ.items() if not k.startswith(PREFIXES)} | {'PYTHONDONTWRITEBYTECODE': '1'}
 
 
-def command_run(command, log, env=None):
+def command_run(command, log, env=None, capture_batch=False):
+    global _capture_lock, _capture_lock_started, _capture_lock_count
     started = time.monotonic()
     launch = command
     if command[:2] == ['flock', '/tmp/botw-render.lock']:
         # This marker executes after flock acquires the lock, before the bounded
         # child starts. Queue wait is reported separately from idle-machine cost.
         marker = 'import os,sys,time; print("pack lock acquired:",time.monotonic(),flush=True); os.execvp(sys.argv[1],sys.argv[1:])'
-        launch = command[:2] + [sys.executable, '-c', marker] + command[2:]
+        if capture_batch:
+            if _capture_lock is None:
+                _capture_lock = open('/tmp/botw-render.lock', 'a')
+                fcntl.flock(_capture_lock, fcntl.LOCK_EX)
+                _capture_lock_started = time.monotonic()
+            # The parent already owns the same flock; do not nest acquisition.
+            launch = [sys.executable, '-c', marker] + command[2:]
+        else:
+            launch = command[:2] + [sys.executable, '-c', marker] + command[2:]
     with log.open('w') as stream:
-        result = subprocess.run(launch, cwd=ROOT, env=env or clean_env(), stdout=stream, stderr=subprocess.STDOUT)
+        result = subprocess.run(launch, cwd=ROOT, env=env or clean_env(), stdout=stream, stderr=subprocess.STDOUT,
+                                pass_fds=(_capture_lock.fileno(),) if capture_batch else ())
+    if capture_batch:
+        _capture_lock_count += 1
+        if _capture_lock_count >= 4 or time.monotonic()-_capture_lock_started >= 60 or result.returncode:
+            release_capture_lock()
     if result.returncode:
         raise RuntimeError(f'exit {result.returncode}: {shlex.join(command)}; see {log}')
     return time.monotonic() - started
@@ -243,6 +286,15 @@ def capture(out, manifest):
         binary = build_fixture(out)
         cached = {}
     manifest['capture_executable_sha256'] = digest(binary)
+    # Keep cache/build startup distinct from lock queue time and scene costs.
+    if 'startup' not in manifest:
+        from round67_startup import measure, rebuilt_fixture
+        startup_out = out/'startup'
+        startup_out.mkdir(exist_ok=True)
+        production = startup_out/'plateau'
+        command_run(['sloppy/bin/sloppy','build','tools/performance_game.jo','-o',str(production)],startup_out/'build.log')
+        manifest['startup'] = measure(production, startup_out, rebuilt_fixture(production,startup_out))
+        save_manifest(out,manifest)
     shots = []
     for area, name, frames, flags, provenance in SCENES:
         folder = out / 'captures' / name
@@ -260,11 +312,13 @@ def capture(out, manifest):
             continue
         env = clean_env() | BASE | flags | dict(CP_SCENE=name, CP_FRAMES=','.join(str(f) for f, _ in frames), CP_OUT=str(folder),
             SLOPPY_FRAMES=str(run_frames), SLOPPY_SCREENSHOT=str(folder / 'final.png'), BOTW_FRAME_LOG='1', BOTW_LOADTIME='1')
-        command = ['flock', '/tmp/botw-render.lock', 'python3', 'tools/performance_window.py', '1280x720', 'timeout', '180', str(binary)]
+        # Four ordinary captures take about 25–45 seconds. Release after 60 s;
+        # the 90 s child timeout bounds a slow final render to about 150 s total.
+        command = ['flock', '/tmp/botw-render.lock', 'python3', 'tools/performance_window.py', '1280x720', 'timeout', '90', str(binary)]
         settings = {k: v for k, v in env.items() if k.startswith(PREFIXES)}
         display_command = shlex.join(['env', *[f'{k}={v}' for k, v in sorted(settings.items())], *command])
         started = time.monotonic()
-        wall_s = command_run(command, folder / 'run.log', env)
+        wall_s = command_run(command, folder / 'run.log', env, capture_batch=True)
         wait_s = lock_wait(folder / 'run.log', started)
         manifest['render_lock_wait_s'] = manifest.get('render_lock_wait_s', 0) + wait_s
         (folder / 'settings.json').write_text(json.dumps({'command': command, 'environment': settings, 'wall_s': wall_s, 'lock_wait_s': wait_s, 'render_process_s': wall_s-wait_s}, indent=2)+'\n')
@@ -283,6 +337,7 @@ def capture(out, manifest):
         manifest['shots'] = shots
         save_manifest(out, manifest)
         print(f'PASS capture {name}: {len(frames)} shots, {wall_s-wait_s:.1f}s rendering, {wait_s:.1f}s lock wait', flush=True)
+    release_capture_lock()
     assert digest(binary) == manifest['capture_executable_sha256'], 'capture executable changed'
     sheets = out / 'contact-sheets'
     sheets.mkdir(exist_ok=True)
@@ -411,8 +466,8 @@ def audio(out, manifest):
             lines += ['This stem mutes the piano. The dispatch log below is retained for comparison with the full mix; these notes are inaudible in this stem.', '']
         if notes.exists():
             rows = list(csv.DictReader(notes.open()))
-            lines += ['| Onset (s) | Note | MIDI |', '|---:|---|---:|']
-            lines += [f'| {float(r["onset_s"]):.3f} | {note_name(int(r["midi"]))} | {r["midi"]} |' for r in rows]
+            lines += ['| Onset (s) | Note | MIDI | Velocity | Kind |', '|---:|---|---:|---:|---|']
+            lines += [f'| {float(r.get("onset_s") or r["time"]):.3f} | {note_name(int(r["midi"]))} | {r["midi"]} | {float(r.get("velocity", 0)):.2f} | {r.get("kind", "piano")} |' for r in rows]
             if not rows: lines += ['', 'No piano notes dispatched in this clip.']
         else:
             lines += ['Note log unavailable for this fixture.']
@@ -473,6 +528,10 @@ def indexes(out, manifest):
             md += [f'- [{shot["name"]}]({shot["png"]}) · [small JPEG]({shot["jpg"]}) · {shot["purpose"]}. Fixture: `{shot["fixture"]}`.', '', '```sh', shot['command'], '```', '']
             cards.append(f'<article><a href="{shot["png"]}"><img loading="lazy" src="{shot["jpg"]}" alt="{html.escape(shot["purpose"])}"></a><h3>{shot["name"]}</h3><p>{html.escape(shot["purpose"])}</p><details><summary>Command and fixture</summary><p>{html.escape(shot["fixture"])}</p><pre>{html.escape(shot["command"])}</pre><a href="{shot["log"]}">Log</a> · <a href="{shot["settings"]}">Settings</a></details></article>')
         sections.append(f'<section><h2>{area}</h2><a href="contact-sheets/{area}.jpg">Contact sheet</a><div class="grid">{"".join(cards)}</div></section>')
+    if 'startup' in manifest:
+        report = manifest['startup']
+        md += ['## Startup', '', f'Cold: {report["cold_s"]:.3f} s; warm median: {report["warm_median_s"]:.3f} s; changed executable, identical shaders: {report["new_build_s"]:.3f} s. [Details](startup/summary.json).', '', report['protocol'], '']
+        sections.append('<section><h2>Startup</h2><a href="startup/summary.json">Cold, warm and new-build summary</a><pre>'+html.escape(json.dumps(report,indent=2))+'</pre></section>')
     if 'performance' in manifest:
         report = manifest['performance']
         md += ['## Performance', '', f'Startup: {report["startup_in_game_s"]:.3f} s in game. [Raw route log](performance/route.log), [summary](performance/summary.json).', '', '| Metric (ms) | p50 | p99 | Worst | Frames >25 ms |', '|---|---:|---:|---:|---:|']
@@ -499,7 +558,14 @@ def main():
     parser.add_argument('out_dir', type=Path)
     parser.add_argument('--only', nargs='+', choices=['captures','performance','audio','checks'], help='partial diagnostic pack; default includes everything')
     parser.add_argument('--resume', action='store_true', help='retain complete matching capture/performance sections after a tooling interruption')
-    args = parser.parse_args()
+    # Accept the brief's `--only captures OUT` spelling as well as `OUT --only captures`.
+    argv = sys.argv[1:]
+    if argv and argv[0] == '--only':
+        for i, value in enumerate(argv[1:], 1):
+            if not value.startswith('-') and value not in ['captures','performance','audio','checks']:
+                argv = [value, *argv[:i], *argv[i+1:]]
+                break
+    args = parser.parse_args(argv)
     os.chdir(ROOT)
     out = args.out_dir.resolve()
     if not out.is_relative_to(ROOT / 'build') or out == ROOT / 'build': parser.error('OUT_DIR must be a new directory under this checkout\'s build/')
@@ -554,6 +620,7 @@ def main():
         manifest['error'] = str(exc)
         raise
     finally:
+        release_capture_lock()
         manifest['wall_s'] = previous_wall_s + time.monotonic()-started
         manifest['wall_s_excluding_render_lock_wait'] = manifest['wall_s'] - manifest.get('render_lock_wait_s', 0)
         manifest['under_25_minutes'] = manifest['wall_s'] <= 1500

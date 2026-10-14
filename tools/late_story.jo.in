@@ -230,7 +230,8 @@ wait(270)
 check(story.beat == .explore and not old_man.visible and not old_man.glide, "old man farewell did not finish")
 restored("farewell-camera-restored")
 # An actual glider input after stepping off the plateau; no state/glider preset.
-pl.pos = v3(-1700.0, 300.0, 1800.0)
+# Departure lies beyond the authored west cliff and its now-playable toe.
+pl.pos = v3(-1740.0, 300.0, 1800.0)
 pl.state = .air
 pl.vel = vec3(0, -3, 0)
 pl.st_t = 0.5

@@ -1,0 +1,36 @@
+# Prepared paths must equal every generated matrix/vector, without tolerances.
+use '../game/enemy_contacts.jo'
+use '../game/weapon_tracks.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/gfx.jo'
+use '../game/mesh_assets.jo'
+use '../game/asset_stream.jo'
+s=pack_open("assets/prepared/enemy-contacts.bin",enemy_contacts_key())
+assert(s.ok,"enemy contact pack missing or stale")
+asset_close(s)
+enemy_contacts_init()
+prepared=enemy_contact_paths
+toe=enemy_kick_toe
+enemy_contact_paths=[]
+enemy_contacts_init(false)
+assert(prepared.len()==ENEMY_MOVES*2 and toe==enemy_kick_toe)
+loop i in [0..prepared.len()):
+    assert(prepared[i].len()==2305)
+    assert(__mem_eq(data(prepared[i]) as *u8,data(enemy_contact_paths[i]) as *u8,2305*size_of(mat4)))
+lib=load_humanoid_anims()
+loop model in ["hero","hero_bare"]:
+    m=load_model("assets/models/{model}.mdl")
+    s=pack_open("assets/prepared/blade-{model}.bin",weapon_tracks_key(model))
+    assert(s.ok,"hero blade pack missing or stale")
+    asset_close(s)
+    weapon_tracks=WeaponTracks()
+    weapon_tracks_init(m,lib)
+    saved=weapon_tracks.paths
+    weapon_tracks=WeaponTracks()
+    weapon_tracks_init(m,lib,false)
+    assert(saved.len()==BLADE_CLIPS.len())
+    loop i in [0..saved.len()):
+        assert(saved[i].len()==121)
+        assert(__mem_eq(data(saved[i]) as *u8,data(weapon_tracks.paths[i]) as *u8,121*size_of(BladePose)))
+print("PASS prepared combat: all 23050 enemy socket matrices, kick toe and 1936 hero blade records byte-exact")

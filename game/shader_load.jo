@@ -1,6 +1,7 @@
 use 'spirv_helpers.jo'
 use 'gfx.jo'
 use 'asset_stream.jo'
+use 'pipeline_cache.jo'
 from 'gfx.jo' import __patch_glsl
 
 # Cache validated program binaries locally; submit independent terrain programs
@@ -55,7 +56,9 @@ __load_init = false
 shader_load_init = ():
     if __load_init: return
     __load_init = true
-    if game_vulkan_backend(): return
+    if game_vulkan_backend():
+        when TARGET != "wasm": game_pipeline_cache_load()
+        return
     when TARGET == "linux":
         if not lib_available("libGLESv2.so.2") or not lib_available("libEGL.so.1"): return
         ex = glGetString(0x1F03) # GL_EXTENSIONS; null on the software path
@@ -124,8 +127,9 @@ shader_load_submit = (src: ShaderSource) -> LoadingShader:
     s = src
     if game_vulkan_backend():
         # Vertex noise also controls cliff displacement, grass and leaf silhouettes.
-        s.vs_spirv = game_spirv_noise_precision(s.vs_spirv)
-        s.fs_spirv = game_spirv_noise_precision(game_spirv_derivatives(s.fs_spirv))
+        s.vs_spirv = game_spirv_cache_source(game_spirv_noise_precision(s.vs_spirv))
+        s.fs_spirv = game_spirv_cache_source(game_spirv_noise_precision(game_spirv_derivatives(s.fs_spirv)))
+        if env("BOTW_SHADER_DIGESTS") != none: eprint("shader digest: {__str_hash(s.vs_spirv)} {__str_hash(s.fs_spirv)}")
         return LoadingShader(ready = make_shader(s))
     s.vs = __patch_glsl(s.vs)
     s.fs = __patch_glsl(s.fs)

@@ -73,7 +73,7 @@ atmos = (c: vec3, world: vec3, cam: vec3, l: vec3, haze: vec3, sun: vec3, densit
 
 # Cloud cover travels in the orthographic projector's homogeneous W (see shadows.jo).
 # Clear skies keep the existing taps; overcast broadens them and removes direct shadows.
-shadow_direct = (cover: f32) -> f32: 1.0 - smoothstep(0.52, 0.85, cover)
+shadow_direct = (cover: f32) -> f32: 1.0 - smoothstep(0.42, 0.74, cover)
 shadow_softness = (cover: f32) -> f32: 1.0 + smoothstep(0.45, 0.85, cover) * 4.0
 
 # percentage-closer filtering of one shadow map: 12 taps on a spiral (a Vogel disk) turned by
@@ -120,7 +120,7 @@ painted_near_shadow = (s: f32, sp: vec4) -> f32:
 
 cascade_shadow_fast = (world: vec3, ndl: f32, vp0: mat4, vp1: mat4, vp2: mat4, sm0: Texture, sm1: Texture, sm2: Texture) -> f32:
     # Orthographic W is uniform: a solid cloud deck skips the entire receiver filter.
-    if vp0[3].w >= 1.85: return 1.0
+    if vp0[3].w >= 1.74: return 1.0
     b = 1.0 - clamp(ndl, 0.0, 1.0)
     rot = hash12(floor(world.xz * 40.0) + vec2(floor(world.y * 40.0) * 0.37, 0)) * 6.2832
     near = vp0 * vec4(world, 1)
@@ -143,7 +143,7 @@ cascade_shadow_fast = (world: vec3, ndl: f32, vp0: mat4, vp1: mat4, vp2: mat4, s
 # three cascades: the first map that covers the point decides
 cascade_shadow = (world: vec3, ndl: f32, vp0: mat4, vp1: mat4, vp2: mat4, sm0: Texture, sm1: Texture, sm2: Texture) -> f32:
     # Orthographic W is uniform: a solid cloud deck skips the entire receiver filter.
-    if vp0[3].w >= 1.85: return 1.0
+    if vp0[3].w >= 1.74: return 1.0
     b = 1.0 - clamp(ndl, 0.0, 1.0)
     rot = hash12(floor(world.xz * 40.0) + vec2(floor(world.y * 40.0) * 0.37, 0)) * 6.2832
     near = vp0 * vec4(world, 1)

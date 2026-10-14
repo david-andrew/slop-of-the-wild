@@ -103,6 +103,10 @@ water_wade_foam = (relative: vec2, motion: vec4, time: f32, strength: f32) -> f3
 water_wade_color = (sun: vec3, horizon: vec3) -> vec3:
     vec3(0.74, 0.87, 0.83) * min(sun * 0.4 + horizon * 0.9 + vec3(0.1, 0.12, 0.14), vec3(0.9, 0.9, 0.9))
 
+# Flow-aligned pigment field, shared by CPU coverage checks and the shader.
+water_impact_brush = (p: vec2, t: f32) -> f32:
+    vnoise(p*vec2(0.30,0.88)+vec2(t*0.23,-t*0.09))
+
 water_fs = (i: WaterO, u: WaterU) -> vec4:
     w = i.world
     # Low drifting impact veils share the water mesh and draw. Two small layers per
@@ -404,7 +408,7 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         clear = mix(through, sky * 0.9, reflection) + u.sun_color * min(spec, 1.2) * 0.12 * (1.0 - u.night)
         c = mix(c, clear, pond)
     c = mix(c, sky * 0.65 + vec3(0.08, 0.12, 0.15), rain_foam)
-    # The swimmer leaves a narrow V and rings at each stroke; entry rings stay behind.
+    # Broken brush strokes follow the swimmer, with open gaps between the two wake arms.
     disturbance: f32 = 0.0
     if (u.swimmer.w > 0.0 or (u.entry.w > 0.0 and u.entry.z < 1.2)) and length(w.xz - u.swimmer.xy) < 6.0:
         relative = w.xz - u.swimmer.xy
@@ -412,12 +416,13 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         lateral = dot(relative, vec2(-forward.y, forward.x))
         behind = -dot(relative, forward)
         radius = length(relative)
-        stroke = sin(radius * 13.0 - u.motion.w * 12.56637 + sin(relative.x * 6.0 + relative.y * 3.0) * 0.55) * 0.5 + 0.5
-        ring = pow(stroke, 8.0) * (1.0 - smoothstep(0.6, 2.8, radius)) * smoothstep(0.2, 0.65, radius) * u.swimmer.w
-        wake = exp(-abs(abs(lateral) - behind * 0.28) * 12.0) * smoothstep(0.0, 0.7, behind) * (1.0 - smoothstep(0.4, 2.8, behind)) * min(length(u.motion.xy) / 2.6, 1.0) * u.swimmer.w
-        arrival_r = length(w.xz - u.entry.xy)
-        arrival = exp(-pow((arrival_r - u.entry.z * 2.1) * 10.0, 2.0)) * smoothstep(0.0, 0.1, u.entry.z) * (1.0 - smoothstep(0.3, 1.2, u.entry.z)) * u.entry.w
-        disturbance = clamp(ring * 0.1 + wake * 0.18 + arrival * 0.4, 0.0, 0.75)
+        brush = vnoise(vec2(behind*2.4-u.motion.w*0.9,lateral*5.5)+vec2(3.0,7.0))
+        broken = smoothstep(0.32,0.72,brush)
+        stroke = exp(-abs(abs(lateral)-0.30-behind*0.24)*5.0) * smoothstep(-0.2,0.4,behind) * (1.0-smoothstep(0.8,2.7,behind))
+        wake = stroke * broken * min(length(u.motion.xy)/2.6,1.0) * u.swimmer.w
+        arrival_r = length((w.xz-u.entry.xy)*vec2(0.85,1.15))
+        arrival = exp(-pow((arrival_r-u.entry.z*2.1)*5.0,2.0)) * broken * smoothstep(0.0,0.1,u.entry.z) * (1.0-smoothstep(0.3,1.2,u.entry.z)) * u.entry.w
+        disturbance = clamp(wake*0.30+arrival*0.28,0.0,0.65)
         disturbance = disturbance * (1.0 - smoothstep(0.3, 0.8, abs(w.y - u.swimmer.z)))
         c = mix(c, vec3(0.82, 0.9, 0.84) * (u.sun_color * 0.4 + u.horizon * 0.6), disturbance)
     # An ankle/knee ring and two small broken foam cuffs follow the legs while wading.
@@ -445,18 +450,14 @@ water_fs = (i: WaterO, u: WaterU) -> vec4:
         contact = length((w.xz-vec2(-1488.0,1823.0))/vec2(19.0,16.0))
         impact = max(impact,1.0-smoothstep(0.15,1.0,contact))
     if impact > 0.01:
-        # Separate narrow moving crests from the broad churn. The cached radial
-        # envelope keeps rings at real receiving pools, in the same water draw.
-        crest = sin((1.0 - impact) * 38.0 - u.time * 3.8) * 0.5 + 0.5
-        ring = smoothstep(0.84, 0.98, crest) * smoothstep(0.03, 0.18, impact) * (1.0 - smoothstep(0.72, 0.98, impact))
-        ring *= 0.6 + h0 * 0.4
-        froth = smoothstep(if west_plunge: 0.18 else: 0.27, 0.66, h0) * impact
-        if west_plunge:
-            rafts = vnoise(w.xz*0.72+vec2(-u.time*0.65,u.time*0.23))
-            froth = max(froth,smoothstep(0.35,0.67,rafts)*impact*0.94)
-        c = mix(c, vec3(0.83, 0.91, 0.89) * (u.sun_color * 0.4 + u.horizon * 0.7), froth * 0.86)
-        c = mix(c, vec3(0.68, 0.86, 0.84) * (u.sun_color * 0.45 + u.horizon * 0.85), ring * 0.65)
-        a = max(a, max(froth * 0.92, ring * 0.78))
+        # Advected, unequal brush islands run away from the fall. Their
+        # gaps cross the whole impact envelope; no radial phase closes a ring.
+        rafts = water_impact_brush(w.xz,u.time)
+        froth = smoothstep(0.38,0.74,rafts) * impact
+        streaks = smoothstep(0.48,0.80,h0) * smoothstep(0.23,0.63,rafts) * impact
+        c = mix(c,vec3(0.77,0.86,0.81)*(u.sun_color*0.4+u.horizon*0.7),froth*0.78)
+        c = mix(c,vec3(0.64,0.78,0.74)*(u.sun_color*0.4+u.horizon*0.7),streaks*0.36)
+        a = max(a,max(froth*0.86,streaks*0.72))
     c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
     vec4(c, a)
 

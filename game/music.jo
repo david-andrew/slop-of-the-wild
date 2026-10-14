@@ -387,6 +387,8 @@ struct ScoreVoice:
     source_pos = 0.0
     mixer_pos = 0.0
     prepared_until = 0
+    damper_close = -1.0
+    damper_end = 0.0
 score_voices: ScoreVoice[]
 music_hold = 0.0
 music_activity = 0.0
@@ -416,11 +418,15 @@ __score_play = (s: Sound, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
     score_set_volume(id, initial)
     id
 
-__score_piano_play = (s: PianoSample, gain: f64, pan: f64, pitch: f64, score: bool) -> int:
+__score_piano_play = (s: PianoSample, gain: f64, pan: f64, pitch: f64, score: bool, hold: f64 = -1.0) -> int:
     initial = clamp(gain * (if score: seq.volume * (if seq.mood == .combat: 1.0 else: seq.sneak_gain) else: 1.0) * music_duck, 0.0, 8.0)
     window = int(ceil(8192.0 * pitch)) + 3
     id = play(Sound(fill(f32(0), window * 2)), 1.0, pan, pitch, true)
-    score_voices.push(ScoreVoice(id, gain, f64(s.samples.len()) / (2.0 * f64(MIX_RATE) * pitch), context = score, packed = s, applied = initial, ramp_from = initial))
+    # Hold/release follows the source clock, so fractional pitches retain the
+    # old duration without copying and requantizing three full piano layers.
+    left = if hold >= 0.0: f64(int((hold + 0.65) * pitch * f64(MIX_RATE))) / (f64(MIX_RATE) * pitch) else: piano_duration(s) / pitch
+    score_voices.push(ScoreVoice(id, gain, left, context = score, packed = s, applied = initial, ramp_from = initial,
+        damper_close = (if hold >= 0.0: hold * pitch else: -1.0), damper_end = (hold + 0.65) * pitch))
     score_set_volume(id, initial)
     id
 
@@ -461,6 +467,8 @@ score_set_volume = (id: int, gain: f64):
         packed = v.packed.samples.len() > 0
         compact = data(v.packed.samples)
         total = (if packed: v.packed.samples.len() else: v.source.samples.len()) / 2
+        if v.damper_close >= 0.0: total = min(total, int(v.damper_end * f64(MIX_RATE)))
+        release_at = int(ceil(v.damper_close * f64(MIX_RATE)))
         first = if changed: start else: max(start, v.prepared_until)
         slope = (v.applied - v.ramp_from) / v.ramp_frames
         ring = (int(floor(pos)) + first - start) % window
@@ -471,8 +479,17 @@ score_set_volume = (id: int, gain: f64):
             last = min(end, frame + window - ring)
             if frame < total: last = min(last, total)
             if frame < ramp_end: last = min(last, ramp_end)
+            if v.damper_close >= 0.0 and frame < release_at: last = min(last, release_at)
             if frame >= total:
                 loop sample in [ring * 2..(ring + last - frame) * 2): dest[sample] = 0.0
+            else if v.damper_close >= 0.0 and frame >= release_at:
+                loop k in [frame..last):
+                    damper = f32(1.0 - smoothstep(v.damper_close, v.damper_end, f64(k) / f64(MIX_RATE)))
+                    g = f32(v.ramp_from + clamp((f64(k) - v.ramp_at) / v.ramp_frames, 0.0, 1.0) * (v.applied - v.ramp_from))
+                    dest[ring * 2] = f32(compact[k * 2]) * v.packed.scale * damper * g
+                    dest[ring * 2 + 1] = f32(compact[k * 2 + 1]) * v.packed.scale * damper * g
+                    ring += 1
+                ring -= last - frame
             else if frame >= ramp_end:
                 g = f32(v.applied)
                 offset = (frame - ring) * 2
@@ -515,16 +532,9 @@ piano_play = (midi: int, vel: f64 = 0.7, pan: f64 = 0.0, volume: f64 = 1.0, shor
     if score and (seq.mood == .snow or seq.mood == .field_rain):
         soft = piano.weather_soft
     id = 0
-    if hold >= 0.0:
-        soft = [__piano_short(soft[pp_k], hold * pp_pitch, (hold + 0.65) * pp_pitch)]
-        notes = [__piano_short(notes[mf_k], hold * mf_pitch, (hold + 0.65) * mf_pitch)]
-        forte = [__piano_short(forte[ff_k], hold * ff_pitch, (hold + 0.65) * ff_pitch)]
-        pp_k = 0
-        mf_k = 0
-        ff_k = 0
-    if b.pp > 0.000001: id = __score_piano_play(soft[pp_k], g * b.pp, pan, pp_pitch, score)
-    if b.mf > 0.000001: id = __score_piano_play(notes[mf_k], g * b.mf, pan, mf_pitch, score)
-    if b.ff > 0.000001: id = __score_piano_play(forte[ff_k], g * b.ff, pan, ff_pitch, score)
+    if b.pp > 0.000001: id = __score_piano_play(soft[pp_k], g * b.pp, pan, pp_pitch, score, hold)
+    if b.mf > 0.000001: id = __score_piano_play(notes[mf_k], g * b.mf, pan, mf_pitch, score, hold)
+    if b.ff > 0.000001: id = __score_piano_play(forte[ff_k], g * b.ff, pan, ff_pitch, score, hold)
     id
 
 # ---------------- the sequencer ----------------

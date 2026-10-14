@@ -26,7 +26,7 @@ struct VPart:
     mesh: Mesh
     lo: vec3
     hi: vec3
-    shadow_low = Mesh()   # distant casters retain the crown envelope and fewer interior cards
+    shadow_low = Mesh()   # distant canopies/casters retain the envelope and fewer interior cards
 
 struct VModel:
     name: str
@@ -315,6 +315,8 @@ __veg_shadow_fs[U] = (i: VegO, u: U) -> vec4:
     # (low plants far off thin out rather than fill in: a clump of flowers became a solid blob)
     if u.low > 0.5: cut = 0.5 + 0.3 * smoothstep(15.0, 50.0, dcam)
     if u.leaves > 0.5: glsl_discard(ta < cut)
+    # Camera-faded fronds and trunks must lose their shadow coverage too.
+    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_dither(i.pos.xy))
     vec4(1, 1, 1, 1)
 
 veg_occluder_fade[U] = (i: VegO, u: U) -> f32:
@@ -333,7 +335,8 @@ veg_occluder_fade[U] = (i: VegO, u: U) -> f32:
     near_outer = if foliage: 5.5 else: (if u.wood > 0.5: 5.5 else: 1.5 * u.fade_width)
     near_inner = if foliage: 2.2 else: (if u.wood > 0.5: 3.0 else: 1.25 * u.fade_width)
     fade = max(fade, smoothstep(near_outer, near_inner, length(i.world - u.cam)))
-    fade
+    # Distance controls opaque fragment coverage, never material opacity.
+    clamp(fade, 0.0, 1.0)
 
 __veg_depth_fs[U] = (i: VegO, u: U) -> vec4:
     # Complementary coverage in both depth passes avoids a hard switch at 60 m.
@@ -356,7 +359,7 @@ __veg_depth_fs[U] = (i: VegO, u: U) -> vec4:
         if u.low < 0.5 and (u.shadow_pass < 0.5 or u.shadow_pass > 1.5): glsl_leaf_edge(ta, cut, i.pos.xy)
         else: glsl_discard(ta < cut)
     if u.shadow_pass > 0.5 and u.shadow_pass < 1.5: return vec4(1, 1, 1, 1)
-    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_dither(i.pos.xy))
+    glsl_discard(veg_occluder_fade(i, u) > glsl_occluder_patch_dither(i.pos.xy))
     vec4(1, 1, 1, 1)
 
 __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
@@ -455,8 +458,13 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
     # Cool overcast fill follows crown openings instead of filling every face
     # equally. Wet bark ridges and upper leaves remain legible in canopy shade.
     storm_fill = smoothstep(0.84, 0.95, u.clouds) * material_wet
-    gap = 0.35 + 0.65 * smoothstep(0.2, 0.85, vnoise(i.world.xz * 0.11))
-    c = c + alb * u.sky * vec3(0.75, 0.95, 1.18) * storm_fill * gap * (0.30 + 0.18 * max(n.y, 0.0))
+    # The canopy pass is the largest full-resolution GPU zone. Clear/dry
+    # scenes need none of the overcast noise.
+    gap = f32(0.0)
+    if material_wet > 0.0 or storm_fill > 0.0:
+        gap = 0.35 + 0.65 * smoothstep(0.2, 0.85, vnoise(i.world.xz * 0.11))
+    if storm_fill > 0.0:
+        c = c + alb * u.sky * vec3(0.75, 0.95, 1.18) * storm_fill * gap * (0.42 + 0.18 * max(n.y, 0.0))
     c = c + point_light(alb, n, i.world, u.lp, u.lc)
     if leaves < 0.5 and material_wet > 0.0:
         stone = 1.0 - u.wood
@@ -473,7 +481,8 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
         c = c + u.sky * material_wet * pow(1.0 - abs(dot(n, v)), 4.0) * (0.025 + 0.035 * gap)
     c = atmos(c, i.world, u.cam, l, u.haze, u.sun_color, u.density, 0.004)
     fade = veg_occluder_fade(i, u)
-    vec4(c, (if fade > 0.001: -8.0 else: (if leaves > 0.5: 0.65 else: (if u.wood > 0.5: 1.0 else: 0.85))))
+    # Response 32 asks watercolor to preserve opaque patches and their holes.
+    vec4(c, (if fade > 0.001: 32.0 else: (if leaves > 0.5: 0.65 else: (if u.wood > 0.5: 1.0 else: 0.85))))
 
 # ---------------- loading ----------------
 
@@ -752,8 +761,8 @@ load_vm = (name: str) -> VModel:
         t = if fir: __fir_tex() else if starts_with(name, "Bush_Common") and starts_with(tex, "Leaves_"): __bush_tex() else if len(tex) > 0: __veg_tex(tex) else: white_tex
         pt = VPart(kind, t, mesh(vs, ids), lo, hi)
         # Each six-index leaf card remains whole. Keep the outline at every crown height,
-        # the crown tip, and one in four interior cards. Near casters and view meshes use
-        # every original card; only the middle cascade beyond 25 m uses this mesh.
+        # the crown tip, and one in four interior cards. Nearby view/casters use
+        # every card; the midrange view and more distant casters use this mesh.
         if fir:
             pt.shadow_low = mesh(vs, fir_shadow)
             vm.has_shadow_low = true
@@ -1684,7 +1693,9 @@ __cull_one = (p: VPlace, f: Frustum, cam: vec3, reach: f64, min_height: f64, vpa
         if vpass == 0 and d > 55.0 and vmodels[p.model].crown.count > 0:
             crown_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
             if d >= 70.0: return
-        if vpass == 2 and d > 25.0 and vmodels[p.model].has_low and vmodels[p.model].has_shadow_low:
+        # Full leaf cards remain around the player. Outside the near-contact
+        # region use the envelope-preserving caster in either cascade.
+        if vpass > 0 and d > (if vpass == 1: 16.0 else: 25.0) and vmodels[p.model].has_low and vmodels[p.model].has_shadow_low:
             shadow_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
         else if d > lod_dist and vmodels[p.model].has_low: far_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
         else: buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
@@ -1891,15 +1902,17 @@ __veg_draw_all = (u0: VegU, shadow: bool, vpass: int, prepass: bool):
             u.leaves = 1.0
             u.center_y = (pt.lo.y + pt.hi.y) * 0.5
             u.lod_mode = if not shadow and vm.crown.count > 0: 1.0 else: 0.0
-            __veg_draw(sh, pt.mesh, b.buf, u)
+            # The 45–70 m band keeps the crown outline and top shelves, with
+            # fewer interior cards before its existing atlas crossfade.
+            leaf_mesh = if pt.shadow_low.count > 0: pt.shadow_low else: pt.mesh
+            __veg_draw(sh, leaf_mesh, b.buf, u)
+            if gpu_timing and not prepass: veg_tris[vpass] += b.items.len() * max(leaf_mesh.index_count, leaf_mesh.count) / 3
             u.lod_mode = 0.0
         u.tex = vm.bark_tex
         u.leaves = 0.0
         __veg_draw(sh, vm.low, b.buf, u)
         if gpu_timing and not prepass:
             veg_tris[vpass] += b.items.len() * max(vm.low.index_count, vm.low.count) / 3
-            loop pt in vm.parts:
-                if pt.kind == 1: veg_tris[vpass] += b.items.len() * max(pt.mesh.index_count, pt.mesh.count) / 3
     # Lower-detail distant shadow crowns never enter the colour/depth view passes.
     if shadow:
         loop i in [0..vmodels.len()):

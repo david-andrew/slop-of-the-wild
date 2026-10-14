@@ -1,0 +1,86 @@
+build:
+    opt = release
+# Heightfield spawns must lie on the exterior of the rendered cliff. Include
+# the critic's two coordinates and a 4 m terrain lattice across both banks.
+use '../game/structures.jo'
+use '../game/worldgen.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/gfx.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+use '../game/env.jo'
+use '../game/story.jo'
+use '../game/post.jo'
+use '../game/save.jo'
+use '../game/shrines.jo'
+from '../game/story.jo' import __bounds
+from '../game/structures.jo' import __west_cliffs, __cliff_ray
+worldgen_load()
+structures_pads()
+worldgen_finish()
+__west_cliffs()
+count=0
+raised=0
+buried_example=vec3(0,0,0)
+loop zi in [0..108):
+    z=1550+zi*4
+    loop xi in [0..88):
+        x= -1720+xi*4
+        p=v3(f64(x),height_at(f64(x),f64(z)),f64(z))
+        safe=cliff_place_ground(p)
+        assert(safe.x<=p.x and safe.x>=p.x-130.0 and safe.z==p.z and f64(safe.y)>=height_at(f64(safe.x),f64(safe.z))-0.001,"placement stands on exterior ground or a rock crown, with bounded westward retreat")
+        assert(length(cliff_place_ground(safe)-safe)<0.001,"placement is outside rock and idempotent")
+        ceiling=__cliff_ray(safe+vec3(0,0.08,0),vec3(0,1,0),1.65)
+        if ceiling.hit:
+            top=__cliff_ray(vec3(safe.x,500,safe.z),vec3(0,-1,0),500)
+            print("blocked body original {p}; safe {safe}; ceiling {ceiling.pos} {ceiling.dist} normal {ceiling.normal}; top {top.hit} {top.pos}")
+        assert(not ceiling.hit,"the placed body, including the head, clears rock ceilings")
+        if f64(safe.y)>height_at(f64(safe.x),f64(safe.z))+0.1:
+            top=__cliff_ray(vec3(safe.x,500,safe.z),vec3(0,-1,0),500)
+            assert(top.hit and abs(safe.y-top.pos.y-0.05)<0.001,"raised placement stands on actual collision triangles")
+            if raised==0:buried_example=p
+            raised+=1
+        count+=1
+loop x in [-1652.0,-1625.0]:
+    p=v3(x,height_at(x,1752),1752)
+    safe=cliff_place_ground(p)
+    assert(terrain_rim_relief(safe)==0.0,"critic ground/camera cannot be swallowed by distant terrain extrusion")
+    assert(length(cliff_place_ground(safe)-safe)<0.001,"critic placement is exterior")
+    print("PASS critic placement {safe}")
+assert(raised>50,"exercise terrain cells beneath the closed skin, not only open toes")
+print("PASS cliff ground: {count} requested cells, {raised} corrected to physical rock; no camera-dependent west extrusion")
+
+# Reach the same skin through the real controller, rather than only testing
+# teleported placements. Running east from the open toe must stop or climb.
+env.rain=0.0
+loop z in [1645.0,1718.0,1752.0,1777.0,1908.0]:
+    p=cliff_place_ground(v3(-1645,height_at(-1645,z),z))
+    pl=Player(pos=p,last_safe=p,state=.ground,grounded=true,face=PI/2.0)
+    cam_yaw_global=PI/2.0
+    act=Actions(move=vec2(0,1),sprint=true)
+    loop frame in [0..1200):
+        player_update(1.0/60.0)
+        assert(length(cliff_place_ground(pl.pos)-pl.pos)<0.06,"running/climbing cannot reach ground inside the rock")
+print("PASS cliff reachability: five twenty-second production-controller routes")
+
+story.beat=.explore
+story.title_done=true
+loop x in [-1652.0,-1625.0]:
+    p=cliff_place_ground(v3(x,height_at(x,1752),1752))
+    pl=Player(pos=p,last_safe=p,state=.ground,grounded=true)
+    post.fade=0.0
+    loop frame in [0..120):__bounds(1.0/60.0)
+    assert(post.fade==0.0 and pl.pos==p,"critic west-toe placements remain visible instead of entering an endless rescue fade")
+pl=Player(pos=v3(-1800,100,1752),last_safe=v3(-1800,100,1752),state=.ground,grounded=true)
+post.fade=0.0
+loop frame in [0..120):__bounds(1.0/60.0)
+assert(not plateau_outside(pl.pos) and post.fade==0.0,"invalid rescue anchors recover to playable ground and clear black fade")
+print("PASS west-toe visibility and finite recovery from an invalid saved/placed rescue anchor")
+
+# A save from before the collision/terrain correction can carry buried ground.
+# Exercise the actual resume path, not only its placement helper.
+save_apply(PlateauSave(pos=buried_example,awake=true,progress=Story(title_done=true),activated=[loop i in [0..srec.len()):false],completed=[loop i in [0..srec.len()):false]))
+assert(length(cliff_place_ground(pl.pos)-pl.pos)<0.06,"resuming old buried ground places the standing body outside the cliff")
+assert(length(pl.last_safe-pl.pos)<0.06,"the resumed rescue anchor is exterior as well")
+print("PASS saved cliff placement and rescue anchor")

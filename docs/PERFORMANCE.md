@@ -1,9 +1,226 @@
-# Performance — Sloppy 0.6.0, 2026-10-13
+# Performance — Sloppy 0.6.0, 2026-10-14
 
 Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland and XWayland,
 **2133×1200 physical pixels**, production dynamic scene scale. All outliers are
 retained. These are **producer/present-return intervals, not scanout timestamps**;
 the shared desktop is not an isolated hardware guarantee.
+
+## Round 67 continued: structural canopy, upload and cue costs
+
+The latest implementation and measurements are in
+[PERFORMANCE_ROUND67B.md](PERFORMANCE_ROUND67B.md): reduced intermediate canopies
+and shadow casters, frame-local terrain nodes, and bounded held-note releases.
+It retains all matched CPU/GPU repeats, two-minute forest/camp routes, final
+critic captures and the remaining target misses. The earlier round's numbers
+below are historical controls, not the final results of this continuation.
+
+## Round 67 critic follow-up: startup, full 1080p and combat clarity
+
+The release runtime chooses its `.vkpipelines` filename from the **executable
+basename**, not a binary-content hash. The serialized `SLPC` wrapper checks its
+length/hash; Vulkan checks vendor/device and pipeline-cache UUID. A renamed pack
+executable therefore starts cold even when it contains the same shaders.
+Shader debug names also carry compiler-global suffixes from unrelated imports.
+The game now strips only nonsemantic SPIR-V debug records, then merges a shared
+`slop-of-the-wild-060.vkpipelines` cache into the native cache before loading its
+first shader. Shader instructions, entry points, bindings and layouts stay
+intact. The driver still keys individual pipeline variants and rejects obsolete
+device/driver data. `SLOPPY_VK_PIPELINE_CACHE=0` disables this path. The vendored
+runtime is unchanged.
+
+Startup additionally loads prepared enemy contact and hero blade tracks, with
+source/model/animation keys and a generated fallback. All **23,050 enemy socket
+matrices and 1,936 hero blade records** match generation byte for byte. Native
+model reads avoid a second full-file string buffer. Preparation remains CPU-only.
+
+The final capture pack measures one cold process, three warm processes, then an
+entry-point-only rebuilt executable with different binary bytes and identical
+shader digests. Managed X11, Vulkan, 1280×720, full scale, prepared assets; one
+bounded render-lock batch. Cold means fresh local Vulkan and NVIDIA cache
+directories; system/page caches are not flushed. Lock queue time is excluded.
+
+| Launch | In-game load, s | Render warmup, s | Whole process, s |
+|---|---:|---:|---:|
+| Cold | 10.62 | 9.187 | 11.31 |
+| Warm 1 | 1.58 | 0.204 | 2.30 |
+| Warm 2 | 1.57 | 0.206 | 2.26 |
+| Warm 3 | 1.67 | 0.203 | 2.39 |
+| New executable, identical shaders | 1.75 | 0.329 | 2.45 |
+
+Warm median **1.58 s** improves on the critic's 1.75–1.95 s, but misses the
+**1.5 s target**. The shared cache hits in every warm process and the changed
+executable. Cold pipeline compilation remains expensive. Pack startup evidence
+is `build/task67-sol/critic-final5/startup/summary.json`, including load averages,
+binary hashes, per-shader digests and all logs; its index reports these three
+startup cases separately from capture timing.
+
+### GPU zones and resolution
+
+The pinned game previously disabled Vulkan pass timing, and the pinned runtime's
+frame statistics do not provide GPU-zone timestamps. `BOTW_GPU=1` now records
+game-owned native timestamp queries around the existing zones, reading available
+results four frames later without waiting. Normal gameplay allocates no query
+pool. The profile includes all recorded GPU-zone samples after frame 240.
+It measures command-buffer zones, excluding acquire/present and CPU scheduling.
+
+At full 1920×1080 in the forest, the original profile's largest mean costs are
+**trees 4.140 ms, terrain 2.245 ms, near vegetation shadows 1.561 ms, post 1.326 ms,
+grass 0.790 ms and middle vegetation shadows 0.728 ms**. Total GPU mean/p99 is
+**13.600/14.614 ms**. The final shader revision measures **13.793/15.046 ms**;
+its largest per-frame mean zones are **trees 4.162 ms, terrain 2.244 ms, near
+vegetation shadows 1.738 ms, post 1.313 ms, grass 0.808 ms and middle vegetation
+shadows 0.764 ms**. Conditional shadow passes contribute zero in skipped frames;
+separate per-draw means are retained in the final summary. Skipping dry overcast
+work shows no demonstrated total GPU improvement. A
+terrain-noise texture lookup experiment measured **13.886 ms mean / 4.257 ms
+trees**, and was reverted. GPU timestamps do not establish producer pacing.
+Raw profiles and the rejected experiment remain in `build/task67-sol/`.
+
+An adjacent matched camp GPU pair at full 1080p records **12.440 → 12.314 ms
+mean / 14.158 → 14.044 ms p99**. Fully clearing foreground foliage reduces its
+zone mean **0.944 → 0.831 ms**; shortening grass around the locked target reduces
+grass **2.801 → 2.725 ms**. Terrain remains **2.803 → 2.817 ms** and farland
+**1.679 → 1.679 ms**. These are modest measured clarity-related savings, not a
+forest throughput win. Evidence: `camp-gpu-final/summary.json` and both raw logs.
+
+Outputs through **1920×1080 start at full scale**; larger outputs retain the
+80%/72% policy. Both warmed resolutions remain available to the dynamic
+controller. The final default-policy 1080p forest repeat stays at **1.00** in all
+six measured batches, but producer interval p99 is **22.999 ms**, with callback
+thread CPU p99 **7.430 ms**. GPU-zone p99 below 16.7 ms does not establish frame
+delivery below that threshold; the **16.7 ms producer target remains unmet**.
+Evidence: `final-1080/{gpu,dynamic}.{log,png,settings.json}` and
+`final-1080/summary.json`; the original profile is in `gpu-summary.json`.
+
+### CPU comparison and exact contact geometry
+
+The comparisons use adjacent before/after pairs, reversing their order on
+odd repeats. Managed visible 1920×1080 X11 clients, full scale, fixed seed/hour/
+weather/input and 1/60 simulation; only the initial 240 frames are excluded.
+Every later tail is retained. The original game is frozen at `af74b81` with
+observational GPU instrumentation; final gameplay is frozen in `clarity-game`.
+Binary hashes and settings accompany each run. Final route timing is recorded in
+`build/task67-sol/paired-clarity/summary.json`.
+
+Four final-tree pairs per scene retain **1,920 samples per version**:
+
+| Scene | CPU p99 before → after, ms | Producer interval p99 before → after, ms |
+|---|---:|---:|
+| Forest | 10.764 → 10.479 | 20.497 → 19.161 |
+| Camp | 15.130 → 17.075 | 18.233 → 18.723 |
+| Swim-to-shore route | 22.615 → 22.060 | 23.699 → 23.190 |
+
+Forest and swim-to-shore CPU p99 improve. Camp CPU p99 is **1.945 ms worse**,
+so the requested non-regression condition remains unmet. Earlier candidate
+comparisons are retained in `paired-scatter/summary.json`; their different tail
+values do not replace this final-tree comparison. Shared-machine variation and
+diagnostic attribution do not turn a positive measured delta into a pass.
+
+The matched Temple wall climb uses two reversed-order pairs at visible 1280×720,
+full scale. It measures frames 61–360, **600 samples per version**, before the
+finite climb reaches its ledge. Final CPU p99 improves **6.640 → 6.029 ms**;
+producer interval p99 improves **12.978 → 12.001 ms**.
+The first extended fixture attempts are retained, including the normal ledge
+exit that invalidated a 720-frame climbing-only measurement. Valid evidence is
+`temple-cpu-final/summary.json`. The earlier soft fade hid Jo; final image review
+prompted a fully cleared corridor centre through foreground masonry near him,
+with a soft radial edge and held/behind-player stone retained. Its headless
+regression asserts both the clear centre and retained endpoint.
+
+The long swimming route eventually reaches shore, as its frame-720 comparison
+shows; it measures **swim-to-shore traversal**, not stationary swimming throughout.
+A separate replay releases forward at frame 150 and asserts the production swim
+state at every capture through frame 720. It reports moving frames 61–150 and
+treading frames 241–720 independently. Three adjacent/reversed-order pairs in
+one bounded batch, visible 1280×720/full scale, with no snapshots inside those
+windows, retain **270 moving / 1,440 treading samples per version**:
+
+| Swim state | CPU p99 before → after, ms | Producer interval p99 before → after, ms |
+|---|---:|---:|
+| Moving breaststroke | 17.385 → 19.156 | 17.894 → 19.826 |
+| Stationary tread | 5.479 → 5.641 | 9.707 → 9.822 |
+
+Moving CPU p99 is **1.771 ms worse**, and tread is **0.162 ms worse**; the
+requested CPU non-regression condition remains unmet. Final evidence is
+`swim-active-cpu-final/summary.json`. The earlier snapshot-bearing replay is kept
+for visual review; its moving interval p99 includes observer PNG/readback stalls.
+A separate moving-phase diagnostic identifies frame 90's largest stage as
+unchanged `jingles_update`, **15.246 → 14.273 ms thread CPU**, with hero animation
+**0.068 → 0.069 ms** across that frame's simulation ticks. This diagnosis does
+not replace the uninstrumented comparison: `swim-active-trace/moving-attribution.json`.
+
+The extended route's diagnostic pair
+attributes the largest spikes to unchanged **`jingles_update`**, about 13–30 ms
+thread CPU, with hero animation about 0.07–0.12 ms. Instrumented diagnostics are
+kept separate from percentile comparisons: `swim-trace/attribution.json`.
+
+An initial camp CPU regression traced to posed combat surfaces. Affine actor
+worlds now skip the generic homogeneous divide, transforming seam-shared source
+positions once when reuse is substantial. A reference check independently
+replays the original per-vertex formula: **1,338,816 vertices** match byte for
+byte across three models, four clips, cached/uncached skins, actual camp world
+coordinates and a projective fallback. Contact tolerances and geometry remain
+unchanged.
+
+### Clarity and traversal validation
+
+Foreground vegetation clears completely at the lens, then returns through
+opaque dither patches instead of watercolor ghost coverage (bark eases from
+3 to 5.5 metres). The paint and composition passes retain solid patch colors
+and exposed background. Architecture clearance returns before all fade logic
+in shadow passes, including the Temple masonry corridor. Locked opponents
+shorten nearby grass; smoke crossing the camera-to-target line retains 12%
+core coverage. Temple masonry keeps a dithered transition
+while timber and tower supports still clear fully. Daylight Keese roost and dawn
+cancels a swoop; defeated enemies stay defeated. Moving swimming uses symmetric
+breaststroke hand paths, with smaller alternating tread paths at rest.
+
+The merge regression keeps the original lens half-coverage and tower shadow
+assertions. `lens_plant_check` also follows both complete distance ramps;
+`material_paint_check` checks all 15 partial coverage levels against sky and
+ground through the enlarged paint brush and final composition, retaining
+opaque colors and exact coverage. `round67_clarity_check` checks the masonry
+corridor's shadow and inactive-player guards.
+
+The final required critic captures are in `build/task67-sol/critic-final5/`.
+Matched original captures are in `before/captures/` and `temple-before/` under
+the same evidence root. Capture settings retain identical seed, position, hour,
+weather and inputs; the Temple fixture uses a real climb and a fixed opposing
+wall camera. Images are downscaled before review. The CPU swim check samples
+480 stroke/tread poses in both models and retains its surface, kick, camera,
+crossfade, exhaustion, shore and physics assertions. Separate clarity and GPU
+occluder checks cover dusk/day/dawn Keese, smoke bounds, intermediate masonry
+coverage and complete support clearance. Prepared asset equivalence passes.
+`checks-summary.json` records the latest 21 named passing checks, including
+combat/contact/geometry/reach/scatter, camera/input/spacing, cliff/tower climbing,
+swim/clarity, shader loading/adaptation, tooling and prepared assets. Reviewed
+matched final-tree images are `matched-final5-forest-150.jpg`,
+`matched-final5-camp-{180,420,640}.jpg`, `matched-final5-swim-180.jpg` and
+`matched-final5-temple-climb-180.jpg` under the evidence root. All six were viewed
+after downscaling, including Jo's visible climb through the soft clearance.
+`swim-cycle-matched.jpg`
+shows two matched moving phases and stationary tread, with bent arms and a
+narrow recovery; its snapshot-bearing run is visual evidence, not a pure
+producer-interval benchmark.
+
+Reproduce with fresh build evidence directories (these helpers own their locks):
+
+```sh
+tools/prepare_assets.sh
+tools/prepared_assets_check.sh
+python3 tools/round67_performance.py BEFORE_EXECUTABLE AFTER_EXECUTABLE build/task67-repeat --repeats 4
+python3 tools/critic_pack.py --only captures build/task67-critic-repeat
+```
+
+Critic captures now share one lock for at most four scenes, releasing after
+60 seconds of a batch; a 90-second child timeout bounds a slow last render to
+about 150 seconds. The first process in each batch records its queue wait;
+subsequent processes do not reacquire or nest the lock. Completed byte-identical
+captures survive `--resume`. The earlier `critic-final4` attempt was deliberately
+interrupted while pending the lock, then resumed with this protocol. Its recorded
+interrupted wall time is a lower bound excluding compilation and the interrupted
+pending wait; per-process startup and scene timings retain their own raw logs.
+The final `critic-final5` pack starts fresh on the corrected shader.
 
 ## Round 66 critic follow-up: managed X11 launcher and swimming
 

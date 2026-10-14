@@ -1,0 +1,13 @@
+# CPU socket preparation; headless_build owns the software-only preamble.
+use '../game/enemy_contacts.jo'
+use '../game/weapon_tracks.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+assert(enemy_contacts_write())
+lib=load_humanoid_anims()
+loop model in ["hero","hero_bare"]:
+    m=load_model("assets/models/{model}.mdl")
+    weapon_tracks=WeaponTracks()
+    weapon_tracks_init(m,lib,false)
+    assert(weapon_tracks_write())
+print("PASS prepared combat sockets: enemy armed/bare tracks and both hero blade tracks")

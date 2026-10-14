@@ -119,6 +119,8 @@ sheikah_traces = (w: vec3, n: vec3, sparse: f32) -> f32:
 
 # Shared with the scripted tower-base clearance regression.
 build_occluder_fade = (i: BuildO, u: BuildU) -> f32:
+    # Camera clearance never changes a caster or an inactive player view.
+    if u.player.y < -500.0 or u.shadow_pass > 0.5: return 0.0
     # whatever stands between the camera and the player dissolves (a stake, a pillar, a wall's end)
     cp = u.player + vec3(0, 1.0, 0) - u.cam
     tt = clamp(dot(i.world - u.cam, cp) / max(dot(cp, cp), 0.01), 0.0, 1.0)
@@ -137,12 +139,19 @@ build_occluder_fade = (i: BuildO, u: BuildU) -> f32:
     body = vec3(u.player.x, clamp(i.world.y, u.player.y, u.player.y + 1.6), u.player.z)
     if i.mat.w > 0.5 and i.mat.w < 1.5 and length(i.world-body) < 1.0: fade = 1.0
     if length(i.world-u.cam) < 1.0: fade = 1.0
-    if u.player.y < -500.0 or u.shadow_pass > 0.5: fade = 0.0
-    # Every structural surface uses complete clearance, including while entering
-    # a climb from the base rocks. Partial coverage averages into ghost beams
-    # in the paint pass even before the broader climbing fade becomes active.
-    if fade > 0.001: fade = 1.0
-    fade
+    # Timber and tower supports clear completely; masonry keeps a broad
+    # dithered transition instead of a hard oval portal through the wall.
+    timber = i.mat.w > 0.5 and i.mat.w < 1.5
+    if not timber and u.keep_radius <= 0.0 and u.fade_width > 1.1:
+        # The ordinary depth taper ends before Jo. During a masonry climb,
+        # keep the sightline's centre clear through foreground walls close to
+        # him, with a soft radial edge and held/behind-player stone retained.
+        corridor = smoothstep(u.fade_width, u.fade_width * 0.45, length(u.cam + cp * tt - i.world))
+        corridor *= smoothstep(0.08, 0.25, tt) * (1.0 - smoothstep(0.97, 1.0, tt))
+        fade = max(fade, corridor)
+    if timber or u.keep_radius > 0.0:
+        if fade > 0.001: fade = 1.0
+    clamp(fade, 0.0, 1.0)
 
 build_fs = (i: BuildO, u: BuildU) -> vec4:
     if u.collapse > 0.0:
@@ -177,13 +186,15 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
         # The cave's relief owns its planes and undercuts. Pigment groups those
         # planes into cool recesses and warm exposed beds, without a crack grid.
         q = vec2(w.x + w.z * 0.7, w.y + (w.x - w.z) * 0.18)
-        wash = vnoise(q * vec2(0.065, 0.085))
-        bed = vnoise(q * vec2(0.045, 0.15) + vec2(7, 3))
+        wash = vnoise(q * vec2(0.26, 0.38))
+        bed = vnoise(q * vec2(0.10, 0.65) + vec2(7, 3))
         alb = alb * mix(vec3(0.72, 0.83, 0.98), vec3(1.02, 1.0, 0.93), smoothstep(0.22, 0.76, wash))
         # Vertical and inward planes keep their stone value through daylight
         # adaptation; the existing light separates exposed lips from recesses.
         plane = smoothstep(-0.35, 0.65, n.y)
-        alb = alb * (0.84 + bed * 0.18) * (0.55 + plane * 0.35)
+        seam = abs(sin(q.y*3.4+q.x*0.16+wash*2.0))
+        tooth = 1.0-smoothstep(0.025,0.11,seam)
+        alb = alb * (0.88 + bed * 0.28) * (0.84 + plane * 0.16) * (1.0-tooth*0.24)
         exposed = clamp(i.mat.w-6.0,0.0,1.0)
         if exposed > 0.0:
             mineral = cave_weathered_stone(w) * (0.82 + i.color.x * 0.65)
@@ -286,6 +297,10 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
     c = c + alb*stone_sun*vec3(0.98,1.0,1.02)*0.10*exterior*clamp(1.0-n.y*1.4,0.0,1.0)*(1.0-clamp(dot(n,l),0.0,1.0)*sh)
     if i.mat.w > 3.5 and i.mat.w < 4.5:
         c = c + alb * u.sun_color * vec3(1.0, 0.8, 0.55) * 0.2 * clamp(1.0 - n.y * 1.4, 0.0, 1.0) * (1.0 - clamp(dot(n, l), 0.0, 1.0) * sh)
+    # Canyon outcrops use the same mineral response as the adjoining cliff.
+    # Neutral sky alone leaves paint_light's violet shade pigment on these ribs.
+    canyon_mineral = if i.mat.w > 2.5 and i.mat.w < 5.5: west_rock_cover(w) else: f32(0.0)
+    c = mix(c,luma(c)*vec3(1.04,1.0,0.92),canyon_mineral*0.88)
     c = c + alb * i.light + point_light(alb, n, w, u.lp, u.lc)
     # Sheikah glow lines
     if i.mat.z > 0.0:

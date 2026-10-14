@@ -1,0 +1,82 @@
+# Opt-in game-owned Vulkan timestamps; the pinned release exposes CPU stats only.
+# Four slots keep asynchronous reads away from the two runtime frames in flight.
+when TARGET != "wasm":
+    @lib("libvulkan.so.1")
+    extern vkCreateQueryPool = (dev: *u8, info: *u8, allocator: *u8, pool: *int) -> i32
+    @lib("libvulkan.so.1")
+    extern vkCmdResetQueryPool = (cb: *u8, pool: int, first: u32, count: u32)
+    @lib("libvulkan.so.1")
+    extern vkCmdWriteTimestamp = (cb: *u8, stage: u32, pool: int, query: u32)
+    @lib("libvulkan.so.1")
+    extern vkGetQueryPoolResults = (dev: *u8, pool: int, first: u32, count: u32, size: int, values: *u64, stride: int, flags: u32) -> i32
+
+    struct GameQueryInfo:
+        stype = u32(11)
+        next: *u8 = null
+        flags = u32(0)
+        kind = u32(2)
+        count = u32(128)
+        statistics = u32(0)
+
+    __gvt_pool = 0
+    __gvt_period = 1.0
+    __gvt_frame = 0
+    __gvt_used = 0
+    __gvt_names = fill("", 128)
+    __gvt_counts = fill(0, 4)
+    __gvt_values = fill(u64(0), 64)
+    __gvt_log = ""
+    __gvt_samples = 0
+
+    game_gpu_read = ():
+        slot = __gvt_frame % 4
+        count = __gvt_counts[slot]
+        if count < 2: return
+        # 64-bit values plus availability, without VK_QUERY_RESULT_WAIT_BIT.
+        if vkGetQueryPoolResults(__vk_dev, __gvt_pool, u32(slot * 32), u32(count), count * 16, data(__gvt_values), 16, 5) != 0: return
+        loop k in [0..count):
+            if __gvt_values[k * 2 + 1] == 0: return
+        line = "gpu frame: {__gvt_frame - 4}"
+        total = 0.0
+        loop k in [0..count - 1):
+            ms = f64(__gvt_values[(k + 1) * 2] - __gvt_values[k * 2]) * __gvt_period / 1e6
+            total += ms
+            line += " {__gvt_names[slot * 32 + k]} {ms:.3}"
+        __gvt_log += "{line} = {total:.3}\n"
+        __gvt_samples += 1
+        if __gvt_samples >= 120:
+            eprint(__gvt_log)
+            __gvt_log = ""
+            __gvt_samples = 0
+
+    game_gpu_mark = (name: str):
+        if __gvt_used == 0:
+            if __gvt_pool == 0:
+                info = GameQueryInfo()
+                __vk_check(vkCreateQueryPool(__vk_dev, (&info) as *u8, null, &__gvt_pool), "game timestamp pool")
+                props = fill(u8(0), 1024)
+                vkGetPhysicalDeviceProperties(__vk_pd, data(props))
+                # VkPhysicalDeviceProperties.limits.timestampPeriod, Vulkan LP64 ABI.
+                __gvt_period = f64(((data(props) + 720) as *f32)[0])
+                assert(__gvt_period > 0.0 and __gvt_period < 1000.0)
+                eprint("gpu timestamps: Vulkan period {__gvt_period} ns; asynchronous 4-frame slots")
+            game_gpu_read()
+            __vg_end_pass()
+            __vk_begin_frame()
+            vkCmdResetQueryPool(__vk_cb(), __gvt_pool, u32((__gvt_frame % 4) * 32), 32)
+        if __gvt_used >= 31: return
+        index = (__gvt_frame % 4) * 32 + __gvt_used
+        __gvt_names[index] = name
+        vkCmdWriteTimestamp(__vk_cb(), 0x2000, __gvt_pool, u32(index))
+        __gvt_used += 1
+
+    game_gpu_end = ():
+        if __gvt_used == 0: return
+        vkCmdWriteTimestamp(__vk_cb(), 0x2000, __gvt_pool, u32((__gvt_frame % 4) * 32 + __gvt_used))
+        __gvt_counts[__gvt_frame % 4] = __gvt_used + 1
+        __gvt_used = 0
+        __gvt_frame += 1
+        if frame_number() % 120 == 119 and len(__gvt_log) > 0:
+            eprint(__gvt_log)
+            __gvt_log = ""
+            __gvt_samples = 0

@@ -6,6 +6,8 @@ use 'clips.jo'
 use 'items.jo'
 use 'combat.jo'
 use 'enemy_weapon_pose.jo'
+use 'mesh_assets.jo'
+use 'asset_stream.jo'
 
 # CPU-only limb tracks shared by collision and drawing: swing, slam, shove, kick
 # and throw. Bare melee keeps its fist clips. No per-sample skinning.
@@ -17,8 +19,42 @@ const ENEMY_CONTACT_STEP = 1.0 / 240.0
 # Dense sockets preserve fast wrist turns; contact sweeps stay at 240 Hz.
 const ENEMY_SOCKET_STEP = 1.0 / 1920.0
 
-enemy_contacts_init = ():
+enemy_contacts_key = () -> int:
+    asset_key(["game/enemy_contacts.jo", "game/enemy_weapon_pose.jo", "game/skel.jo", "game/clips.jo", "game/mesh_assets.jo", "assets/models/bokoblin.mdl", "assets/models/humanoid.anim"])
+
+enemy_contacts_io = (s: mut AssetStream, paths: mut mat4[][], toe: mut vec3, writing: bool):
+    count = paths.len()
+    pack_count(s, count, writing)
+    if count != ENEMY_MOVES * 2: s.ok = false
+    if not s.ok: return
+    if not writing: paths.resize(count)
+    loop i in [0..count):
+        path = paths[i]
+        pack_array(s, path, writing)
+        if path.len() != 2305: s.ok = false
+        if not s.ok: return
+        paths[i] = path
+    pack_value(s, toe, writing)
+
+enemy_contacts_write = () -> bool:
+    enemy_contacts_init(false)
+    s = pack_create("assets/prepared/enemy-contacts.bin", enemy_contacts_key())
+    enemy_contacts_io(s, enemy_contact_paths, enemy_kick_toe, true)
+    pack_publish(s, "assets/prepared/enemy-contacts.bin")
+
+enemy_contacts_init = (prepared: bool = true):
     if enemy_contact_paths.len() > 0: return
+    if prepared and env("BOTW_NO_PREPARED_ASSETS") == none and env("BOTW_BAKE_ASSETS") == none:
+        s = pack_open("assets/prepared/enemy-contacts.bin", enemy_contacts_key())
+        paths: mat4[][]
+        toe = vec3(0,0,0)
+        if s.ok: enemy_contacts_io(s, paths, toe, false)
+        asset_close(s)
+        if s.ok and s.left == 0:
+            enemy_contact_paths = paths
+            enemy_kick_toe = toe
+            if env("BOTW_LOADTIME") != none: eprint("prepared enemy contacts: hit")
+            return
     r = BinR(read_bytes("assets/models/bokoblin.mdl") ?? [])
     assert(r_u32(r) == MDL_MAGIC and r_u32(r) == MDL_VERSION)
     m = Model(name = r_str(r), skeleton = r_str(r))

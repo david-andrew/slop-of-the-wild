@@ -35,9 +35,12 @@ swim_surface_check = ():
         loop clip in ["swim", "swim_idle"]:
             c = clip_index(lib, clip)
             assert(c >= 0 and m.ok)
+            hand_min=1000.0
+            hand_max=-1000.0
             loop sample in [0..120):
                 pose = sample_clip(lib, c, f64(sample) / 120.0 * clip_duration(lib, c), true)
                 swim_surface_pose(lib, pose, if clip == "swim": 1.0 else: 0.0)
+                swim_arm_pose(m, lib, pose, if clip == "swim": 1.0 else: 0.0, f64(sample) / 120.0, 1.0)
                 head = motion_point(m, pose, bone_index(m, "head"))
                 pelvis = motion_point(m, pose, bone_index(m, "pelvis"))
                 # Origin floats at water level. The head joint must clear it;
@@ -47,11 +50,15 @@ swim_surface_check = ():
                 loop side in ["_l", "_r"]:
                     hand = motion_point(m, pose, bone_index(m, "hand" + side))
                     assert(hand.y < 0.10, "stroke hand above water")
+                    if side == "_l":
+                        hand_min=min(hand_min,f64(hand.x))
+                        hand_max=max(hand_max,f64(hand.x))
                     if clip == "swim":
                         shoulder = motion_point(m, pose, bone_index(m, "upperarm" + side))
                         foot = motion_point(m, pose, bone_index(m, "foot" + side))
                         assert(shoulder.y > 0.09, "swimming shoulder too low")
                         assert(abs(f64(foot.y - pelvis.y)) < 0.25, "breaststroke kick not horizontal")
+            assert(hand_max-hand_min > (if clip == "swim": 0.20 else: 0.08),"static T-pose or missing tread")
     hf.n = 64
     hf.cell = 2.0
     hf.x0 = -64.0

@@ -8,6 +8,8 @@ use 'scene.jo'
 # Negative alpha still marks faded occluders. The paint pass reserves (1,2] for
 # distant fine structure, where preserving the silhouette overrides material grain.
 # (2,3] carries the same protection for foliage while retaining its softer rim.
+# Response 32 marks opaque vegetation dissolve patches before painting; -16
+# preserves their coverage through composition without ink or pigment bleed.
 # Sky is identified by depth and has wet washes but no paper tooth. No extra target.
 paint_foliage = (a: f32) -> f32: if a > 2.0: 1.0 else: 1.0 - smoothstep(0.055, 0.17, abs(a - 0.65))
 paint_stone = (a: f32) -> f32: 1.0 - smoothstep(0.045, 0.14, abs(a - 0.85))
@@ -35,7 +37,7 @@ struct PostU:
     sun_uv = vec2(0, 0)     # the sun on screen
     rays = 0.0              # how strong its shafts (low sun, sun in front)
     ray_color = vec3(0, 0, 0)
-    golden = 0.0            # low sun, clear sky: the whole picture warms, shadows go violet
+    golden = 0.0            # low sun, clear sky: amber highlights and neutral shade
     moon = 0.0              # night outdoors: colors drain toward a moonlit blue
     projection_scale = vec2(0.83, 0.47)
     view_up = vec3(0, 1, 0)
@@ -80,6 +82,10 @@ pp_paint_fs = (i: PostO, u: PostU) -> vec4:
     coverage_b = sample(u.src, i.uv + vec2(1.5, -0.5) * pixel)
     coverage_c = sample(u.src, i.uv + vec2(-0.5, 1.5) * pixel)
     coverage_d = sample(u.src, i.uv + vec2(1.5, 1.5) * pixel)
+    # Vegetation uses opaque patches rather than a blended ghost. A strong
+    # positive marker survives these bilinear probes on the exposed side too.
+    patches = max(center.w, max(max(coverage_a.w, coverage_b.w), max(coverage_c.w, coverage_d.w)))
+    if patches > 3.5: return vec4(center.xyz, -16)
     coverage = max(-center.w, max(max(-coverage_a.w, -coverage_b.w), max(-coverage_c.w, -coverage_d.w)))
     if coverage > 0.001:
         # Half-texel taps and equal weights avoid material-dependent dot contrast.
@@ -121,6 +127,7 @@ pp_paint_fs = (i: PostO, u: PostU) -> vec4:
             c = c4.xyz
             d4 = if x == 0: c4 else: (if y == 0: b4 else: sample(u.src, i.uv + vec2(fx, fy) * t))
             d = d4.xyz
+            patches = max(patches, max(max(a4.w, b4.w), max(c4.w, d4.w)))
             # Four existing nearby taps detect coverage; a strong negative marker
             # survives bilinear sampling even through sparse retained fragments.
             if x == 1 and y == 1: occluder = max(max(-a4.w, -b4.w), max(-c4.w, -d4.w))
@@ -132,6 +139,8 @@ pp_paint_fs = (i: PostO, u: PostU) -> vec4:
             s2 = s2 + c * c
             m3 = m3 + d
             s3 = s3 + d * d
+    # Preserve background pixels reached by the wider brush as well.
+    if patches > 3.5: return vec4(center.xyz, -16)
     m0 = m0 / 9.0
     m1 = m1 / 9.0
     m2 = m2 / 9.0
@@ -250,6 +259,7 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
     if stone + foliage > 0.001:
         grain_scale = 1.0 - stone * 0.64 - foliage * 0.43
         grain = if u.has_grain > 0.5: sample(u.grain, i.uv * grain_scale) else: pp_grain(px * grain_scale)
+    if anchor.w < -12.0: wob = vec2(0, 0)
     uv = i.uv + wob * u.texel * 3.2 * u.paint * (1.0 - fine * 0.85) * (1.0 - (smooth - figure) * 0.85)
     src = sample(u.src, uv)
     c = src.xyz
@@ -347,7 +357,7 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
     l = luma(c)
     c = c + u.shadow_tint * (1.0 - smoothstep(0.0, 0.5, l)) * 0.06 + u.light_tint * smoothstep(0.5, 1.0, l) * 0.04
     c = mix(c, c * vec3(1.1, 0.98, 0.86) + vec3(0.025, 0.008, 0.0), u.golden * smoothstep(0.3, 0.75, l) * 0.6)
-    c = mix(c, c * vec3(0.82, 0.88, 1.16) + vec3(0.0, 0.005, 0.02), u.golden * (1.0 - smoothstep(0.15, 0.5, l)))
+    c = mix(c, c * vec3(0.98, 1.0, 1.02) + vec3(0.003, 0.005, 0.008), u.golden * (1.0 - smoothstep(0.15, 0.5, l)))
     # moonlight: the eye loses color in the dark; what is left leans blue, a little lifted
     lm = luma(c)
     # (except where firelight falls: warm and bright keeps its color)

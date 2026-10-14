@@ -1,0 +1,35 @@
+# Game-owned shared cache, independent of executable basename. Native caches
+# remain intact; the driver keys shader/state variants and validates its UUID.
+when TARGET != "wasm":
+    @lib("libvulkan.so.1")
+    extern vkMergePipelineCaches = (dev: *u8, dst: int, count: u32, sources: *int) -> i32
+    @lib("libvulkan.so.1")
+    extern vkDestroyPipelineCache = (dev: *u8, cache: int, allocator: *u8)
+    __game_cache_path = ""
+    __game_cache_loaded = false
+    game_pipeline_cache_load = ():
+        if __game_cache_loaded: return
+        __game_cache_loaded = true
+        if (env("SLOPPY_VK_PIPELINE_CACHE") ?? "") == "0" or __vk_pcache == 0: return
+        native = __vk_pcache_path()
+        if native == "": return
+        __game_cache_path = native[..rfind(native, "/") + 1) + "slop-of-the-wild-060.vkpipelines"
+        if let bs = read_bytes(__game_cache_path):
+            if bs.len() < 52 or str_from_bytes(bs[..4)) != "SLPC": return
+            q = (data(bs) + 4) as *int
+            h = data(bs) + 20
+            n = q[0]
+            props = fill(u8(0), 1024)
+            vkGetPhysicalDeviceProperties(__vk_pd, data(props))
+            if n != bs.len() - 20 or n < 32 or q[1] != __vk_pcache_hash(h, n): return
+            if not __mem_eq(h + 8, data(props) + 8, 8) or not __mem_eq(h + 16, data(props) + 276, 16): return
+            info = [17, 0, 0, n, h as int]
+            cache = 0
+            if vkCreatePipelineCache(__vk_dev, data(info) as *u8, null, &cache) != 0: return
+            result = vkMergePipelineCaches(__vk_dev, __vk_pcache, 1, &cache)
+            vkDestroyPipelineCache(__vk_dev, cache, null)
+            if env("BOTW_LOADTIME") != none and result == 0: eprint("    game pipeline cache: hit")
+    game_pipeline_cache_commit = ():
+        if __game_cache_path == "": return
+        __vk_save_pipeline_cache()
+        if let bs = read_bytes(__vk_pcache_path()): write_bytes(__game_cache_path, bs)

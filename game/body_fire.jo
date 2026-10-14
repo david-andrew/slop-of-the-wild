@@ -28,6 +28,13 @@ body_fire_vs = (v: QuadV, i: PInst, u: BodyFireU) -> BodyFireO:
         point = flame_card_bound(point,i.pos.xyz,u.vp)
     BodyFireO(u.vp * vec4(point,1),vec2(v.corner.x,y),i.data.z,strength)
 
+# HDR flame values survive the painterly tone map: pale hot fuel at the core,
+# amber sheets, red tips and a dim smoky shoulder. Shared by ground/body fire.
+flame_ink = (y: f32, core: f32, density: f32) -> vec3:
+    sheet = mix(vec3(1.65,0.48,0.045),vec3(0.68,0.075,0.018),smoothstep(0.28,0.96,y))
+    sheet = mix(vec3(0.22,0.045,0.018),sheet,smoothstep(0.04,0.72,density))
+    mix(sheet,vec3(4.2,3.25,1.65),clamp(core,0.0,1.0))
+
 body_fire_fs = (i: BodyFireO, u: BodyFireU) -> vec4:
     y = i.uv.y
     flow = y * 8.0 - u.time * 12.0
@@ -42,8 +49,8 @@ body_fire_fs = (i: BodyFireO, u: BodyFireU) -> vec4:
     trail_x = abs(i.uv.x + sin(flow-0.8+i.seed*0.23)*y*0.20 + y*0.16)
     trail = (1.0-smoothstep(width*0.15,width*0.65+0.04,trail_x))*0.36*smoothstep(0.15,0.45,y)
     alpha = max(edge,trail) * smoothstep(0.0,0.08,y) * (1.0-smoothstep(0.72,1.0,y)) * (0.78+holes*0.22) * (1.0-smoothstep(0.38,0.80,y)*smoothstep(0.55,0.78,holes)*0.85)
-    core = (1.0-smoothstep(0.0,0.70,y)) * (1.0-smoothstep(0.0,0.32,x))
-    color = mix(vec3(1.65,0.32,0.025),vec3(2.15,1.10,0.16),core*0.78)
+    core = (1.0-smoothstep(0.16,0.65,y)) * (1.0-smoothstep(0.08,0.40,x))
+    color = flame_ink(y,core,edge)
     vec4(color,alpha*i.strength)
 
 __body_fire_ready = false

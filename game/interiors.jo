@@ -588,7 +588,7 @@ sor_rock_finish = (first: int):
         patch = __n3(p*0.075)
         recess = smoothstep(0.20,0.62,-f64(n.y))
         col = cur.verts[k].color
-        col = vec4(col.xyz*f32(0.68+patch*0.28-recess*0.07),col.w)
+        col = vec4(col.xyz*f32(0.82+patch*0.32-recess*0.05),col.w)
         moss = smoothstep(0.15,0.72,f64(n.y))*smoothstep(0.66,0.88,__n3(p*0.18))
         col = vec4(mix(col.xyz,col.xyz*vec3(0.72,0.88,0.67),f32(moss*0.35)),col.w)
         cur.verts[k].color = col
@@ -760,7 +760,11 @@ sor_passage_surface = (a: vec3, b: vec3, n: int, station: f64, ang: f64) -> vec3
     cleft = smoothstep(0.66,0.82,bed)*(1.0-smoothstep(0.86,1.0,bed))
     # The lining carries broad bedding rather than a metre-by-metre faceted
     # mosaic beside the opening camera. Keep the sealed rim and clearance.
-    rough = sin(station*0.31+ang*2.0)*0.14 + (noise(station*0.26,ang*1.6)-0.5)*0.14 + cleft*0.12
+    # Unequal shoulders and a slow offset break the ruler-straight
+    # borders, tapering into the original vestibule and sealed mouth.
+    irregular = smoothstep(4.0,7.0,station)*(1.0-smoothstep(f64(n-5),f64(n),station))
+    base += side*f32(sin(station*0.23)*0.22*irregular)
+    rough = (sin(station*0.31+ang*2.0)*0.26 + (noise(station*0.26,ang*1.6)-0.5)*0.28 + cleft*0.22)*irregular
     up = -0.65 + pow(max(sin(ang), 0.0), 0.55) * (4.65 + rough)
     q = base + side * f32(-cos(ang) * (2.7 + rough)) + v3(0.0, up, 0.0)
     # Side ordering is reversed in the mouth's local frame.

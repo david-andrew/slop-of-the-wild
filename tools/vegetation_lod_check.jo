@@ -1,0 +1,47 @@
+# CPU selection contract: full nearby canopies, bounded distant cards, existing
+# complementary atlas band, and independent caster buckets for both cascades.
+use '../game/vegetation.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/scene.jo'
+from '../game/vegetation.jo' import __cull_one, __bk
+
+vmodels = [VModel("CommonTree", [], 12.0, 4.0, has_low = true, has_shadow_low = true, crown = Mesh(count = 6)),
+    VModel("BareTree", [], 12.0, 4.0, has_low = false)]
+loop model in [0..2):
+    loop vpass in [0..3):
+        buckets.push(VBucket([], InstBuf()))
+        far_buckets.push(VBucket([], InstBuf()))
+        shadow_buckets.push(VBucket([], InstBuf()))
+        crown_buckets.push(VBucket([], InstBuf()))
+checks = 0
+loop model in [0..2):
+    loop vpass in [0..3):
+        loop distance in [0.0, 15.99, 16.0, 16.01, 24.99, 25.0, 25.01, 44.99, 45.0, 45.01, 55.0, 55.01, 69.99, 70.0, 120.0]:
+            k = __bk(vpass, model)
+            buckets[k].items.clear()
+            far_buckets[k].items.clear()
+            shadow_buckets[k].items.clear()
+            crown_buckets[k].items.clear()
+            p = VPlace(model, mat4(), vec4(1, 1, 1, 0), vec3(0, 0, f32(distance)), 4.0, 12.0, false)
+            d = f64(length(p.pos))
+            lod = if vpass == 0: 45.0 else: (if vpass == 1: 25.0 else: 0.0)
+            __cull_one(p, Frustum(), vec3(0, 0, 0), 1800.0, 0.0, vpass, lod, true)
+            ordinary = buckets[k].items.len() + far_buckets[k].items.len()
+            if model == 1:
+                assert(ordinary == 1 and shadow_buckets[k].items.len() == 0 and crown_buckets[k].items.len() == 0, "bare trees keep their original geometry")
+            else if vpass == 0:
+                assert(shadow_buckets[k].items.len() == 0, "caster simplification cannot leak into nearby view buckets")
+                assert(crown_buckets[k].items.len() == int(d > 55.0))
+                assert(ordinary == int(d < 70.0), "complementary atlas band retains the existing thresholds")
+                if d <= 45.0: assert(buckets[k].items.len() == 1, "full detail next to Jo")
+            else:
+                assert(crown_buckets[k].items.len() == 0)
+                assert(shadow_buckets[k].items.len() == int(d > (if vpass == 1: 16.0 else: 25.0)))
+                assert(ordinary + shadow_buckets[k].items.len() == 1, "exactly one caster at every boundary")
+            before = buckets[k].items.len() + far_buckets[k].items.len() + shadow_buckets[k].items.len() + crown_buckets[k].items.len()
+            p.felled = true
+            __cull_one(p, Frustum(), vec3(0, 0, 0), 1800.0, 0.0, vpass, lod, true)
+            assert(before == buckets[k].items.len() + far_buckets[k].items.len() + shadow_buckets[k].items.len() + crown_buckets[k].items.len(), "felled trees never add a standing canopy")
+            checks += 1
+print("PASS vegetation LOD: {checks} full-detail, atlas, bare/felled tree and independent cascade boundary cases")

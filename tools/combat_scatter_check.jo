@@ -1,0 +1,40 @@
+# Exact posed surface order through seam reuse, uncached/cached poses and worlds.
+use '../game/chars.jo'
+from '../game/chars.jo' import __posed_body_points, __combat_local_poses
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/gfx.jo'
+lib=load_humanoid_anims()
+checks=0
+loop name in ["hero","hero_bare","bokoblin"]:
+    m=load_model("assets/models/{name}.mdl")
+    combat_body_prepare(m)
+    body=combat_bodies[m.name]
+    print("{name}: vertices {body.vertices.len()} unique {body.unique.len()}")
+    loop clip in ["idle","slash1","knockback","swim"]:
+        pose=sample_clip(lib,clip_index(lib,clip),0.37,true)
+        palette=skin_cpu(m,pose)
+        __combat_local_poses.clear()
+        loop k in [0..4):
+            world=translation(vec3(-1439+f32(k),239,1614))*rotation_y(0.63+f64(k))*scaling(vec3(1.1,1.1,1.1))
+            if k==3: world[0].w=0.001
+            actual: vec3[]
+            __posed_body_points(m,palette,world,actual)
+            expected: vec3[]
+            loop v in body.vertices:
+                q=vec3(0,0,0)
+                p=vec4(v.pos,1)
+                loop weight in [0..4):
+                    w=v.wgt[weight]
+                    if w<=0.0: continue
+                    o=int(v.jnt[weight])*12
+                    a=palette.mats
+                    x=vec4(a[o],a[o+1],a[o+2],a[o+3])
+                    y=vec4(a[o+4],a[o+5],a[o+6],a[o+7])
+                    z=vec4(a[o+8],a[o+9],a[o+10],a[o+11])
+                    q+=vec3(dot(x,p),dot(y,p),dot(z,p))*w
+                expected.push(transform_point(world,q))
+            assert(actual.len()==expected.len())
+            assert(__mem_eq(data(actual) as *u8,data(expected) as *u8,actual.len()*size_of(vec3)),"posed contact surface changed")
+            checks+=actual.len()
+print("PASS combat scatter: {checks} byte-exact posed vertices, three models, four clips, cached/uncached skins and translated/rotated/scaled worlds")

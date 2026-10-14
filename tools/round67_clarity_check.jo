@@ -1,0 +1,59 @@
+# Daylight Keese must never interrupt a climb; smoke clearing is lens-to-target only.
+use '../game/enemies.jo'
+from '../game/enemies.jo' import __enemy_step
+use '../game/player.jo'
+use '../game/terrain.jo'
+use '../game/env.jo'
+use '../game/fx.jo'
+use '../game/build.jo'
+use '../game/gfx.jo'
+
+hf.n=4
+hf.h=fill(f32(0),16)
+pl = Player(pos=vec3(0,0,0),state=.climb,grounded=false)
+e = Enemy(.keese,vec3(0,1.2,0),vec3(0,3,0),state=.chase,t=2.0,hp=1.0,hp_max=1.0)
+alarm=false
+saved_hp=pl.hp
+loop k in [0..120): __enemy_step(e,1.0/60.0,false,alarm)
+assert(e.state==.buried and e.pos==e.home and pl.hp==saved_hp,"daylight Keese interrupted climbing")
+__enemy_step(e,1.0/60.0,true,alarm)
+assert(e.state==.chase,"night Keese did not wake at its roost")
+__enemy_step(e,1.0/60.0,false,alarm)
+assert(e.state==.buried and e.alert==0.0,"dawn retained a swoop")
+e.state=.dead
+e.t=0.0
+__enemy_step(e,0.01,false,alarm)
+assert(e.state==.dead,"daylight revived a defeated Keese")
+e.state=.gone
+__enemy_step(e,0.01,false,alarm)
+assert(e.state==.gone,"daylight respawned a nearby Keese")
+cam=vec3(0,2,10)
+target=vec3(0,0,0)
+assert(smoke_lock_coverage(vec3(0,1.5,5),1.0,cam,target)<0.13)
+assert(smoke_lock_coverage(vec3(5,1.5,5),1.0,cam,target)==1.0)
+assert(smoke_lock_coverage(vec3(0,1,-5),1.0,cam,target)==1.0)
+assert(smoke_lock_coverage(vec3(0,2,12),1.0,cam,target)==1.0)
+assert(smoke_lock_coverage(vec3(0,1.5,5),1.0,cam,vec3(0,-1000,0))==1.0)
+# A masonry edge has intermediate coverage; timber still clears fully.
+u=BuildU(cam=vec3(0,2,5),player=vec3(0,0,0),fade_width=2.6)
+i=BuildO(vec4(0,0,0,1),vec3(3.0,2,4.0),vec3(0,0,1),vec4(1,1,1,1),vec4(0.48,0,0,-1))
+f=build_occluder_fade(i,u)
+assert(f>0.0 and f<1.0,"masonry fade still cuts a hard edge")
+i.world=u.cam+(u.player+vec3(0,1,0)-u.cam)*0.79
+assert(build_occluder_fade(i,u)==1.0,"foreground masonry still hides the climbing body")
+i.world=u.player+vec3(0,1,0)
+assert(build_occluder_fade(i,u)==0.0,"held masonry must remain at the sightline endpoint")
+# The new masonry corridor must respect the guard on every route through it.
+loop point in [vec3(3,2,4),u.cam+(u.player+vec3(0,1,0)-u.cam)*0.79,u.cam]:
+    i.world=point
+    u.shadow_pass=1
+    assert(build_occluder_fade(i,u)==0,"masonry clearance cannot remove structure shadows")
+    u.shadow_pass=0
+u.player=vec3(0,-1000,0)
+i.world=u.cam
+assert(build_occluder_fade(i,u)==0,"inactive camera clearance cannot be revived by the masonry corridor")
+u.player=vec3(0,0,0)
+i.world=vec3(3,2,4)
+i.mat.w=1.0
+assert(build_occluder_fade(i,u)==1.0,"timber retained a ghost")
+print("PASS round67 clarity: daylight/night/dawn/dead Keese, climbing immunity, smoke sight-line bounds, soft masonry and complete timber clearance")

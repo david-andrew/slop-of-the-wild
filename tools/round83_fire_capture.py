@@ -15,8 +15,8 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'build/round83'
 SCENES = {
-    'fire': (720, {'BOTW_FIRE': '1'}, [150, 230, 260, 290, 320, 600]),
-    'tentfire': (960, {'BOTW_TENTFIRE': '5', 'BOTW_AT': '-955,1964,0'}, [150, 230, 260, 320, 600, 900]),
+    'fire': (720, {'BOTW_FIRE': '1'}, [150, 230, 260, 290, 320, 420, 600]),
+    'tentfire': (960, {'BOTW_TENTFIRE': '5', 'BOTW_AT': '-955,1964,0'}, [150, 230, 260, 290, 320, 420, 600, 900]),
     # Raw telemetry flushes each 120 frames: retain every measured shock row.
     'shock': (480, {'BOTW_AT': '-1190,1665,-0.9', 'BOTW_WEATHER': 'storm', 'BOTW_BOLT': '300'}, [298, 300, 302, 304, 310, 320]),
 }
@@ -122,8 +122,8 @@ def performance(candidate, repeats=3, lock_wait=60, scenes=None, paired=False, r
             if paired and repeat % batch_pairs == 0:
                 # A short render batch is bounded independently of queue waiting.
                 # No inner flock is taken by the internal child or game helpers.
-                code = "import sys; sys.path.insert(0, 'tools'); from round83_fire_capture import performance_pair; performance_pair(sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == '1', int(sys.argv[5]))"
-                subprocess.run(['flock', '-w', str(lock_wait), '-E', '75', '/tmp/botw-render.lock', 'timeout', '-k', '5', '150', 'python3', '-c', code, candidate, scene, str(repeat), '1' if resume else '0', str(min(batch_pairs, repeats - repeat))], check=True)
+                code = "import sys; sys.path.insert(0, 'tools'); from pathlib import Path; import round83_fire_capture as r; r.OUT = Path(sys.argv[6]); r.performance_pair(sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == '1', int(sys.argv[5]))"
+                subprocess.run(['flock', '-w', str(lock_wait), '-E', '75', '/tmp/botw-render.lock', 'timeout', '-k', '5', '150', 'python3', '-c', code, candidate, scene, str(repeat), '1' if resume else '0', str(min(batch_pairs, repeats - repeat)), str(OUT)], check=True)
             for phase in (['before', 'after'] if repeat % 2 == 0 else ['after', 'before']):
                 directory = OUT / f'performance-{candidate}' / scene / f'{phase}-{repeat}'
                 if not paired:
@@ -148,6 +148,7 @@ if __name__ == '__main__':
     parser.add_argument('mode', choices=['prepare', 'capture', 'performance', 'profile'])
     parser.add_argument('label', nargs='?', default='after')
     parser.add_argument('--game-dir', type=Path)
+    parser.add_argument('--output-dir', type=Path, help='keep a separate matched series under build/')
     parser.add_argument('--scene', action='append', choices=SCENES, help='limit captures/performance to selected scenes')
     parser.add_argument('--paired', action='store_true', help='benchmark each AB/BA pair under one flock, capped at 150 seconds')
     parser.add_argument('--resume', action='store_true', help='reuse complete matching runs with --paired')
@@ -156,6 +157,9 @@ if __name__ == '__main__':
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--lock-wait', type=float, default=60)
     args = parser.parse_args()
+    if args.output_dir:
+        OUT = args.output_dir.resolve()
+        if not OUT.is_relative_to(ROOT / 'build') or OUT == ROOT / 'build': parser.error('output directory must be under this checkout build/')
     if args.cpu_set:
         if not re.fullmatch(r'[0-9]+(?:,[0-9]+)*', args.cpu_set) or not set(map(int, args.cpu_set.split(','))) <= os.sched_getaffinity(0): parser.error('CPU set must be inside this process allowed CPUs')
         os.environ['ROUND83_CPU_SET'] = args.cpu_set

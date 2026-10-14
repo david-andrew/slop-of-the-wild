@@ -146,6 +146,9 @@ ch_cell = (w: vec3) -> vec3:
 # restores a little volume at the elbow crease. It is zero at the wrists and
 # never changes the bind mesh, influences, skeleton or hand-contact vertices.
 ch_wake_point = (p: vec3, weight: f32) -> vec3:
+    # Every corrective has zero support outside this anatomical envelope.
+    # Skip its five vertex-normal evaluations on the head, hair and legs.
+    if abs(p.x)>=0.60 or p.y<=1.10 or p.y>=1.49: return p
     q=p
     x=abs(p.x)
     band=smoothstep(1.12,1.21,p.y)*(1.0-smoothstep(1.39,1.49,p.y))*weight
@@ -222,13 +225,18 @@ ch_light = (alb: vec3, n: vec3, v: vec3, l: vec3, u: ChU, shadow: f32, skin_: f3
     d = (0.10 + band * 0.73 + top * (0.08 - skin_ * 0.045)) * skin_shadow
     hemi = mix(u.ground, u.sky, 0.45 + smoothstep(-0.35, 0.65, n.y) * 0.22)
     amb = hemi * mix(vec3(0.83, 0.91, 1.07), vec3(1, 1, 1), band * skin_shadow)
+    # Broad cool halftones on receding flesh and warm upward planes. This
+    # changes pigment gently across the form without a specular skin lobe.
+    flesh_plane=smoothstep(-0.65,0.70,n.y)*skin_
+    amb*=mix(vec3(1,1,1),vec3(1.10,0.98,0.92),flesh_plane)
     c = alb * (amb * 1.08 + u.sun_color * d)
     # A broad warm pigment transition, not a view-dependent highlight. It
     # disappears on the fully lit and fully shaded planes and under occlusion.
     warmth = band * (1.0-band) * skin_ * skin_shadow
     c += alb * u.sun_color * vec3(0.16,0.045,0.012) * warmth
     # Diffuse flesh bounce retains a little warmth under the blue chamber sky.
-    c += alb * hemi * vec3(0.18,0.055,0.018) * skin_ * (1.0-band*0.5)
+    c += alb * hemi * vec3(0.32,0.075,0.012) * skin_ * (1.0-band*0.5)
+    c += alb * luma(hemi) * vec3(0.12,0.025,0.005) * skin_
     # A quiet blue-grey paint edge, never a white sun/specular lobe.
     nv = clamp(dot(n, v), 0.0, 1.0)
     edge = smoothstep(0.72, 0.97, 1.0 - nv) * smoothstep(-0.4, 0.5, n.y)
@@ -356,6 +364,8 @@ ch_fs = (i: ChO, u: ChU) -> vec4:
 ch_status_light = (color: vec3, normal: vec3, view: vec3, rim: vec4, flash: f32) -> vec3:
     if rim.w <= 0.0 and flash <= 0.0: return color
     edge = pow(1.0 - abs(dot(normal, view)), 3.0)
+    # Heat should catch the silhouette, not fill grazing lower-tunic panels.
+    if rim.x > rim.z: edge = smoothstep(0.72,0.97,1.0 - abs(dot(normal, view)))
     color + rim.xyz * (rim.w * edge) + vec3(0.65, 0.85, 1.0) * flash
 
 # ---- depth only (shadow maps) ----
