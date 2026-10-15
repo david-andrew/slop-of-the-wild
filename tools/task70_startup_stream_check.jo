@@ -1,0 +1,18 @@
+build:
+    opt = release
+use '../game/main.jo'
+use '../game/terrain_stream.jo'
+use 'performance_output.jo'
+
+stream_check_update = (dt: f64):
+    update(dt)
+    frame = frame_number()
+    if frame < 4:
+        assert(not terrain_stream_ready and terrain_stream_stage == 0 and terrain_stream_row == 0, "first four displayed opening frames do not force outdoor maps")
+    if frame == 4:
+        assert(not terrain_stream_ready and terrain_stream_stage == 0 and terrain_stream_row == 64, "first background callback uploads one bounded noise tile")
+    if frame == 300:
+        assert(terrain_stream_ready, "outdoor maps complete before leaving the wake sequence")
+        print("PASS production startup stream: first four visible frames precede uploads; frame 4 bounded; complete by frame 300")
+
+main = (): performance_output_run(stream_check_update, draw)

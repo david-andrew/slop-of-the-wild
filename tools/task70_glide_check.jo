@@ -1,0 +1,99 @@
+# Automatic glide framing must retain the distant horizon, including a ledge's
+# inherited terrain lift. Manual look remains under the player's control.
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/input.jo'
+use '../game/gfx.jo'
+
+horizon_height = () -> f64:
+    direction = normalize(view_target() - view_pos())
+    # Project the horizontal vanishing direction through the displayed vertical
+    # FOV; normalized image coordinates run from top (0) to bottom (1).
+    down = -f64(direction.y) / max(0.001, f64(length(direction.xz)))
+    0.5 - down / (2.0 * tan(view_fov() * PI / 360.0))
+
+check_glide_horizon = ():
+    use_terrain = true
+    hf.n = 64
+    hf.cell = 2.0
+    hf.x0 = -64.0
+    hf.z0 = -64.0
+    hf.h = fill(f32(0), hf.n * hf.n)
+    hf.mat = fill(u8(0), hf.n * hf.n * 4)
+    loop hz in [30, 60, 120]:
+        loop inherited in [0.0, 0.3, 0.65]:
+            pl = Player(pos = vec3(0, 24, 0), face = 0.0, state = .glide, vel = vec3(0, -1.8, -6), speed = 6.0)
+            cam = Cam(pitch = 0.22, lift = inherited)
+            aim_fov = 50.0
+            act = Actions()
+            cam_open_ground = true
+            camera_snap()
+            low = 1.0
+            high = 0.0
+            loop frame in [0..hz * 4):
+                pl.pos += pl.vel / f32(hz)
+                camera_update(1.0 / f64(hz))
+                horizon = horizon_height()
+                assert(horizon >= 0.25 and horizon <= 0.40, "automatic glide keeps the horizon at 25-40% of image height")
+                assert(cam.dist >= 7.1, "gliding never inherits the short cave boom")
+                assert(view_pos().y > pl.pos.y and dot((view_pos()-pl.pos).xz, forward_of(pl.face).xz) < 0.0, "glide lens stays above and behind Jo")
+                low = min(low, horizon)
+                high = max(high, horizon)
+            # Deliberate pitch input is not clamped to the automatic framing.
+            act.look = vec2(0, 0.4)
+            camera_update(1.0 / f64(hz))
+            assert(cam.pitch > 0.5, "glide preserves manual pitch input")
+            print("glide horizon PASS {hz}Hz inherited lift {inherited:.2}: {low:.3}..{high:.3}")
+
+check_glide_horizon()
+
+# Exercise the production controller, terrain and solids at the real overlook.
+# Match the critic pack's +24 m air launch and deploy with the normal jump action.
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/env.jo'
+use '../game/architecture_assets.jo'
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+if not architecture_load():
+    sor_interior()
+    structures_build()
+loop stick in [0.0, 1.0]:
+    loop hz in [30, 60, 120]:
+        p = cliff_place_ground(v3(-1050, height_at(-1050, 1828), 1828))
+        p.y += 24.0
+        pl = Player(pos = p, last_safe = p, face = -2.36, has_glider = true)
+        pl.state = .air
+        pl.grounded = false
+        pl.st_t = 0.3
+        cam = Cam(yaw = pl.face)
+        aim_fov = 50.0
+        cam_yaw_global = pl.face
+        camera_snap()
+        cave_mouth = SOR_MOUTH_IN
+        cave_in = normalize(v3(-1128.0, 0.0, 1884.0) - vec3(SOR_MOUTH_IN.x, 0, SOR_MOUTH_IN.z))
+        deployed = false
+        frames = 0
+        low = 1.0
+        high = 0.0
+        loop frame in [0..hz * 8):
+            deploy = not deployed and frame >= hz / 6 and (pl.state == .air or pl.state == .slide) and pl.st_t > 0.15
+            act = Actions(move = vec2(0, f32(stick)), jump = deploy)
+            cam_open_ground = f64(length(pl.pos - SOR_MOUTH_IN)) > 60.0
+            player_update(1.0 / f64(hz))
+            camera_update(1.0 / f64(hz))
+            if pl.state == .glide:
+                deployed = true
+                assert(cam.dist >= 7.1, "real overlook glide keeps the trailing boom even in the cave proximity radius")
+                horizon = horizon_height()
+                assert(horizon >= 0.25 and horizon <= 0.40, "real overlook glide retains the horizon through ledge clearance")
+                low = min(low, horizon)
+                high = max(high, horizon)
+                frames += 1
+        assert(frames > hz, "route must enter real gliding; raised pack launch sustains at least a second")
+        print("overlook glide horizon PASS {hz}Hz stick {stick:.0} launch +24m: {frames} frames, {low:.3}..{high:.3}")

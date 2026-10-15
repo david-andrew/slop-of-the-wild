@@ -1,0 +1,164 @@
+use 'terrain.jo'
+from 'terrain.jo' import __grid, __terr_noise_vs, __terr_noise_fs, __terrain_loading
+use 'gfx.jo'
+from 'gfx.jo' import __tex_params
+use 'vulkan_textures.jo'
+use 'shader_load.jo'
+
+# The cave needs only the height/burn maps for particle roots. Keep immutable
+# outdoor maps off the first visible frames; never expose a partial map outdoors.
+terrain_stream_started = false
+terrain_stream_ready = false
+terrain_stream_stage = 0
+terrain_stream_row = 0
+__stream_noise_fb = 0
+__stream_noise_sh: Shader
+
+__stream_texture = (n: int) -> Texture:
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            levels = 1
+            size = n
+            loop size > 1:
+                levels += 1
+                size /= 2
+            info = VkImageCreateInfo(stype = 14, image_type = 1, format = u32(VK_FORMAT_R8G8B8A8_UNORM),
+                width = u32(n), height = u32(n), depth = 1, mips = u32(levels), layers = 1, samples = 1,
+                usage = u32(VK_USAGE_SAMPLED | VK_USAGE_TRANSFER_DST | VK_USAGE_TRANSFER_SRC))
+            img = __VkImage(width = n, height = n, format = u32(VK_FORMAT_R8G8B8A8_UNORM), aspect = 1)
+            __vk_check(vkCreateImage(__vk_dev, (&info) as *u8, null, &img.image), "streamed terrain image")
+            req = VkMemoryRequirements()
+            vkGetImageMemoryRequirements(__vk_dev, img.image, (&req) as *u8)
+            img.mem = __vk_alloc(req, u32(VK_MEM_DEVICE_LOCAL), 0, 1)
+            __vk_check(vkBindImageMemory(__vk_dev, img.image, __vk_range_mem(img.mem), u64(__vk_range_off(img.mem))), "streamed terrain memory")
+            view = VkImageViewCreateInfo(stype = 15, image = img.image, view_type = 1, format = img.format, aspect = 1, mips = u32(levels), layers = 1)
+            __vk_check(vkCreateImageView(__vk_dev, (&view) as *u8, null, &img.view), "streamed terrain view")
+            __vk_begin_frame()
+            __vg_end_pass()
+            loop level in [0..levels): game_mip_barrier(__vk_cb(), img.image, level, VK_LAYOUT_UNDEFINED, VK_LAYOUT_SHADER_READ, 0, VK_ACCESS_SHADER_READ)
+            img.layout = u32(VK_LAYOUT_SHADER_READ)
+            id = gl_create_texture()
+            __vgt[id].img = img
+            __vgt[id].live = true
+            __vgt[id].linear = true
+            __vgt[id].repeat = false
+            __vg_tex_slot(id)
+            return Texture(id, n, n)
+    color_texture(n, n, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE)
+
+__stream_mips = (tex: Texture):
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            __vk_begin_frame()
+            __vg_end_pass()
+            cb = __vk_cb()
+            img = __vgt[tex.id].img
+            width = tex.width
+            level = 0
+            loop width > 1:
+                game_mip_barrier(cb, img.image, level, VK_LAYOUT_SHADER_READ, VK_LAYOUT_TRANSFER_SRC, VK_ACCESS_SHADER_READ, VK_ACCESS_TRANSFER_READ)
+                game_mip_barrier(cb, img.image, level + 1, VK_LAYOUT_SHADER_READ, VK_LAYOUT_TRANSFER_DST, VK_ACCESS_SHADER_READ, VK_ACCESS_TRANSFER_WRITE)
+                next = max(width / 2, 1)
+                reg = VkImageBlit2(stype = 1000337008, src_aspect = 1, src_mip = u32(level), src_layers = 1,
+                    src1 = [i32(width), i32(width), 1], dst_aspect = 1, dst_mip = u32(level + 1), dst_layers = 1,
+                    dst1 = [i32(next), i32(next), 1])
+                info = VkBlitImageInfo2(stype = 1000337004, src = img.image, src_layout = u32(VK_LAYOUT_TRANSFER_SRC),
+                    dst = img.image, dst_layout = u32(VK_LAYOUT_TRANSFER_DST), nregions = 1, regions = (&reg) as *u8, filter = 1)
+                vkCmdBlitImage2(cb, (&info) as *u8)
+                game_mip_barrier(cb, img.image, level, VK_LAYOUT_TRANSFER_SRC, VK_LAYOUT_SHADER_READ, VK_ACCESS_TRANSFER_READ, VK_ACCESS_SHADER_READ)
+                game_mip_barrier(cb, img.image, level + 1, VK_LAYOUT_TRANSFER_DST, VK_LAYOUT_SHADER_READ, VK_ACCESS_TRANSFER_WRITE, VK_ACCESS_SHADER_READ)
+                width = next
+                level += 1
+            return
+    glBindTexture(GL_TEXTURE_2D, u32(tex.id))
+    glGenerateMipmap(GL_TEXTURE_2D)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, i32(GL_LINEAR_MIPMAP_LINEAR))
+    if not soft_rendering(): glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, 8.0)
+
+terrain_stream_begin = ():
+    terrain_stream_started = true
+    # Shader source/format and final texels are identical to terrain_noise_bake.
+    terrain_noise_tex = color_texture(TERR_NOISE_N, 4096, GL_RGBA16F_, GL_RGBA, GL_FLOAT, GL_NEAREST)
+    __stream_noise_fb = gl_create_framebuffer()
+    glBindFramebuffer(GL_FRAMEBUFFER, u32(__stream_noise_fb))
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(terrain_noise_tex.id), 0)
+    noise_target_ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE
+    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+    if noise_target_ok:
+        __stream_noise_sh = make_sh(shader(__terr_noise_vs, __terr_noise_fs))
+    else:
+        # Preserve terrain_noise_bake's ALU fallback on devices without a
+        # renderable half-float target. No lookup texture is sampled there.
+        gl_delete_framebuffer(__stream_noise_fb)
+        gl_delete_texture(terrain_noise_tex.id)
+        terrain_noise_tex = Texture(0, 1, 1)
+        __stream_noise_fb = 0
+        terrain_stream_stage = 1
+    __terrain_loading.push(shader_load_submit(terrain_noise_shader(shader(terrain_vs, terrain_fs))))
+    __terrain_loading.push(shader_load_submit(terrain_noise_shader(shader(terrain_vs, terrain_wet_fs))))
+    __terrain_loading.push(shader_load_submit(shader(terrain_vs, terrain_depth_fs)))
+    __terrain_loading.push(shader_load_submit(shader(terrain_vs, terrain_shadow_fs)))
+    grid_mesh = __grid()
+    height_tex = float_texture(hf.n, hf.n, hf.h)
+    if terrain_normal_pixels.len() != hf.n * hf.n * 4: terrain_prepare_cpu()
+    normal_tex = __stream_texture(hf.n)
+    mat_tex = __stream_texture(hf.n)
+    burn_px = fill(u8(0), BURN_N * BURN_N * 4)
+    burn_scorch_tiles = fill(false, BURN_TILE_N * BURN_TILE_N)
+    burn_tex = bytes_texture(BURN_N, BURN_N, burn_px, false, false)
+    tnode_buf = inst_buffer(tnodes)
+    inst_reserve(tnode_buf, (1 << (2 * (LOD_LEVELS - 1))) * size_of(TNode))
+    gl_restore_2d()
+
+terrain_stream_step = (required: bool = false):
+    if not terrain_stream_started or terrain_stream_ready: return
+    started = time()
+    if terrain_stream_stage == 0:
+        # One MiB of noise output per callback, with the original full-size
+        # viewport so row boundaries do not change interpolation/hash coordinates.
+        rows = min((if required: 4096 else: 64), 4096 - terrain_stream_row)
+        glBindFramebuffer(GL_FRAMEBUFFER, u32(__stream_noise_fb))
+        glViewport(0, 0, TERR_NOISE_N, 4096)
+        glDisable(GL_DEPTH_TEST)
+        glDisable(GL_CULL_FACE)
+        glDisable(GL_BLEND)
+        glEnable(GL_SCISSOR_TEST)
+        glScissor(0, i32(terrain_stream_row), TERR_NOISE_N, i32(rows))
+        draw_fast(__stream_noise_sh, fullscreen_mesh(), TerrNoiseU(vec2(f32(TERR_NOISE_N), 4096)))
+        glDisable(GL_SCISSOR_TEST)
+        terrain_stream_row += rows
+        if terrain_stream_row == 4096:
+            glBindFramebuffer(GL_FRAMEBUFFER, 0)
+            gl_delete_framebuffer(__stream_noise_fb)
+            terrain_stream_stage = 1
+            terrain_stream_row = 0
+        gl_restore_2d()
+    else:
+        # At most 512 KiB of host copies per callback. Publish the mip chain
+        # only after the complete base image has reached its final contents.
+        rows = min((if required: hf.n else: max(1, 512 * 1024 / (hf.n * 4))), hf.n - terrain_stream_row)
+        tex = if terrain_stream_stage == 1: normal_tex else: mat_tex
+        px = if terrain_stream_stage == 1: terrain_normal_pixels else: terrain_material_pixels
+        glBindTexture(GL_TEXTURE_2D, u32(tex.id))
+        gl_tex_sub_image(0, terrain_stream_row, hf.n, rows, GL_RGBA, GL_UNSIGNED_BYTE, data(px) + terrain_stream_row * hf.n * 4, rows * hf.n * 4)
+        terrain_stream_row += rows
+        if terrain_stream_row == hf.n:
+            __stream_mips(tex)
+            if terrain_stream_stage == 1: terrain_normal_pixels = []
+            else: terrain_material_pixels = []
+            terrain_stream_stage += 1
+            terrain_stream_row = 0
+            if terrain_stream_stage == 3:
+                terrain_stream_ready = true
+                if env("BOTW_LOADTIME") != none: eprint("terrain stream ready: frame {frame_number()}")
+    if env("BOTW_STREAM_LOG") != none: eprint("terrain stream: frame {frame_number()} stage {terrain_stream_stage} row {terrain_stream_row} cpu {(time()-started)*1000.0:.3} ms")
+
+terrain_stream_require = ():
+    # Tools using the original eager terrain_upload already own complete maps.
+    if not terrain_stream_started or terrain_stream_ready: return
+    started = time()
+    # An outdoor checkpoint already needs every texel now. Batch its transfers
+    # and noise draw rather than paying one render-pass transition per tile.
+    loop not terrain_stream_ready: terrain_stream_step(true)
+    terrain_upload_finish()
+    if env("BOTW_LOADTIME") != none: eprint("  terrain stream required {time()-started:.3}s frame {frame_number()}")

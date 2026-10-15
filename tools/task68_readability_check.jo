@@ -57,9 +57,11 @@ loop yaw in [0.0,1.57,3.14,4.71]:
     print("PASS rain heading {yaw}: {near} near parcels in the field camera")
 
 # Fill and ground bounce vary continuously throughout the closed daytime deck.
+# Sample 0.1 percent steps (below one production frame at 30 Hz); a whole
+# percent step spans several frames of the rain approach.
 last_sky=0.0
-loop k in [0..101):
-    env=Env(hour=11,time_scale=0,weather=.rain,weather_t=1e9,clouds=0.86,rain=f64(k)/100.0,wet=1)
+loop k in [0..1001):
+    env=Env(hour=11,time_scale=0,weather=.rain,weather_t=1e9,clouds=0.86,rain=f64(k)/1000.0,wet=1)
     env_update(0,false)
     sky=f64(luma(env.sky_amb))
     assert(sky>=last_sky,"rain diffuse fill cannot reverse into darkness")

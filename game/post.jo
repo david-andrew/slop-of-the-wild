@@ -362,7 +362,7 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
     dens = 1.0 + (blot - 0.5) * 0.7 * wash * u.paint + ((grain.z - 0.5) * 0.3 + gran) * tooth * u.paint + ed * 3.6 * u.paint
     # shafts of light from a low sun: march toward it on screen counting open sky (the depth
     # buffer's far plane) between here and there, so trees and ridges cast rays across the haze
-    if u.rays > 0.01:
+    if u.rays > 0.01 and sample(u.depth, u.sun_uv).x >= 0.9999:
         dv = (u.sun_uv - i.uv) / 24.0
         acc: f32 = 0.0
         loop k in [0..24):

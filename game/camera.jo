@@ -293,7 +293,9 @@ __camera_step = (dt: f64):
     want_d = lerp(want_d, lerp(4.4, 6.4, cam.crowd_frame), cam.lock_frame)
     tgt_h = lerp(tgt_h, 1.2, cam.lock_frame)
     # (in the narrow of the cave the camera follows close, inside the rock round him)
-    if not cam_open_ground: want_d = min(want_d, 2.8)
+    # The proximity flag also covers open air above the cave/overlook. A glider
+    # is not inside that passage and needs its full trailing boom.
+    if not cam_open_ground and pl.state != .glide: want_d = min(want_d, 2.8)
     if use_terrain and not cam.aiming and not cam.locked:
         want_d = lerp(want_d, max(want_d, 4.8), cam.hurt_frame)
     if cam.aiming:
@@ -327,7 +329,7 @@ __camera_step = (dt: f64):
     # look down from higher until he is in sight, and settle back once the way is clear
     # (a wall of rock right behind cannot be looked over: the camera pulls in against it instead)
     want_lift = 0.0
-    if use_terrain and cam_open_ground and not cam.aiming and cam.blend < 0.99:
+    if use_terrain and cam_open_ground and pl.state != .glide and not cam.aiming and cam.blend < 0.99:
         loop want_lift < 0.65 and __cam_free(cam.target, __cam_back(cam.yaw, cam.pitch + want_lift), cam.dist_cur) < cam.dist_cur: want_lift += 0.1
         if want_lift >= 0.65: want_lift = 0.0
         # still hemmed in (sliding down a face, the slope rising right behind): swing round to
@@ -347,7 +349,9 @@ __camera_step = (dt: f64):
                 cam.yaw += wrap_angle(best - cam.yaw) * min(1.0, 2.5 * dt)
     cam.lift = approach(cam.lift, want_lift, (if want_lift > cam.lift: 2.0 else: 0.5), dt)
     # (never straight down on him: past 45 degrees the view is only the face he is on)
-    pitch = min(cam.pitch + cam.lift, max(cam.pitch, 0.8))
+    # Ground crests must not keep pitching the airborne view at the slope.
+    # Retain the normal retract/slide clearance below, with a level glide boom.
+    pitch = min(cam.pitch + (if pl.state == .glide: 0.0 else: cam.lift), max(cam.pitch, 0.8))
     if use_terrain and not cam.aiming: pitch = max(pitch, lerp(cam.pitch, 0.28, cam.hurt_frame))
     view_yaw = cam.yaw
     # A close foe directly beyond Link must not share his head silhouette.
@@ -537,7 +541,7 @@ __camera_turn = (dt: f64):
         # drift the pitch back toward the default (walking out of the cave, level: the light at
         # the mouth opens on the view, not on the ground at his feet)
         out_ = not cam_open_ground and f64(length(pl.pos - cave_mouth)) < 18.0
-        cam.pitch = approach(cam.pitch, (if pl.state == .swim: 0.42 else: (if pl.state == .glide: 0.3 else: (if out_: 0.04 else: 0.22))), (if pl.state == .swim: 1.8 else: (if out_: 0.25 else: 0.4)), dt)
+        cam.pitch = approach(cam.pitch, (if pl.state == .swim: 0.42 else: (if pl.state == .glide: 0.16 else: (if out_: 0.04 else: 0.22))), (if pl.state == .swim: 1.8 else: (if out_: 0.25 else: 0.4)), dt)
     if cam.locked:
         # face the lock-on target over the player's shoulder
         dv = cam.lock_pos - pl.pos
@@ -718,7 +722,17 @@ view_pos = () -> vec3:
             __masonry_view = camera_climb_masonry_view(pos, cam.target)
         pos = __masonry_view
     pos
-view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, mix(cam.target,cam.paired_target,f32(cam.lock_frame)), cam.from_pos, cam.from_target, smooth01(cam.blend))
+camera_player_target = () -> vec3:
+    target = mix(cam.target, cam.paired_target, f32(cam.lock_frame))
+    if pl.state == .glide and not cam.locked and not cam.aiming:
+        # Retraction/recovery smooths the lens independently of a falling target.
+        # Its extra vertical lag must not turn a level glide into a downward shot.
+        # Aim with the requested pitch; retain the collision-safe lens position.
+        horizontal = f64(length((target - cam.pos).xz))
+        if horizontal > 0.001: target.y = cam.pos.y - f32(horizontal * tan(cam.pitch))
+    target
+
+view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, camera_player_target(), cam.from_pos, cam.from_target, smooth01(cam.blend))
 view_fov = () -> f64: if cam.override: lerp(cam.from_fov, cam.o_fov, smooth01(cam.blend)) else: lerp(aim_fov, cam.from_fov, smooth01(cam.blend))
 __camdbg = env("BOTW_CAMDBG") != none
 __camdbg_n = 0

@@ -769,9 +769,9 @@ story_render_hooks = ():
     hooks.named_lift["sor_door1"] = -4.0 * smooth01(story.door1)
     hooks.named_lift["sor_door2"] = -4.0 * smooth01(story.door2)
     hooks.tower_lift = hooks.tower_lift
-    # a beacon over the pedestal until the tower has risen
+    # A local pedestal cue, not a column of large discs across the sky.
     if story.title_done and not story.tower_risen and random() < 0.3:
-        emit(.glow, TOWER_PEDESTAL + v3(random(-0.3, 0.3), random(0.5, 40.0), random(-0.3, 0.3)), v3(0, 3.0, 0), 1.5, 0.3, rgba(1.0, 0.55, 0.15, 0.6))
+        emit(.glow, TOWER_PEDESTAL + v3(random(-0.3, 0.3), random(0.25, 1.4), random(-0.3, 0.3)), v3(0, 0.35, 0), 1.5, 0.06, rgba(1.0, 0.55, 0.15, 0.6))
 
 story_assets_init = ():
     if __title_ready: return

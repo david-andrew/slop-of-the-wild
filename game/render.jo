@@ -16,6 +16,7 @@ use 'farland.jo'
 use 'scene.jo'
 use 'vegetation.jo'
 use 'interiors.jo'
+use 'terrain_stream.jo'
 use 'player.jo'
 use 'structures.jo'
 
@@ -95,6 +96,7 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
     # underground: the outdoor world is not drawn at all
     # (underground the world outside is not drawn, except near a mouth that opens onto it)
     under = zone_at(cam_pos) != "" and f64(length(cam_pos - see_out_from)) > 45.0
+    if not under: terrain_stream_require()
     sc.cam = cam_pos
     sc.fwd = normalize(target - cam_pos)
     sc.fov = fov
@@ -103,7 +105,9 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
     sc.vp = sc.proj * sc.view
     vp = sc.vp
     cpu_mark("terrain_select")
-    terrain_select(cam_pos, vp)
+    # Underground views never draw terrain or grass; do not cull/upload
+    # those hidden patches while the opening streams its immutable maps.
+    if not under: terrain_select(cam_pos, vp)
     cpu_mark("shadow_matrices")
     shadow_matrices(cam_pos, sc.fwd, env.light_dir)
     # shadows
@@ -179,9 +183,10 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
     gl_opaque_state()
     gpu_mark("grass")
     cpu_mark("grass_select")
-    grass_select(cam_pos, vp)
+    if not under: grass_select(cam_pos, vp)
     cpu_mark("grass_draw")
     if under:
+        gpatches_close.clear()
         gpatches.clear()
         gpatches_far.clear()
     if not under: grass_draw(GrassU(vp, cam_pos, vec2(f32(hf.x0), f32(hf.z0)), f32(hf.cell), f32(hf.n), height_tex, mat_tex, burn_tex, normal_tex, water_tex,
@@ -207,12 +212,13 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
     # god rays: strongest with the sun low and ahead, gone under cloud, at night or underground
     sp = vp * vec4(cam_pos + env.light_dir * 1000.0, 1.0)
     post_rays = 0.0
-    if sp.w > 0.0 and not under and env.night < 0.5:
+    screen_weight = sun_screen_weight(sp)
+    if screen_weight > 0.0 and not under and env.night < 0.5:
         sun_uv = sp.xy / sp.w * 0.5 + vec2(0.5, 0.5)
         post_sun_uv = sun_uv
         low = 1.0 - clamp((f64(env.light_dir.y) - 0.05) / 0.45, 0.0, 1.0)
         ahead = clamp(1.0 - f64(length(sun_uv - vec2(0.5, 0.5))) * 1.2, 0.0, 1.0)
-        post_rays = (0.25 + 0.75 * low) * ahead * (1.0 - env.dark) * f64(shadow_direct(f32(env.clouds))) * 0.9
+        post_rays = (0.25 + 0.75 * low) * ahead * (1.0 - env.dark) * f64(shadow_direct(f32(env.clouds))) * 0.9 * screen_weight
         post_ray_color = env.sun_color * 0.7
     cpu_mark("post_draw")
     gpu_mark("post")

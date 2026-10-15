@@ -157,6 +157,29 @@ vegetation_unit_fade[U] = (base: vec3, height: f32, radius: f32, u: U) -> f32:
 
 vegetation_unit_scale = (fade: f32) -> f32: 1.0 - smoothstep(0.03, 0.5, fade)
 
+# Only a steep view closes the tiny gaps between a bush's opaque leaves.
+# Keep the transparent atlas border and the ordinary ground-level cutout.
+bush_overhead = (view_y: f32) -> f32: smoothstep(0.12, 0.38, view_y)
+bush_leaf_cut = (cut: f32, view_y: f32) -> f32: mix(cut, 0.14, bush_overhead(view_y))
+bush_leaf_relief = (green: f32) -> f32: clamp(green * 2.24, 0.82, 1.18)
+bush_overhead_enabled = (snow_tag: f32) -> bool: snow_tag == 0.0
+
+# Bush meshes also form tree-crown lobes. Mark only their uploaded snow channel;
+# a sign flip preserves every snow bit, and -2 marks an originally snow-free lobe.
+# Placement tint, geometry, shadows and the shared vertex shader stay untouched.
+bush_crown_tag = (snow: f32) -> f32: if snow == 0.0: -2.0 else: -snow
+bush_crown_snow = (tag: f32) -> f32: if tag < -1.5: 0.0 else: -tag
+
+# Preserve the meadow blend's value while recovering leaf pigment overhead.
+# Removing the meadow blend outright made these bushes almost black-green.
+bush_overhead_pigment = (meadow: vec3, leaf: vec3, view_y: f32) -> vec3:
+    overhead = bush_overhead(view_y)
+    if overhead <= 0.0: return meadow
+    weights = vec3(0.30, 0.55, 0.15)
+    pigment = leaf * vec3(0.80, 1.08, 0.80)
+    opaque = pigment * (dot(meadow, weights) / max(dot(pigment, weights), 0.001))
+    mix(meadow, opaque, overhead)
+
 __veg_vertex[U] = (v: Vertex3D, inst: VInst, u: U, charred: f32) -> VegO:
     p = v.pos
     hn = clamp(p.y / u.height, 0.0, 1.0)
@@ -519,6 +542,11 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
         gap = 0.35 + 0.65 * smoothstep(0.2, 0.85, vnoise(i.world.xz * 0.11))
     if storm_fill > 0.0:
         c = c + alb * u.sky * vec3(0.75, 0.95, 1.18) * storm_fill * gap * (0.42 + 0.18 * max(n.y, 0.0))
+    if leaves < 0.5 and u.wood > 0.5 and material_wet > 0.0:
+        # Wet bark retains brown pigment under the cool overcast fill. Avoid
+        # turning its lit ridges pink while preserving the diffuse value.
+        pigment = alb * (luma(c)/max(luma(alb),0.001))
+        c = mix(c,pigment,material_wet*(1.0-shadow_direct(u.clouds))*0.65)
     c = c + point_light(alb, n, i.world, u.lp, u.lc)
     if leaves < 0.5 and material_wet > 0.0:
         stone = 1.0 - u.wood
@@ -550,15 +578,41 @@ veg_shadow_fs = (i: VegO, u: VegU) -> vec4: __veg_shadow_fs(i,u)
 plant_shadow_fs = (i: VegO, u: PlantU) -> vec4: __veg_shadow_fs(i,u)
 
 veg_depth_fs = (i: VegO, u: VegU) -> vec4: __veg_depth_fs(i,u)
+bush_depth_fs = (i: VegO, u: VegU) -> vec4:
+    if not bush_overhead_enabled(i.tint.w): return __veg_depth_fs(i,u)
+    view_y = normalize(u.cam-i.world).y
+    if bush_overhead(view_y) <= 0.0: return __veg_depth_fs(i,u)
+    # Openness is already the depth shader's leaf-cutoff offset. Override it
+    # only for this bush draw, preserving every shared shader byte for byte.
+    base_cut = 0.5 - 0.15 * smoothstep(25.0,220.0,length(u.cam-i.world))
+    adjusted = i
+    adjusted.openness = bush_leaf_cut(base_cut+i.openness,view_y)-base_cut
+    __veg_depth_fs(adjusted,u)
 plant_depth_fs = (i: VegO, u: PlantU) -> vec4: __veg_depth_fs(i,u)
 
 # A constant zero eliminates char shading from tree/fir fragment programs.
 veg_fs = (i: VegO, u: VegU) -> vec4: __veg_fs(i,u,f32(0),f32(0))
+bush_fs = (i: VegO, u: VegU) -> vec4:
+    original = i
+    crown = i.tint.w < 0.0
+    if crown: original.tint.w = bush_crown_snow(i.tint.w)
+    color = veg_fs(original,u)
+    if not bush_overhead_enabled(i.tint.w): return color
+    view_y = normalize(u.cam-i.world).y
+    overhead = bush_overhead(view_y)
+    if overhead > 0.0:
+        # Recover the existing leaf folds lost in the distant turf blend.
+        # Bounded contrast around its mean keeps these leaves mid-green.
+        relief = bush_leaf_relief(sample(u.tex,i.uv).y)
+        color.xyz = bush_overhead_pigment(color.xyz,color.xyz,view_y) * mix(1.0,relief,overhead)
+    color
 plant_fs = (i: VegO, u: PlantU) -> vec4: __veg_fs(i,u,max(-i.tint.w,f32(0)),f32(0))
 
 fir_fs = (i: VegO, u: VegU) -> vec4: __veg_fs(i,u,f32(0),f32(1))
 
 veg_sh: Shader
+bush_sh: Shader
+bush_depth_sh: Shader
 fir_sh: Shader
 plant_sh: Shader
 plant_depth_sh: Shader
@@ -1599,6 +1653,8 @@ vegetation_init = ():
     plant_depth_sh = make_sh(shader(plant_vs, plant_depth_fs))
     plant_shadow_sh = make_sh(shader(plant_vs, plant_shadow_fs))
     veg_sh = make_sh(shader(veg_vs, veg_fs))
+    bush_sh = make_sh(shader(veg_vs, bush_fs))
+    bush_depth_sh = make_sh(shader(veg_vs, bush_depth_fs))
     fir_sh = make_sh(shader(veg_vs, fir_fs))
     veg_depth_sh = make_sh(shader(veg_vs, veg_depth_fs))
     veg_shadow_sh = make_sh(shader(veg_vs, veg_shadow_fs))
@@ -1800,7 +1856,10 @@ __cull_one = (p: VPlace, f: Frustum, cam: vec3, reach: f64, min_height: f64, vpa
         if vpass > 0 and d > (if vpass == 1: 16.0 else: 25.0) and vmodels[p.model].has_low and vmodels[p.model].has_shadow_low:
             shadow_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
         else if d > lod_dist and vmodels[p.model].has_low: far_buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
-        else: buckets[__bk(vpass, p.model)].items.push(VInst(p.m, p.tint))
+        else:
+            tint = p.tint
+            if p.owner >= 0 and starts_with(vmodels[p.model].name,"Bush_"): tint.w = bush_crown_tag(tint.w)
+            buckets[__bk(vpass, p.model)].items.push(VInst(p.m, tint))
 
 # Ordinary size reach is pure height math. Wide moving views repeat pow() for
 # thousands of candidates. Keep exact f64 results beside the placements/cells,
@@ -1869,7 +1928,10 @@ __veg_draw = (sh0: Shader, m: Mesh, b: InstBuf, params: VegU):
     # Fir sprays are closed, outward-wound solids. Their back faces cannot
     # contribute to the exterior or its shadow; leaf cards and atlases can.
     solid_fir = params.fir > 0.5 and params.leaves > 0.5 and params.impostor < 0.5
-    sh = if solid_fir and sh0.prog == veg_sh.prog: fir_sh else: sh0
+    # Specialize only bush draws: other foliage keeps its original programs,
+    # register footprint and sampler/uniform payload.
+    bush = params.leaves > 0.5 and params.wood > 0.5 and params.tree < 0.5 and params.fir < 0.5
+    sh = if solid_fir and sh0.prog == veg_sh.prog: fir_sh else if bush and sh0.prog == veg_sh.prog: bush_sh else if bush and sh0.prog == veg_depth_sh.prog: bush_depth_sh else: sh0
     if solid_fir: glEnable(GL_CULL_FACE)
     if game_vulkan_backend():
         draw_static(sh, m, b, params)

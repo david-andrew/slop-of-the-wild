@@ -188,6 +188,8 @@ jo() {
 # Headless tests; helper-only *_checks.jo files are exercised by their entry
 # points (fauna includes spacing, Stalkoblin, wildlife voices and Talus).
 cpu_checks=(
+    task70_glide_check
+    task70_weather_check
     task69_hud_check
     task69_tower_check
     web_piano_worker_check
@@ -344,12 +346,18 @@ check cpu listening_clips python3 tools/listen.py
 # Small GPU equivalence tests never self-lock. Compile while holding their sole
 # lock too, so even a compiler-run window cannot overlap another renderer.
 for name in combat_geometry_check draw_cache_check skin_row_check fir_surface_check round82_plant_surface_check hero_surface_check material_paint_check post_edge_check \
-    shader_load_check shader_adapter_check slot_check terrain_noise_check noise_seam_check climb_occluder_check; do
+    shader_load_check shader_adapter_check slot_check terrain_noise_check task70_stream_check noise_seam_check climb_occluder_check; do
     # flock launches a fresh shell; export this function and its binary directory.
     export out
     export -f jo
     check render "$name" bash -c 'jo "$1"' -- "$name"
 done
+
+# The production opening must not drain its deferred maps in hidden warmup.
+check render task70_startup_stream_check env BOTW_LOADTIME=1 BOTW_FRAME_LOG=1 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=301 SLOPPY_SCREENSHOT="$out/terrain-stream.png" python3 tools/performance_window.py 1280x720 timeout 120 sloppy/bin/sloppy tools/task70_startup_stream_check.jo
+
+# A cave start must prewarm both sky programs and wet terrain without map uploads.
+check render weather_warmup_check env SLOPPY_VULKAN=1 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=2 python3 tools/performance_window.py 1280x720 timeout 120 sloppy/bin/sloppy tools/weather_warmup_check.jo
 
 # Every rendered frame of the full tower-base circuit checks its HDR body crop.
 check render tower_base_climb_capture env BOTW_SKIP=1 BOTW_TOWER=1 BOTW_HOUR=11 BOTW_WEATHER=clear BOTW_SCALE=1 SLOPPY_WINDOW=1280x720 SLOPPY_FRAMES=2600 SLOPPY_SCREENSHOT="$out/tower-base.png" timeout 240 sloppy/bin/sloppy tools/tower_base_climb_capture.jo

@@ -8,6 +8,14 @@ use 'fx.jo'
 
 # The sky: a painted gradient, sun and moon, stars, and sculpted cumulus clouds that drift.
 
+# Solar screen effects end at the viewport, including a soft inner edge.
+# Perspective W rejects the antipodal projection of a sun behind the camera.
+sun_screen_weight = (clip: vec4) -> f64:
+    if clip.w <= 0.0: return 0.0
+    uv = clip.xy / clip.w * 0.5 + vec2(0.5,0.5)
+    margin = min(min(uv.x,1.0-uv.x),min(uv.y,1.0-uv.y))
+    f64(smoothstep(0.0,0.04,margin))
+
 struct SkyU:
     inv_vp: mat4
     cam: vec3
@@ -36,7 +44,7 @@ skyp_vs = (v: FsVert, u: SkyU) -> SkyO: SkyO(vec4(v.pos, 0.99999, 1), v.pos)
 # One bank has a softly scalloped underside and an unequal cauliflower crown.
 # The contour joins the lobes first; pigment belongs to the whole bank, rather
 # than lighting every overlapping oval as a separate bubble.
-cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f32, clearing: vec4) -> vec2:
+cumulus_field = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f32, clearing: vec4, closed: bool) -> vec2:
     az = atan2(dir.z, dir.x)
     p = vec2(az * 2.54648, dir.y * 4.8) + wind * time * vec2(0.0008, 0.00012)
     cell = floor(p)
@@ -44,6 +52,7 @@ cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f3
     pigment: f32 = 0.0
     east = vec3(-sin(az), 0, cos(az))
     sun_side = dot(sun, east)
+    deck = if closed: smoothstep(0.45,0.74,cover) else: f32(0.0)
     loop iy in [-1..1]:
         loop ix in [-1..1]:
             id = cell + vec2(f32(ix), f32(iy))
@@ -65,12 +74,23 @@ cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f3
             visibility = smoothstep(1.0,1.28,length(offset/envelope))
             if visibility < 0.001: continue
             q = (p - center) * vec2(mirror, 1) / size
-            if abs(q.x) > 1.12 or q.y < -0.38 or q.y > 0.77: continue
+            bottom_limit = if closed: f32(-0.60) else: f32(-0.38)
+            if abs(q.x) > 1.12 or q.y < bottom_limit or q.y > 0.77: continue
             # Broad unequal volumes overlap before the silhouette is extracted.
             # Seeded spacing lets shoulders merge; only selected banks grow towers.
+            # Closed banks use broad contours; fade the fine clear-sky ripple
+            # out instead of adding another expensive wave to every pixel.
             x = q.x + sin(q.y * 11.0 + seed * 31.0) * 0.018
-            base = -0.12 + sin(x * (4.0 + shoulder * 2.0) + shape * 9.0) * 0.085
+            if closed:
+                x = q.x
+                if deck < 1.0: x += sin(q.y * 11.0 + seed * 31.0) * 0.018 * (1.0-deck)
+            broad = sin(x * (4.0 + shoulder * 2.0) + shape * 9.0)
+            base = -0.12 + broad * 0.085
             base += sin(x * 10.0 + seed * 17.0) * 0.035 + x * (shoulder - 0.5) * 0.11
+            # Closed banks lose the common condensation level. Broad seeded
+            # slopes and low lobes disturb long shelves without a noisy edge.
+            # Clear-weather contours remain byte-for-byte the authored field.
+            if closed: base += deck * (broad * 0.12 + x * (shoulder - 0.5) * 0.30)
             bottom = smoothstep(-0.07, 0.12 + shoulder * 0.07, q.y - base)
             if bottom <= 0.0: continue
             crown: f32 = -0.3
@@ -160,7 +180,7 @@ sky_color = (dir: vec3, u: SkyU) -> vec3:
     band_color = if l.x > 0.0: vec3(1.08, 0.58, 0.25) else: vec3(1.22, 0.44, 0.26)
     c + band_color * hz * lowsun * 0.5 * (1.0 - u.dark)
 
-skyp_fs = (i: SkyO, u: SkyU) -> vec4:
+skyp_surface = (i: SkyO, u: SkyU, closed: bool) -> vec4:
     a = u.inv_vp * vec4(i.ndc, 1, 1)
     b = u.inv_vp * vec4(i.ndc, -1, 1)
     dir = normalize(a.xyz / a.w - b.xyz / b.w)
@@ -222,7 +242,7 @@ skyp_fs = (i: SkyO, u: SkyU) -> vec4:
         castle_clear = if dot(dir, toward) > 0.0: smoothstep(1.0, 1.24, length(castle_uv)) else: 1.0
         softness = 0.06 + u.night * 0.24 + smoothstep(0.55, 0.8, u.clouds) * 0.16
         clearing = vec4(atan2(toward.z,toward.x)*2.54648,toward.y*4.8,380.0/distance*2.54648,255.0/distance*4.8)
-        cloud = cumulus(dir, l, u.time, u.wind, u.clouds, softness, clearing)
+        cloud = cumulus_field(dir, l, u.time, u.wind, u.clouds, softness, clearing, closed)
         if cloud.x > 0.001:
             day_shade = u.horizon * 0.35 + vec3(0.24, 0.23, 0.28)
             night_shade = u.horizon * 0.65 + vec3(0.015, 0.024, 0.05)
@@ -261,13 +281,25 @@ skyp_fs = (i: SkyO, u: SkyU) -> vec4:
     c = c * mix(vec3(1, 1, 1), vec3(0.44, 0.49, 0.60), storm_deck)
     vec4(c, 1)
 
+# Compile the open/closed field separately to remove per-bank weather work
+# from the clear shader. Longer GPU frames can require extra simulation ticks.
+# At clouds <= 0.45 the underside deformation is exactly zero: the old clear
+# field is identical, without carrying the closed-deck work through every bank.
+cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f32, clearing: vec4) -> vec2:
+    cumulus_field(dir,sun,time,wind,cover,softness,clearing,true)
+
+skyp_fs = (i: SkyO, u: SkyU) -> vec4: skyp_surface(i,u,true)
+skyp_clear_fs = (i: SkyO, u: SkyU) -> vec4: skyp_surface(i,u,false)
+
 sky_sh: Shader
+sky_clear_sh: Shader
 __sky_ready = false
 
 sky_prepare = ():
     if not __sky_ready:
         __sky_ready = true
         sky_sh = make_sh(shader(skyp_vs, skyp_fs))
+        sky_clear_sh = make_sh(shader(skyp_vs, skyp_clear_fs))
 
 draw_sky = (inv_vp: mat4, cam: vec3):
     sky_prepare()
@@ -279,7 +311,8 @@ draw_sky = (inv_vp: mat4, cam: vec3):
         f32(env.clouds), f32(env.dark), f32(elapsed()), env.wind, env.haze, zone, f32(clear), malice_center + vec3(0, 270, 0), f32(env.storm_k * env.rain))
     glDepthMask(0)
     glDisable(GL_CULL_FACE)
-    draw_fast(sky_sh, fullscreen_mesh(), u)
+    sh = if env.clouds <= 0.45: sky_clear_sh else: sky_sh
+    draw_fast(sh, fullscreen_mesh(), u)
     glDepthMask(1)
     draw_valley_mist(inverse(inv_vp), cam)
 

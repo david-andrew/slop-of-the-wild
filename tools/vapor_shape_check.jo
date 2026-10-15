@@ -68,3 +68,31 @@ check_cold_emitter = ():
     print("PASS cold emitter: four mouth-local wisps, restrained drift/opacity, expiry within 0.4s")
 
 check_cold_emitter()
+
+# Waterfall billows use a separate density fringe from ordinary smoke.
+# It must remain continuous below the old 0.01 discard threshold.
+loop phase in [0.1,0.4,0.8]:
+    assert(water_mist_data(phase,2.7,false)==vec4(f32(phase),1,2.7,0),"other waterfalls retain master's exact mist payload")
+    center = part_fs(PartO(vec4(),vec2(0.5,0.5),vec4(0.9,0.93,0.96,0.5),water_mist_data(phase,2.7),vec4(0,0,0,30),10),u)
+    assert(center.w>0.1 and center.w<0.6,"mist retains a translucent core")
+    previous = 1.0
+    loop step in [0..100):
+        r = 0.80+f64(step)*0.00199
+        color = part_fs(PartO(vec4(),vec2(f32(0.5+r*0.5),0.5),vec4(0.9,0.93,0.96,0.5),water_mist_data(phase,2.7),vec4(0,0,0,30),10),u)
+        assert(color.w>=0.0 and color.w<0.01,"mist fringe approaches zero before the card edge")
+        assert(abs(f64(color.w)-previous)<0.001 or step==0,"no density step at the old alpha cutoff")
+        previous=f64(color.w)
+    assert(previous<0.000001,"mist card rim is visually transparent")
+print("PASS waterfall mist: continuous sub-threshold density and transparent card rims")
+
+# Exercise the production particle payload through the real vertex shader.
+# A mist tag must not enter the rain-streak path and collapse into a wire.
+lo=vec3(1e9,1e9,1e9)
+hi=vec3(-1e9,-1e9,-1e9)
+loop corner in [vec2(-1,-1),vec2(-1,1),vec2(1,1),vec2(1,-1)]:
+    cloud=PInst(vec4(0,0,0,10),vec4(0.9,0.93,0.96,0.5),water_mist_data(0.4,2.7))
+    point=part_vs(QuadV(corner),cloud,u).pos.xyz
+    lo=min(lo,point)
+    hi=max(hi,point)
+assert(hi.x-lo.x>15.0 and hi.y-lo.y>15.0,"mist retains its full billow geometry instead of rain streaks")
+print("PASS waterfall mist: full-size billows use the existing continuous soft-density path")

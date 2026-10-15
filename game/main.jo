@@ -21,6 +21,7 @@ use 'shade.jo'
 use 'env.jo'
 use 'post.jo'
 use 'terrain.jo'
+use 'terrain_stream.jo'
 use 'worldgen.jo'
 use 'water.jo'
 use 'water_render.jo'
@@ -84,7 +85,7 @@ __lap("worldgen_finish")
 terrain_asset_load()
 __lap("terrain_read")
 window("The Legend of Jo: Slop of the Wild", 1280, 720)
-terrain_upload()
+terrain_stream_begin()
 __lap("terrain_upload")
 water_build()
 __lap("water_build")
@@ -854,6 +855,7 @@ update = (dt0: f64):
         __warmup_done = true
         eprint("loaded in {time() - t0:.2}s")
     frame_stats_begin(post.scale)
+    if frame_number() >= 4: terrain_stream_step()
     # (the real time between frames: dt0 is the fixed step)
     now_ = time()
     elapsed_dt = if __loop_last > 0.0: now_ - __loop_last else: dt0
@@ -1368,6 +1370,32 @@ character_warmup = ():
     free_target(rt)
     gl_restore_2d()
 
+# Weather programs must be ready even when the cave opening defers outdoor maps.
+# One terrain patch and two sky draws exercise the production HDR/depth state
+# under the caller's 16x16 scissor, without world selection or texture streaming.
+weather_pipeline_warmup = ():
+    saved_env = env
+    glEnable(GL_SCISSOR_TEST)
+    glScissor(0, 0, 16, 16)
+    bind_target(post.scene)
+    gl_opaque_state()
+    patch = inst_buffer([TNode(vec4(-1000, 1620, 2, 0), vec2(1, 2))])
+    u = terr_u(sc.vp, false)
+    glDepthFunc(GL_EQUAL)
+    glDepthMask(0)
+    u.wet = 0.0
+    draw_static(terrain_sh, grid_mesh, patch, u)
+    u.wet = 1.0
+    draw_static(terrain_wet_sh, grid_mesh, patch, u)
+    glDepthFunc(GL_LEQUAL)
+    glDepthMask(1)
+    gl_delete_buffer(patch.vbo)
+    loop clouds in [0.42, 0.85]:
+        env.clouds = clouds
+        draw_sky(inverse(sc.vp), sc.cam)
+    env = saved_env
+    gl_opaque_state()
+
 # Submit representative shader/target/material paths during loading without
 # advancing story/simulation. Vulkan also primes presentation with black loading frames.
 # Temporarily selecting a shrine warms its monk/dome; restore the selection afterwards.
@@ -1395,42 +1423,51 @@ render_warmup = ():
     valley_mist_prepare()
     dome_prepare()
     post_begin()
+    # The chase lens has not been positioned by the first update yet. Classify
+    # the actual starting player, not that uninitialized lens at the world origin.
+    opening = zone_at(pl.pos + vec3(0, 1, 0)) == "sor" and f64(length(pl.pos-see_out_from)) > 45.0
+    start_pos = if opening: SOR_BED + vec3(0, 2, 4) else: view_pos()
+    start_target = if opening: SOR_BED else: view_target()
+    if not opening: terrain_stream_require()
     ch_init_shaders()
     game_pipeline_warmup_begin()
     vegetation_warmup()
     character_warmup()
-    # Outdoor view (terrain, vegetation, grass, sky, water, characters, post).
+    # Pipeline specialization is independent of output area. Restrict hidden
+    # representative draws to a small tile; restore full coverage for both
+    # starting-camera cascade updates below. Grain caches are initialized before
+    # enabling the scissor, including the spare production resolution.
+    glEnable(GL_SCISSOR_TEST)
+    glScissor(0, 0, 16, 16)
     p = v3(-1000.0, height_at(-1000.0, 1620.0) + 3.0, 1620.0)
-    render_world(p, p + vec3(0, 0, 1), 50.0)
-    bind_target(post.scene)
-    trail_warmup(sc.vp, p + vec3(0, 0, 3))
-    fx_warmup(sc.cam, sc.vp, sc.view)
-    body_fire_warmup()
-    # Dawn mist is otherwise not requested until the hour changes mid-play.
-    saved_env = env
-    env.valley_mist = 1.0
-    draw_valley_mist(sc.vp, sc.cam)
-    env = saved_env
-    # Uniform variants share a Vulkan pipeline, but exercise their materials
-    # with rain/night values as well as the daytime outdoor path.
-    saved_rain = rain_streaks
-    rain_streaks = [vec3(5, 5, 5)]
-    env.night = 1.0
-    env.rain = 1.0
-    env.wet = 1.0
-    render_world(p, p + vec3(0, 0, 1), 50.0)
-    rain_streaks = saved_rain
-    env = saved_env
-    # The wet terrain is a separate program; link completion alone does not warm
-    # its driver draw specialization. Compile that path before the first storm.
-    saved_wet = env.wet
-    saved_shadow_frame = shadow_frame
-    env.wet = 1.0
-    render_world(p, p + vec3(0, 0, 1), 50.0)
-    env.wet = saved_wet
-    # Preserve the original alternating cascade schedule for the remaining
-    # warmup views and the first visible frames.
-    shadow_frame = saved_shadow_frame
+    # During the cave opening no outdoor pixels are visible. Queued terrain
+    # pipeline recipes compile without forcing its deferred texture uploads.
+    if not opening:
+        saved_clouds = env.clouds
+        env.clouds = 0.42
+        render_world(p, p + vec3(0, 0, 1), 50.0)
+        env.clouds = saved_clouds
+        bind_target(post.scene)
+        trail_warmup(sc.vp, p + vec3(0, 0, 3))
+        fx_warmup(sc.cam, sc.vp, sc.view)
+        body_fire_warmup()
+        # Dawn mist is otherwise not requested until the hour changes mid-play.
+        saved_env = env
+        env.valley_mist = 1.0
+        draw_valley_mist(sc.vp, sc.cam)
+        env = saved_env
+        # Uniform variants share a Vulkan pipeline, but exercise their materials
+        # with rain/night values as well as the daytime outdoor path. Both sky
+        # programs must draw here so the first weather change cannot compile one.
+        saved_rain = rain_streaks
+        rain_streaks = [vec3(5, 5, 5)]
+        env.night = 1.0
+        env.rain = 1.0
+        env.wet = 1.0
+        env.clouds = 0.85
+        render_world(p, p + vec3(0, 0, 1), 50.0)
+        rain_streaks = saved_rain
+        env = saved_env
     # Shrine material, mechanisms, the monk's translucent dome, and the cave pool.
     loop id in [0..4):
         shr_cur = id
@@ -1461,19 +1498,24 @@ render_warmup = ():
     sc = saved_scene
     shr_cur = -1
     render_world(SOR_BED + vec3(0, 2, 4), SOR_BED, 50.0)
+    weather_pipeline_warmup()
     shr_cur = saved_shrine
     # Prepare the second production resolution and its smoke/grain targets.
     # Return to the original scale so startup and the controller agree.
     saved_scale = post.scale
     if not __res_fixed:
         post.scale = if pixel_size().x * pixel_size().y > 1920.0 * 1080.0: 0.72 else: 0.9
-        render_world(view_pos(), view_target(), view_fov())
+        glDisable(GL_SCISSOR_TEST)
+        post_begin()
+        glEnable(GL_SCISSOR_TEST)
+        render_world(start_pos, start_target, view_fov())
         bind_target(post.scene)
         fx_warmup(sc.cam, sc.vp, sc.view)
         body_fire_warmup()
         post.scale = saved_scale
+    glDisable(GL_SCISSOR_TEST)
     # Both staggered shadow cascades belong to the starting camera before play begins.
-    loop k in [0..2): render_world(view_pos(), view_target(), view_fov())
+    loop k in [0..2): render_world(start_pos, start_target, view_fov())
     story.title_alpha = 1.0
     if not invui.open: story_draw_2d()
     flush()

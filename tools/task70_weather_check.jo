@@ -1,0 +1,100 @@
+# Headless checks for the actual rain exposure, diffuse envelope and HUD/plume paths.
+use '../game/env.jo'
+use '../game/shade.jo'
+use '../game/sky.jo'
+use '../game/charshade.jo'
+use '../game/ui.jo'
+use '../game/fx.jo'
+
+# The same hour has the same distant ash pigment under every weather state.
+# Include dawn/night where the pre-weather daylight value is below one.
+loop hour in [4.6,6.4,11.0,18.6,22.0]:
+    env=Env(hour=hour,time_scale=0,weather=.clear,weather_t=1e9)
+    env_update(0,false)
+    clear=env
+    loop weather in [Weather.cloudy,Weather.rain,Weather.storm]:
+        env=Env(hour=hour,time_scale=0,weather=weather,weather_t=1e9,clouds=0.95,rain=1,wet=1,storm_k=(if weather==.storm:1 else:0))
+        env_update(0,false)
+        loop h in [0.0,0.08,0.25,0.8]:
+            actual=far_plume_color(h)
+            expected=mix(vec3(0.62,0.3,0.16),vec3(0.24,0.21,0.21)*f32(clear.plume_light),f32(smoothstep(0.0,0.25,h)))
+            assert(length(actual-expected)<0.000001,"ash/crater pigment must not turn orange with cloud attenuation")
+        if hour==22: assert(luma(env.sky_amb)<0.4,"daytime rain fill cannot brighten night")
+print("PASS plume: identical pigment across weather at dawn/day/dusk/night")
+
+loop idle in [0.0,0.01,0.2,0.7,1.0]:
+    assert(clock_opacity(idle,0)==idle,"clear-weather HUD fade unchanged")
+    assert(clock_opacity(idle,0.75)>=0.88,"rain dial stays legible after idle timer expires")
+    previous=idle
+    loop n in [0..101):
+        alpha=clock_opacity(idle,f64(n)/100)
+        assert(alpha>=previous and alpha-previous<0.07,"HUD rain floor fades continuously")
+        previous=alpha
+print("PASS clock: rain contrast floor, continuous entry and unchanged dry fade")
+
+# Soaked shirt, skin, leather and steel retain their pigment order across canopy
+# and open diffuse lighting, including downward/vertical planes and deep shadow.
+env=Env(hour=11,time_scale=0,weather=.rain,weather_t=1e9,clouds=0.85,rain=0.75,wet=1)
+env_update(0,false)
+u=ChU(environment=1,wet=1,environment_sun=env.sun_color,environment_sky=env.sky_amb,environment_ground=env.ground_amb)
+loop n in [vec3(0,1,0),vec3(0,0,1),vec3(0,-1,0)]:
+    loop cover in [0.0,0.5,1.0]:
+        u.environment_shade=f32(cover)
+        previous: f32=0
+        loop pigment in [vec3(0.15,0.08,0.035),vec3(0.35,0.34,0.32),vec3(0.55,0.38,0.27),vec3(0.7,0.72,0.73)]:
+            ref=paint_light(pigment,n,env.light_dir,vec3(0,0,1),env.sun_color,env.sky_amb,env.ground_amb,0,0.45)
+            lower=ch_environment_bound(ref*0.2,pigment,n,vec3(0,0,1),env.light_dir,0,u)
+            upper=ch_environment_bound(ref*3,pigment,n,vec3(0,0,1),env.light_dir,0,u)
+            assert(luma(lower)>luma(ref)*0.90 and luma(upper)<luma(ref)*1.25,"daytime canopy diffuse stays near the environment")
+            assert(luma(upper)>luma(lower)*1.15,"material planes retain diffuse headroom")
+            assert(luma(lower)>previous,"wet material pigment values remain ordered")
+            previous=luma(lower)
+print("PASS wet canopy: material value order, near-environment diffuse and plane headroom")
+
+assert(sun_screen_weight(vec4(0,0,0,-1))==0,"sun behind camera cannot produce rays")
+loop edge in [-1.2,-1.0,1.0,1.2]:
+    assert(sun_screen_weight(vec4(f32(edge),0,0,1))==0,"offscreen side rejects solar effects")
+    assert(sun_screen_weight(vec4(0,f32(edge),0,1))==0,"offscreen top/bottom rejects solar effects")
+assert(sun_screen_weight(vec4(0,0,0,1))==1,"visible sun can cast shafts")
+previous=0.0
+loop k in [0..81):
+    weight=sun_screen_weight(vec4(-1+f32(k)*0.001,0,0,1))
+    assert(weight>=previous and weight-previous<0.02,"sun rays fade continuously at screen edge")
+    previous=weight
+print("PASS sun rays: offscreen/behind rejection and continuous visible edge")
+
+# The snowy transition fixture clears the storm at frame 1400. Direct sun
+# returns at the same time, so the extra ordinary-rain fill must not surge
+# through the first two 100-frame intervals of that handoff.
+env=Env(hour=11,time_scale=1,weather=.clear,weather_t=1e9)
+clearing_sky: f32=0
+loop frame in [1..1601):
+    if frame==200:
+        env.weather=.storm
+        env.bolt_wait=1e9
+    if frame==1400: env.weather=.clear
+    loop tick in [0..2): env_update(1.0/120.0,false)
+    if frame==1400: clearing_sky=luma(env.sky_amb)
+    if frame==1500 or frame==1600:
+        change=abs(luma(env.sky_amb)-clearing_sky)
+        assert(change<0.02,"storm clearing cannot stack a rapid diffuse rise on the returning sun")
+        print("PASS clearing frame {frame}: ambient step {change:.4}")
+        clearing_sky=luma(env.sky_amb)
+
+# The fast clear shader must be the same field, including the exact switch
+# boundary. Sweep azimuth/elevation, wind directions and moving bank offsets.
+clear_error: f32=0
+loop cover in [f32(0.0),f32(0.2),f32(0.42),f32(0.45)]:
+    loop wind in [vec2(1,0.35),vec2(-1,0.35)]:
+        loop k in [0..48):
+            az=f64(k)*TAU/48.0
+            loop j in [1..17):
+                y=f64(j)/17.0
+                r=sqrt(1.0-y*y)
+                dir=vec3(f32(cos(az)*r),f32(y),f32(sin(az)*r))
+                clearing=vec4(3.4,1.3,0.1,0.1)
+                a=cumulus_field(dir,normalize(vec3(0.2,0.9,0.4)),137,wind,cover,0.06,clearing,false)
+                b=cumulus_field(dir,normalize(vec3(0.2,0.9,0.4)),137,wind,cover,0.06,clearing,true)
+                clear_error=max(clear_error,length(a-b))
+assert(clear_error<0.000001,"clear shader specialization preserves cloud coverage/pigment")
+print("PASS clear cloud specialization: 6144 samples, max error {clear_error}")

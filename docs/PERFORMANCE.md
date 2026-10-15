@@ -1,11 +1,142 @@
-# Performance — Sloppy 0.6.0, 2026-10-14
+# Performance — Sloppy 0.6.0, 2026-10-15
 
 Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland and XWayland,
 **2133×1200 physical pixels**, production dynamic scene scale. All outliers are
 retained. These are **producer/present-return intervals, not scanout timestamps**;
 the shared desktop is not an isolated hardware guarantee.
 
-## Current results — 2026-10-14, Round 69
+## Current startup — 2026-10-15, Round 70
+
+Native X11/Vulkan, **exact 2133×1200 client pixels, full scene scale 1.00**,
+prepared assets, fixed 11:00/clear, `BOTW_SKIP=1`, one completed frame per launch.
+The benchmark helper hides and resizes only its own X11 client. Cold uses fresh
+local Vulkan/NVIDIA cache directories; warm reuses them. System/page/shared
+library caches are not flushed. Compilation, render-lock queue and pre-launch
+quiet waits are excluded from every launch time.
+
+The old **8.30 s** headline described an earlier **1280×720** run, not this
+protocol. The critic measured **13.75 s cold** and **2.70–2.99 s warm** over 18
+launches at **2133×1200**, including about **1.03 s render warmup / 0.61 s terrain
+upload**. Those observations are retained as the reported shared-desktop case;
+they are not replaced by a smaller-resolution headline.
+
+The final executable's strict low-activity control required **CPU <12% and GPU
+<5%** immediately before every launch. All four final launches passed: CPU
+**11.0–12.0%**, GPU **1–4%**. The original control also passed (CPU
+**10.9–11.9%**, GPU **0–1%**). These are brief pre-launch observations on a shared
+desktop, not isolation throughout the run.
+
+| Metric | Original control | Final executable |
+|---|---:|---:|
+| Cold in-game load, s | 11.13 | 10.71 |
+| Warm launches | 3 | 3 |
+| Warm median in-game load, s | 1.68 | 1.61 |
+| Warm range, s | 1.62–1.70 | 1.61–1.64 |
+| Warm median render warmup, s | 0.267 | 0.201 |
+| Warm median initial terrain upload, s | 0.190 | 0.180 |
+| Warm median first callback end from process start, s | 1.692 | 1.623 |
+| Warm median complete process, s | 3.35 | 3.31 |
+
+The **1.5 s warm target remains unmet**. One cold launch per version is too small
+a sample to claim a cold speedup: an earlier low-activity implementation control
+measured 11.19 s cold against the original 11.13 s. The final headline uses this
+exact executable's control, not the best sample from an earlier implementation.
+Raw rows and binary hashes: `build/task70-sol/idle-{before-v3,final-v4}/summary.json`.
+
+An earlier implementation (before the final camera and underground-culling
+refinements) retained **all 18 warm samples per version** at the same output:
+original median **1.685 s**, range **1.64–1.86 s**; implementation median
+**1.540 s**, range **1.49–1.61 s**. Warm render warmup medians were
+**0.273 → 0.184 s**. Cold was **13.20 → 10.36 s**, but the original cold launch
+started at **33.4% CPU** versus **11.25% CPU / 1% GPU** afterward. That cold
+difference cannot be attributed entirely to code. Pre-launch CPU activity across
+those cohorts ranged **11.6–33.4%** before and **9.2–23.9%** afterward. These
+18-run cohorts remain archived as load context, not final idle measurements.
+
+A preceding 18-run, same-output implementation cohort retained a **1.620 s**
+warm median and **1.51–4.47 s** range with CPU activity up to **84.6%**. Warm
+outliers at 3.34 and 4.47 s followed high CPU activity; neither was discarded.
+That superseded cohort is retained in `build/task70-sol/startup-final/`, rather
+than being relabeled as idle final-tree performance. It illustrates why the
+critic's busier-desktop observations and earlier smaller-resolution numbers
+must keep their conditions attached.
+
+`loaded in` ends after offscreen/presentation warmup and before the first game
+draw. The first-callback marker includes update/draw and excludes presentation;
+the process total includes PNG readback/write and teardown. None measures
+compositor scanout. Earlier 18-run rows, exact environment, viewport validation and binary
+hashes: `build/task70-sol/startup-{before-prepared,final-v3}/summary.json`.
+
+Terrain payloads now stream during the cave opening after four visible frames,
+with at most 512 KiB of texture copies or one 64-row noise tile per callback.
+Height/burn maps stay available for particle roots. Outdoor starts finish the
+payload in bulk before drawing; partial outdoor maps never appear. The initial
+terrain-upload column therefore covers retained prerequisites, and the load
+number also includes the required outdoor drain. Hidden warmup views use a
+16×16 scissor, omit one redundant wet draw, and restore full coverage for both
+starting-camera shadow refreshes. Full mip/noise GPU equivalence and prepared
+asset byte equivalence pass. Implementation details and review evidence are in
+[ROUND70_SOL.md](ROUND70_SOL.md).
+
+## Round 70 CPU and pacing evidence
+
+Matched fixed-step controls use the original and final executable snapshots,
+1280×720 full scale, identical production seeds/positions/hour/weather/input,
+and unchanged CPU affinity. Each scene runs in interleaved A B B A A B order:
+three 841-frame launches per version, with 840 recorded callback samples per
+launch. Camera diagnostic logging is disabled; production frame logging is on.
+All samples and repeats are retained. The standard steady window excludes the
+first 240 frames (1,800 samples/version/scene); the complete window retains
+2,520 samples. CPU means main-thread callback time, excluding runtime gaps.
+
+| Scene | Steady CPU p99, before → after (ms) | All-frame CPU p99 (ms) | First-120-frame CPU p99 (ms) |
+|---|---:|---:|---:|
+| Forest | 7.295 → 6.838 | 7.666 → 6.809 | 7.441 → 6.982 |
+| Glide | 5.152 → 5.003 | 5.138 → 5.020 | 5.138 → 5.175 |
+| Cave opening | 4.572 → 4.191 | 4.532 → 4.133 | 5.122 → 4.523 |
+
+The actual gliding window, frames 60–320 (783 samples/version), improves from
+**4.913 → 4.599 ms CPU p99**. The steady and complete-scene p99 comparisons pass
+for all three scenes. This does not mean every narrower window improves:
+glide's first-120-frame p99 is 0.037 ms higher. Streaming moves work into early
+cave callbacks: their first-120-frame CPU median rises **1.484 → 2.211 ms** and
+worst **7.921 → 9.034 ms**, while that window's p99 falls. These costs remain in
+the measurements rather than being excluded as startup.
+
+These fixed-step runs are **shared-load measurements**, not idle controls.
+Each launch attempts a five-second quiet wait, then records actual activity and
+runs regardless; pre-launch CPU activity spans **11.42–57.63%**, GPU **1–3%**.
+The strict low-activity requirement applies to the startup control above.
+Raw logs, every per-run activity snapshot, binary/source hashes, protocol and
+all timing windows: `build/task70-sol/paired-cpu-production/`.
+
+An earlier final-camera diagnostic control with `BOTW_CAMDBG=1` completed only
+five launches before its strict quiet gate repeatedly rejected the next launch.
+Its partial forest steady p99 is **6.882 → 8.578 ms** (three original versus two
+final runs); that higher tail is retained in
+`build/task70-sol/paired-cpu-stock/`. The trace-enabled cohort is incomplete and
+is not merged with the completed production-logging controls. Together with the
+variation between repeats, it limits any claim of an isolated hardware speedup.
+
+The full critic pack's 120-second real-dt forest route uses the managed
+2133×1200 client, launcher-default present mode and dynamic scene scale. Both
+versions used the driver's immediate fallback for mailbox. Excluding the first
+240 frames, its master/final measurements are:
+
+| Metric, ms | Master pack | Final pack |
+|---|---:|---:|
+| CPU callback thread p99 | 8.116 | 6.719 |
+| CPU callback wall p99 | 15.483 | 14.125 |
+| Present-return interval p99 | 16.320 | 15.034 |
+| Present-return intervals >25 ms | 1 | 0 |
+
+This route compares the same timed traversal; it is not an isolated-machine
+claim and its real-dt sample counts differ (9,685 / 11,809 steady frames).
+Raw evidence: `/tmp/crit70pack/performance/summary.json` and
+`build/task70-sol/final-v4-pack/performance/{summary.json,route.log}`. Display
+scanout is not measured.
+
+## Historical results — 2026-10-14, Round 69
 
 Unmodified Sloppy **0.6.0**, i7-6700 / GTX 1070, shared loaded desktop.
 Native startup and fixed captures: **1280×720, scale 1.00**, managed X11/Vulkan,

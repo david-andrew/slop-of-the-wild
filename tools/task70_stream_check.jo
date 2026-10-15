@@ -1,0 +1,90 @@
+# Caller owns the render lock. Verify every streamed row and every mip against
+# the existing eager path, including the half-float terrain noise lattice.
+use '../game/terrain_stream.jo'
+use '../game/terrain.jo'
+use '../game/gfx.jo'
+
+struct StreamCheckU:
+    a: Texture
+    b: Texture
+    lod: f32
+    size: vec2
+struct StreamCheckO:
+    pos: vec4
+    uv: vec2
+stream_check_vs = (v: FsVert, u: StreamCheckU) -> StreamCheckO:
+    StreamCheckO(vec4(v.pos, 0, 1), v.pos * 0.5 + vec2(0.5, 0.5))
+stream_check_fs = (i: StreamCheckO, u: StreamCheckU) -> vec4:
+    uv = (floor(i.uv * u.size) + vec2(0.5)) / u.size
+    d = sample_lod(u.a, uv, u.lod) - sample_lod(u.b, uv, u.lod)
+    vec4(abs(d.xyz), abs(d.w))
+
+window("Terrain stream equality", 128, 128)
+hf.n = 512
+hf.cell = 2.0
+hf.h = fill(f32(0), hf.n * hf.n)
+hf.mat = fill(u8(0), hf.n * hf.n * 4)
+pixels = [loop i in [0..hf.n * hf.n * 4): u8((i * 29 + i / (hf.n * 4) * 71) % 256)]
+terrain_normal_pixels = pixels
+terrain_material_pixels = pixels
+terrain_stream_begin()
+assert(not terrain_stream_ready and terrain_stream_stage == 0 and terrain_stream_row == 0, "begin leaves outdoor payload behind the first frame")
+terrain_stream_step()
+assert(not terrain_stream_ready and terrain_stream_row == 64, "one callback advances a bounded noise tile")
+steps = 1
+loop not terrain_stream_ready:
+    terrain_stream_step()
+    steps += 1
+assert(steps == 68, "64 noise tiles and four bounded texture copies")
+assert(terrain_normal_pixels.len() == 0 and terrain_material_pixels.len() == 0, "completed stream releases immutable CPU payloads")
+streamed_noise = terrain_noise_tex
+terrain_noise_bake()
+reference = bytes_texture(hf.n, hf.n, pixels, true, false)
+sh = make_sh(shader(stream_check_vs, stream_check_fs))
+rt = make_target(128, 128, false, false)
+gl_delete_texture(rt.color.id)
+rt.color = color_texture(128, 128, GL_RGBA32F, GL_RGBA, GL_FLOAT, GL_NEAREST)
+glBindFramebuffer(GL_FRAMEBUFFER, u32(rt.fbo))
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, u32(rt.color.id), 0)
+assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+# Positive control: a broken sampler binding/checker must not pass by reading
+# the same default texture twice and returning zero differences everywhere.
+black = bytes_texture(1, 1, [u8(0), 0, 0, 255], false, false)
+white = bytes_texture(1, 1, [u8(255), 255, 255, 255], false, false)
+bind_target(rt)
+glDisable(GL_DEPTH_TEST)
+glDisable(GL_CULL_FACE)
+glDisable(GL_BLEND)
+glClearColor(0, 0, 0, 1)
+glClear(GL_COLOR_BUFFER_BIT)
+draw_fast(sh, fullscreen_mesh(), StreamCheckU(black, white, 0, vec2(1, 1)))
+control = fill(f32(0), 4)
+game_read_pixels_f32(0, 0, 1, 1, data(control) as *u8)
+assert(control[0] > 0.99 and control[1] > 0.99 and control[2] > 0.99 and control[3] < 0.01, "GPU comparator detects intentionally different texture data")
+gl_delete_texture(black.id)
+gl_delete_texture(white.id)
+max_error = 0.0
+# Tiled noise must be byte-identical, not merely close, at every lattice texel.
+loop pair in [(streamed_noise, terrain_noise_tex), (normal_tex, reference), (mat_tex, reference)]:
+    levels = if pair.0 == streamed_noise: 1 else: 10
+    loop level in [0..levels):
+        w = max(pair.0.width >> level, 1)
+        h = max(pair.0.height >> level, 1)
+        loop y in [0..(h + 127) / 128):
+            loop x in [0..(w + 127) / 128):
+                # A viewport offset enumerates the full normalized image in tiles.
+                bind_target(rt)
+                glViewport(i32(-x * 128), i32(-y * 128), i32(w), i32(h))
+                glDisable(GL_DEPTH_TEST)
+                glDisable(GL_CULL_FACE)
+                glDisable(GL_BLEND)
+                glClearColor(1, 1, 1, 1)
+                glClear(GL_COLOR_BUFFER_BIT)
+                draw_fast(sh, fullscreen_mesh(), StreamCheckU(pair.0, pair.1, f32(level), vec2(f32(w), f32(h))))
+                px = fill(f32(1), 128 * 128 * 4)
+                game_read_pixels_f32(0, 0, 128, 128, data(px) as *u8)
+                loop row in [0..min(128, h - y * 128)):
+                    loop col in [0..min(128, w - x * 128)):
+                        loop c in [0..4): max_error = max(max_error, f64(px[(row * 128 + col) * 4 + c]))
+assert(max_error == 0, "streamed noise/base images/full mip pyramids equal eager GPU upload")
+print("PASS terrain stream: {steps} bounded steps, deferred begin, released CPU maps; full noise lattice and both complete mip pyramids equal eager GPU upload")

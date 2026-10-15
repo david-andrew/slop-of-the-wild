@@ -1,0 +1,54 @@
+# Caller owns one render lock. A cave start must keep terrain maps deferred,
+# then reach clear outdoors and change weather without new Vulkan pipelines.
+# Also run with BOTW_SKIP=1 to cover an outdoor start.
+build:
+    opt = release
+use '../game/main.jo'
+use '../game/post.jo'
+use '../game/render.jo'
+use '../game/sky.jo'
+use '../game/shrines.jo'
+use '../game/env.jo'
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/terrain_stream.jo'
+pipeline_inventory = () -> int:
+    total = 0
+    when TARGET != "wasm":
+        if game_vulkan_backend():
+            loop p in __vgp: total += p.pipelines.len()
+    total
+check_draw = ():
+    assert(game_vulkan_backend(), "pipeline inventory requires Vulkan")
+    if env("BOTW_SKIP") == none:
+        assert(not terrain_stream_ready, "weather warmup must preserve deferred cave maps")
+    draw()
+    flush()
+    # Reach clear outdoors before measuring the first weather change.
+    shr_cur = -1
+    p = v3(-1000.0, height_at(-1000.0, 1620.0) + 3.0, 1620.0)
+    env.clouds = 0.42
+    env.wet = 0.0
+    env.rain = 0.0
+    render_world(p, p + vec3(0, 0, 1), 50.0)
+    flush()
+    before = pipeline_inventory()
+    existing: {int: int[]} = {}
+    loop i in 0.. and program in __vgp: existing[i] = program.pipelines.keys()
+    eprint("weather programs: clear {sky_clear_sh.prog} closed {sky_sh.prog} dry {terrain_sh.prog} wet {terrain_wet_sh.prog}")
+    env.wet = 1.0
+    env.rain = 1.0
+    env.night = 1.0
+    loop clouds in [0.85, 0.42]:
+        env.clouds = clouds
+        render_world(p, p + vec3(0, 0, 1), 50.0)
+    flush()
+    after = pipeline_inventory()
+    loop i in 0.. and program in __vgp:
+        loop key in program.pipelines.keys():
+            if not existing.get(i, []).contains(key): eprint("weather missing pipeline: program {i} key {key}")
+    eprint("weather coverage: before {before} after {after}")
+    assert(before == after, "first outdoor weather change created a pipeline")
+    print("PASS first outdoor weather change: clear/closed sky and wet terrain")
+    exit(0)
+main = (): __game_run(update, check_draw)

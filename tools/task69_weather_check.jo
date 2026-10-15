@@ -68,7 +68,7 @@ ref=paint_light(pigment,normal,env.light_dir,vec3(0,0,1),env.sun_color,env.sky_a
 low=ch_environment_bound(ref*0.2,pigment,normal,vec3(0,0,1),env.light_dir,1,u)
 high=ch_environment_bound(ref*3,pigment,normal,vec3(0,0,1),env.light_dir,1,u)
 assert(luma(high)>luma(low)*1.10,"wet canopy retains a useful range for material planes")
-assert(luma(low)>luma(ref)*0.55 and luma(high)<luma(ref)*0.80,"wet canopy stays below the reflected-water value group")
+assert(luma(low)>luma(ref)*0.90 and luma(high)<luma(ref)*1.25,"wet canopy preserves pigment-relative diffuse without triple darkening")
 
 rain_streaks.clear()
 seed_random(64)

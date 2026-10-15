@@ -1,11 +1,6 @@
 # The Legend of Jo: Slop of the Wild
 
-**[Play in the browser](https://david-andrew.github.io/slop-of-the-wild/)** (desktop browser with WebGL 2; about 121 MB to load).
-
-[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **197 PASS / 0 FAIL**
-([evidence](docs/EVALUATE.md#whole-regression-suite)).
-[Compact performance summary](docs/PERFORMANCE.md), [current listening evidence](docs/MUSIC.md),
-and [Round 81 targeted findings and evidence](docs/ROUND81_SOL.md).
+**Prepared native 2133×1200 startup: 10.71 s cold · 1.61 s warm median (1.61–1.64 s; low-activity control)** — [conditions](docs/PERFORMANCE.md) · [play](https://david-andrew.github.io/slop-of-the-wild/).
 
 *The Legend of Jo: Slop of the Wild* is a parody tribute inspired by *Breath of the Wild*'s
 Great Plateau, written in [Sloppy](../slop-lang) (formerly Jot), a small compiled language for games. Everything (rendering,
@@ -18,6 +13,9 @@ the title card's lettering in a serif
 
 Player-facing names use parody aliases. Original actor and item IDs stay internal for
 map-data and save compatibility.
+
+[Evaluation and complete-suite evidence](docs/EVALUATE.md), [listening evidence](docs/MUSIC.md),
+and [Round 70 implementation and checks](docs/ROUND70_SOL.md).
 
 [Measured source size, build/load times, headless tests, and Sloppy features and limits](docs/SLOPPY_SHOWCASE.md).
 

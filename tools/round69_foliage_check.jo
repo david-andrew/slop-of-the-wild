@@ -22,6 +22,32 @@ assert(holes > image.width*image.height/5,"open sprays retain real coverage gaps
 assert(all_rgb.y/leaf_rgb.y > 0.90 and all_rgb.y/leaf_rgb.y < 1.10,"one-texel mip preserves leaf pigment independently of coverage")
 print("PASS bush mip: {holes} transparent texels, leaf green {leaf_rgb.y:.2}, final-mip green {all_rgb.y:.2}")
 
+# Ground-level pigment/cutouts must remain exact; steep-view opacity must not
+# restore the very dark raw leaf values that failed the Temple hillside gate.
+weights=vec3(0.30,0.55,0.15)
+loop meadow in [vec3(0.21,0.29,0.13),vec3(0.33,0.30,0.17)]:
+    loop leaf in [vec3(0.035,0.065,0.04),vec3(0.08,0.12,0.07)]:
+        loop view_y in [-0.3,0.0,0.12]:
+            assert(bush_overhead_pigment(meadow,leaf,f32(view_y))==meadow,"ground bush pigment stays exactly as master")
+            assert(bush_leaf_cut(0.42,f32(view_y))==0.42,"ground leaf cutout stays exactly as master")
+        loop view_y in [0.35,0.5,0.7,1.0]:
+            pigment=bush_overhead_pigment(meadow,leaf,f32(view_y))
+            assert(abs(dot(pigment,weights)-dot(meadow,weights))<0.000001,"overhead pigment preserves master's middle value")
+            if view_y>=0.38: assert(pigment.y>pigment.x and pigment.y>pigment.z,"opaque overhead bushes remain mid-green")
+            assert(bush_leaf_cut(0.42,f32(view_y))>=0.14,"transparent atlas borders remain holes")
+print("PASS bush overhead: unchanged ground pigment/coverage; opaque cutouts and preserved mid-green values above")
+relief_mean=0.0
+loop k in [0..image.width*image.height):
+    relief=bush_leaf_relief(f32(image.pixels[k*4+1])/255.0)
+    assert(relief>=0.82 and relief<=1.18,"leaf folds cannot turn the bush black or wash it out")
+    relief_mean+=f64(relief)/f64(image.width*image.height)
+assert(relief_mean>0.98 and relief_mean<1.04,"authored leaf folds preserve the mean bush value")
+loop snow in [0.0,0.1,0.35,0.4,0.85,1.0]:
+    tag=bush_crown_tag(f32(snow))
+    assert(tag<0.0 and bush_crown_snow(tag)==f32(snow),"owned tree lobes recover master's exact snow value")
+assert(bush_crown_snow(-1.99999)==0.0 and bush_crown_snow(-2.00001)==0.0,"interpolated crown sentinel remains snow-free")
+assert(bush_overhead_enabled(0.0) and not bush_overhead_enabled(0.85) and not bush_overhead_enabled(-2.0),"snowy foliage and owned crown lobes keep master's shader response")
+
 broadleaf = __broadleaf_image()
 loop y in [0..broadleaf.height):
     loop x in [0..broadleaf.width):

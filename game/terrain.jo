@@ -778,7 +778,11 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
         c = c + vec3(0.8, 0.12, 0.014) * em * (0.85 + 0.15 * sin(u.time * 2.0 + seed * 17.0))
     if soaked and u.wet > 0.0:
         c = c + wet_surface(n, l, v, u.sun_color, u.sky, sh, wetness, max(rockk, puddle))
-        c = c + u.sky * puddle * 0.08 * (1.0 - clamp(dot(n, v), 0.0, 1.0))
+        # A closed deck has no concentrated sky highlight. Broad additive
+        # reflection on forest puddles read as a floating milk-white patch.
+        # Retain the wet pigment and a subdued grazing film in diffuse rain.
+        reflection = mix(0.08,0.012,1.0-shadow_direct(u.clouds))
+        c = c + u.sky * puddle * reflection * (1.0 - clamp(dot(n, v), 0.0, 1.0))
     c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
     # Rock, turf and neutral snow/earth share one continuous response channel.
     material = mix(1.0, 0.65, gr * (1.0 - snk))

@@ -484,7 +484,10 @@ strike_at = (p: vec3, direct_metal: bool = false):
     if not strike_wet and burn_px.len() > 0:
         ground = height_at(f64(p.x), f64(p.z))
         if abs(f64(p.y) - ground) <= 1.6 and rain_cover_height(f64(p.x), f64(p.z)) < ground + 1.6:
-            burn_mark(f64(p.x), f64(p.z), 2.8, 0, 1.0)
+            burn_mark(f64(p.x), f64(p.z), 4.2, 0, 2.2)
+            loop k in [0..5):
+                angle=f64(k)*2.39996
+                burn_mark(f64(p.x)+cos(angle)*2.5,f64(p.z)+sin(angle)*2.5,1.5,0,0.85)
     __shock_graph()
     __shock_arcs()
     # Resolve a warned hit on carried metal before secondary water conduction:
@@ -1301,15 +1304,48 @@ __trees_update = (dt: f64, cam: vec3):
         if left <= dt: done.push(i)
     loop i in done: __tree_cooling.remove(i)
 
+# Open hemispherical iron cookware: curved normals keep the bowl round under
+# a low fire, and the rolled lip catches a narrow warm highlight.
+bonfire_pot_mesh = () -> MeshB:
+    b=MeshB()
+    loop inner in [false,true]:
+        loop row in [0..6):
+            loop col in [0..32):
+                base=u32(b.vs.len())
+                loop corner in [vec2(0,0),vec2(1,0),vec2(0,1),vec2(1,1)]:
+                    a=(f64(row)+f64(corner.y))/6.0*PI*0.5
+                    phi=(f64(col)+f64(corner.x))/32.0*TAU
+                    r=0.17+0.30*sin(a)-(if inner: 0.025 else: 0.0)
+                    y=0.40+0.42*(1.0-cos(a))+(if inner: 0.025 else: 0.0)
+                    normal=normalize(v3(cos(phi)*sin(a),-cos(a),sin(phi)*sin(a)))
+                    if inner: normal *= -1
+                    pigment=if inner: rgb(0.10,0.088,0.075) else: rgb(0.18,0.16,0.14)
+                    b.vs.push(Vertex3D(v3(cos(phi)*r,y,sin(phi)*r),normal,vec2(),pigment))
+                loop q in (if inner: [base,base+1,base+2,base+1,base+3,base+2] else: [base,base+2,base+1,base+1,base+2,base+3]): b.idx.push(q)
+    loop col in [0..32):
+        loop row in [0..6):
+            base=u32(b.vs.len())
+            loop corner in [vec2(0,0),vec2(1,0),vec2(0,1),vec2(1,1)]:
+                phi=(f64(col)+f64(corner.x))/32.0*TAU
+                a=(f64(row)+f64(corner.y))/6.0*TAU
+                normal=v3(cos(phi)*cos(a),sin(a),sin(phi)*cos(a))
+                point=v3(cos(phi)*0.46,0.82,sin(phi)*0.46)+normal*0.028
+                b.vs.push(Vertex3D(point,normal,vec2(),rgb(0.27,0.215,0.16)))
+            loop q in [base,base+2,base+1,base+1,base+2,base+3]: b.idx.push(q)
+    b
+
 # A low crossed bundle leaves room for the animated flames above its lit wood.
 __fire_stones = Mesh()
 __fire_logs = Mesh()
 __pot_fire_logs = Mesh()
 __pot_fire_cracks = Mesh()
+__cooking_pot = Mesh()
 __fire_ready = false
 __fire_meshes = ():
     if __fire_ready: return
     __fire_ready = true
+    bowl=bonfire_pot_mesh()
+    __cooking_pot=mesh(bowl.vs,bowl.idx)
     b = MeshB()
     loop k in [0..10):
         a = f64(k) / 10.0 * TAU + 0.2
@@ -1412,7 +1448,12 @@ draw_bonfires = (cam: vec3):
             t = 2.2 - pot_cook_t
             bounce = if active: abs(sin(t * 13.0)) * 0.07 * min(1.0, pot_cook_t * 4.0) else: 0.0
             tilt = if active: sin(t * 17.0) * 0.055 else: 0.0
-            draw_prop(shape_mesh(.lid), translation(b.pos + v3(0.0, 0.55 + bounce, 0.0)) * rotation_z(tilt) * rotation_x(PI / 2.0) * scaling(v3(1.5, 1.5, 3.0)), bonfire_pot_tint(b.lit,env.night), bonfire_pot_bounce(b.lit,env.night))
+            # Move the rim bounce only for the bowl; logs and stones retain
+            # their original firelight and rendered appearance.
+            if b.lit:
+                toward = normalize(vec3(cam.x-b.pos.x,0,cam.z-b.pos.z)+vec3(0.0001,0,0))
+                sc_lp = vec4(b.pos+toward*0.85+vec3(0,0.38,0),3.6)
+            draw_prop(__cooking_pot, translation(b.pos + v3(0.0, bounce, 0.0)) * rotation_z(tilt), rgba(1,1,1,1), (if b.lit: 0.10*env.night else: 0.0), 0.08)
     sc_lp = saved_lp
     sc_lc = saved_lc
 

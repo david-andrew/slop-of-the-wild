@@ -296,13 +296,13 @@ ch_environment_bound = (c: vec3, alb: vec3, n: vec3, v: vec3, l: vec3, shadow: f
     # Retain a narrow exposure range so the existing hemisphere lighting can
     # distinguish limb planes instead of clamping all canopy fill to one value.
     shade = clamp(u.environment_shade,0.0,1.0)
-    # Keep the soaked figure below the wet grass/reflected-water value group,
-    # with room for hemisphere shading. The wet daylight ramp preserves dry
-    # and night lighting; raising this whole range erased the silhouette.
+    # Rain has already reduced the pigment and removed direct sunlight. Keep
+    # canopy diffuse near the environment instead of darkening it a third time.
+    # The dry/night envelope is unchanged; hemisphere planes retain headroom.
     rain = u.wet * smoothstep(0.25,0.45,luma(u.environment_sky))
-    canopy = mix(0.85,0.58,rain)
+    canopy = mix(0.85,0.96,rain)
     lower = mix(0.92,canopy,shade)
-    upper = mix(1.15,canopy + rain * 0.12,shade)
+    upper = mix(1.15,canopy + rain * 0.24,shade)
     target = clamp(current,dot(reference,weights)*lower,dot(reference,weights)*upper)
     c * mix(1.0,target/current,u.environment)
 
@@ -350,9 +350,11 @@ ch_fs = (i: ChO, u: ChU) -> vec4:
     # absorption pass below; ease out this extra wet value to avoid stacking
     # two darkening responses. Retain soaked cloth as a darker value group;
     # the rainy sky/ground fill still reveals its folds and the exposed limbs.
-    # Skin, leather and hair remain unchanged. Keep the darker cloth pigment;
-    # lifting it into the wet meadow value group erases the body contour.
-    alb *= 1.0 - u.wet * cloth * 0.42 * (1.0-below)
+    # The shared wet pigment above already absorbs 38 percent. Ease the
+    # second fibre response under canopy; open wet grass still needs the
+    # darker cloth contour. Shade blends continuously between those envelopes.
+    cloth_absorption = 0.42 - 0.30 * clamp(u.environment_shade,0.0,1.0)
+    alb *= 1.0 - u.wet * cloth * cloth_absorption * (1.0-below)
     weave = vnoise(i.uv * vec2(180.0, 34.0) + vec2(tx.y * 3.0, 0.0))
     pigment = vnoise(i.uv * 620.0)
     if u.submerged > 0.0: pigment = mix(pigment,0.5,below)
