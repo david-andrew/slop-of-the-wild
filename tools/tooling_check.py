@@ -15,10 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     shots = [(area, name, frame) for area, name, frames, _, _ in SCENES for frame, _ in frames]
-    assert 38 <= len(shots) <= 46 and len(shots) == len(set(shots))
+    assert 38 <= len(shots) <= 56 and len(shots) == len(set(shots))
     names = {name for _, name, _ in shots}
     assert {f'shrine-{n}' for n in range(1,5)} <= names
-    assert {'wake','passage','title','forest','waterfall','pool','temple','roof','husks','snow','firs','dawn','golden','night','storm','rain','camp','grass-fire','tent-fire','body-fire','boar','bird','swim','climb','temple-climb','glide','map','inventory','options'} <= names
+    assert {'wake','passage','title','forest','waterfall','pool','temple','roof','husks','snow','firs','dawn','golden','night','storm','rain','camp','grass-fire','tent-fire','body-fire','boar','bird','swim','climb','temple-climb','glide','glide-runoff','map','inventory','options'} <= names
     assert [f for _,n,f in shots if n=='camp'] == [180,300,420,640]
     assert [f for _,n,f in shots if n=='tent-fire'] == [900]
     assert note_name(60)=='C4' and note_name(61)=='C#4' and note_name(21)=='A0'

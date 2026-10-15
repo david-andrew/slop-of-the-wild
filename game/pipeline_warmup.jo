@@ -2,9 +2,9 @@ use 'pipeline_recipes.jo'
 use 'gfx.jo'
 use 'pipeline_cache.jo'
 # Game-owned preparation through the public Vulkan entry point. The vendored
-# release stays intact. Workers consume immutable modules/state; only the
-# calling thread inserts handles into the runtime program maps. Vulkan's default
-# pipeline cache is internally synchronized (no EXTERNALLY_SYNCHRONIZED flag).
+# release stays intact. Sloppy owns all create-info storage and submits each
+# queued batch in one Vulkan call, allowing driver-internal parallel compilation.
+# Driver calls and program-map updates stay on the calling Sloppy thread.
 when TARGET != "wasm":
     struct GamePipelineJob:
         prog: int
@@ -14,8 +14,6 @@ when TARGET != "wasm":
         topo: u32
         cf: u32
         df: u32
-    @lib("build/libbotw-pipelines.so")
-    extern botw_compile_pipelines = (dev:*u8,cache:int,count:int,infos:*u8,stride:int,handles:*int) -> i32
     struct GamePipelineInfo:
         entry: str
         stages: VkPipelineShaderStageCreateInfo[]
@@ -39,7 +37,7 @@ when TARGET != "wasm":
     __game_pipeline_started = false
     __game_pipeline_seconds = 0.0
     game_pipeline_queue = (sh: Shader, vs: str, fs: str):
-        if not __game_pipeline_loading or game_pipeline_cache_hit or env("BOTW_SERIAL_PIPELINES") != none or not lib_available("build/libbotw-pipelines.so"): return
+        if not __game_pipeline_loading or game_pipeline_cache_hit or env("BOTW_SERIAL_PIPELINES") != none: return
         recipe = game_pipeline_recipes.get("{__str_hash(vs)}:{__str_hash(fs)}", [])
         loop key in recipe:
             if __vgp[sh.prog].pipelines.contains(key): continue
@@ -94,14 +92,15 @@ when TARGET != "wasm":
         jobs=[loop job in __game_pipeline_jobs: if not __vgp[job.prog].pipelines.contains(job.key): job]
         __game_pipeline_jobs=[]
         if jobs.len()==0:return
-        # Linux pool workers do not provide independent libc TLS. Retain all
-        # Sloppy-owned pointed-to arrays here; real pthreads only call Vulkan.
+        # The release Linux task pool lacks independent libc TLS for driver
+        # calls. Submit on this thread and retain every pointed-to array until
+        # the entire batch returns; the driver may parallelize internally.
         built=[loop job in jobs:game_pipeline_info(job)]
         infos=[loop info in built:info.gi]
         handles=fill(0,jobs.len())
-        result=botw_compile_pipelines(__vk_dev,__vk_pcache,jobs.len(),data(infos) as *u8,size_of(VkGraphicsPipelineCreateInfo),data(handles))
-        assert(built.len()==handles.len(),"retain pipeline create-info storage until workers join")
-        assert(result==0,"parallel Vulkan pipeline compilation")
+        result=vkCreateGraphicsPipelines(__vk_dev,__vk_pcache,u32(jobs.len()),data(infos) as *u8,null,data(handles))
+        assert(built.len()==handles.len(),"retain pipeline create-info storage until the batch returns")
+        assert(result==0,"batched Vulkan pipeline compilation")
         loop i in [0..jobs.len()): __vgp[jobs[i].prog].pipelines[jobs[i].key]=handles[i]
         __vk_pcache_dirty=true
         __game_pipeline_prepared+=jobs.len()
@@ -116,7 +115,7 @@ when TARGET != "wasm":
         if not game_vulkan_backend(): return
         game_pipeline_prepare()
         if env("BOTW_LOADTIME") != none:
-            eprint("  parallel pipelines: {__game_pipeline_prepared} in {__game_pipeline_seconds:.3}s")
+            eprint("  batched pipelines: {__game_pipeline_prepared} in {__game_pipeline_seconds:.3}s")
 else:
     game_pipeline_warmup_begin = ():
         pass

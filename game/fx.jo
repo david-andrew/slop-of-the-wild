@@ -36,6 +36,11 @@ smoke_lock_coverage = (p: vec3, radius: f64, cam: vec3, target: vec3) -> f64:
     distance = f64(length(p - (cam + sight * f32(clamp(t, 0.0, 1.0)))))
     0.12 + 0.88 * smoothstep(radius * 0.5 + 0.6, radius + 1.1, distance)
 
+# Grass-front smoke is sparse near the lens, with the original distant opacity.
+# Use centre distance for the whole billboard so the fade cannot expose its edges.
+grass_smoke_coverage = (distance: f32) -> f32:
+    mix(0.22,1.0,smoothstep(4.0,18.0,distance))
+
 struct Particle:
     kind: PKind
     pos: vec3
@@ -388,6 +393,9 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
         wisp = i.pos.xyz + u.cam_right * (v.corner.x * s * 0.55) + u.cam_up * (v.corner.y * s * 1.25)
         w = mix(w, wisp, close)
     color = i.color
+    if warm_smoke:
+        # Thin only tagged grass-fire billows; retain their neutral pigment.
+        color.w *= grass_smoke_coverage(length(i.pos.xyz-u.cam))
     if i.data.w < 0.0:
         # Clip whole cards at the lens, rather than fading per-vertex depth
         # across a sheet that intersects the camera. Bound projected extents

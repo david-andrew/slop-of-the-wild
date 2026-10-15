@@ -236,6 +236,8 @@ const SOR_MOUTH_IN = v3(-1068.0, 248.0, 1845.0)
 
 # the rooms run from the bed toward the north-east (yaw so local -z points that way)
 SOR_YAW = 0.0
+# The right-hand surviving strip lights the passage's dressed threshold.
+SOR_PASSAGE_LAMP = v3(-1128,237,1884)+normalize(vec3(61,10.5,-40))*3.0+normalize(vec3(40,0,61))*2.55+vec3(0,0.9,0)
 
 sor_pads = ():
     # a cut through the ridge from the mouth out to the open slope toward the overlook
@@ -502,7 +504,7 @@ sor_interior = ():
     corridor(leg1a, corner, 3)
     corridor(corner, mouth, 36)
     # close the outside of the bend
-    box(corner + v3(-2.7, -1.2, -2.7), v3(2.0, 6.5, 2.0), 0.0, stone(0.3, 0.29, 0.28), PLAIN, true, false)
+    box(corner + v3(-2.7, -1.2, -2.7), v3(2.0, 6.5, 2.0), 0.0, stone(0.3, 0.29, 0.28), SOR_DRESSED, true, false)
     box(corner + v3(0.0, 3.5, 0.0), v3(7.0, 1.0, 7.0), 0.0, stone(0.3, 0.29, 0.28), PLAIN, true, false)
     box(corner + v3(0.0, -1.0, 0.0), v3(6.0, 1.0, 6.0), 0.0, SH_FLOOR, SH_TILE, true, false)
     zones.push(Zone("sor", v3(-1142.0, 228.0, 1886.0), v3(-1114.0, 248.0, 1926.0)))
@@ -521,7 +523,9 @@ sor_rim = (j: int, layer: int) -> vec3:
     # Carry the flared lip past the terrain cut, including oblique side views.
     depths = [-3.0, 4.5, 15.5, 16.2, 9.5, 0.0, -17.0]
     x = -cos(a) * widths[layer] + yy * sin(a * 2.0 + 0.4) * 0.4
-    y = -1.0 + yy * heights[layer] + sin(a * 3.0) * 0.4 + sin(a * 7.0) * 0.32 + sin(a * 11.0 + f64(layer)) * 0.18
+    # The sealed inner lip is worn smooth; sharper fractures belong outside.
+    tooth = lerp(0.30, 1.0, smoothstep(0.0, 2.0, f64(layer)))
+    y = -1.0 + yy * heights[layer] + sin(a * 3.0) * 0.4 + (sin(a * 7.0) * 0.32 + sin(a * 11.0 + f64(layer)) * 0.18) * tooth
     # Bury the jambs below the terrain, including the lower outer hillside.
     y -= pow(abs(cos(a)), 12.0) * 2.0
     z = depths[layer] + sin(a * 5.0 + f64(layer) * 0.6) * 0.65
@@ -830,13 +834,11 @@ sor_passage_stratum = (a: vec3, b: vec3, n: int, station: f64, sign: f64, row: i
 # backing remains separate, while this surface seals every wall and roof seam.
 sor_passage_shell = (a: vec3, b: vec3, n: int):
     side = normalize(v3(-f64(b.z - a.z), 0.0, f64(b.x - a.x)))
-    raw_point = (j: int, k: int) -> vec3: sor_passage_surface(a,b,n,4.0+f64(k)*0.5,PI*f64(j)/32.0)
-    # The shrine end uses sixteen angular panels, this shell thirty-two.
-    # Seat new midpoint vertices on the old straight edge at the shared ring.
-    p = (j: int, k: int) -> vec3:
-        if k == 0 and j % 2 == 1: return (raw_point(j-1,k)+raw_point(j+1,k))*0.5
-        raw_point(j,k)
-    rings = (n - 4) * 2
+    raw_point = (j: int, k: int) -> vec3: sor_passage_surface(a,b,n,f64(k)*0.5,PI*f64(j)/32.0)
+    # Carry the same lining back through the former four-box vestibule, so
+    # there is no rectangular portal or separate cave silhouette at station 4.
+    p = (j: int, k: int) -> vec3: raw_point(j,k)
+    rings = n * 2
     normal = (j: int, k: int) -> vec3:
         normalize(cross(p(j, min(k + 1, rings)) - p(j, max(k - 1, 0)), p(min(j + 1, 32), k) - p(max(j - 1, 0), k)))
     loop k in [0..rings):
@@ -880,6 +882,12 @@ sor_passage_floor = (a: vec3, b: vec3, i: int, n: int):
         across = abs(f64(dot(v.pos-mix(a,b,clamp(dot(v.pos-a,b-a)/dot(b-a,b-a),0.0,1.0)),side)))
         damp = smoothstep(0.5,2.65,across) * smoothstep(0.25,0.72,__n3(v.pos*0.43))
         cur.verts[k].color = vec4(mix(v.color.xyz,vec3(0.16,0.21,0.105),f32(damp*0.65)),v.color.w)
+        # Surviving shrine circuitry follows the ramp, without a separate
+        # floor box or a rectangular portal at the cave transition.
+        station = f64(i)+clamp(f64(dot(v.pos-mix(a,b,f32(f64(i)/f64(n))),ax))/f64(length((b-a)/f32(n))),0.0,1.0)
+        if station < 5.0:
+            cur.verts[k].mat = SH_TILE
+            cur.verts[k].mat.z *= f32(1.0-smoothstep(2.0,5.0,station))
     __end()
 
 # a sloping corridor with walls, a ceiling and glowing strips, from a to b (floor heights)
@@ -897,10 +905,13 @@ corridor = (a: vec3, b: vec3, n: int):
         mid = (p0 + p1) * 0.5
         # (the shrine's built passage gives way to a rough cave toward the mouth)
         cave = if n > 3: smoothstep(0.12, 0.38, f64(i) / f64(n)) else: 0.0
-        if n > 3 and i >= 4:
+        if n > 3:
             # Preserve box_m's ramp collider exactly (its physics is yaw-only).
             add_box(mid - vec3(0, 1, 0), v3((seg + 0.3) * 0.5, 0.5, 2.2), yaw, false, .stone)
             sor_passage_floor(a, b, i, n)
+            if i < 5 and i % 2 == 0:
+                loop sign in [-1.0,1.0]:
+                    box_m(translation(mid+side*f32(sign*2.55)+vec3(0,0.9,0))*rotation_y(yaw)*rotation_z(slope)*scaling(v3(seg*0.8,0.06,0.06)),SH_STONE,SH_GLOW,false)
             if i < n - 4: add_box(mid + vec3(0, 4, 0), v3((seg + 0.4) * 0.5, 0.5, 3.1), yaw, false, .stone)
             loop k in [-1.0, 1.0]:
                 add_box(mid + side * f32(k * 2.6) - vec3(0, 1.2, 0), v3((seg + 0.6) * 0.5, 3.25, 0.5), yaw, false, .stone)

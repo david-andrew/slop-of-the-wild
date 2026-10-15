@@ -6,6 +6,10 @@ batches. The final fixed critic pack is `build/task69-sol/final-v3-pack/`.
 
 ## Native startup
 
+Historical measurements below used a C transport that has since been removed.
+The game now submits Vulkan pipeline batches directly from Sloppy; current
+2133×1200 measurements and validation are in [PERFORMANCE.md](PERFORMANCE.md).
+
 Exact canonical SPIR-V digests select 44 program recipes covering 50 observed
 pipeline states. The default Vulkan cache retains its UUID/device checks.
 Game-owned create-info storage stays alive while a tiny C helper compiles on up

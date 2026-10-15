@@ -325,7 +325,26 @@ pack licences, archive/source/output hashes and processing settings are in `asse
 `python3 assets/audio/import_foley.py --download`; listening exports and measurements are
 described in [docs/MUSIC.md](docs/MUSIC.md).
 
+## Glide deployment regression
+
+`tools/run_all_checks.sh --only task71_runoff_check` follows the ground run-off
+route at `BOTW_SKIP=1 BOTW_AT="-1030,1805,1.57" BOTW_GIVE=paraglider`, with
+`SLOPPY_INPUT="10:w+,20:shift+,100:shift-,230:space+,232:space-"`.
+It checks the actual animated body and canopy, conservative projected bounds and
+clear body sightlines on every frame from deployment through recovery, with the
+real terrain, colliders and collision-retracted camera.
+`task70_glide_check` also covers the raised overlook launch and level horizon.
+The critic pack includes the same ground route as `glide-runoff`, at frames
+240, 250, 270 and 300, alongside the raised `glide` fixture.
+
 ## Combat framing regression
+
+`tools/run_all_checks.sh --only camera_check` verifies a 50–55° lock-on lens
+from 2–20 m at 30/60/120 Hz, with and without a crowd, plus wall-retracted
+head, foot and raised-weapon framing. The production framing trace also checks
+that the final posed-body repair retains that lens cap. Nearby lateral spear
+attackers are included in the lock-on aim, with the boom capped at 7.2 m;
+unlocked chase framing is checked separately.
 
 `tools/combat_visual_check.sh` owns one render lock per scene; do not wrap it.
 `tools/run_all_checks.sh --only camp_sword_visual_check` covers the placed camp at
@@ -372,3 +391,7 @@ Round 77 before/after captures, per-frame metrics and regression logs are under
 
 `sloppy/bin/sloppy tools/combat_reach_check.jo` checks that short blades, branches,
 claymores and spears still connect through their drawn sockets on flat ground and a slope.
+
+Combat bounds use Sloppy skinning and pose caches. `combat_geometry_check`
+checks cached skinning, support, projection and contact bounds against the complete
+posed mesh and unfiltered contact queries.

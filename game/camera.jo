@@ -35,6 +35,9 @@ struct Cam:
     crowd_frame = 0.0         # eased space for three-enemy windups and foreground equipment
     paired_target = vec3(0, 0, 0)
     paired_lift = 0.0
+    paired_orbit = 0.0
+    glide_orbit = 0.0
+    glide_frame = 0.0        # eased canopy reserve
     lock_frame = 0.0          # enter the paired combat view over 0.4 s; ease its release
     aiming = false            # drawing the bow: close over the right shoulder
     override = false          # cutscenes set pos/target directly
@@ -75,6 +78,97 @@ cave_in = vec3(1, 0, 0)
 
 # how far the line from the look point back toward the camera runs before it meets the ground
 aim_fov = 50.0
+
+# Keep the paired view within a normal lens; distance supplies framing space.
+camera_lock_boom = () -> f64:
+    gap = f64(length((cam.lock_pos-pl.pos).xz))
+    base = lerp(5.4,7.2,smoothstep(2.0,12.0,gap))
+    crowd = lerp(6.2,7.2,smoothstep(2.0,12.0,gap))
+    boom = lerp(base,crowd,cam.crowd_frame)
+    loop e in enemies:
+        if camera_nearby_body(e) and length(e.pos-cam.lock_pos)>3.0:
+            spread = f64(length((e.pos-pl.pos).xz))
+            boom=max(boom,lerp(5.6,6.4,smoothstep(3.0,5.0,spread)))
+    min(boom,7.2)
+
+# Falling bodies remain visible for a second. Include them until they vanish
+# so the boom cannot close onto a corpse during the finishing strike.
+camera_nearby_body = (e: Enemy) -> bool:
+    enemy_melee_body(e) and e.state != .buried and e.state != .gone and not e.skull_out and e.alert > 0.5 and length(e.pos-pl.pos) < 10.0
+
+# Aim halfway between the visible angular bounds, including flankers. Keep
+# Jo and the selected head inside their middle-third framing interval.
+camera_lock_aim = (eye: vec3, hero: vec3, selected: vec3, repair: bool = false) -> vec3:
+    forward = normalize(vec3(cam.target.x-eye.x,0,cam.target.z-eye.z))
+    right = cross(forward,vec3(0,1,0))
+    a = hero-eye
+    b = selected-eye
+    aa = atan2(f64(dot(a,right)),f64(dot(a,forward)))
+    bb = atan2(f64(dot(b,right)),f64(dot(b,forward)))
+    low = min(aa,bb)
+    high = max(aa,bb)
+    loop e in enemies:
+        if camera_nearby_body(e):
+            d = e.pos+vec3(0,1.2,0)-eye
+            angle = atan2(f64(dot(d,right)),f64(dot(d,forward)))
+            low = min(low,angle)
+            high = max(high,angle)
+    half = atan(tan(max(50.0,aim_fov)*PI/360.0)*aspect_ratio()/3.3)
+    lower = max(aa,bb)-half
+    upper = min(aa,bb)+half
+    preferred = cam.paired_target-eye
+    midpoint = if repair: atan2(f64(dot(preferred,right)),f64(dot(preferred,forward))) else: (low+high)*0.5
+    midpoint = if lower <= upper: clamp(midpoint,lower,upper) else: (aa+bb)*0.5
+    centre = forward*f32(cos(midpoint))+right*f32(sin(midpoint))
+    centre.y = (cam.target.y-eye.y)/max(0.1,length((cam.target-eye).xz))
+    if repair:
+        # Preserve the posed-head elevation used by the final body/weapon
+        # repair. Reusing the lower chase target left raised weapons clipped
+        # and retriggered the full solver several times on one animation pose.
+        heads = normalize(a)+normalize(b)
+        centre.y = heads.y/max(0.1,length(heads.xz))
+    eye+normalize(centre)*max(1.0,length(cam.target-eye))
+
+# A flanker close to the lens can lie beyond the selected pair's framing
+# interval. Orbit the displayed boom, independently of movement yaw, to fit
+# those intervals together before asking for any extra distance.
+camera_lock_orbit = (yaw: f64, pitch: f64, boom: f64) -> f64:
+    flanker = false
+    loop e in enemies:
+        if camera_nearby_body(e) and length(e.pos-cam.lock_pos)>3.0: flanker=true
+    if not flanker: return 0.0
+    best = 0.0
+    error = 1000.0
+    pair_half = atan(tan(50.0*PI/360.0)*aspect_ratio()/3.4)
+    full_half = atan(tan(50.0*PI/360.0)*aspect_ratio()*0.78)
+    loop offset in [0.0,0.25,-0.25,0.5,-0.5,0.75,-0.75,1.0,-1.0]:
+        back = __cam_back(yaw+offset,pitch)
+        eye = cam.target+back*f32(boom)
+        forward = normalize(vec3(-back.x,0,-back.z))
+        right = cross(forward,vec3(0,1,0))
+        lower = -100.0
+        upper = 100.0
+        loop p in [pl.pos,cam.lock_pos]:
+            d = p-eye
+            angle = atan2(f64(dot(d,right)),f64(dot(d,forward)))
+            lower = max(lower,angle-pair_half)
+            upper = min(upper,angle+pair_half)
+        if lower>upper or lower-upper+pair_half*2.0<0.10: continue
+        loop e in enemies:
+            if camera_nearby_body(e):
+                d = e.pos-eye
+                angle = atan2(f64(dot(d,right)),f64(dot(d,forward)))
+                lower = max(lower,angle-full_half)
+                upper = min(upper,angle+full_half)
+        cost = max(0.0,lower-upper)+abs(offset)*0.025
+        if cost >= error: continue
+        hit = raycast(cam.target,back,boom+0.35,true,false)
+        if hit.hit and hit.dist<boom: continue
+        if use_terrain and cam_open_ground and __cam_free(cam.target,back,boom)<boom: continue
+        best = offset
+        error = cost
+        if lower <= upper: break
+    best
 
 __cam_free = (t: vec3, b: vec3, d: f64) -> f64:
     loop i in [1..13):
@@ -236,6 +330,9 @@ camera_snap = ():
     cam.hurt_frame = 0.0
     cam.lock_frame = 0.0
     cam.paired_lift = 0.0
+    cam.paired_orbit = 0.0
+    cam.glide_orbit = 0.0
+    cam.glide_frame = 0.0
     cam.crowd_frame = 0.0
     cam.step_remaining = 0.0
     cam.step_player = pl.pos
@@ -263,6 +360,18 @@ __camera_handoff = ():
     cam.blend = if cam.override: cam.handoff_t else: 1.0 - cam.handoff_t
 
 __camera_step = (dt: f64):
+    previous_lens = cam.pos
+    reserve_glide = pl.has_glider and (pl.state == .glide or (pl.state == .air and pl.vel.y < 0.0)) and not cam.locked and not cam.aiming and cam.blend < 0.01
+    if not reserve_glide and cam.glide_frame > 0.0:
+        # Hand the displayed boom to swept recovery, including wall grabs.
+        # The reserve has already extended beyond the shorter stored booms;
+        # restoring those would pull in then rebound. Fresh clearance below
+        # can still retract either boom immediately when a solid requires it.
+        cam.collision_active = true
+        shown_boom = f64(length(cam.pos-cam.target))
+        cam.collision_dist = max(cam.collision_dist,shown_boom)
+        cam.climb_dist = max(cam.climb_dist,min(cam.dist_cur,shown_boom))
+        cam.glide_frame = 0.0
     cam.handoff_t = min(1.0, cam.handoff_t + dt / cam.handoff_duration)
     cam.blend = if cam.override: cam.handoff_t else: 1.0 - cam.handoff_t
     __camera_turn(dt)
@@ -272,7 +381,7 @@ __camera_step = (dt: f64):
     nearby = 0
     if cam.locked:
         loop e in enemies:
-            if enemy_melee_body(e) and e.hp > 0.0 and e.state != .buried and e.alert > 0.5 and length(e.pos - pl.pos) < 10.0: nearby += 1
+            if camera_nearby_body(e): nearby += 1
     cam.crowd_frame = approach(cam.crowd_frame, if nearby >= 3: 1.0 else: 0.0, 4.0, dt)
     # distance by activity
     want_d = 5.3
@@ -288,9 +397,8 @@ __camera_step = (dt: f64):
         _:
             if pl.sprinting: want_d = 5.9
             if pl.sneaking: tgt_h = 1.25
-    # Close the boom and lower the look point together: Link's feet stay inside
-    # the tighter cone while the opponent grows, rather than leaving a chase shot.
-    want_d = lerp(want_d, lerp(4.4, 6.4, cam.crowd_frame), cam.lock_frame)
+    # Retreat the boom as the pair spreads, keeping a normal field of view.
+    if cam.lock_frame > 0.0: want_d = lerp(want_d, camera_lock_boom(), cam.lock_frame)
     tgt_h = lerp(tgt_h, 1.2, cam.lock_frame)
     # (in the narrow of the cave the camera follows close, inside the rock round him)
     # The proximity flag also covers open air above the cave/overlook. A glider
@@ -354,6 +462,9 @@ __camera_step = (dt: f64):
     pitch = min(cam.pitch + (if pl.state == .glide: 0.0 else: cam.lift), max(cam.pitch, 0.8))
     if use_terrain and not cam.aiming: pitch = max(pitch, lerp(cam.pitch, 0.28, cam.hurt_frame))
     view_yaw = cam.yaw
+    want_orbit = if cam.locked and not cam.aiming and cam.lock_frame>0.5: camera_lock_orbit(view_yaw,pitch,cam.dist_cur) else: 0.0
+    cam.paired_orbit += clamp(want_orbit-cam.paired_orbit,-1.8*dt,1.8*dt)
+    view_yaw += cam.paired_orbit
     # A close foe directly beyond Link must not share his head silhouette.
     # Apply a small shoulder orbit during engaged combat after manual look
     # settles; bow aiming and deliberate pans keep their view.
@@ -403,6 +514,28 @@ __camera_step = (dt: f64):
             view_yaw += cam.climb_offset
             if abs(cam.climb_offset) < 0.001 and abs(cam.climb_dist - cam.dist_cur) < 0.01: cam.climb_recovery = false
         else: cam.climb_dist = cam.dist_cur
+    want_orbit = 0.0
+    if pl.has_glider and (pl.state == .glide or (pl.state == .air and pl.vel.y < 0.0)) and not cam.locked and not cam.aiming and cam.blend < 0.01 and cam.idle_t > 0.35:
+        # A retracted lens above the ledge can fit Jo yet hide him behind the
+        # slope. Find the nearest clear shoulder before deployment, using a
+        # low body sightline as well as the lens boom's endpoint clearance.
+        centre = pl.pos+vec3(0,1.9,0)
+        foot = pl.pos+vec3(0,0.2,0)
+        side = if cam.glide_orbit < 0.0: -1.0 else: 1.0
+        found = false
+        loop sign in [side,-side]:
+            if found: break
+            loop angle in [0.0,0.35,0.7,1.05,1.4,1.75]:
+                offset = angle*sign
+                probe = centre+__cam_back(view_yaw+offset,pitch)*6.4
+                delta = probe-foot
+                hit = raycast(foot,normalize(delta),f64(length(delta))+0.2,true,true)
+                if not hit.hit:
+                    want_orbit = offset
+                    found = true
+                    break
+    cam.glide_orbit += clamp(want_orbit-cam.glide_orbit,-1.8*dt,1.8*dt)
+    view_yaw += cam.glide_orbit
     back = __cam_back(view_yaw, pitch)
     boom = if pl.state == .climb or cam.climb_recovery: min(cam.dist_cur, cam.climb_dist) else: cam.dist_cur
     want_pos = cam.target + back * f32(boom)
@@ -441,15 +574,15 @@ __camera_step = (dt: f64):
                 if ceiling.hit: gy = min(gy, f64(want_pos.y) + max(0.0, ceiling.dist - 0.35))
             want_pos.y = f32(gy)
     # A blocked shoulder can leave the lens between the two actors. Rise into
-    # a clear view rather than widening past 100 degrees or losing either head.
+    # a clear view while retaining the capped paired field of view.
     want_lift = 0.0
     if cam.locked and not cam.aiming and cam.lock_frame > 0.5 and (pl.state == .ground or pl.state == .hurt):
         a = normalize((pl.pos-want_pos).xz)
         b = normalize((cam.lock_pos-want_pos).xz)
         angle = acos(clamp(f64(dot(a,b)),-1.0,1.0))*0.5
         need_fov = atan(tan(angle)/(0.25*aspect_ratio()))*360.0/PI
-        if min(free,cam.collision_dist) < boom-0.5 and need_fov > 80.0: want_lift = 4.0
-    cam.paired_lift = approach(cam.paired_lift,want_lift,6.0,dt)
+        if cam.collision_active and min(free,cam.collision_dist) < boom-0.5 and need_fov > 55.0: want_lift = 8.0
+    cam.paired_lift = approach(cam.paired_lift,want_lift,4.0,dt)
     if cam.paired_lift > 0.001:
         rise = cam.paired_lift
         right = normalize(cross(back,vec3(0,1,0)))
@@ -480,31 +613,56 @@ __camera_step = (dt: f64):
             cam.pos = next
         if length(cam.pos - want_pos) < 0.01 and abs(cam.collision_dist - free) < 0.01 and free >= boom - 0.01: cam.collision_active = false
     else: cam.pos = want_pos
+    # Prepare canopy room as descent begins. Ease the correction in simulation
+    # time instead of switching to a full 6.4 m reserve at vy=-5 m/s.
+    if reserve_glide:
+        cam.glide_frame = approach(cam.glide_frame, 1.0, 10.0, dt)
+        # Clearance can retract the boom against the ledge just as the glider
+        # opens. Retreat radially from its bounds centre, including upward when
+        # the lens is above the cliff, instead of leaving the canopy on the lens.
+        # Prepare during the preceding fall so deployment needs no camera cut.
+        centre = pl.pos+vec3(0,1.9,0)
+        away = cam.pos-centre
+        radius = f64(length(away))
+        if radius > 0.001 and radius < 6.4:
+            retreat = centre+away*f32(lerp(radius,6.4,cam.glide_frame)/radius)
+            delta = retreat-cam.pos
+            travel = f64(length(delta))
+            direction = normalize(delta)
+            right = if length(direction.xz)>0.001: normalize(cross(direction,vec3(0,1,0))) else: vec3(1,0,0)
+            loop edge in [-0.35,0.0,0.35]:
+                hit = raycast(cam.pos+right*f32(edge),direction,travel+0.35,true,not in_mouth)
+                if hit.hit: travel = min(travel,max(0.0,hit.dist-0.35))
+            cam.pos += direction*f32(travel)
+            if use_terrain and not in_mouth: cam.pos.y = max(cam.pos.y,f32(height_at(f64(cam.pos.x),f64(cam.pos.z))+0.9))
+            camera_lens_push(cam.pos)
     if cam.shake > 0.0:
         cam.shake = max(0.0, cam.shake - dt * 2.5)
         s = f32(cam.shake * cam.shake * 0.25)
         cam.pos += vec3(f32(random(-1.0, 1.0)) * s, f32(random(-1.0, 1.0)) * s, f32(random(-1.0, 1.0)) * s)
+    # The extra crowd orbit shares the ground camera's 0.35 m/60 Hz motion
+    # budget with its ordinary turn, rise and collision recovery.
+    if cam.lock_frame>0.0 and not cam.aiming and cam.blend<0.01:
+        delta = cam.pos-previous_lens
+        travel = f64(length(delta))
+        if travel>21.0*dt: cam.pos=previous_lens+delta*f32(21.0*dt/travel)
     # Aim along the angular midpoint, not the root-space midpoint: perspective
     # makes nearby Link larger than the distant lock target. Keep both centred
     # even with the guard shoulder active, without moving the collision boom.
     if cam.lock_frame > 0.0:
-        a = normalize(pl.pos + vec3(0,1.2,0) - cam.pos)
-        b = normalize(cam.lock_pos + vec3(0,1.2,0) - cam.pos)
-        centre = normalize(vec3(a.x+b.x,0,a.z+b.z))
-        centre.y = (cam.target.y-cam.pos.y) / max(0.1,length((cam.target-cam.pos).xz))
-        cam.paired_target = cam.pos + normalize(centre) * max(1.0, length(cam.target-cam.pos))
+        cam.paired_target = camera_lock_aim(cam.pos,pl.pos+vec3(0,1.2,0),cam.lock_pos+vec3(0,1.2,0))
     # Movement follows the displayed view while a crane returns to control.
     # Using the hidden chase yaw made held forward input change direction at release.
     cam_yaw_global = if cam.return_settle: yaw_of(view_target() - view_pos()) else: cam.yaw
     if cam.handoff_t >= 1.0: cam.handoff_duration = 0.75
-    combat_fov = lerp(cam.fov, lerp(min(cam.fov, 44.0), max(cam.fov, 54.0), cam.crowd_frame), cam.lock_frame)
+    combat_fov = lerp(cam.fov, lerp(max(cam.fov, 50.0), max(cam.fov, 54.0), cam.crowd_frame), cam.lock_frame)
     if cam.lock_frame > 0.0:
         a = normalize((pl.pos-cam.pos).xz)
         b = normalize((cam.lock_pos-cam.pos).xz)
         half_angle = acos(clamp(f64(dot(a,b)),-1.0,1.0))*0.5
         # The angular midpoint centres the pair; widen only enough that each
         # head remains in the middle third, with room for its posed offset.
-        paired_fov = clamp(atan(tan(half_angle)/(0.25*aspect_ratio()))*360.0/PI,44.0,100.0)
+        paired_fov = clamp(atan(tan(half_angle)/(0.25*aspect_ratio()))*360.0/PI,50.0,55.0)
         combat_fov = max(combat_fov,lerp(cam.fov,paired_fov,cam.lock_frame))
     aim_fov = approach(aim_fov, (if cam.aiming: 38.0 else: combat_fov), (if cam.lock_frame > 0.0: 20.0 else: 8.0), dt)
     __camera_record_view()
@@ -557,18 +715,24 @@ __camera_turn = (dt: f64):
         # Ease back to narrower distant framing so a 20 m lock stays inside
         # the narrow paired field of view.
         close = 1.0-smoothstep(8.0,18.0,f64(length(dv.xz)))
-        shoulder = lerp(lerp(0.58,0.85,close),lerp(0.95,1.22,close),cam.crowd_frame)
+        crowd_shoulder = lerp(0.58,1.22,1.0-smoothstep(4.0,12.0,f64(length(dv.xz))))
+        shoulder = lerp(lerp(0.58,0.85,close),crowd_shoulder,cam.crowd_frame)
         # In a narrow portal a broad shoulder can put the lens into a jamb,
         # retracting it until the paired actors no longer fit. Keep the side,
         # but reduce its angle while a smaller orbit preserves the full boom.
         paired = pl.pos + vec3(0,1.2,0)
         if length(dv.xz) > 0.1: paired += normalize(vec3(dv.x,0,dv.z)) * f32(min(f64(length(dv.xz))*0.25,1.2))
-        boom = lerp(4.4,6.4,cam.crowd_frame)
+        boom = camera_lock_boom()
         chosen = shoulder
         best_free = -1.0
         loop scale_ in [1.0,0.8,0.6,0.45,1.2,1.4]:
-            candidate = max(0.38,shoulder*scale_)
+            candidate = max(0.28,shoulder*scale_)
             back = __cam_back(facing+candidate*cam.lock_side,cam.pitch)
+            eye = paired+back*f32(boom)
+            a = normalize((pl.pos-eye).xz)
+            b = normalize((cam.lock_pos-eye).xz)
+            half = acos(clamp(f64(dot(a,b)),-1.0,1.0))*0.5
+            if tan(half) > tan(55.0*PI/360.0)*aspect_ratio()/3.15: continue
             hit = raycast(paired,back,boom+0.35,true,false)
             free = if hit.hit: max(0.8,hit.dist-0.45) else: boom
             # Evaluate the same lens radius used by the final ground sweep.
@@ -585,7 +749,7 @@ __camera_turn = (dt: f64):
             if free >= boom: break
         shoulder = chosen
         want = facing + shoulder * cam.lock_side
-        turn_rate = lerp(2.4, 5.2, cam.crowd_frame)
+        turn_rate = lerp(2.4,5.2,cam.crowd_frame)
         cam.yaw += clamp(wrap_angle(want - cam.yaw) * (1.0 - exp(-dt * lerp(8.0, 14.0, cam.crowd_frame))), -turn_rate * dt, turn_rate * dt)
         cam.pitch = approach(cam.pitch, lerp(0.18, 0.32, cam.crowd_frame), 3.0, dt)
 
@@ -722,14 +886,54 @@ view_pos = () -> vec3:
             __masonry_view = camera_climb_masonry_view(pos, cam.target)
         pos = __masonry_view
     pos
+# The fitted glide view is queried by many draw paths. Reuse it until the
+# actual pose/lens inputs change, including during headless substep checks.
+__glide_fit_pos = vec3()
+__glide_fit_body = vec3()
+__glide_fit_target = vec3()
+__glide_fit_face = 0.0
+__glide_fit_pitch = 0.0
+__glide_fit_fov = -1.0
+__glide_fit_view = vec3()
 camera_player_target = () -> vec3:
     target = mix(cam.target, cam.paired_target, f32(cam.lock_frame))
     if pl.state == .glide and not cam.locked and not cam.aiming:
         # Retraction/recovery smooths the lens independently of a falling target.
-        # Its extra vertical lag must not turn a level glide into a downward shot.
-        # Aim with the requested pitch; retain the collision-safe lens position.
+        # Prefer a level horizon while fitting the displayed body and canopy.
+        # Deliberate look retains the requested pitch and collision-safe lens.
         horizontal = f64(length((target - cam.pos).xz))
-        if horizontal > 0.001: target.y = cam.pos.y - f32(horizontal * tan(cam.pitch))
+        if horizontal > 0.001:
+            if cam.idle_t < 0.35:
+                target.y = cam.pos.y-f32(horizontal*tan(cam.pitch))
+                return target
+            if __glide_fit_pos == cam.pos and __glide_fit_body == pl.pos and __glide_fit_target == target and __glide_fit_face == pl.face and __glide_fit_pitch == cam.pitch and __glide_fit_fov == aim_fov: return __glide_fit_view
+            __glide_fit_pos = cam.pos
+            __glide_fit_body = pl.pos
+            __glide_fit_target = target
+            __glide_fit_face = pl.face
+            __glide_fit_pitch = cam.pitch
+            __glide_fit_fov = aim_fov
+            forward = normalize(vec3(target.x-cam.pos.x,0,target.z-cam.pos.z))
+            # A retracting ledge boom can leave the lens above the falling body.
+            # Fit body and canopy separately through the *actual* lens position;
+            # a level horizon is preferred only while both envelopes still fit.
+            low = 10.0
+            high = -10.0
+            facing = rotation_y(PI-pl.face)
+            loop canopy in [false,true]:
+                width = if canopy: 1.4 else: 0.55
+                depth = if canopy: 1.2 else: 0.8
+                loop y in (if canopy: [2.3,4.0] else: [-0.15,2.6]):
+                    loop x in [-width,width]:
+                        loop z in [-depth,depth]:
+                            d = pl.pos + transform_dir(facing,v3(x,y,z))-cam.pos
+                            elevation = atan2(-f64(d.y),f64(dot(d,forward)))
+                            low = min(low,elevation)
+                            high = max(high,elevation)
+            half = aim_fov*PI/360.0*0.92
+            fitted = if high-low <= half*2.0: clamp(cam.pitch,high-half,low+half) else: (low+high)*0.5
+            target.y = cam.pos.y-f32(horizontal*tan(fitted))
+            __glide_fit_view = target
     target
 
 view_target = () -> vec3: if cam.override: camera_aim_blend(cam.from_pos, cam.from_target, cam.o_pos, cam.o_target, smooth01(cam.blend)) else: camera_aim_blend(cam.pos, camera_player_target(), cam.from_pos, cam.from_target, smooth01(cam.blend))

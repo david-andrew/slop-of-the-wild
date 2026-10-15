@@ -188,12 +188,14 @@ jo() {
 # Headless tests; helper-only *_checks.jo files are exercised by their entry
 # points (fauna includes spacing, Stalkoblin, wildlife voices and Talus).
 cpu_checks=(
+    task71_runoff_check
+    task71_smoke_check
+    task71_weather_check
     task70_glide_check
     task70_weather_check
     task69_hud_check
     task69_tower_check
     web_piano_worker_check
-    pipeline_workers_check
     tooling_check
     architecture_test
     art_shade_test

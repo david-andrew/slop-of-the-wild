@@ -1255,6 +1255,9 @@ simulation_step = (dt: f64):
         # the restoration pool lights the room
         sc_lp = vec4(SOR_BED.x, SOR_BED.y + 1.4, SOR_BED.z, 8.0)
         sc_lc = vec3(0.55, 1.15, 1.6) * f32(1.0 + 0.06 * sin(elapsed() * 1.3))
+        if length(pl.pos-SOR_PASSAGE_LAMP) < 18.0:
+            sc_lp = vec4(SOR_PASSAGE_LAMP,14.0)
+            sc_lc = vec3(1.35,1.65,1.8)
         # up the passage, the day pours in at the mouth, warm on the rock
         dm = f64(length(pl.pos - SOR_MOUTH_IN))
         if dm < 45.0:

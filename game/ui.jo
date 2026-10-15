@@ -223,11 +223,11 @@ stamina_draw = ():
             arc(c, 23.0 + f64(k - 1) * 7.0, 4.0, 1.0, rgba(0.1, 0.12, 0.08, 0.45 * a))
             arc(c, 23.0 + f64(k - 1) * 7.0, 4.0, f, green)
 
-# Dry weather retains its quiet fade; rain keeps the existing compact dial legible.
+# Keep the compact dial legible at every hour, including dry dusk.
 clock_opacity = (idle: f64, rain: f64) -> f64:
-    max(idle, 0.88 * smoothstep(0.0,0.2,rain))
+    max(idle, 0.88)
 
-# the clock fades out while nothing changes (walking about) and back when it matters
+# The clock settles to its contrast floor at rest and brightens when it matters.
 clock_draw = ():
     # (not inside the shrines: no day or weather down there)
     ca = f32(clock_opacity(clock_a,env.rain))

@@ -1,0 +1,446 @@
+{
+  "baseline_revision": "200741fc0f4c2bae122390e02a7acf2572b204a7",
+  "protocol": "2133x1200 exact X11/Vulkan output, full scale, prepared assets, one completed frame, fresh local Vulkan/NVIDIA caches for cold; reused for 6 warm launches; no system/page-cache flush; render-lock and quiet wait excluded; load ends before first game draw, first callback and process include it",
+  "samples": {
+    "master": {
+      "executable_sha256": "4eba16b7e4a21bdff8854ae923f303b6a708ae0aa33527e13da2a1db9ad92dc0",
+      "runs": [
+        {
+          "name": "cold",
+          "load_s": 10.61,
+          "warmup_s": 9.278,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 10.617331,
+          "process_s": 12.2,
+          "cache_hit": false,
+          "activity": {
+            "cpu_busy_pct": 10.1,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "2.16 1.44 1.39 3/2147 2043511",
+            "quiet_wait_s": 2.141305755940266,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-1",
+          "load_s": 1.56,
+          "warmup_s": 0.213,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 1.568223,
+          "process_s": 3.13,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 10.08,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.98 1.42 1.39 1/2150 2043640",
+            "quiet_wait_s": 1.0523126201005653,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-2",
+          "load_s": 1.52,
+          "warmup_s": 0.183,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 1.527237,
+          "process_s": 3.07,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 11.59,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.90 1.41 1.38 2/2152 2043745",
+            "quiet_wait_s": 1.0519776060245931,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-3",
+          "load_s": 1.51,
+          "warmup_s": 0.18,
+          "terrain_upload_s": 0.18,
+          "first_callback_end_s": 1.517931,
+          "process_s": 3.07,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 9.95,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.83 1.41 1.38 3/2157 2043849",
+            "quiet_wait_s": 1.0467581279808655,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-4",
+          "load_s": 1.51,
+          "warmup_s": 0.186,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 1.517885,
+          "process_s": 3.09,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 10.89,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.84 1.42 1.39 2/2157 2043923",
+            "quiet_wait_s": 1.053394748014398,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-5",
+          "load_s": 1.51,
+          "warmup_s": 0.18,
+          "terrain_upload_s": 0.19,
+          "first_callback_end_s": 1.524189,
+          "process_s": 3.03,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 21.89,
+            "gpu_busy_pct": 1.0,
+            "loadavg": "1.78 1.41 1.38 5/2150 2044001",
+            "quiet_wait_s": 1.021080082980916,
+            "idle_before_launch": false
+          }
+        },
+        {
+          "name": "warm-6",
+          "load_s": 1.56,
+          "warmup_s": 0.186,
+          "terrain_upload_s": 0.21,
+          "first_callback_end_s": 1.573865,
+          "process_s": 3.11,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 11.11,
+            "gpu_busy_pct": 1.0,
+            "loadavg": "1.63 1.39 1.37 2/2141 2044050",
+            "quiet_wait_s": 1.0541307140374556,
+            "idle_before_launch": true
+          }
+        }
+      ],
+      "warm": {
+        "load_s": {
+          "median": 1.5150000000000001,
+          "min": 1.51,
+          "max": 1.56
+        },
+        "warmup_s": {
+          "median": 0.1845,
+          "min": 0.18,
+          "max": 0.213
+        },
+        "terrain_upload_s": {
+          "median": 0.175,
+          "min": 0.17,
+          "max": 0.21
+        },
+        "first_callback_end_s": {
+          "median": 1.525713,
+          "min": 1.517885,
+          "max": 1.573865
+        },
+        "process_s": {
+          "median": 3.08,
+          "min": 3.03,
+          "max": 3.13
+        }
+      },
+      "cold_screenshot_sha256": "274af9b2e678e74ad0b15862c0ac8cde6058b87327447d9b4fe3dd12a49126b3"
+    },
+    "batched": {
+      "executable_sha256": "d01ca615af0bb99fbeca30cbc6dfd34faf547324ed3ba4b563c131643fe6deb5",
+      "runs": [
+        {
+          "name": "cold",
+          "load_s": 10.85,
+          "warmup_s": 9.523,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 10.86317,
+          "process_s": 12.37,
+          "cache_hit": false,
+          "activity": {
+            "cpu_busy_pct": 10.39,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.35 1.33 1.36 1/2153 2044289",
+            "quiet_wait_s": 1.0404976250138134,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-1",
+          "load_s": 1.51,
+          "warmup_s": 0.181,
+          "terrain_upload_s": 0.16,
+          "first_callback_end_s": 1.515206,
+          "process_s": 3.03,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 9.97,
+            "gpu_busy_pct": 1.0,
+            "loadavg": "1.50 1.37 1.37 1/2147 2044414",
+            "quiet_wait_s": 1.0528949849540368,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-2",
+          "load_s": 1.5,
+          "warmup_s": 0.188,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 1.51046,
+          "process_s": 3.02,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 10.21,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.50 1.37 1.37 2/2146 2044455",
+            "quiet_wait_s": 1.0550326820230111,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-3",
+          "load_s": 1.53,
+          "warmup_s": 0.18,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 1.545472,
+          "process_s": 3.11,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 10.23,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.54 1.38 1.37 1/2147 2044494",
+            "quiet_wait_s": 1.0509210269665346,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-4",
+          "load_s": 1.48,
+          "warmup_s": 0.182,
+          "terrain_upload_s": 0.16,
+          "first_callback_end_s": 1.485563,
+          "process_s": 2.99,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 10.08,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.66 1.40 1.38 2/2150 2044645",
+            "quiet_wait_s": 1.020815905998461,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-5",
+          "load_s": 1.54,
+          "warmup_s": 0.181,
+          "terrain_upload_s": 0.17,
+          "first_callback_end_s": 1.548277,
+          "process_s": 3.07,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 10.57,
+            "gpu_busy_pct": 0.0,
+            "loadavg": "1.53 1.38 1.37 1/2156 2044692",
+            "quiet_wait_s": 1.0491511470172554,
+            "idle_before_launch": true
+          }
+        },
+        {
+          "name": "warm-6",
+          "load_s": 1.54,
+          "warmup_s": 0.184,
+          "terrain_upload_s": 0.18,
+          "first_callback_end_s": 1.550648,
+          "process_s": 3.06,
+          "cache_hit": true,
+          "activity": {
+            "cpu_busy_pct": 9.84,
+            "gpu_busy_pct": 1.0,
+            "loadavg": "1.48 1.37 1.37 1/2155 2044762",
+            "quiet_wait_s": 1.0506141500081867,
+            "idle_before_launch": true
+          }
+        }
+      ],
+      "warm": {
+        "load_s": {
+          "median": 1.52,
+          "min": 1.48,
+          "max": 1.54
+        },
+        "warmup_s": {
+          "median": 0.1815,
+          "min": 0.18,
+          "max": 0.188
+        },
+        "terrain_upload_s": {
+          "median": 0.17,
+          "min": 0.16,
+          "max": 0.18
+        },
+        "first_callback_end_s": {
+          "median": 1.5303390000000001,
+          "min": 1.485563,
+          "max": 1.550648
+        },
+        "process_s": {
+          "median": 3.045,
+          "min": 2.99,
+          "max": 3.11
+        }
+      },
+      "cold_screenshot_sha256": "274af9b2e678e74ad0b15862c0ac8cde6058b87327447d9b4fe3dd12a49126b3"
+    }
+  },
+  "evidence_directory": "build/pure-sloppy-pipelines",
+  "cold_startup_pixels_identical": true,
+  "limitations": "One cold launch per version; six warm launches each. Individual load logs have 0.01 s precision. Shared desktop, no system/page-cache flush; pre-launch CPU/GPU activity is retained for every sample.",
+  "validation": {
+    "render_warmup_check": {
+      "before": 54,
+      "after": 54
+    },
+    "weather_warmup_cave": {
+      "before": 53,
+      "after": 53
+    },
+    "weather_warmup_outdoor": {
+      "before": 55,
+      "after": 55
+    },
+    "prepared_assets_check": "PASS",
+    "headless_assets_check": "PASS",
+    "web_build": "PASS",
+    "task70_startup_stream_check": "PASS",
+    "shader_load_check": "PASS",
+    "shader_adapter_check": "PASS",
+    "no_c_helper_source_grep": "PASS",
+    "linux_package_build": "PASS",
+    "linux_archive_no_helper_library_source_or_extern": "PASS",
+    "critic_pack": {
+      "status": "PASS",
+      "shots": 49,
+      "audio_clips": 13,
+      "checks": [
+        {
+          "name": "feel_test",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 1.9728578958893195,
+          "log": "checks/feel_test.log",
+          "command": "tools/run_all_checks.sh -j 1 --only feel_test",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-dcHcC9fD"
+        },
+        {
+          "name": "integration_test",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 12.123897066921927,
+          "log": "checks/integration_test.log",
+          "command": "tools/run_all_checks.sh -j 1 --only integration_test",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-yoomx9u4"
+        },
+        {
+          "name": "input_check",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 2.6631621649721637,
+          "log": "checks/input_check.log",
+          "command": "tools/run_all_checks.sh -j 1 --only input_check",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-eRRjSX2J"
+        },
+        {
+          "name": "opening_test",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 1.390402174089104,
+          "log": "checks/opening_test.log",
+          "command": "tools/run_all_checks.sh -j 1 --only opening_test",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-QcMAEP7t"
+        },
+        {
+          "name": "combat_check",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 3.6820095089497045,
+          "log": "checks/combat_check.log",
+          "command": "tools/run_all_checks.sh -j 1 --only combat_check",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-JLQncwL0"
+        },
+        {
+          "name": "weather_fx_test",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 1.0145664239535108,
+          "log": "checks/weather_fx_test.log",
+          "command": "tools/run_all_checks.sh -j 1 --only weather_fx_test",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-EovLXtMR"
+        },
+        {
+          "name": "music_harmony_check",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 3.7932219830108806,
+          "log": "checks/music_harmony_check.log",
+          "command": "tools/run_all_checks.sh -j 1 --only music_harmony_check",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-t2VvHhcZ"
+        },
+        {
+          "name": "late_story_check",
+          "status": "PASS",
+          "exit": 0,
+          "wall_s": 6.261153960949741,
+          "log": "checks/late_story_check.log",
+          "command": "tools/run_all_checks.sh -j 1 --only late_story_check",
+          "evidence": "/var/home/david/dev/botw-clone-sol/build/all-checks/run-KQoHqa4i"
+        }
+      ],
+      "wall_s": 462.95685313106515,
+      "path": "build/pure-sloppy-pipelines/full-pack"
+    },
+    "startup_copy_initial": {
+      "status": "FAIL timing budget",
+      "source_median_s": 2.465,
+      "binary_median_s": 3.535,
+      "budget_s": 3.5,
+      "overlapping_work": "pack checks and Linux package build",
+      "path": "build/pure-sloppy-pipelines/startup-copy"
+    },
+    "startup_copy_serial": {
+      "status": "PASS",
+      "source_median_s": 2.54,
+      "binary_median_s": 2.425,
+      "source_launches": 6,
+      "binary_launches": 6,
+      "budget_s": 3.5,
+      "path": "build/pure-sloppy-pipelines/startup-copy-serial"
+    },
+    "linux_smoke_initial": {
+      "status": "FAIL prepared texture hit assertion",
+      "cause": "Pre-existing staging bug: ln -s into existing archived assets/src directory left archive texture mtimes for baking; final package replaced textures with working-tree mtimes, invalidating the pack",
+      "path": "build/pure-sloppy-pipelines/linux-smoke",
+      "cold_load_s": 11.55,
+      "png_decodes": 12
+    },
+    "linux_smoke_fixed": {
+      "status": "PASS",
+      "protocol": "Fresh Linux archive extract, existing empty HOME, fresh local Vulkan/NVIDIA caches then reuse; exact 2133x1200 X11/Vulkan, full scale, clear 11:00 outdoor, prepared hits and zero PNG decodes; no system/page-cache flush",
+      "runs": [
+        {
+          "phase": "cold",
+          "load_s": 10.62,
+          "process_s": 12.15
+        },
+        {
+          "phase": "warm",
+          "load_s": 1.49,
+          "process_s": 3.02
+        }
+      ],
+      "path": "build/pure-sloppy-pipelines/linux-smoke-fixed"
+    },
+    "linux_package_fixed_build": "PASS",
+    "final_game_sources_match_full_pack": true
+  }
+}

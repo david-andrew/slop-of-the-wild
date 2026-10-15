@@ -5,7 +5,76 @@ Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland and XWayl
 retained. These are **producer/present-return intervals, not scanout timestamps**;
 the shared desktop is not an isolated hardware guarantee.
 
-## Current startup — 2026-10-15, Round 70
+## Current startup — pure Sloppy Vulkan batches, 2026-10-15
+
+The game no longer builds, packages or loads a C pipeline helper. Sloppy retains
+all create-info storage and calls `vkCreateGraphicsPipelines` once per queued
+batch on its calling thread; the driver can parallelize internally. Sloppy's
+Linux task workers are unsuitable for driver calls because they lack independent
+libc TLS. Warm cache hits keep the existing runtime path. All representative
+weather, combat, shrine and resolution warmup draws remain; rare variants are
+not deferred into play. The vendored Sloppy release is unchanged.
+
+Matched master **200741f** and candidate executables, exact **2133×1200** hidden
+X11/Vulkan client, full scale 1.00, prepared assets, 11:00/clear outdoor start,
+one captured frame per launch. Each version uses fresh local Vulkan/NVIDIA
+caches for its cold run, followed by six launches reusing those caches. Build,
+render-lock queue and pre-launch activity waits are excluded. System/page caches
+are not flushed. Load ends before the first game draw; whole-process time
+includes PNG capture and teardown.
+
+| Metric | Master with C helper | Pure Sloppy batches |
+|---|---:|---:|
+| Cold in-game load, s | 10.61 | 10.85 |
+| Cold render warmup, s | 9.278 | 9.523 |
+| Warm median in-game load, s | 1.515 | 1.520 |
+| Warm load range, s | 1.51–1.56 | 1.48–1.54 |
+| Warm median render warmup, s | 0.184 | 0.181 |
+| Warm median first callback end, s | 1.526 | 1.530 |
+| Warm median complete process, s | 3.080 | 3.045 |
+
+Cold increases **0.24 s (2.3%)** in this single-pair observation; it is not a
+statistical cold-start estimate. Warm differs by **5 ms**, below the 10 ms
+precision of individual load logs, with overlapping ranges: no measurable warm
+regression in this cohort. The 1.5 s warm target remains unmet. All samples are
+retained. Pre-launch GPU activity was 0–1%; CPU was 9.84–11.59% except master
+warm-5 at 21.89%. These are shared-desktop observations, not hardware isolation.
+Binary hashes, all timing rows and pre-launch activity are in
+[the machine-readable evidence](performance-pure-sloppy-pipelines.json); logs and
+screenshots are in `build/pure-sloppy-pipelines/{master,batched}-startup/`.
+
+Validation: cold-cache pipeline coverage **54 → 54**; first weather
+change **53 → 53** from the cave and **55 → 55** outdoors. Prepared assets retain
+complete byte equivalence; fresh headless preparation and the wasm/web package
+build pass. Master/candidate cold-start images are pixel-identical. Source grep
+finds no C helper references or C compiler steps in `game/` or the launch,
+prepare, web and Linux package scripts. The retired pthread transport check was
+removed with the implementation it tested; real Vulkan coverage remains.
+
+The full critic pack passes: **49 captures**, the 120-second pacing route,
+**13 audio clips with scores**, and **eight checks**, in 463 s. Evidence is in
+`build/pure-sloppy-pipelines/full-pack/`. Shader loading/adapter and deferred
+startup-stream checks also pass. The separate fresh-copy startup check uses
+1280×720 cave starts, six source and six binary launches. Its first run overlapped
+package building and pack checks: binary median **3.535 s** missed the **3.5 s**
+budget (source **2.465 s**). Repeating after those jobs finished passes at
+**2.540 s source / 2.425 s binary**, retaining every sample in both
+`startup-copy/` and `startup-copy-serial/` under the same evidence directory.
+These copy-check timings do not replace the 2133×1200 matched comparison above.
+
+The Linux package also materializes source textures into staging before baking.
+Previously `git archive` already supplied `assets/src/`, so the attempted symlink
+became a nested link; baking used archive timestamps, while the final package
+copied working-tree texture timestamps. Fresh extraction then rejected the
+texture pack and decoded 12 PNGs. The initial smoke log is retained under
+`build/pure-sloppy-pipelines/linux-smoke/`; staging and shipping now use identical
+texture inputs and mtimes. The rebuilt archive contains no helper library or
+source. Its fresh-extract cold/warm smoke passes at exact 2133×1200, all packs
+hit and zero PNG decodes: **10.62 / 1.49 s load**, **12.15 / 3.02 s complete
+process** (one launch each, separate from the matched cohort). Evidence:
+`build/pure-sloppy-pipelines/linux-smoke-fixed/`.
+
+## Prior startup — 2026-10-15, Round 70
 
 Native X11/Vulkan, **exact 2133×1200 client pixels, full scene scale 1.00**,
 prepared assets, fixed 11:00/clear, `BOTW_SKIP=1`, one completed frame per launch.

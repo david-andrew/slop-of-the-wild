@@ -250,6 +250,8 @@ framing_update = (dt: f64):
         assert(framing_scene == "tentfire" or damage > 0.0, "scripted fight must land real posed sword contacts")
 framing_draw = ():
     draw()
+    if cam.locked and not cam.aiming and cam.lock_frame>0.99:
+        assert(view_fov()>=50.0 and view_fov()<=55.0,"production pose repair retains the 50-55 degree lock lens")
     if framing_scene == "camp" and frame_number() == 300:
         flush()
         assert(save_png(screenshot(),env("FRAMING_CRITIC_PNG") ?? "build/combat-frame300.png"))

@@ -77,6 +77,8 @@ SCENES = [
     ('traversal', 'climb', [(180, 'Real cliff climb')], dict(BOTW_SKIP='1'), 'cliff_climb_capture.jo'),
     ('traversal', 'temple-climb', [(180, 'Temple wall climb and soft masonry clearance')], dict(BOTW_SKIP='1', SLOPPY_INPUT='1:w+'), 'round67 temple inner-wall climb; fixed opposing-wall camera'),
     ('traversal', 'glide', [(90, 'Paraglider pose over the Plateau')], dict(BOTW_SKIP='1', BOTW_AT='-1050,1828,-2.36', BOTW_GIVE='paraglider', SLOPPY_INPUT='10:space+,11:space-'), 'overlook fixture / production glider input'),
+    ('traversal', 'glide-runoff', [(240, 'Ground glider deployment'), (250, 'Ground glider body and canopy'), (270, 'Ground glider feet and ledge clearance'), (300, 'Ground glide camera recovery')],
+     dict(BOTW_SKIP='1', BOTW_AT='-1030,1805,1.57', BOTW_GIVE='paraglider', SLOPPY_INPUT='10:w+,20:shift+,100:shift-,230:space+,232:space-'), 'README.md exact ground run-off route / task71_runoff_check.jo'),
     *[('shrines', f'shrine-{n}', [(180, f'Shrine {n} interior')], dict(BOTW_SKIP='1', BOTW_TOWER='1', BOTW_SHRINE=str(n)), 'BOTW_SHRINE interior fixture') for n in range(1, 5)],
     ('interface', 'map', [(120, 'Slate map')], dict(BOTW_SKIP='1', BOTW_TOWER='1', SLOPPY_INPUT='20:m+,21:m-'), 'slate_map_view.jo / production map input'),
     ('interface', 'inventory', [(120, 'Inventory and item icons')], dict(BOTW_SKIP='1', BOTW_GIVE='travelers_sword,travelers_shield,apple', SLOPPY_INPUT='20:i+,21:i-'), 'inventory_check.sh / production inventory input'),
@@ -197,7 +199,7 @@ update = (dt: f64):
         if cp_scene=="roof" and frame_number()==780: assert(story.glider_given,"roof gift completed")
         if cp_scene=="swim": assert(pl.state==.swim,"swimming fixture")
         if cp_scene=="climb": assert(pl.state==.climb and f64(pl.pos.y)>cp_climb_y+2.0,"climbing fixture")
-        if cp_scene=="glide": assert(pl.state==.glide,"gliding fixture")
+        if cp_scene=="glide" or cp_scene=="glide-runoff": assert(pl.state==.glide,"gliding fixture")
 draw = ():
     production_draw()
     if cp_frames.contains(frame_number()):

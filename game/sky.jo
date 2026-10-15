@@ -166,7 +166,10 @@ title_sky_strength = () -> f64:
 
 sky_color = (dir: vec3, u: SkyU) -> vec3:
     y = dir.y
-    t = 1.0 - exp(-max(y, 0.0) * 5.0)
+    # Keep peach in the shallow evening horizon band. A broad red/blue
+    # overlap made the upper sunset mauve even with blue zenith keyframes.
+    evening = step(u.sun_dir.x, 0.0) * smoothstep(0.0, 0.08, u.sun_dir.y) * (1.0-smoothstep(0.20,0.34,u.sun_dir.y)) * (1.0-u.dark)
+    t = 1.0 - exp(-max(y, 0.0) * (5.0 + evening * 8.0))
     c = mix(u.horizon, u.zenith, t)
     if y < 0.0: c = mix(u.horizon, u.haze * 0.85, clamp(-y * 3.0, 0.0, 1.0))
     l = normalize(u.sun_dir)
@@ -278,7 +281,8 @@ skyp_surface = (i: SkyO, u: SkyU, closed: bool) -> vec4:
     # cloud darkness. A clearing twenty-second deck must not shed its entire
     # sky tint in a second; ordinary rain keeps its pale sky.
     storm_deck = clamp(u.storm, 0.0, 1.0)
-    c = c * mix(vec3(1, 1, 1), vec3(0.44, 0.49, 0.60), storm_deck)
+    c = mix(c, vec3(luma(c)) * vec3(0.96, 1.0, 1.04), storm_deck * 0.85)
+    c = c * mix(vec3(1, 1, 1), vec3(0.50, 0.52, 0.55), storm_deck)
     vec4(c, 1)
 
 # Compile the open/closed field separately to remove per-bank weather work

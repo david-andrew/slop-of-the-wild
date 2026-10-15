@@ -23,7 +23,7 @@ big = font(FONT, 64, b"Medium")
 small = font(FONT_I, 40, b"Regular")
 LH = 100
 W = 1400
-lines = [(n, big) for n in names] + [(s, small) for s in subs]
+lines = [(n, big) for n in names] + [(s, small) for s in subs] + [("Game Over", big)]
 img = Image.new("RGBA", (W, LH * len(lines)), (0, 0, 0, 0))
 rects = []
 for i, (s, f) in enumerate(lines):

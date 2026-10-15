@@ -141,9 +141,14 @@ terr_height = (u: TerrU, xz: vec2) -> f32:
 # The west wall has an authored render/collision skin. Camera-dependent
 # heightfield extrusion beneath it can bury a player on otherwise open ground.
 # Keep its source vertices on the same surface queried by feet and the camera.
+# The north camp sightline's hill carries loose actor stones. Its visible face
+# must stay on the heightfield those stones use for their roots.
+camp_hill_cover = (w: vec3) -> f32:
+    1.0-smoothstep(42.0,85.0,length(w.xz-vec2(-1295.0,1395.0)))
+
 terrain_rim_relief = (w: vec3) -> f32:
     if w.x >= -1720.0 and w.x <= -1370.0 and w.z >= 1550.0 and w.z <= 1980.0: return 0.0
-    1.0-cave_cliff_cover(w)
+    (1.0-cave_cliff_cover(w))*(1.0-camp_hill_cover(w))
 
 terrain_vs = (v: GridV, n: TNode, u: TerrU) -> TerrO:
     size = n.offs.z
@@ -316,9 +321,15 @@ canyon_rock_normal = (w: vec3, n: vec3, dist: f32) -> vec3:
     normalize(n - (t1 * dx + t2 * dy) * strength)
 
 rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
-    cover = west_rock_cover(w)
+    hill = camp_hill_cover(w)
+    cover = max(west_rock_cover(w),hill)
     if cover <= 0.0: return __rim_rock_color(w, n, dist)
     c = __canyon_rock_color(w, n, dist)
+    if hill > 0.0:
+        # The hill keeps cool mid-grey values, with continuous mineral streaks
+        # visible at camp distance instead of the canyon's pale limestone wash.
+        grain = vnoise(vec2((w.x+w.z)*0.12+w.y*0.025,w.y*0.16))
+        c *= mix(vec3(1,1,1),vec3(0.62,0.76,0.73)*(0.88+grain*0.24),hill)
     if cover >= 0.999: return c
     mix(__rim_rock_color(w, n, dist), c, cover)
 
@@ -329,10 +340,12 @@ rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
 meadow_color = (w: vec3, t: f32) -> vec3:
     big = fbm3(w.xz * 0.012)
     mid = fbm3(w.xz * 0.038 + vec2(4.0, 9.0))
-    ang = vnoise(w.xz * 0.01) * 3.0
-    dir = vec2(cos(ang), sin(ang))
-    q = vec2(dot(w.xz, dir), dot(w.xz, vec2(-dir.y, dir.x)))
-    stroke = vnoise(q * vec2(0.15, 1.1))
+    # A varying rotation of absolute world coordinates magnifies tiny angle
+    # changes into concentric rings. Fixed oblique axes with bounded warping
+    # keep the painterly strokes irregular at every distance from the origin.
+    warp = (vnoise(w.xz * 0.01) - 0.5) * 2.5
+    q = vec2(w.x * 0.8 + w.z * 0.6, w.z * 0.8 - w.x * 0.6 + warp)
+    stroke = vnoise(q * vec2(0.65, 1.1))
     lush = vec3(0.21, 0.355, 0.13)
     dry = vec3(0.49, 0.435, 0.235)
     deep = vec3(0.12, 0.265, 0.145)

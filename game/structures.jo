@@ -1602,6 +1602,10 @@ cliff_outcrops = ():
             add_box(q - v3(0.0, tall * 0.78, 0.0), v3(w * 0.65, tall * 0.75, deep * 0.7), yaw, true, .rock)
             if h > 0.72:
                 ledge = q + out * f32(deep * 0.25) + v3(w * 0.25, tall * 0.42, 0.0)
+                # Keep every shelf cap visible, with its lower half rooted in
+                # the physical slope rather than burying the entire crown.
+                if camp_hill_cover(ledge) > 0.5:
+                    ledge.y = f32(height_at(f64(ledge.x),f64(ledge.z))+0.65)
                 __cliff_lump(ledge, v3(w * 1.2, 2.0, deep * 1.2), rotation_y(yaw), z, rk, vec4(0.0, 0.55, 0.0, 4.0), 0.7)
                 add_box(ledge - v3(0.0, 1.4, 0.0), v3(w * 0.85, 1.4, deep * 0.8), yaw, true, .rock)
             count += 1

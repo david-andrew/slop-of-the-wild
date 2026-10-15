@@ -16,3 +16,4 @@ Magnet Trial	569	1417	261	60
 Bomb Trial	587	1517	226	50
 Pause Trial	584	1617	231	50
 Ice Block Trial	556	1717	287	50
+Game Over	520	1827	363	66

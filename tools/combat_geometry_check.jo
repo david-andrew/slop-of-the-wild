@@ -3,7 +3,7 @@ use '../game/chars.jo'
 use '../game/skel.jo'
 use '../game/gfx.jo'
 use '../game/structures.jo'
-from '../game/chars.jo' import __posed_body_points, __blade_near_triangle, __combat_head_indices, __combat_triangle_prepare, __combat_triangle_lo, __combat_triangle_hi
+from '../game/chars.jo' import __combat_support_edge, __combat_triangle_bounds, __combat_project_area, __posed_body_points, __blade_near_triangle, __combat_head_indices, __combat_triangle_prepare, __combat_triangle_lo, __combat_triangle_hi
 from '../game/structures.jo' import __cliff_inside, __cliff_segment_gap
 reference_blade_triangle = (a: vec3,b: vec3,p: vec3,q: vec3,r: vec3) -> bool:
     cross_ = cross(q-p,r-p)
@@ -20,6 +20,19 @@ reference_blade_triangle = (a: vec3,b: vec3,p: vec3,q: vec3,r: vec3) -> bool:
     loop gap in [__cliff_segment_gap(a,b,p,q),__cliff_segment_gap(a,b,q,r),__cliff_segment_gap(a,b,r,p)]:
         if length(gap)<0.085: return true
     false
+
+reference_project_area = (points: vec3[], vp: mat4, shift: vec3) -> (bool,f64):
+    lo=vec2(1e9,1e9)
+    hi=vec2(-1e9,-1e9)
+    visible=false
+    loop point in points:
+        c=vp*vec4(point+shift,1)
+        if c.w<=0.1: continue
+        xy=clamp(c.xy/c.w,vec2(-1,-1),vec2(1,1))
+        lo=min(lo,xy)
+        hi=max(hi,xy)
+        visible=true
+    (visible,max(0.0,f64(hi.x-lo.x))*max(0.0,f64(hi.y-lo.y))*0.25)
 
 main = ():
     chars_init()
@@ -47,6 +60,28 @@ main = ():
             assert(length(updated[vertex]-points[vertex]-displacement)<0.00001,"palette COW writes invalidate the cached skinning result")
         __posed_body_points(m,palette,world,repeated)
         assert(repeated == points,"retained original palette survives a later animation write")
+        all_indices = [loop i in [0..points.len()): i]
+        assert(body.surface.len()==body.unique.len(),"one representative per exact skinning input")
+        loop eye in [vec3(0,3,5),vec3(2,3,-0.8),vec3(-3,4,2)]:
+            vp=perspective(55.0*PI/180.0,16.0/9.0,0.1,100.0)*look_at(eye,vec3(0,2,-1),vec3(0,1,0))
+            loop shift in [vec3(),vec3(0.25,-0.5,1),vec3(2,0,-3)]:
+                assert(__combat_project_area(points,body.surface,vp,shift)==__combat_project_area(points,all_indices,vp,shift),"unique surface preserves exact clipped projected bounds, including near-plane crossings")
+                assert(__combat_project_area(points,body.surface,vp,shift)==reference_project_area(points,vp,shift),"Sloppy projection preserves the original complete-surface arithmetic")
+                direction=normalize(eye+shift)
+                full_lo=1e9
+                full_hi=-1e9
+                unique_lo=1e9
+                unique_hi=-1e9
+                loop q in points:
+                    d=f64(dot(q+shift,direction))
+                    full_lo=min(full_lo,d)
+                    full_hi=max(full_hi,d)
+                loop i in body.surface:
+                    d=f64(dot(points[i]+shift,direction))
+                    unique_lo=min(unique_lo,d)
+                    unique_hi=max(unique_hi,d)
+                assert(full_lo==unique_lo and full_hi==unique_hi,"unique surface preserves exact support planes")
+                assert(__combat_support_edge(points,body.surface,direction,shift,false)==full_hi and __combat_support_edge(points,body.surface,direction,shift,true)==full_lo,"cached support extrema match the complete reference surface")
         print("PASS combat pose cache {m.name}: {body.vertices.len()} vertices / {body.unique.len()} unique inputs; repeated, translated and changed palettes")
         at = 0
         head_at = 0
@@ -72,10 +107,19 @@ main = ():
                     head_at += 1
                 at += 1
         __combat_triangle_prepare(body.indices,points)
+        old_lo=__combat_triangle_lo
+        old_hi=__combat_triangle_hi
+        __combat_triangle_prepare(body.indices,points)
+        assert(__combat_triangle_lo==old_lo and __combat_triangle_hi==old_hi,"repeated contact bounds remain exact")
+        __combat_triangle_prepare(body.indices,moved)
+        __combat_triangle_prepare(body.indices,points)
+        assert(__combat_triangle_lo==old_lo and __combat_triangle_hi==old_hi,"translated and retained world poses have independent cached contact bounds")
         loop tri in [0..body.indices.len()/3):
             p = points[int(body.indices[tri*3])]
             q = points[int(body.indices[tri*3+1])]
             r = points[int(body.indices[tri*3+2])]
+            expected_lo,expected_hi=__combat_triangle_bounds(p,q,r)
+            assert(__combat_triangle_lo[tri]==expected_lo and __combat_triangle_hi[tri]==expected_hi,"cached contact bounds match scalar arithmetic exactly")
             centre = (p+q+r)/3.0
             # Crossing, grazing, remote and tiny/sliver face probes on real meshes.
             loop offset in [vec3(0,0,0),vec3(0.08,0,0),vec3(0.086,0,0),vec3(0.1,0.1,0.1),vec3(1,2,3)]:

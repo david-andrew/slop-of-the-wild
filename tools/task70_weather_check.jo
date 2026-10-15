@@ -22,15 +22,13 @@ loop hour in [4.6,6.4,11.0,18.6,22.0]:
         if hour==22: assert(luma(env.sky_amb)<0.4,"daytime rain fill cannot brighten night")
 print("PASS plume: identical pigment across weather at dawn/day/dusk/night")
 
-loop idle in [0.0,0.01,0.2,0.7,1.0]:
-    assert(clock_opacity(idle,0)==idle,"clear-weather HUD fade unchanged")
-    assert(clock_opacity(idle,0.75)>=0.88,"rain dial stays legible after idle timer expires")
-    previous=idle
-    loop n in [0..101):
-        alpha=clock_opacity(idle,f64(n)/100)
-        assert(alpha>=previous and alpha-previous<0.07,"HUD rain floor fades continuously")
-        previous=alpha
-print("PASS clock: rain contrast floor, continuous entry and unchanged dry fade")
+loop hour in [0.0,6.4,11.0,18.6,22.0]:
+    loop rain in [0.0,0.1,0.75,1.0]:
+        loop idle in [0.0,0.01,0.2,0.7,1.0]:
+            env.hour=hour
+            assert(clock_opacity(idle,rain)>=0.88,"clock contrast floor survives idle in every hour/weather")
+            assert(clock_opacity(idle,rain)<=1.0,"clock alpha remains bounded")
+print("PASS clock: all-hours/all-weather idle contrast floor")
 
 # Soaked shirt, skin, leather and steel retain their pigment order across canopy
 # and open diffuse lighting, including downward/vertical planes and deep shadow.

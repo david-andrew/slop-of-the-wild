@@ -45,6 +45,8 @@ check_glide_horizon = ():
             act.look = vec2(0, 0.4)
             camera_update(1.0 / f64(hz))
             assert(cam.pitch > 0.5, "glide preserves manual pitch input")
+            look=normalize(view_target()-view_pos())
+            assert(atan2(-f64(look.y),f64(length(look.xz)))>0.5,"displayed glide view obeys deliberate pitch input")
             print("glide horizon PASS {hz}Hz inherited lift {inherited:.2}: {low:.3}..{high:.3}")
 
 check_glide_horizon()
@@ -91,6 +93,7 @@ loop stick in [0.0, 1.0]:
                 deployed = true
                 assert(cam.dist >= 7.1, "real overlook glide keeps the trailing boom even in the cave proximity radius")
                 horizon = horizon_height()
+                if horizon < 0.25 or horizon > 0.40: print("overlook frame {frame} hz {hz} stick {stick} horizon {horizon} pl {pl.pos} eye {view_pos()} target {view_target()} collision {cam.collision_dist}")
                 assert(horizon >= 0.25 and horizon <= 0.40, "real overlook glide retains the horizon through ledge clearance")
                 low = min(low, horizon)
                 high = max(high, horizon)

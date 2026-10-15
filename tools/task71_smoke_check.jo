@@ -1,0 +1,26 @@
+# Exercise production vertex opacity and tag isolation, without opening a window.
+use '../game/fx.jo'
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+previous=f32(0.22)
+loop step in [0..361):
+    distance=f32(step)*0.1
+    coverage=grass_smoke_coverage(distance)
+    assert(coverage>=previous and coverage-previous<0.009,"proximity fade is continuous and monotone")
+    assert(coverage>=0.22 and coverage<=1,"opacity remains bounded")
+    if distance<=4: assert(coverage==f32(0.22),"near billows remain sparse")
+    if distance>=18: assert(coverage==1,"distant smoke keeps original opacity")
+    previous=coverage
+loop distance in [2.0,8.0,14.0,18.0,40.0]:
+    plain=PInst(vec4(0,0,f32(-distance),2),vec4(0.32,0.32,0.32,0.28),vec4(0.5,1,0.75,0))
+    tagged=plain
+    tagged.data.z+=2048
+    loop corner in [vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(1,1)]:
+        ordinary=part_vs(QuadV(corner),plain,u)
+        grass=part_vs(QuadV(corner),tagged,u)
+        assert(ordinary.pos==grass.pos,"smoke geometry is unchanged")
+        assert(ordinary.color.xyz==grass.color.xyz,"smoke pigment is unchanged")
+        assert(abs(grass.color.w-ordinary.color.w*grass_smoke_coverage(f32(distance)))<0.000001,"whole-card opacity uses centre distance")
+        assert(ordinary.color.w==plain.color.w,"ordinary smoke is unaffected")
+    tagged.data.x=-0.5
+    assert(part_vs(QuadV(vec2(0,0)),tagged,u).color.w==plain.color.w,"Calamity smoke is unaffected")
+print("PASS grass smoke: smooth bounded proximity fade, unchanged distant opacity, geometry/pigment and other smoke tags")

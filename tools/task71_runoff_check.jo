@@ -1,0 +1,106 @@
+# Exact critic/README run-off: no raised launch, terrain and player/camera ticks.
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/terrain.jo'
+use '../game/physics.jo'
+use '../game/input.jo'
+use '../game/gfx.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/architecture_assets.jo'
+use '../game/chars.jo'
+from '../game/chars.jo' import __posed_body_points, __glider_point
+use '../game/inventory.jo'
+use '../game/items.jo'
+use '../game/skel.jo'
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+if not architecture_load():
+    sor_interior()
+    structures_build()
+items_init()
+chars_init()
+inv_add("old_shirt")
+p=cliff_place_ground(v3(-1030,height_at(-1030,1805),1805))
+pl=Player(pos=p,last_safe=p,face=1.57,has_glider=true)
+cam=Cam(yaw=pl.face)
+aim_fov=50.0
+cam_yaw_global=pl.face
+camera_snap()
+cave_mouth=SOR_MOUTH_IN
+cave_in=normalize(v3(-1128,0,1884)-vec3(SOR_MOUTH_IN.x,0,SOR_MOUTH_IN.z))
+frames=0
+peak=0.0
+loop frame in [1..421):
+    act=Actions(move=vec2(0,if frame>=10:1 else:0),sprint=frame>=20 and frame<100,jump=frame==230)
+    cam_open_ground=f64(length(pl.pos-SOR_MOUTH_IN))>60.0
+    last_eye=view_pos()
+    player_update(1.0/60.0)
+    hero_animate(1.0/60.0,0.0)
+    enemy_anim_update(0.0)
+    camera_update(1.0/60.0)
+    if frame>=210: peak=max(peak,f64(length(view_pos()-last_eye)))
+    if pl.state==.glide:
+        eye=view_pos()
+        look=normalize(view_target()-eye)
+        right=normalize(cross(look,vec3(0,1,0)))
+        up=normalize(cross(right,look))
+        cone=tan(view_fov()*PI/360.0)
+        worst=0.0
+        loop height in [0.25,1.3]:
+            body=pl.pos+v3(0,height,0)
+            ray=eye-body
+            assert(not raycast(body,normalize(ray),f64(length(ray))-0.35,true,true).hit,"ledge cannot hide Jo during any deployment/recovery frame")
+        # Conservative envelope includes deployed canopy, cords and dangling feet.
+        loop canopy in [false,true]:
+            width=if canopy:1.4 else:0.55
+            depth_=if canopy:1.2 else:0.8
+            loop y in (if canopy:[2.3,4.0] else:[-0.15,2.6]):
+                loop x in [-width,width]:
+                    loop z in [-depth_,depth_]:
+                        d=pl.pos+transform_dir(rotation_y(PI-pl.face),v3(x,y,z))-eye
+                        depth=f64(dot(d,look))
+                        projected=max(abs(f64(dot(d,up)))/max(0.001,depth)/cone,abs(f64(dot(d,right)))/max(0.001,depth)/cone/aspect_ratio())
+                        worst=max(worst,projected)
+        # Also project the actual production skin and animated canopy on every
+        # deployment frame, including its blend up from the falling pose.
+        points: vec3[]
+        __posed_body_points(hero_m,hero_skin,hero_world,points)
+        hl=hero_world*bone_world(hero_m,hero_skin,"hand_l")
+        hr=hero_world*bone_world(hero_m,hero_skin,"hand_r")
+        mid=(hl[3].xyz+hr[3].xyz)*0.5
+        canopy_world=translation(mid+vec3(0,0.75,0))*rotation_y(PI-pl.face)*rotation_z(pl.lean*0.3+pl.glide_lean)*rotation_x(-0.4)
+        loop x in [-1.06,0.0,1.06]:
+            loop t in [-0.045,0.5,1.05]: points.push(transform_point(canopy_world,__glider_point(x,t)))
+        loop point in points:
+            d=point-eye
+            depth=f64(dot(d,look))
+            actual=max(abs(f64(dot(d,up)))/depth/cone,abs(f64(dot(d,right)))/depth/cone/aspect_ratio())
+            if depth<=0.0 or actual>=0.96: print("actual frame={frame} bound={actual:.3} point={point} pl={pl.pos} eye={eye}")
+            assert(depth>0.0 and abs(f64(dot(d,up)))/depth<cone*0.96 and abs(f64(dot(d,right)))/depth<cone*aspect_ratio()*0.96,"actual animated hero/canopy stays inside viewport during deployment")
+        if frame%10==0: print("runoff frame={frame} bounds={worst:.3} pl={pl.pos} eye={eye} target={view_target()} boom={cam.collision_dist:.3}")
+        assert(worst<0.94,"every deployment/recovery frame retains Jo and the entire glider within the viewport")
+        frames+=1
+assert(peak<0.35,"run-off camera recovery respects the ground camera movement limit")
+assert(frames>150,"exact ground route deploys and sustains gliding through recovery")
+print("PASS exact README run-off: {frames} consecutive full-envelope frames; peak lens step {peak:.3}m")
+
+# Reserving glide room must not extend a collision-retracted lens through a wall.
+use_terrain=false
+loop mut c in colliders: c.active=false
+add_box(vec3(0,20,3),vec3(10,10,0.2),0.0,false,.stone)
+pl=Player(pos=vec3(0,24,0),state=.glide,grounded=false,has_glider=true)
+cam=Cam()
+aim_fov=50.0
+camera_snap()
+loop frame in [0..120):
+    act=Actions()
+    camera_update(1.0/60.0)
+    assert(cam.pos.z<2.46,"glide framing cannot extend the lens through a solid wall")
+cam.glide_orbit=0.7
+camera_snap()
+assert(cam.glide_orbit==0.0,"snap clears the deployment shoulder")
+print("PASS glide reserve: swept wall clearance and reset")

@@ -305,6 +305,12 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
         offset = tangent * u.texel * mix(0.45, 1.35, smoothstep(0.35, 0.80, lap))
         edge_color = (sample(u.src, i.uv - offset).xyz + sample(u.src, i.uv + offset).xyz) * 0.5
         c = mix(c, edge_color, stone_edge * 0.88)
+    # During the mouth reveal, resolve the bright stone silhouette over a
+    # full pixel footprint. Ink removal alone leaves its raster staircase.
+    if u.white > 0.08 and edge_stone > 0.01 and occlusion < 0.01:
+        pixel = glsl_texel_size(u.src) * 1.7
+        edge_color = (sample(u.src,i.uv+pixel*vec2(-0.5,-0.5)).xyz+sample(u.src,i.uv+pixel*vec2(0.5,-0.5)).xyz+sample(u.src,i.uv+pixel*vec2(-0.5,0.5)).xyz+sample(u.src,i.uv+pixel*vec2(0.5,0.5)).xyz)*0.25
+        c = mix(c,edge_color,edge_stone*smoothstep(0.08,0.55,u.white)*0.95)
     ink = smoothstep(0.2, 0.6, lap) * clamp(1.0 - d0 / 160.0, 0.0, 1.0) * 0.5 * u.paint
     sky = step(0.9999, sample(u.depth, i.uv).x)
     ink = ink * (1.0 - sky) * (1.0 - occlusion) * (1.0 - (smooth - figure) * 0.40)
@@ -419,8 +425,8 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
     if u.white > 0.0:
         # Blend the pre-pigment highlight into the daylight wash; dark silhouettes
         # keep their ink while bright facets lose the hard outlined polygon effect.
-        highlight = smoothstep(0.40, 0.82, luma(adaptation)) * smoothstep(0.08, 0.55, u.white)
-        c = mix(c, adaptation, highlight * 0.65)
+        highlight = smoothstep(0.20, 0.64, luma(adaptation)) * smoothstep(0.08, 0.55, u.white)
+        c = mix(c, adaptation, highlight * 0.95)
         c = max(c, vec3(0, 0, 0)) * (1.0 + u.white * 1.25)
         excess = max(c - vec3(0.62, 0.62, 0.62), vec3(0, 0, 0))
         shoulder = min(c, vec3(0.62, 0.62, 0.62)) + excess / (vec3(1, 1, 1) + excess / 0.365)

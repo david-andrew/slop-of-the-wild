@@ -466,6 +466,11 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
         # the kit's bark is salmon: weathered grey-brown, warmer low on the trunk
         bl = dot(alb, vec3(0.3, 0.55, 0.15))
         alb = mix(alb, vec3(bl, bl, bl) * vec3(1.18, 1.0, 0.82), 0.6) * (0.85 + 0.25 * (1.0 - i.h))
+        # Fallen mossy timber exposes the kit's almost-black root pigment.
+        # Restore weathered bark before lighting so its underside receives the
+        # same sky/ground bounce as the trunk instead of a black cut-out.
+        if mossy > 0.0 and u.wood > 0.5:
+            alb = max(alb,vec3(0.34,0.29,0.22)*mossy)
         # moss over the tops of forest boulders and logs (a green-leaning tint asks for it)
         # Smooth rock normals carry moss over rounded shoulders; world-space
         # cushions break the margin across triangles instead of painting faces.
@@ -482,6 +487,11 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
         # shader here inflated register pressure and the passage's CPU/GPU tail.
         turf = mix(vec3(0.24,0.335,0.145),vec3(0.41,0.37,0.205),canopy_wash) * 0.90
         alb = mix(alb, turf * (0.90 + 0.10 * max(n.y, 0.0)), smoothstep(14.0, 55.0, dcam) * 0.88)
+    # The existing solid-fir specialization owns near cap detail. Fold it out
+    # of the large shared canopy shader, and compute it only after the pigment
+    # washes so it does not keep an extra register live through their noise.
+    # Fade before the 55–70 m crown transition; distant views stay authored.
+    cap_detail = if solid_fir > 0.5 and i.tint.w > 0.0: 1.0-smoothstep(35.0,55.0,i.lod_distance) else: f32(0)
     # Waxed needles retain green pigment on the closed branch undersides.
     # Apply before snow so upper caps keep their established pale values.
     if leaves > 0.5 and u.fir > 0.5: alb *= mix(1.45, 1.0, i.tint.w)
@@ -494,12 +504,13 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
         snow = i.tint.w * smoothstep(-0.15, 0.35, n.y + (drift - 0.5) * 0.4)
         if leaves > 0.5:
             if u.fir > 0.5:
-                # Snow wraps the rounded shoulder down to the lower boughs.
-                # The old threshold only capped the narrower eight-sided crown;
-                # six-sided scallops need lateral coverage as well as top faces.
+                # Unequal caps sit on the rounded solid sprays. Their sides
+                # reveal green needles instead of white overlapping cut-outs.
                 snow = i.tint.w * fir_snow_coverage(n.y)
+                if cap_detail > 0.0:
+                    snow = i.tint.w * smoothstep(mix(-0.22,0.12,cap_detail),mix(0.30,0.72,cap_detail),n.y+(i.color.y-0.95)*0.7*cap_detail)
             else: snow *= smoothstep(0.30, 0.62, drift) * (0.8 + 0.2 * smoothstep(0.15, 0.45, dot(t.xyz, vec3(0.3, 0.6, 0.1))))
-        alb = mix(alb, vec3(0.82, 0.86, 0.93), snow)
+        alb = mix(alb, vec3(0.82,0.86,0.93), snow)
     # Bark drinks rain; mineral faces darken less and retain a tighter film.
     # Snow caps stay pale. The model material separates trunks from boulders.
     material_wet = u.wet * (1.0 - i.tint.w * smoothstep(0.05, 0.6, n.y))
@@ -508,7 +519,9 @@ __veg_fs[U] = (i: VegO, u: U, charred: f32, solid_fir: f32) -> vec4:
     # A distant spray samples many needles. Its illumination follows the
     # canopy hemisphere rather than alternating top/underside slivers.
     if leaves > 0.5 and u.fir > 0.5:
-        n = normalize(mix(n, vec3(0,1,0), 0.30 + smoothstep(20.0,80.0,dcam)*0.12))
+        lift = 0.30 + smoothstep(20.0,80.0,dcam)*0.12
+        if cap_detail > 0.0: lift *= 1.0 - i.tint.w * 0.85 * cap_detail
+        n = normalize(mix(n, vec3(0,1,0), lift))
     l = normalize(u.sun_dir)
     v = normalize(u.cam - i.world)
     sh = (if leaves > 0.5: cascade_shadow_fast(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2) else: cascade_shadow(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2)) * cloud_shade(i.world.xz, u.time, u.clouds)
@@ -1064,12 +1077,26 @@ place = (name: str, pos: vec3, rot: f64, height: f64, tint: vec4, collide: bool 
     broad = if starts_with(name, "CommonTree"): hash2(f64(pos.x), f64(pos.z)) else: 0.5
     px = px * (0.84 + broad * 0.32)
     pz = pz * (1.13 - broad * 0.26)
-    m = translation(pos) * rotation_y(rot) * scaling(v3(w * px, s, w * pz))
+    root = pos
+    if starts_with(name,"Rock_Medium_"):
+        # The surviving loose stones on the north camp hill were swallowed
+        # when the distant face was put back on its physical heightfield.
+        # Move each downhill to a seat at its existing elevation; bury the
+        # lower half rather than removing the stone or balancing it on a point.
+        loop anchor in [vec2(-1295.1122,1405.4713),vec2(-1285.1013,1418.5112),vec2(-1275.7477,1417.1748)]:
+            if length(pos.xz-anchor)>0.15: continue
+            normal = normal_at(f64(pos.x),f64(pos.z))
+            downhill = normalize(vec3(normal.x,0,normal.z))
+            loop step in [0..100):
+                if height_at(f64(root.x),f64(root.z)) <= f64(pos.y)+height*0.55: break
+                root += downhill*0.2
+            root.y = f32(height_at(f64(root.x),f64(root.z))-height*0.55)
+    m = translation(root) * rotation_y(rot) * scaling(v3(w * px, s, w * pz))
     bound = vm.radius * (if starts_with(name, "CommonTree"): max(w * px, w * pz) else: s)
     surface_tint = tint
     if tint.w > 0.0 or starts_with(name, "Pine_") or starts_with(name, "CommonTree"):
         surface_tint.w = 0.85 * vegetation_snow_cover(f64(pos.x), f64(pos.z))
-    places.push(VPlace(mi, m, surface_tint, pos, bound, treeheight, collide))
+    places.push(VPlace(mi, m, surface_tint, root, bound, treeheight, collide))
 
 LEAF = vec4(0.95, 1.0, 0.9, 0.0)
 
