@@ -1,0 +1,102 @@
+# Headless production texture/mip and crown silhouette regression.
+use '../game/vegetation.jo'
+use '../game/fir_boughs.jo'
+from '../game/vegetation.jo' import __bush_leaf_image, __broadleaf_image, __rd32
+
+image = __bush_leaf_image()
+all_rgb = vec3(0,0,0)
+leaf_rgb = vec3(0,0,0)
+leaves = 0
+holes = 0
+loop k in [0..image.width*image.height):
+    rgb = vec3(f32(image.pixels[k*4]),f32(image.pixels[k*4+1]),f32(image.pixels[k*4+2]))
+    all_rgb += rgb
+    if image.pixels[k*4+3] > 220:
+        leaf_rgb += rgb
+        leaves += 1
+    if image.pixels[k*4+3] == 0: holes += 1
+    assert(rgb.x > 55 and rgb.y > 80,"transparent foliage texels retain pigment through every mip")
+all_rgb /= f32(image.width*image.height)
+leaf_rgb /= f32(leaves)
+assert(holes > image.width*image.height/5,"open sprays retain real coverage gaps")
+assert(all_rgb.y/leaf_rgb.y > 0.90 and all_rgb.y/leaf_rgb.y < 1.10,"one-texel mip preserves leaf pigment independently of coverage")
+print("PASS bush mip: {holes} transparent texels, leaf green {leaf_rgb.y:.2}, final-mip green {all_rgb.y:.2}")
+
+broadleaf = __broadleaf_image()
+loop y in [0..broadleaf.height):
+    loop x in [0..broadleaf.width):
+        if x < 9 or x >= broadleaf.width-9 or y < 9 or y >= broadleaf.height-9:
+            assert(broadleaf.pixels[(y*broadleaf.width+x)*4+3]==0,"broadleaf sprays need transparent margins on every quad edge")
+print("PASS broadleaf transparent border")
+
+cross2 = (a: vec2,b: vec2) -> f32: a.x*b.y-a.y*b.x
+loop variant in [1..6):
+    bytes=read_bytes("assets/nature/Pine_{variant}.vm")!
+    offset=8
+    loop part in [0..__rd32(bytes,4)):
+        kind=__rd32(bytes,offset)
+        offset+=8+__rd32(bytes,offset+4)
+        nv=__rd32(bytes,offset)
+        ni=__rd32(bytes,offset+4)
+        offset+=8
+        vertices=fill(Vertex3D(),nv)
+        mem_copy(data(vertices) as *u8,data(bytes)+offset,nv*48)
+        offset+=nv*48
+        indices=fill(u32(0),ni)
+        mem_copy(data(indices) as *u8,data(bytes)+offset,ni*4)
+        offset+=ni*4
+        if kind!=1:continue
+        crown=fir_crown(vertices,indices)
+        low=1e9
+        high=-1e9
+        loop v in vertices:
+            low=min(low,f64(v.pos.y))
+            high=max(high,f64(v.pos.y))
+        lo3 = vec3(1e9,1e9,1e9)
+        hi3 = vec3(-1e9,-1e9,-1e9)
+        loop v in crown.vertices:
+            lo3=min(lo3,v.pos)
+            hi3=max(hi3,v.pos)
+        frame=crown_frame(lo3,hi3)
+        center=vec3(0,(lo3.y+hi3.y)*0.5,0)
+        loop yaw in [0.0,0.785398,1.570796,2.356194,3.141593,3.926991,4.712389,5.497787]:
+            back=vec3(f32(sin(yaw)*cos(0.22)),f32(sin(0.22)),f32(cos(yaw)*cos(0.22)))
+            right=normalize(cross(vec3(0,1,0),back))
+            up=normalize(cross(back,right))
+            loop v in crown.vertices:
+                q=v.pos-center
+                assert(abs(dot(q,right))<frame.x*0.99 and abs(dot(q,up))<frame.y*0.99,"all boughs fit inside the atlas at every baked angle")
+        worst=1.0
+        # A 64x96 silhouette approximates a 20 m view. Four angles must retain
+        # substantial crown mass; narrow detached spears fail this footprint.
+        loop yaw in [0.0,0.7,1.4,2.1]:
+            side=vec3(f32(cos(yaw)),0,f32(sin(yaw)))
+            left=1e9
+            right=-1e9
+            loop v in crown.vertices:
+                left=min(left,f64(dot(v.pos,side)))
+                right=max(right,f64(dot(v.pos,side)))
+            project=(p:vec3)->vec2:vec2((dot(p,side)-f32(left))/f32(right-left)*64,(p.y-f32(low))/f32(high-low)*96)
+            covered=fill(false,64*96)
+            loop triangle in [0..crown.indices.len()/3):
+                a=project(crown.vertices[int(crown.indices[triangle*3])].pos)
+                b=project(crown.vertices[int(crown.indices[triangle*3+1])].pos)
+                c=project(crown.vertices[int(crown.indices[triangle*3+2])].pos)
+                area=cross2(b-a,c-a)
+                if abs(area)<0.00001:continue
+                lo=max(min(min(a,b),c),vec2(0,0))
+                hi=min(max(max(a,b),c),vec2(63,95))
+                loop y in [int(floor(lo.y))..int(ceil(hi.y))]:
+                    loop x in [int(floor(lo.x))..int(ceil(hi.x))]:
+                        p=vec2(f32(x)+0.5,f32(y)+0.5)
+                        u=cross2(b-p,c-p)/area
+                        v=cross2(c-p,a-p)/area
+                        if u>=0.0 and v>=0.0 and u+v<=1.0:covered[y*64+x]=true
+            filled=0
+            loop pixel in covered:
+                if pixel:filled+=1
+            ratio=f64(filled)/f64(64*96)
+            worst=min(worst,ratio)
+        print("fir crown Pine_{variant}: minimum four-view coverage {worst:.3}")
+        assert(worst>0.20,"conifer crowns must form full overlapping silhouettes at 20 m")
+print("PASS five fir crown silhouettes, four views each")

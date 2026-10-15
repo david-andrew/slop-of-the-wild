@@ -25,7 +25,7 @@ use 'body_fire.jo'
 # defeated monster, and the rain. Simulated on the CPU, drawn as camera-facing soft sprites in
 # instanced draws per blend mode, with smooth smoke accumulated at half scene resolution.
 
-enum PKind: flame, smoke, ember, spark, dust, splash, leaf, poof, glow, snow, ring, arc, slash, breath, steam
+enum PKind: flame, smoke, ember, spark, dust, splash, leaf, poof, glow, snow, ring, arc, slash, breath, steam, rain_impact
 
 fx_lock_target = vec3(0, -1000, 0)
 smoke_lock_coverage = (p: vec3, radius: f64, cam: vec3, target: vec3) -> f64:
@@ -85,6 +85,7 @@ struct PartO:
     size: f32
     foot = vec2(0, 0)    # interpolated ground root, before any rising curl
     front = 1.0
+    fire_lod = 0.0
 
 struct QuadV:
     corner: vec2
@@ -182,7 +183,42 @@ flame_front_corner = (corner: vec2, size: f32, seed: f32, age: f32) -> vec2:
     height = max(size * (0.38 + shape * 0.38 + tall * 0.28) * pulse, 0.12 + shape * 0.09)
     vec2(corner.x * width + (corner.y + 1.0) * size * 0.07 * sin(seed * 3.0 + age * 9.0), (corner.y + 1.0) * height)
 
+# Match tangent signs before blending: opposite camera headings must never
+# cancel a segment's width halfway through its distance transition.
+flame_contour_side = (tangent: vec3, right: vec3, close: f32) -> vec3:
+    aligned = tangent*(if dot(tangent,right)<0.0: f32(-1) else: f32(1))
+    normalize(mix(aligned,right,close))
+
+# Suppress the whole sheet before its projected area collapses. Include the
+# vertical view angle: an upright wall viewed from above also becomes a strip.
+flame_contour_visibility = (normal: vec3, sight: vec3) -> f32:
+    smoothstep(0.45,0.75,abs(dot(normal,normalize(sight+vec3(0,0,0.0001)))))
+
+# Contour endpoints cannot pull a fire sheet down the vertical cliff beside
+# its fuel cell. Feather unsupported endpoints and bound their root height.
+flame_contour_root = (point: vec3, owner_y: f32, ground_y: f32) -> vec4:
+    vec4(point.x,clamp(ground_y,owner_y-0.40,owner_y+0.40)+0.035,point.z,1.0-smoothstep(0.65,1.60,abs(ground_y-owner_y)))
+
 part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
+    if i.data.y < -7.5:
+        # Fuel-contour segments overlap around shared world corners.
+        # The moving silhouette lives inside this low continuous wall.
+        close = 1.0-smoothstep(12.0,26.0,length(u.cam-i.pos.xyz))
+        side = flame_contour_side(vec3(cos(i.data.z),0,sin(i.data.z)),u.cam_right,close)*i.pos.w
+        foot = i.pos.xyz+side*v.corner.x
+        color = i.color
+        if u.ground_grid.w>0.5:
+            surface = flame_contour_root(foot,i.pos.y,flame_ground(foot.xz,u))
+            foot = surface.xyz
+            color.w *= surface.w
+        # A contour is a vertical wall, never a ground-facing wash. Fade
+        # the whole segment under overhead views, before its rise collapses.
+        color.w *= flame_contour_visibility(cross(normalize(side),vec3(0,1,0)),u.cam-i.pos.xyz)
+        y = (v.corner.y+1.0)*0.5
+        rise = normalize(mix(vec3(0,1,0),u.cam_up,close*0.35))
+        w = foot+rise*(y*mix(i.data.w,max(i.data.w,1.1),close))
+        cp = u.vp*vec4(w,1)
+        return PartO(cp,v.corner*0.5+vec2(0.5,0.5),color,i.data,cp,i.pos.w,foot.xz)
     if i.data.y > 18.5 and i.data.y < 19.5:
         # A broad faint halo reuses the additive submission, with no particles.
         w = i.pos.xyz + u.cam_right*v.corner.x*i.pos.w + u.cam_up*v.corner.y*i.pos.w*0.65
@@ -215,12 +251,16 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
             cell = floor((i.pos.xz-u.burn_grid.xy)/u.burn_grid.z*f32(BURN_N))
             front = flame_cell_front(u.live_burn,cell,i.data.x)
         growth = (if i.data.x <= 0.20001: f32(0) else: smoothstep(0.20,0.65,i.data.x))*front
+        lod = smoothstep(12.0,26.0,length(i.pos.xyz-u.cam))
         height = (6.0+fract(seed*1.73)*3.0)*(0.82+0.18*sin(u.time*11.0+seed))*(0.02+0.98*heat*heat)
+        # The close lens already bounds tall crowns. At range, join lower
+        # sheets instead of uncovering nine-metre towers in overlapping rows.
+        height *= mix(1.0,0.52,lod)
         curl = sin(y*6.0-u.time*7.0+seed)*y*y*height*0.045
         drift = flame_wind(u.wind)*height
         crest = vec3(drift.x,height,drift.y)
         root = vec3(i.pos.x,surface.x+0.025,i.pos.z)
-        side = flame_root_side(u.cam_right,i.pos.w,surface)
+        side = flame_root_side(u.cam_right,i.pos.w*mix(1.0,1.55,lod),surface)
         limits = vec2(1,1)
         color = i.color
         if i.data.w < 0.0:
@@ -237,14 +277,15 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
         w += vec3(drift.x*y*y,y*height,drift.y*y*y)*limits.y
         data.y = -6
         # Keep individual crown proportions when the camera caps sheet height.
-        data.w = -max(height*limits.y/max(i.pos.w*sqrt(growth)*limits.x*2.0,0.001),0.001)
+        data.w = -max(height*limits.y/max(i.pos.w*mix(1.0,1.55,lod)*sqrt(growth)*limits.x*2.0,0.001),0.001)
         cp = u.vp*vec4(w,1)
-        return PartO(cp,v.corner*0.5+vec2(0.5,0.5),color,data,cp,i.pos.w,foot.xz,front)
+        return PartO(cp,v.corner*0.5+vec2(0.5,0.5),color,data,cp,i.pos.w,foot.xz,front,lod)
     s = i.pos.w
     # Tag fire smoke once at emission, rather than classify every live smoke
     # particle on the CPU each draw. Decode its ordinary angle on the GPU.
-    fire_smoke = i.data.y > 0.5 and i.data.y < 1.5 and i.data.x >= 0.0 and i.data.z > 1000.0
-    a = i.data.z - (if fire_smoke: 1024.0 else: 0.0)
+    warm_smoke = i.data.y > 0.5 and i.data.y < 1.5 and i.data.x >= 0.0 and i.data.z > 2000.0
+    fire_smoke = i.data.y > 0.5 and i.data.y < 1.5 and i.data.x >= 0.0 and i.data.z > 1000.0 and not warm_smoke
+    a = i.data.z - (if warm_smoke: 2048.0 else if fire_smoke: 1024.0 else: 0.0)
     c = cos(a)
     sn = sin(a)
     q = vec2(v.corner.x * c - v.corner.y * sn, v.corner.x * sn + v.corner.y * c)
@@ -292,6 +333,9 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
         steam = i.data.y > 17.5
         rise = if steam: normalize(mix(u.cam_up, vec3(0, 1, 0), 0.70)) else: u.cam_up
         w = i.pos.xyz + u.cam_right * (v.corner.x * s * (if steam: 0.50 else: 0.90)) + rise * (v.corner.y * s * (if steam: 1.35 else: 0.28))
+    # Rain crowns stay rooted and low; their open cup has no luminous centre.
+    if i.data.y > 19.5 and i.data.y < 20.5:
+        w = i.pos.xyz + u.cam_right * (v.corner.x*s) + vec3(0,(v.corner.y+1.0)*s*0.38,0)
     # rings on water: flat on the surface
     if i.data.y > 7.5 and i.data.y < 9.5: w = i.pos.xyz + vec3(v.corner.x * s, 0.0, v.corner.y * s)
     if i.data.y > 12.5 and i.data.y < 13.5:
@@ -301,7 +345,7 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
         w = i.pos.xyz + along * (v.corner.y * (s + max(i.data.x, 0.002))) + across * (v.corner.x * max(i.data.x, 0.002))
     if i.data.y > 13.5 and i.data.y < 14.5: w = i.pos.xyz + vec3(v.corner.x * s, 0.0, v.corner.y * s * 0.65)
     data = i.data
-    if fire_smoke: data.z = a
+    if fire_smoke or warm_smoke: data.z = a
     if i.data.y < -0.5 and i.data.w < 0.0 and u.ground_grid.w > 0.5:
         ground = flame_ground(i.pos.xz, u)
         if i.pos.y - ground < 1.1 and i.pos.y - ground > -0.4:
@@ -347,7 +391,7 @@ part_vs = (v: QuadV, i: PInst, u: PartU) -> PartO:
         color.w *= smoothstep(3.0, 4.5, length(i.pos.xyz-u.cam))
         w = flame_card_bound(w,i.pos.xyz,u.vp)
     cp = u.vp * vec4(w, 1)
-    PartO(cp, v.corner * 0.5 + vec2(0.5, 0.5), color, data, cp, s)
+    PartO(cp, v.corner * 0.5 + vec2(0.5, 0.5), color, data, cp, s,fire_lod=(if fire_smoke or warm_smoke: 1.0 else: 0.0))
 
 # Each crown tapers against its own height. Cutting a short tongue out of a
 # full-height taper leaves a broad round cap, even with upright card geometry.
@@ -355,7 +399,44 @@ flame_tongue = (distance: f32, fraction: f32, width: f32, power: f32) -> f32:
     taper = pow(max(1.0-fraction,0.0),power)
     (1.0-smoothstep(width*taper*0.12,width*taper+0.012,distance))*(1.0-smoothstep(0.90,1.0,fraction))
 
+# Distant crowns share a low, irregular body. Continuous UV falloffs keep the
+# join free of stipple and card edges; the exact live-fuel mask still owns it.
+flame_mass = (uv: vec2, seed: f32, time: f32) -> f32:
+    crest = 0.43+0.085*sin(uv.x*12.0+seed+time*2.7)+0.055*sin(uv.x*23.0-seed-time*4.1)
+    shoulders = 1.0-smoothstep(0.36,0.50,abs(uv.x-0.5))
+    shoulders*(1.0-smoothstep(crest-0.10,crest+0.09,uv.y))*smoothstep(0.005,0.18,uv.y)
+
+# Linear heat is half the owner value at an exposed texel edge. Feather that
+# perimeter inward; adjoining live cells retain full coverage, without a grid.
+flame_fuel_fade = (heat: f32, owner: f32, lod: f32) -> f32:
+    mix(smoothstep(0.0,0.32,heat),smoothstep(0.50,0.59,heat/max(owner,0.001)),lod)
+
 part_fs = (o: PartO, u: PartU) -> vec4:
+    if o.data.y < -7.5:
+        if o.color.w<0.008:
+            glsl_discard(true)
+            return vec4(0,0,0,0)
+        y = o.uv.y
+        phase = o.foot.x*2.9+o.foot.y*2.3
+        # A tall transparent envelope leaves room for unequal peaks. Broad
+        # lobes merge with the tongues instead of clipping to a ribbon top.
+        crest = 0.46+0.15*sin(phase*0.72-u.time*3.4)+0.11*sin(phase*1.83+u.time*5.1)
+        crest += 0.08*sin(phase*3.7-u.time*6.3)
+        a = (1.0-smoothstep(crest-0.075,crest+0.10,y))*smoothstep(0.0,0.25,y)
+        a *= 1.0-smoothstep(0.42,0.50,abs(o.uv.x-0.5))
+        # All segments use world phase: adjacent roots and crests join without
+        # a card border or per-cell repeating taper.
+        flow = vnoise(vec2(phase*0.67,y*3.1-u.time*2.3))
+        a *= (0.85+flow*0.15)*(1.0-smoothstep(0.25,0.70,y)*smoothstep(0.40,0.80,flow)*0.30)
+        color_y = clamp(y/max(crest,0.1),0.0,1.0)
+        ink = flame_ink(color_y,pow(1.0-color_y,2.5)*0.16,a)
+        if u.near>0.0:
+            uv = o.clip.xy/o.clip.w*0.5+vec2(0.5,0.5)
+            z = sample(u.depth,uv).x*2.0-1.0
+            depth = 2.0*u.near*u.far/(u.far+u.near-z*(u.far-u.near))
+            a *= clamp((depth-o.clip.w)/0.12,0.0,1.0)
+        glsl_discard(a*o.color.w<0.008)
+        return vec4(ink,a*o.color.w)
     if o.data.y > 18.5 and o.data.y < 19.5:
         q = (o.uv-vec2(0.5,0.5))*2.0
         alpha = pow(max(0.0,1.0-dot(q,q)),3.0)*o.color.w
@@ -384,7 +465,7 @@ part_fs = (o: PartO, u: PartU) -> vec4:
             depth = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
             opacity *= clamp((depth - o.clip.w) / max(o.size * 0.6, 0.035), 0.0, 1.0)
         return vec4(min(o.color.xyz, vec3(0.82, 0.85, 0.87)), opacity)
-    if k > 14.5:
+    if k > 14.5 and k < 16.5:
         # Source-over ink behind the additive contact. A local value drop makes
         # the light stroke readable even over the noon meadow's pale blades.
         body = smoothstep(1.0, 0.28, d)
@@ -405,7 +486,7 @@ part_fs = (o: PartO, u: PartU) -> vec4:
     if k > 12.5 and k < 13.5:
         core = smoothstep(0.50, 0.06, abs(o.uv.x - 0.5))
         return vec4(o.color.xyz, o.color.w * core)
-    if k > 13.5:
+    if k > 13.5 and k < 14.5:
         # A dark absorbed margin with a broad, quiet sky reflection inside it.
         body = smoothstep(1.0, 0.4, d)
         sheen = smoothstep(0.6, 0.1, d) * (0.5 + 0.5 * sin(o.uv.y * 17.0 + u.time * 1.6 + o.data.z))
@@ -464,6 +545,7 @@ part_fs = (o: PartO, u: PartU) -> vec4:
             core = (1.0-smoothstep(0.0,max(wdt*0.72,0.02),x))*pow(max(1.0-y,0.0),3.0)
         if persistent:
             heat = grass_flame_heat(o.data.x)
+            owner = f32(1)
             # Growth is already in the vertex geometry; fragments only need
             # the ignition guard, not another per-pixel smoothstep envelope.
             if heat<=0.0 or o.data.x<=0.20001 or o.front<=0.0 or o.color.w<=0.0:
@@ -476,9 +558,15 @@ part_fs = (o: PartO, u: PartU) -> vec4:
                 # only softens coverage inside that accepted footprint.
                 uv = (o.foot-u.burn_grid.xy)/u.burn_grid.z
                 cell = floor(uv*f32(BURN_N))
-                if glsl_fetch(u.live_burn,int(cell.x),int(cell.y)).z <= 0.0:
+                owner = glsl_fetch(u.live_burn,int(cell.x),int(cell.y)).z
+                if owner <= 0.0:
                     glsl_discard(true)
                     return vec4(0, 0, 0, 0)
+            # Near crowns retain their approved geometry, but their lower
+            # bodies must join above terrain that hides the outside contour.
+            bed_lod = max(o.fire_lod,smoothstep(4.5,7.0,o.clip.w)*0.65)*smoothstep(0.20,0.45,-o.data.w)
+            # Projected short sheets keep only narrow upright tongues. Even
+            # the distant connecting mass must disappear before becoming a bar.
             # Three overlapping roots have independent widths, heights and curves.
             # Their upper curls stay narrow as the whole sheet settles to coals.
             shape = fract(o.data.z*2.17)
@@ -496,7 +584,7 @@ part_fs = (o: PartO, u: PartU) -> vec4:
             if y>=max(main_height,max(left_height,right_height)):
                 glsl_discard(true)
                 return vec4(0, 0, 0, 0)
-            if y>0.16:
+            if y>(if bed_lod>0.001: f32(0.68) else: f32(0.16)):
                 main_limit = main_width*sqrt(max(1.0-y/main_height,0.0))+(0.025+shape*0.045)*y*y+0.013
                 left_limit = left_width*sqrt(max(1.0-y/left_height,0.0))+0.035*y*y+0.013
                 right_limit = right_width*sqrt(max(1.0-y/right_height,0.0))+0.04*y*y+0.013
@@ -521,7 +609,9 @@ part_fs = (o: PartO, u: PartU) -> vec4:
             # The broad fresh bed dissolves before short dying crowns become
             # horizontal orange bars; individual tongues retain the 3–5s fade.
             shoulder = (1.0-smoothstep(0.42,0.50,x))*(1.0-smoothstep(0.035,0.16,y))*0.62*heat*heat*smoothstep(0.20,0.75,aspect)
-            coverage = max(shoulder,max(main,max(lick,fork)))
+            mass = flame_mass(o.uv,o.data.z,f32(u.time))*bed_lod*heat*heat*0.70
+            coverage = max(mass,max(shoulder,max(main,max(lick,fork))))
+            color_y = mix(color_y,y*1.6,mass*(1.0-max(main,max(lick,fork))))
             root_fade = smoothstep(root,root+0.035,y)
             if o.color.w*coverage*root_fade*heat<0.008:
                 glsl_discard(true)
@@ -532,12 +622,19 @@ part_fs = (o: PartO, u: PartU) -> vec4:
             interior = (main_width*main+left_width*lick+right_width*fork)/max(main+lick+fork,0.001)
             core = (1.0-smoothstep(0.0,interior*0.75+0.004,hot))*pow(max(1.0-color_y,0.0),2.5)
             core *= smoothstep(0.35,0.85,heat)
+            core = max(core,mass*(1.0-smoothstep(0.05,0.24,y))*0.12)
             # Fuel still spreads until its own expiry, but spent roots cannot
             # leave a translucent ghost tongue over the untouched foreground.
             a *= heat*smoothstep(0.18,0.55,heat)
             if u.burn_grid.w > 0.5:
                 uv = (o.foot-u.burn_grid.xy)/u.burn_grid.z
-                a *= smoothstep(0.0,0.32,sample(u.live_burn,uv).z)
+                fuel = sample(u.live_burn,uv).z
+                crown_fade = flame_fuel_fade(fuel,owner,o.fire_lod)
+                # Broad near roots reach the exact texel edge. Feather that
+                # mass inward without narrowing the approved upper tongues.
+                mass_fade = flame_fuel_fade(fuel,owner,1)
+                crowns = max(shoulder,max(main,max(lick,fork)))
+                a *= max(mass*mass_fade,crowns*crown_fade)/max(coverage,0.001)
             ember = (1.0-heat)*0.90
         glsl_discard(o.color.w * a < 0.008)
         # (soft where it meets the ground and rises from behind a rise: no hard seam)
@@ -590,6 +687,8 @@ part_fs = (o: PartO, u: PartU) -> vec4:
             a = smoothstep(1.0, 0.18, d + lobe * 0.1) * smoothstep(1.0, 0.72, d) * 0.72
             body = clamp(0.9 - q.y * 0.22 + lobe * 0.08, 0.68, 1.18)
             ink = o.color.xyz * body
+            # Neutral smoke retains its grey pigment; fire glow is confined
+            # to the separate ground halo, never a tint on broad smoke cards.
         hz0 = clamp(1.0 - exp(-o.clip.w * u.density * 0.22), 0.0, 0.6)
         sa = a
         if u.near > 0.0:
@@ -616,6 +715,12 @@ part_fs = (o: PartO, u: PartU) -> vec4:
     # a light column: soft at its sides, fading toward the floor and up into the dark
     # (and gone when the camera is right at it: no hard bar across the view)
     if k > 9.5: a = pow(smoothstep(0.5, 0.0, abs(o.uv.x - 0.5)), 1.5) * smoothstep(0.0, 0.25, o.uv.y) * smoothstep(1.0, 0.6, o.uv.y) * smoothstep(2.0, 6.0, o.clip.w)
+    if k > 19.5 and k < 20.5:
+        q = (o.uv-vec2(0.5,0.5))*2.0
+        rim = -0.65 + q.x*q.x*1.65 + 0.10*cos(q.x*14.0+o.data.z)
+        # Storm crowns shed an uneven rim instead of repeating a paired W.
+        rim += o.data.w * q.x * sin(o.data.z*3.7) * 0.45
+        a = (1.0-smoothstep(0.09,0.24,abs(q.y-rim))) * (1.0-smoothstep(0.72,1.0,abs(q.x)))
     # ripples: a thin ring that fades as it spreads
     if k > 7.5 and k < 8.5:
         # Break the bright circumference into soft arcs; each impact has its own seed.
@@ -626,7 +731,7 @@ part_fs = (o: PartO, u: PartU) -> vec4:
     if k > 5.5 and k < 6.5: a = smoothstep(0.55, 0.45, length((o.uv - vec2(0.5, 0.5)) * vec2(1.0, 2.2)))
     # soft: fade where the sprite meets the scene behind it (no hard line through hills and walls)
     # (not for things lying flat on the ground: ripples, firelight)
-    if u.near > 0.0 and k < 7.5:
+    if u.near > 0.0 and (k < 7.5 or k > 19.5):
         suv = o.clip.xy / o.clip.w * 0.5 + vec2(0.5, 0.5)
         z = sample(u.depth, suv).x * 2.0 - 1.0
         sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
@@ -1011,11 +1116,11 @@ fx_rain_ground = (cam: vec3, dt: f64, indoor: bool):
     if indoor or snowing or env.rain < 0.1: return
     n = int(env.rain * 900.0 * dt + random())
     loop k in [0..n):
-        # Spend a third of the existing impact budget in the visible foreground.
-        close = k % 3 == 0
-        span = if close: 5.0 else: 14.0
-        x = f64(cam.x) + random(-span, span)
-        z = f64(cam.z) + random(-span, span)
+        # Aim two thirds of the existing impact budget into the visible foreground.
+        close = k % 3 != 2
+        span = if close: 3.5 else: 14.0
+        x = f64(cam.x) + random(-span, span) + (if close: f64(sc.fwd.x) * 4.0 else: 0.0)
+        z = f64(cam.z) + random(-span, span) + (if close: f64(sc.fwd.z) * 4.0 else: 0.0)
         cover = rain_cover_height(x, z)
         if let wl = water_level(x, z):
             if cover > wl + 0.1: continue
@@ -1041,7 +1146,9 @@ fx_rain_ground = (cam: vec3, dt: f64, indoor: bool):
             if pool > 0.15:
                 emit(.ring, v3(x, ground + 0.025, z), vec3(0, 0, 0), random(0.22, 0.5), random(0.07, 0.18), rgba(0.72, 0.79, 0.88, 0.28 * f64(pool)))
                 continue
-        loop j in [0..2): emit(.splash, v3(x, y + 0.04, z), v3(random(-0.5, 0.5), random(0.9, 1.7), random(-0.5, 0.5)), random(0.15, 0.3), 0.025, rgba(0.85, 0.9, 1.0, 0.6), 9.8, 0.0)
+        # Brief surface crowns, not buoyant white motes. The open rim
+        # rises only centimetres and fades before the next rain parcel.
+        emit(.rain_impact, v3(x, y + 0.035, z), vec3(0,0,0), random(0.12,0.20)*(1.0-env.storm_k*0.35), random(0.10,0.16), mix(rgba(0.36,0.43,0.48,0.45),rgba(1.4,1.45,1.5,0.20),f32(env.storm_k)))
 
 # rain: streaks in a box that follows the camera
 rain_streaks: vec3[]
@@ -1055,7 +1162,7 @@ __rain_fill = ():
 # follows its current height, so the phase reset cannot teleport it sideways
 # halfway through a visible stroke. Near rain uses a denser volume without adding parcels.
 rain_drop_offset = (seed: vec3, index: int, seconds: f64, wind: vec2, gust: f64) -> vec3:
-    near = index >= 6200
+    near = index >= 3200
     # Spend the near parcel budget around the lens instead of twenty metres
     # overhead. A six-metre column fills the visible air below forest branches.
     # Preserve fall speed, wind slope, RNG consumption and snow seeds.
@@ -1066,7 +1173,7 @@ rain_drop_offset = (seed: vec3, index: int, seconds: f64, wind: vec2, gust: f64)
     y = mod(seed_y - fall - bottom, height) + bottom
     drift = (height + bottom - y) * 0.22 * gust
     span = if near: 6.0 else: 30.0
-    scale = if near: 2.0 / 3.0 else: 1.0
+    scale = if index >= 6200: 2.0 / 3.0 else if near: 0.2 else: 1.0
     x = mod(f64(seed.x) * scale + f64(wind.x) * drift + span, span * 2.0) - span
     z = mod(f64(seed.z) * scale + f64(wind.y) * drift + span, span * 2.0) - span
     v3(x, y, z)
@@ -1160,7 +1267,7 @@ __hero_fire_bones = ["spine_01", "spine_02", "upperarm_l", "upperarm_r", "calf_l
 
 grass_particle_visible = (p: Particle, cam: vec3) -> bool:
     if p.kind != .flame or p.fuel_cell < 0: return true
-    if length(p.pos-cam) <= 60.0: return false
+    if length(p.pos-cam) <= 90.0: return false
     # Distant particle cues must retain both a live owner and a live root.
     # Test only those grass flames actually drawn; near sheets replace them.
     __burning.has(p.fuel_cell) and __burning.has(__cell_of(f64(p.pos.x),f64(p.pos.z)))
@@ -1188,14 +1295,15 @@ grass_fire_instances = (cam: vec3, frustum: Frustum, instances: mut PInst[]):
             f.render_seed = hash2(f64(f.cell),83.0)
             f.render_offset = hash2(f64(f.cell),84.0)
         p = f.render_center
-        if length(p-cam) > 60.0 or length(p-cam) < 3.0: continue
-        if not box_visible(frustum,p-vec3(2.0,0.1,2.0),p+vec3(2.0,4.5,2.0)): continue
+        if length(p-cam) > 90.0 or length(p-cam) < 3.0: continue
+        if not box_visible(frustum,p-vec3(3.0,0.1,3.0),p+vec3(3.0,9.0,3.0)): continue
         if not grass_flame_owned(f): continue
         seed = f.render_seed
         q = p+v3((seed-0.5)*0.24,0.08,(f.render_offset-0.5)*0.24)
         heat = grass_flame_heat(f32(f.t))
         size = (1.45+seed*0.30)*(0.12+0.88*f64(heat))
-        instances.push(PInst(vec4(q,f32(size)),vec4(1.55,0.45,0.055,0.88*(0.30+0.70*heat)),vec4(f32(f.t), -6, f32(seed*TAU),-1.6)))
+        fade = 1.0-smoothstep(80.0,90.0,length(p-cam))
+        instances.push(PInst(vec4(q,f32(size)),vec4(1.55,0.45,0.055,0.88*(0.30+0.70*heat)*fade),vec4(f32(f.t), -6, f32(seed*TAU),-1.6)))
 
 fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
     if not __fx_ready: return
@@ -1214,8 +1322,49 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
         heat = grass_flame_heat(tongue.data.x)
         # Reuse the halo slot for a low red ember wash as the front passes.
         glow = mix(vec3(0.95,0.10,0.012),vec3(1.5,0.38,0.045),heat)
-        strength = (0.06+0.04*(1.0-heat))*(1.0-smoothstep(4.1,5.0,tongue.data.x))
+        lod = smoothstep(12.0,26.0,length(tongue.pos.xyz-cam))
+        strength = (0.06+0.10*lod*heat+0.04*(1.0-heat))*(1.0-smoothstep(4.1,5.0,tongue.data.x))*(1.0-smoothstep(80.0,90.0,length(tongue.pos.xyz-cam)))
         __pinst_add.push(PInst(vec4(tongue.pos.xyz+vec3(0,0.07+heat*0.21,0),tongue.pos.w*1.9),vec4(glow,strength),vec4(0,19,0,0)))
+    # Join the fuel edge with standing sheets. Near segments turn toward the
+    # camera and retain a real rise; distant segments follow the fuel contour.
+    loop f in flames:
+        p = f.render_center
+        distance = length(p-cam)
+        if distance<9.0 or distance>90.0 or f.t<=0.20: continue
+        if not box_visible(frustum,p-vec3(3,0.1,3),p+vec3(3,3,3)): continue
+        heat = grass_flame_heat(f32(f.t))
+        strength = smoothstep(9.0,12.0,distance)*(1.0-smoothstep(80.0,90.0,distance))*smoothstep(0.20,0.65,f.t)*f64(heat)
+        if strength<0.01: continue
+        # Follow the true outside contour instead of billboard rows through
+        # the patch. Spent neighbouring fuel belongs behind this front.
+        neighbours = (if __burning.has(f.cell+1): 1 else: 0)+(if __burning.has(f.cell-1): 1 else: 0)
+        neighbours += (if __burning.has(f.cell+hf.n): 1 else: 0)+(if __burning.has(f.cell-hf.n): 1 else: 0)
+        if neighbours==4: continue
+        loop k in [0..4):
+            dx = if k==0: 1 else if k==1: -1 else: 0
+            dz = if k==2: 1 else if k==3: -1 else: 0
+            neighbour = f.cell+dx+dz*hf.n
+            if __burning.has(neighbour): continue
+            # Skip side-on and overhead contour sheets before building instances.
+            # The vertex shader applies the same continuous whole-card fade.
+            # Ash behind live fuel still borders the advancing wall. Omitting
+            # it exposes separated cones across the near and middle front.
+            q = p+v3(f64(dx)*hf.cell*0.5,0,f64(dz)*hf.cell*0.5)
+            angle = if dx!=0: PI*0.5 else: 0.0
+            facing = flame_contour_visibility(vec3(f32(dx),0,f32(dz)),cam-q)
+            if facing<0.01: continue
+            __pinst_flame.push(PInst(vec4(q,f32(hf.cell*0.65)),vec4(1,1,1,f32(strength*f64(facing)*0.86)),vec4(f32(f.t),-8,f32(angle),f32(lerp(0.65,2.50,smoothstep(12.0,26.0,distance))*(0.20+0.80*heat)))))
+    # Unequal rooted flames rise above the crossed logs, sharing the existing
+    # source-over flame batch and its bounded, feathered articulated shader.
+    loop b in bonfires:
+        if not b.lit or length(b.pos-cam)>80.0: continue
+        if not box_visible(frustum,b.pos-vec3(1,0,1),b.pos+vec3(1,2.2,1)): continue
+        loop k in [0..5):
+            seed = f32(k)*2.73+b.pos.x*0.13
+            offset = (f32(k)-2.0)*0.17
+            q = b.pos+right*offset+vec3(0,0.10,0)
+            height = (if b.pot: f32(0.60) else: f32(1.15))+0.32*sin(seed*1.7)
+            __pinst_flame.push(PInst(vec4(q,0.28+0.08*sin(seed)),vec4(0,0,0,0.82),vec4(0,-7,seed,height)))
     loop p in particles:
         if not grass_particle_visible(p,cam): continue
         # Fire remnants keep their simulation lifetime after their visible fade.
@@ -1290,6 +1439,9 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
             dust, splash, snow:
                 col.w = a
                 __pinst_alpha.push(PInst(vec4(p.pos.x, p.pos.y, p.pos.z, f32(s)), col, vec4(f32(f), 4, f32(p.rot), 0)))
+            rain_impact:
+                col.w = p.color.w * f32(smoothstep(0.0,0.08,f)*pow(1.0-f,1.2)*(1.0-env.storm_k*(0.15+0.4*fract(p.rot*3.17))))
+                __pinst_alpha.push(PInst(vec4(p.pos,f32(p.size*(0.65+f*0.5))),col,vec4(f32(f),20,f32(p.rot),f32(env.storm_k))))
             ring:
                 if p.water_bound and not wade_ring_wet(p.pos,p.size*(0.15+f*1.2)): continue
                 col.w = min(0.6, p.color.w * 1.65) * f32(smoothstep(0.0, 0.08, f) * pow(1.0 - f, 1.5))
@@ -1478,7 +1630,13 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
         rain_half = vec2(1.0/sc.proj[0].x,1.0/sc.proj[1].y)
         col = vec4(0.88, 0.94, 1.05, f32(0.82 * env.rain))
         if snowing: col = vec4(1.4, 1.45, 1.5, f32(0.85 * env.rain))
-        loop k in [0..n):
+        # Keep a quarter of distant rain seeds and all near seeds. Iterating only
+        # live parcels pays for the denser foreground; snow retains all seeds.
+        far_count = min(n, 3200)
+        far_draw = (far_count + 3) / 4
+        draw_count = if snowing: n else: n - far_count + far_draw
+        loop slot in [0..draw_count):
+            k = if snowing: slot else if slot < far_draw: slot * 4 else: far_count + slot - far_draw
             r = rain_streaks[k]
             # (light rain draws a share of the streaks, near and far alike)
             if fract(f64(k) * 0.754877) > env.rain: continue
@@ -1490,28 +1648,28 @@ fx_draw = (cam: vec3, vp: mat4, view: mat4, indoor: bool):
                 __pinst_alpha.push(PInst(vec4(p.x, p.y, p.z, 0.09), col, vec4(0, 4, 0, 0)))
             else:
                 offset = rain_drop_offset(r, k, tt, env.wind, env.gust)
-                p = cam + offset
                 # (short and faint: the near ones, long on screen, fade most; the far edge of the box too)
                 # Measure after wind drift: the nearest projected streaks can
                 # originate farther out in the seed box during strong gusts.
-                rd = f64(length(p - cam))
                 # Rain and storm both keep the dense near field. Reject drops
                 # behind the lens before shelter queries and instance uploads.
                 view_depth = dot(offset, sc.fwd)
                 if view_depth < -1.0: continue
                 extent = rain_half * max(view_depth,0.0) + vec2(0.75,0.75)
                 if abs(dot(offset,right)) > extent.x or abs(dot(offset,up)) > extent.y: continue
+                rd = f64(length(offset))
+                p = cam + offset
                 depth = smoothstep(5.0, 20.0, rd)
                 near_k = f32(smoothstep(0.7, 1.8, rd) * smoothstep(35.0, 24.0, rd))
                 # The denser near volume fades at its wrap boundary instead of
                 # popping a foreground streak across the lens.
-                if k >= 6200: near_k *= 1.0 - smoothstep(4.5, 6.0, max(abs(offset.x), abs(offset.z)))
+                if k >= 3200: near_k *= 1.0 - smoothstep(4.5, 6.0, max(abs(offset.x), abs(offset.z)))
                 # Invisible volume edges need neither shelter queries nor uploads.
                 # This pays for the closer streaks without changing visible coverage.
                 if near_k <= 0.0: continue
                 if rain_view_height(f64(p.x), f64(p.z)) > f64(p.y) - 0.6: continue
                 variation = fract(f64(k) * 0.618034)
-                opacity = lerp(0.19, 0.20, depth) * (0.55 + variation * 0.65)
+                opacity = lerp(0.12, 0.20, depth) * (0.55 + variation * 0.65)
                 depth_length = lerp(0.21, 0.18, depth)
                 streak_length = depth_length * (0.60 + variation * 0.85) * (1.0 + env.storm_k * 0.20)
                 __pinst_alpha.push(PInst(vec4(p.x, p.y, p.z, 1.2), vec4(col.xyz, col.w * near_k * f32(opacity)), vec4(0, 4, f32(fract(f64(k) * 0.317)), f32(streak_length))))

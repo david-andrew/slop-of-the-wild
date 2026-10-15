@@ -68,6 +68,7 @@ struct CharParams:
     recolor = vec4(0, 0, 0, 0)      # rgb, amount: a new base color, keeping the texture's light and shade
     environment = 0.0              # outdoor hero diffuse follows the environment exposure
     environment_shade = 0.0        # overcast canopy favors the dark end of the same exposure range
+    burn_light = 0.0               # draw-local fire bounce; no light leaks to other actors
 
 struct ChU:
     vp: mat4
@@ -250,6 +251,12 @@ ch_light = (alb: vec3, n: vec3, v: vec3, l: vec3, u: ChU, shadow: f32, skin_: f3
         c = c + alb * u.sky * overcast * u.wet * (0.3 + 0.15 * u.hero_material)
     c + alb * (u.sky * 0.16 + vec3(0.02, 0.02, 0.02)) * u.fill
 
+# A torso source gives the belt and hanging hem different light distances.
+burning_character_light = (world: mat4, cam: vec3) -> vec4:
+    center = transform_point(world,vec3(0,1.30,0))
+    toward = normalize(cam-center+vec3(0,0.001,0))
+    vec4(center+toward*0.40+transform_dir(world,vec3(-0.30,0,0)),1.85)
+
 # Fire and chamber lights use the same painted terminator as daylight. Their
 # distance falloff remains soft, but smooth mesh normals do not add glossy-looking
 # anatomical gradients inside an otherwise flat painted scene.
@@ -286,15 +293,16 @@ ch_environment_bound = (c: vec3, alb: vec3, n: vec3, v: vec3, l: vec3, shadow: f
     weights = vec3(0.2126,0.7152,0.0722)
     current = max(dot(c,weights),0.00001)
     # Keep the wet figure inside the same pigment-relative exposure envelope.
-    # Raising the rain bound as well as the ambient fill moves the body into
-    # the grass/water value group and loses its silhouette.
+    # Retain a narrow exposure range so the existing hemisphere lighting can
+    # distinguish limb planes instead of clamping all canopy fill to one value.
     shade = clamp(u.environment_shade,0.0,1.0)
-    # Wet canopy shade keeps a small value reserve against dark reflected
-    # water. The same daylight/wetness ramp leaves dry and night lighting intact.
+    # Keep the soaked figure below the wet grass/reflected-water value group,
+    # with room for hemisphere shading. The wet daylight ramp preserves dry
+    # and night lighting; raising this whole range erased the silhouette.
     rain = u.wet * smoothstep(0.25,0.45,luma(u.environment_sky))
-    canopy = mix(0.85,0.78,rain)
+    canopy = mix(0.85,0.58,rain)
     lower = mix(0.92,canopy,shade)
-    upper = mix(1.15,canopy,shade)
+    upper = mix(1.15,canopy + rain * 0.12,shade)
     target = clamp(current,dot(reference,weights)*lower,dot(reference,weights)*upper)
     c * mix(1.0,target/current,u.environment)
 
@@ -342,7 +350,8 @@ ch_fs = (i: ChO, u: ChU) -> vec4:
     # absorption pass below; ease out this extra wet value to avoid stacking
     # two darkening responses. Retain soaked cloth as a darker value group;
     # the rainy sky/ground fill still reveals its folds and the exposed limbs.
-    # Skin, leather and hair remain unchanged.
+    # Skin, leather and hair remain unchanged. Keep the darker cloth pigment;
+    # lifting it into the wet meadow value group erases the body contour.
     alb *= 1.0 - u.wet * cloth * 0.42 * (1.0-below)
     weave = vnoise(i.uv * vec2(180.0, 34.0) + vec2(tx.y * 3.0, 0.0))
     pigment = vnoise(i.uv * 620.0)

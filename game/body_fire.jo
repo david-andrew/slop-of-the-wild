@@ -22,6 +22,11 @@ body_fire_surface = (root: vec3, cam: vec3, extent: f32) -> vec3:
     toward = cam-root
     root+toward*(extent/max(length(toward),0.001))
 
+# Sample the moving bone segment before pulling it onto the visible surface.
+# Two overlapping roots follow both ends of a limb instead of one flame badge.
+body_fire_limb_root = (root: vec3, end: vec3, along: f32, cam: vec3, extent: f32) -> vec3:
+    body_fire_surface(mix(root,end,along),cam,extent)
+
 body_fire_vs = (v: QuadV, i: PInst, u: BodyFireU) -> BodyFireO:
     y = (v.corner.y + 1.0) * 0.5
     flicker = 0.82 + sin(u.time * 16.0 + i.data.z) * 0.18

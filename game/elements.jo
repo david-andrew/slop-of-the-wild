@@ -696,7 +696,10 @@ elements_update = (dt: f64, cam: vec3):
             loop k in [first..particles.len()):
                 if particles[k].kind == .flame: particles[k].fuel_cell = f.cell
         # a grass fire smokes: grey-brown billows rising off the burning front
-        if f64(length(p - cam)) < 150.0 and random() < dt * 0.45 * min(1.0, 80.0 / f64(max(flames.len(), 1))): emit(.smoke, p + v3(random(-1.0, 1.0), 0.8, random(-1.0, 1.0)), v3(random(-0.4, 0.4), random(1.5, 2.6), random(-0.4, 0.4)) + wind * 0.6, random(3.0, 5.0), random(1.2, 2.0), rgba(0.34, 0.31, 0.29, 0.28), -0.25, 0.2)
+        if f64(length(p - cam)) < 150.0 and random() < dt * 0.45 * min(1.0, 80.0 / f64(max(flames.len(), 1))):
+            first = particles.len()
+            emit(.smoke, p + v3(random(-1.0, 1.0), 0.8, random(-1.0, 1.0)), v3(random(-0.4, 0.4), random(1.5, 2.6), random(-0.4, 0.4)) + wind * 0.6, random(3.0, 5.0), random(1.2, 2.0), rgba(0.32, 0.32, 0.32, 0.28), -0.25, 0.2)
+            if particles.len()>first: particles[first].rot+=2048.0
         # in the fire: the player, monsters, items
         if __fire_reaches(p + vec3(0, 0.5, 0), pl.pos, 1.4) and pl.state != .glide:
             if pl.invuln <= 0.0:
@@ -1298,9 +1301,11 @@ __trees_update = (dt: f64, cam: vec3):
         if left <= dt: done.push(i)
     loop i in done: __tree_cooling.remove(i)
 
-# a fireplace: a ring of stones, split logs leaning together, their ends charred
+# A low crossed bundle leaves room for the animated flames above its lit wood.
 __fire_stones = Mesh()
 __fire_logs = Mesh()
+__pot_fire_logs = Mesh()
+__pot_fire_cracks = Mesh()
 __fire_ready = false
 __fire_meshes = ():
     if __fire_ready: return
@@ -1315,25 +1320,101 @@ __fire_meshes = ():
     b2 = MeshB()
     loop k in [0..6):
         a = f64(k) / 6.0 * TAU + 0.5
-        base = v3(cos(a) * 0.42, 0.04, sin(a) * 0.42)
-        top = v3(cos(a) * 0.06, 0.62, sin(a) * 0.06)
-        mb_cyl(b2, base, base + (top - base) * 0.7, 0.06, 0.05, rgb(0.13, 0.085, 0.05), 6)
-        mb_cyl(b2, base + (top - base) * 0.7, top, 0.05, 0.03, rgb(0.08, 0.06, 0.05), 6)
+        base = v3(cos(a) * 0.49, 0.08+f64(k%2)*0.045, sin(a) * 0.49)
+        top = v3(-cos(a) * 0.35, 0.17+f64(k%3)*0.06, -sin(a) * 0.35)
+        mb_cyl(b2, base, base + (top - base) * 0.7, 0.075, 0.065, rgb(0.24, 0.14, 0.065), 6)
+        mb_cyl(b2, base + (top - base) * 0.7, top, 0.065, 0.055, rgb(0.12, 0.065, 0.035), 6)
     __fire_logs = mesh(b2.vs, b2.idx)
+    # Cooking fires expose low timber below the rim. Dark round bark keeps
+    # its volume under the strong pot light; narrow seams alone emit.
+    char = MeshB()
+    cracks = MeshB()
+    loop k in [0..5):
+        a = f64(k)/5.0*TAU+0.5
+        base = v3(cos(a)*0.47,0.105+f64(k%2)*0.04,sin(a)*0.47)
+        top = v3(-cos(a)*0.34,0.18+f64(k%3)*0.035,-sin(a)*0.34)
+        ax = normalize(top-base)
+        side = normalize(cross(ax,vec3(0,1,0)))
+        up = normalize(cross(side,ax))
+        # Unequal round sections retain a lit shoulder and a dark underside.
+        # Flat dark spheres at the ends used to read as loose black lumps.
+        loop j in [0..3):
+            t0 = f32(j)/3.0
+            t1 = f32(j+1)/3.0
+            a0 = mix(base,top,t0)+up*f32(sin(f64(t0)*PI)*0.012)
+            a1 = mix(base,top,t1)+up*f32(sin(f64(t1)*PI)*0.012)
+            mb_cyl(char,a0,a1,0.095-f64(t0)*0.015,0.095-f64(t1)*0.015,rgb(0.13-f64(j)*0.018,0.075-f64(j)*0.009,0.038-f64(j)*0.004),12)
+        # Recessed circular cut ends close the hollow cylinders without blobs.
+        loop end in [0..2):
+            center = if end==0: base else: top
+            radius = if end==0: 0.095 else: 0.080
+            normal = ax*f32(if end==0: -1 else: 1)
+            loop j in [0..12):
+                a = f64(j)/12.0*TAU
+                z = f64(j+1)/12.0*TAU
+                i = u32(char.vs.len())
+                loop q in [center,center+(side*f32(cos(a))+up*f32(sin(a)))*f32(radius),center+(side*f32(cos(z))+up*f32(sin(z)))*f32(radius)]:
+                    char.vs.push(Vertex3D(q,normal,vec2(),rgb(0.075,0.043,0.025)))
+                loop q in (if end==0: [i,i+1,i+2] else: [i,i+2,i+1]): char.idx.push(q)
+        # Narrow broken fissures wander around the curved bark; none spans
+        # the whole log as a straight bright bar.
+        loop j in [0..3):
+            angle = (f64(j)-1.0)*0.85+0.13*f64(k)
+            loop segment in [0..5):
+                if (segment+j+k)%4==0: continue
+                t0 = 0.10+f64(j)*0.045+f64(segment)*0.135
+                t1 = t0+0.105
+                a0 = angle+sin(f64(segment)*2.3+f64(k+j))*0.16
+                a1 = angle+sin(f64(segment+1)*2.3+f64(k+j))*0.16
+                r0 = 0.096-t0*0.015
+                r1 = 0.096-t1*0.015
+                start = mix(base,top,f32(t0))+up*f32(sin(t0*PI)*0.012)+(up*f32(cos(a0))+side*f32(sin(a0)))*f32(r0)
+                finish = mix(base,top,f32(t1))+up*f32(sin(t1*PI)*0.012)+(up*f32(cos(a1))+side*f32(sin(a1)))*f32(r1)
+                mb_cyl(cracks,start,finish,0.0025+f64((segment+k)%3)*0.0006,0.0015,rgb(0.72+f64(segment%2)*0.16,0.095,0.009),4)
+    __pot_fire_logs = mesh(char.vs,char.idx)
+    __pot_fire_cracks = mesh(cracks.vs,cracks.idx)
+
+# The hollow pot has outward radial normals. A source inside it cannot light
+# its visible sides; bounce from flames at the near rim reaches that metal.
+bonfire_prop_light = (b: Bonfire, cam: vec3) -> vec4:
+    if not b.pot: return vec4(b.pos+vec3(0,0.85,0),3.6)
+    toward = normalize(vec3(cam.x-b.pos.x,0,cam.z-b.pos.z)+vec3(0.0001,0,0))
+    vec4(b.pos+toward*0.75+vec3(0,0.25,0),3.6)
+
+# A small wrapped fire bounce keeps the dark iron readable on surfaces that
+# face away from the single direct source. Daylight and unlit pots keep theirs.
+bonfire_pot_tint = (lit: bool, night: f64) -> vec4:
+    mix(rgba(0.25,0.25,0.27,1),rgba(0.32,0.27,0.23,1),f32(if lit: night else: 0.0))
+
+bonfire_pot_bounce = (lit: bool, night: f64) -> f64:
+    if lit: lerp(0.08,0.65,night) else: 0.0
 
 draw_bonfires = (cam: vec3):
     __fire_meshes()
+    saved_lp = sc_lp
+    saved_lc = sc_lc
     loop b in bonfires:
         if f64(length(b.pos - cam)) > 120.0: continue
+        # Each fire lights its own cookware even when another fire is nearer Jo.
+        sc_lp = saved_lp
+        sc_lc = saved_lc
+        if b.lit:
+            sc_lp = bonfire_prop_light(b,cam)
+            sc_lc = vec3(3.4,1.55,0.55)*f32(1.0+0.08*sin(elapsed()*13.0+f64(b.pos.x)))
         m = translation(b.pos) * rotation_y(f64(b.pos.x) * 3.1)
         draw_prop(__fire_stones, m, rgba(1, 1, 1, 1), 0.0)
-        draw_prop(__fire_logs, m, rgba(1, 1, 1, 1), (if b.lit: 0.1 else: 0.0))
+        if b.pot:
+            draw_prop(__pot_fire_logs,m,rgba(1,1,1,1),0.0)
+            if b.lit: draw_prop(__pot_fire_cracks,m,rgba(1,1,1,1),1.5)
+        else: draw_prop(__fire_logs, m, rgba(1, 1, 1, 1), (if b.lit: 0.28 else: 0.0))
         if b.pot:
             active = pot_cook_t > 0.0 and length(b.pos - pot_cook_pos) < 0.5
             t = 2.2 - pot_cook_t
             bounce = if active: abs(sin(t * 13.0)) * 0.07 * min(1.0, pot_cook_t * 4.0) else: 0.0
             tilt = if active: sin(t * 17.0) * 0.055 else: 0.0
-            draw_prop(shape_mesh(.lid), translation(b.pos + v3(0.0, 0.55 + bounce, 0.0)) * rotation_z(tilt) * rotation_x(PI / 2.0) * scaling(v3(1.5, 1.5, 3.0)), rgba(0.25, 0.25, 0.27, 1), 0.0)
+            draw_prop(shape_mesh(.lid), translation(b.pos + v3(0.0, 0.55 + bounce, 0.0)) * rotation_z(tilt) * rotation_x(PI / 2.0) * scaling(v3(1.5, 1.5, 3.0)), bonfire_pot_tint(b.lit,env.night), bonfire_pot_bounce(b.lit,env.night))
+    sc_lp = saved_lp
+    sc_lc = saved_lc
 
 # Persistent burnt timber keeps the original prop's construction readable.
 # Geometry uses deterministic offsets, with no gameplay RNG or colliders.

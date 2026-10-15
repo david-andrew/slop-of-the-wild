@@ -1,15 +1,17 @@
 # The Legend of Jo: Slop of the Wild
 
-**[Play in the browser](https://david-andrew.github.io/slop-of-the-wild/)** (desktop browser with WebGL 2; about 95 MB to load).
+**[Play in the browser](https://david-andrew.github.io/slop-of-the-wild/)** (desktop browser with WebGL 2; about 121 MB to load).
 
-[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **188 PASS / 0 FAIL**
+[Play and evaluate](docs/EVALUATE.md): latest complete Sloppy 0.6.0 sweep **197 PASS / 0 FAIL**
 ([evidence](docs/EVALUATE.md#whole-regression-suite)).
 [Compact performance summary](docs/PERFORMANCE.md), [current listening evidence](docs/MUSIC.md),
 and [Round 81 targeted findings and evidence](docs/ROUND81_SOL.md).
 
 *The Legend of Jo: Slop of the Wild* is a parody tribute inspired by *Breath of the Wild*'s
 Great Plateau, written in [Sloppy](../slop-lang) (formerly Jot), a small compiled language for games. Everything (rendering,
-physics, animation, audio mixing, the tools that build the world) is Sloppy, except the piano
+physics, animation, audio mixing, the tools that build the world) is Sloppy. Native pipeline
+compilation uses a small C pthread transport (`tools/pipeline_workers.c`), built with `cc`
+by the launcher and asset preparation. The other exceptions are the piano
 sample importer, two small Python scripts that read the original's map data and one that sets
 the title card's lettering in a serif
 (`tools/title_art.py` and `tools/names_art.py`, Noto Serif; the game's built-in font is a sans).
@@ -127,7 +129,7 @@ Textures, spatial cells, the shrine chime and representative render paths warm d
 
 ## What it shows about Sloppy
 
-Everything that runs is Sloppy: a forward renderer with a CDLOD heightfield, three
+Gameplay and rendering are Sloppy: a forward renderer with a CDLOD heightfield, three
 shadow cascades and a watercolor post pass (shaders written as Sloppy functions and translated to
 GLSL), GPU skinning of glTF characters baked by a Sloppy tool, capsule physics, an element system, a
 sampled piano score and synthesized sound effects through the standard library's software mixer,

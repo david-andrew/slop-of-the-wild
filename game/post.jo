@@ -169,7 +169,21 @@ pp_paint_fs = (i: PostO, u: PostU) -> vec4:
     contrast = max(luma(moment - mean * mean), 0.0) / max(luma(mean) * luma(mean), 0.025)
     fine = smoothstep(0.008, 0.065, contrast) * smoothstep(55.0, 150.0, dist)
     fine = fine * smoothstep(0.5, 0.65, o4.w)
-    k = k * (1.0 - fine * 0.78)
+    # Do not move a near stone silhouette by a whole watercolor quadrant.
+    # Texture inside quiet planes keeps the full wash; contrast at a pier or
+    # window receives a restrained brush instead of stair-stepped edge blocks.
+    # The grass side of a small stone must preserve the same contour. Its
+    # quiet watercolor quadrant can otherwise borrow a little stone pigment,
+    # leaving a flecked fringe outside an entirely opaque mesh. Reuse the four
+    # physical-pixel probes already fetched for coverage; no extra texture read.
+    # paint_stone is monotone in distance from .85. Pick the closest
+    # response first, then evaluate its smoothstep once rather than four times.
+    contour_delta = min(min(abs(coverage_a.w - 0.85), abs(coverage_b.w - 0.85)), min(abs(coverage_c.w - 0.85), abs(coverage_d.w - 0.85)))
+    contour_stone = max(stone, 1.0 - smoothstep(0.045, 0.14, contour_delta))
+    k = k * (1.0 - fine * 0.92) * (1.0 - contour_stone * smoothstep(0.012, 0.080, contrast) * 0.94)
+    # Preserve scalloped leaf coverage instead of replacing its narrow gaps
+    # with the quiet solid quadrant, which turns nearby sprays into slabs.
+    k = k * (1.0 - foliage * smoothstep(0.012,0.080,contrast) * 0.82)
     # (a figure keeps its outline: the brush passes over it lightly)
     k = k * (1.0 - smooth * 0.80)
     # (the night sky stays unpainted: the brush would wipe out the stars)
@@ -255,22 +269,42 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
     if stone + foliage > 0.001:
         grain_scale = 1.0 - stone * 0.64 - foliage * 0.43
         grain = if u.has_grain > 0.5: sample(u.grain, i.uv * grain_scale) else: pp_grain(px * grain_scale)
-    if anchor.w < -12.0: wob = vec2(0, 0)
-    uv = i.uv + wob * u.texel * 3.2 * u.paint * (1.0 - fine * 0.85) * (1.0 - (smooth - figure) * 0.85)
-    src = sample(u.src, uv)
-    c = src.xyz
-    occlusion = smoothstep(0.0, 0.04, -src.w)
-    soft = sample(u.soft, i.uv).xyz
     d0 = lin_depth(u, i.uv)
-    # ink: depth discontinuities, thinner and fainter with distance
     dl = lin_depth(u, i.uv + vec2(u.texel.x, 0))
     dr = lin_depth(u, i.uv - vec2(u.texel.x, 0))
     du = lin_depth(u, i.uv + vec2(0, u.texel.y))
     dd = lin_depth(u, i.uv - vec2(0, u.texel.y))
-    # Reciprocal view depth is affine across a projected plane. Linear depth's
-    # curvature instead explodes at grazing angles and inks snow triangle joins.
-    # The same five taps still detect actual occluding silhouettes (including sky).
+    # Reciprocal view depth is affine over a plane: only genuine silhouette
+    # jumps anchor the stone's pigment and receive subpixel contour filtering.
     lap = ink_curvature(d0, dl, dr, du, dd)
+    edge_stone = stone
+    if lap > 0.12 and stone < 0.99:
+        # Resolve both sides of masonry/sky and masonry/grass silhouettes.
+        # The background side has no stone response of its own.
+        edge_stone = max(edge_stone, paint_stone(sample(u.src, i.uv + vec2(u.texel.x, 0)).w))
+        edge_stone = max(edge_stone, paint_stone(sample(u.src, i.uv - vec2(u.texel.x, 0)).w))
+        edge_stone = max(edge_stone, paint_stone(sample(u.src, i.uv + vec2(0, u.texel.y)).w))
+        edge_stone = max(edge_stone, paint_stone(sample(u.src, i.uv - vec2(0, u.texel.y)).w))
+    stone_edge = edge_stone * smoothstep(0.12, 0.35, lap)
+    if anchor.w < -12.0: wob = vec2(0, 0)
+    uv = i.uv + wob * u.texel * 3.2 * u.paint * (1.0 - fine * 0.85) * (1.0 - (smooth - figure) * 0.85) * (1.0 - stone_edge)
+    src = sample(u.src, uv)
+    c = src.xyz
+    occlusion = smoothstep(0.0, 0.04, -src.w)
+    soft = sample(u.soft, i.uv).xyz
+    if stone_edge > 0.01 and occlusion < 0.01:
+        # Average along the depth edge, never across the pier's width. The
+        # bilinear half-pixel footprint softens staircase corners while quiet
+        # masonry/paint washes and fine openings retain their full resolution.
+        gradient = vec2(1.0 / dl - 1.0 / dr, 1.0 / du - 1.0 / dd)
+        tangent = normalize(vec2(-gradient.y, gradient.x) + vec2(0.000001, 0.000001))
+        # A shallow stone/grass depth step has a noisy tangent at this
+        # scale. A long tap reaches past the tiny stone and makes a flecked
+        # fringe. Keep its support inside half a pixel; large masonry jumps
+        # retain the established contour filter.
+        offset = tangent * u.texel * mix(0.45, 1.35, smoothstep(0.35, 0.80, lap))
+        edge_color = (sample(u.src, i.uv - offset).xyz + sample(u.src, i.uv + offset).xyz) * 0.5
+        c = mix(c, edge_color, stone_edge * 0.88)
     ink = smoothstep(0.2, 0.6, lap) * clamp(1.0 - d0 / 160.0, 0.0, 1.0) * 0.5 * u.paint
     sky = step(0.9999, sample(u.depth, i.uv).x)
     ink = ink * (1.0 - sky) * (1.0 - occlusion) * (1.0 - (smooth - figure) * 0.40)
@@ -288,7 +322,7 @@ pp_comp_fs = (i: PostO, u: PostU) -> vec4:
     # Those depth seams must not be inked through the hot yellow interior.
     # The HDR red/yellow envelope excludes ordinary lit cloth and grass.
     emissive_fire = flame_emission(c)
-    ink = ink * (1.0 - leaf_rim * 0.94)*(1.0-emissive_fire)
+    ink = ink * (1.0 - leaf_rim * 0.94)*(1.0-emissive_fire) * (1.0 - stone_edge * 0.65)
     if ink > 0.001: ink = ink * ink_surface(d0, dl, dr, du, dd, i.uv, u.texel, u.projection_scale, u.view_up)
     # edge darkening: pigment pools where the image steps from light to dark
     ed = clamp(luma(soft) - luma(c), 0.0, 1.0)

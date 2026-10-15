@@ -104,11 +104,19 @@ water_wade_color = (sun: vec3, horizon: vec3) -> vec3:
     vec3(0.74, 0.87, 0.83) * min(sun * 0.4 + horizon * 0.9 + vec3(0.1, 0.12, 0.14), vec3(0.9, 0.9, 0.9))
 
 # Flow-aligned pigment field, shared by CPU coverage checks and the shader.
+# Rough rain surfaces reflect a continuous sky wash. Screen-space bank hits
+# otherwise switch between unrelated opaque samples, leaving dark oval holes.
+water_reflection_hold = (overcast: f32, rain: f32) -> f32:
+    1.0 - smoothstep(0.18, 0.60, overcast * rain)
+
 water_impact_brush = (p: vec2, t: f32) -> f32:
-    # Warped, rotated flow breaks the regular noise cells into unequal rafts.
-    drift=vnoise(p*vec2(0.13,0.19)+vec2(-t*0.035,t*0.021))
-    q=vec2(p.x+p.y*0.21,p.y-p.x*0.12)
-    vnoise(q*vec2(0.30,0.88)+vec2(drift*2.4+t*0.23,drift*1.7-t*0.09))
+    # Streamwise advection, sub-metre cross-flow detail and unequal local bends.
+    # Overlapping scales break the noise lattice before foam coverage is applied.
+    q=vec2((p.x+t*3.0)*0.80,p.y*2.4)
+    bend=vnoise(q*0.43+vec2(17,7))-0.5
+    broad=vnoise(q+vec2(bend*2.7,bend*1.4))
+    detail=vnoise(vec2(q.x*0.94-q.y*0.342,q.x*0.342+q.y*0.94)*1.63+vec2(13,29))
+    broad*0.60+detail*0.40
 
 water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
     w = i.world
@@ -190,7 +198,7 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
         plunge = 1.0-smoothstep(105.0,127.0,w.y+(broad-0.5)*5.0)
         rafts = water_impact_brush(w.xz,u.time)
         contact = length((w.xz-vec2(-1495.0,1823.0))/vec2(20.0,13.0))
-        churn = smoothstep(0.52,0.80,rafts)*(1.0-smoothstep(0.25,1.0,contact))*0.52
+        churn = smoothstep(0.55,0.90,rafts)*(1.0-smoothstep(0.25,1.0,contact))*0.36
         pool_light = u.sun_color*0.35+u.horizon*0.5
         quiet = vec3(0.035,0.16,0.20)*pool_light+min(u.horizon,vec3(0.5,0.58,0.66))*0.08
         pool = mix(quiet*(0.92+rafts*0.12),vec3(0.64,0.78,0.74)*lit,churn)
@@ -339,25 +347,23 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
     rc = vec3(0, 0, 0)
     # (traced off a calmer surface: full ripples scatter it into blotches of the shore's grass)
     rr = reflect(v * -1.0, normalize(mix(n, vec3(0, 1, 0), 0.75)))
-    loop k in [1..20):
-        if found < 0.5:
-            q = w + rr * (pow(f32(k), 1.6) * 0.7)
-            cq = u.vp * vec4(q, 1)
-            suv = cq.xy / cq.w * 0.5 + vec2(0.5, 0.5)
-            if suv.x > 0.0 and suv.x < 1.0 and suv.y > 0.0 and suv.y < 1.0 and cq.w > 0.0:
-                z = sample(u.scene_depth, suv).x * 2.0 - 1.0
-                sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
-                if sd < cq.w and cq.w - sd < 6.0 + f32(k) * 1.5 and z < 0.9999:
-                    found = 1.0
-                    edge = min(min(suv.x, 1.0 - suv.x), min(suv.y, 1.0 - suv.y))
-                    found = smoothstep(0.0, 0.08, edge)
-                    rc = sample(u.scene, suv).xyz
-    # Rain scatters the reflected bank into short drifting fragments. A dim
-    # sky fill between them prevents broad black patches from burying the rings.
-    reflection_hold: f32 = 1.0
-    if overcast * u.rain > 0.0:
-        scatter = smoothstep(0.24, 0.76, vnoise(w.xz * vec2(2.1, 3.7) + vec2(u.time * 0.18, -u.time * 0.23)))
-        reflection_hold = mix(1.0, 0.16 + scatter * 0.34, overcast * u.rain)
+    reflection_hold = water_reflection_hold(overcast, u.rain)
+    # The uniform cutoff avoids paying nineteen scene/depth probes per pixel
+    # when dense rain has already erased the coherent bank reflection.
+    if reflection_hold > 0.001:
+        loop k in [1..20):
+            if found < 0.5:
+                q = w + rr * (pow(f32(k), 1.6) * 0.7)
+                cq = u.vp * vec4(q, 1)
+                suv = cq.xy / cq.w * 0.5 + vec2(0.5, 0.5)
+                if suv.x > 0.0 and suv.x < 1.0 and suv.y > 0.0 and suv.y < 1.0 and cq.w > 0.0:
+                    z = sample(u.scene_depth, suv).x * 2.0 - 1.0
+                    sd = 2.0 * u.near * u.far / (u.far + u.near - z * (u.far - u.near))
+                    if sd < cq.w and cq.w - sd < 6.0 + f32(k) * 1.5 and z < 0.9999:
+                        found = 1.0
+                        edge = min(min(suv.x, 1.0 - suv.x), min(suv.y, 1.0 - suv.y))
+                        found = smoothstep(0.0, 0.08, edge)
+                        rc = sample(u.scene, suv).xyz
     sky = mix(sky, rc * 0.9, found * smoothstep(0.02, 0.12, rr.y) * reflection_hold)
     # (the sky in it never brighter than a pale grey-blue: no white slivers at grazing angles)
     sky = min(sky, vec3(0.5, 0.58, 0.66))
@@ -423,15 +429,9 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
         # HDR alpha now carries paint response: figures end at .33, while
         # turf/stone begin at .65. Keep the existing terrain-height rejection.
         bed_mask = bed_mask * smoothstep(0.45, 0.60, opaque.w)
-        # Pebbles borrow the existing bed light, rather than adding an unshaded
-        # pale material. Their rims and tops reveal scale through clear shallows.
-        cell = floor(bedp.xz * 1.6)
-        pf = fract(bedp.xz * 1.6) - vec2(0.5, 0.5)
-        ph = hash12(cell)
-        pr = length(pf - (vec2(ph, hash12(cell + vec2(4, 7))) - vec2(0.5, 0.5)) * 0.45)
-        pebble = (1.0 - smoothstep(0.10, 0.18, pr)) * step(0.63, ph)
-        relief = pebble * (0.25 - smoothstep(-0.01, 0.12, pf.y) * 0.38)
-        transmitted = transmitted * (1.0 + ((grain - 0.5) * 0.12 + relief) * bed_mask)
+        # Continuous mineral grain follows the visible bed; regularly spaced
+        # cell-centred disks read as a polka-dot overlay in the swim camera.
+        transmitted = transmitted * (1.0 + (grain - 0.5) * 0.16 * bed_mask)
         # Red absorbs first; shallow sand remains legible before the deeper teal takes over.
         # Use the visible submerged fragment, including a wader or fish, to measure
         # the path through water. Vertical bed depth over-absorbed the shallow lip.
@@ -491,8 +491,8 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
         # Advected, unequal brush islands run away from the fall. Their
         # gaps cross the whole impact envelope; no radial phase closes a ring.
         rafts = water_impact_brush(w.xz,u.time)
-        froth = smoothstep(0.50,0.78,rafts) * impact * (1.0-landing*0.35)
-        streaks = smoothstep(0.48,0.80,h0) * smoothstep(0.36,0.70,rafts) * impact * (1.0-landing*0.25)
+        froth = smoothstep(0.52,0.88,rafts) * impact * (1.0-landing*0.35) * 0.58
+        streaks = smoothstep(0.48,0.80,h0) * smoothstep(0.48,0.82,rafts) * impact * (1.0-landing*0.25) * 0.65
         c = mix(c,vec3(0.77,0.86,0.81)*(u.sun_color*0.4+u.horizon*0.7),froth*0.78)
         c = mix(c,vec3(0.64,0.78,0.74)*(u.sun_color*0.4+u.horizon*0.7),streaks*0.36)
         a = max(a,max(froth*0.86,streaks*0.72))

@@ -1,0 +1,201 @@
+# Fire LOD must join the front without an opaque perimeter or discrete fade.
+use '../game/fx.jo'
+use '../game/body_fire.jo'
+use '../game/charshade.jo'
+use '../game/skel.jo'
+use '../game/elements.jo'
+use '../game/shade.jo'
+
+m=load_model("assets/models/bokoblin.mdl")
+loop name in ["upperarm_l","upperarm_r","lowerarm_l","lowerarm_r","thigh_l","thigh_r","calf_l","calf_r","hand_l","hand_r","foot_l","foot_r","spine_01","spine_02","Head"]:
+    assert(bone_index(m,name)>=0,"every flame segment uses a real articulated rig bone")
+
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop tick in [0..60):
+        t=f32(tick)/60.0
+        loop y in [0.10,0.15,0.20]:
+            # The full lower sheet stays connected between the three crowns.
+            loop k in [2..19):
+                uv=vec2(f32(k)/20.0,f32(y))
+                assert(flame_mass(uv,f32(seed),t)>0.18,"distant fire has a connected lower mass")
+        loop uv in [vec2(0,0.2),vec2(1,0.2),vec2(0.5,0),vec2(0.5,1)]:
+            assert(flame_mass(uv,f32(seed),t)==0,"mass has transparent card sides, foot and top")
+print("PASS flame wall: 240 animated/seeded sheets; continuous lower mass, transparent perimeters")
+
+loop owner in [0.45,0.58,0.71,0.97]:
+    assert(flame_fuel_fade(f32(owner)*0.5,f32(owner),1)==0,"exposed live-texel edge is feathered before the exact ownership cut")
+    assert(flame_fuel_fade(f32(owner),f32(owner),1)==1,"joined live neighbours have no transparent tile seams")
+    assert(flame_fuel_fade(f32(owner)*0.80,f32(owner),1)>0.9,"different live fuel ages still join without a grid")
+    loop fraction in [0.0,0.25,0.5,0.75,1.0]:
+        value=f32(owner*fraction)
+        assert(abs(flame_fuel_fade(value,f32(owner),0)-smoothstep(0.0,0.32,value))<0.000001,"close fuel coverage stays unchanged at shader precision")
+print("PASS live-fuel boundaries: soft exposed edges, continuous live-cell joins, unchanged close coverage")
+assert(flame_fuel_fade((0.97+0.45*3.0)*0.25,0.97,1)==1,"even a four-cell corner joining three newborn neighbours never shows a tile grid")
+
+vp=perspective(radians(50.0),16.0/9.0,0.1,1000.0)
+previous=f32(0)
+loop distance in [8.0,12.0,13.0,18.0,22.0,26.0,60.0,80.0]:
+    u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+    p=PInst(vec4(0,0,f32(-distance),1.6),vec4(1.5,0.45,0.05,0.88),vec4(0.8,-6,2.7,-1.6))
+    left=part_vs(QuadV(vec2(-1,-1)),p,u)
+    right=part_vs(QuadV(vec2(1,-1)),p,u)
+    assert(left.fire_lod>=previous,"distance joins smoothly toward the full sheet")
+    previous=left.fire_lod
+    if distance<=12.0: assert(left.fire_lod==0,"close approved tongues retain their original shape")
+    if distance>=26.0: assert(left.fire_lod==1,"mid-distance wall is fully joined")
+    a=inverse(vp)*left.pos
+    b=inverse(vp)*right.pos
+    span=length(b.xyz/b.w-a.xyz/a.w)
+    if distance==12: assert(abs(span-3.2)<0.001,"close cell width unchanged")
+    if distance>=26: assert(abs(span-4.96)<0.001,"distant neighbouring sheets overlap")
+    if distance>=26:
+        top=part_vs(QuadV(vec2(-1,1)),p,u)
+        tip=inverse(vp)*top.pos
+        assert(tip.y/tip.w-a.y/a.w<4.70,"joined distant grass fire stays low rather than stacking tall towers")
+print("PASS continuous distance LOD: unchanged 0–12m geometry, connected 26–80m sheet")
+
+# Articulated coverage samples both endpoints, retaining the moving bone's
+# projected location even at maximum panic speed. Existing tests bound tip lean.
+loop tick in [0..120):
+    t=f32(tick)/60.0
+    root=vec3(sin(t*5.0)*0.4,1.2,-5)
+    end=root+vec3(cos(t*7.0)*0.65,-0.6,sin(t*3.0)*0.2)
+    loop along in [0.0,0.55]:
+        q=body_fire_limb_root(root,end,f32(along),vec3(),0.32)
+        target=vp*vec4(mix(root,end,f32(along)),1)
+        shown=vp*vec4(q,1)
+        assert(length(target.xy/target.w-shown.xy/shown.w)<0.0001,"moving limb fire stays on the visible segment")
+        assert(abs(length(q-mix(root,end,f32(along)))-0.32)<0.0001,"surface coverage never detaches from the body")
+print("PASS articulated coverage: 240 moving segment roots, no projection drift or detached badges")
+
+alb=vec3(0.30,0.10,0.065)
+w=vec3(0,0.8,0)
+lit=ch_point_light(alb,vec3(0,0,1),w,vec4(0,0.95,0.65,4.5),vec3(3,1.15,0.32),0.8)
+assert(lit.x>0.30 and lit.y>0.025,"burning body receives warm light on painted skin at night")
+assert(ch_point_light(alb,vec3(0,0,1),w,vec4(),vec3(),0.8)==vec3(),"unlit actors keep their original lighting")
+pot=Bonfire(vec3(),pot=true)
+lp=bonfire_prop_light(pot,vec3(0,2,5))
+iron=vec3(0.075,0.075,0.0864)
+side=vec3(0,0.55,0.42)
+lit_iron=point_light(iron,vec3(0,0,1),side,lp,vec3(3.4,1.55,0.55))
+inside=point_light(iron,vec3(0,0,1),side,vec4(0,0.85,0,3.6),vec3(3.4,1.55,0.55))
+assert(inside.x<0.001 and lit_iron.x>0.12 and lit_iron.y>0.04,"near-rim fire bounce lights outward pot normals rather than leaving a black silhouette")
+assert(bonfire_prop_light(Bonfire(vec3()),vec3(0,2,5))==vec4(0,0.85,0,3.6),"ordinary bonfire logs keep their approved local light")
+assert(bonfire_pot_bounce(false,1)==0 and bonfire_pot_bounce(true,0)==0.08,"unlit pots stay dark and daylight retains its small fill")
+assert(bonfire_pot_tint(false,1)==rgba(0.25,0.25,0.27,1) and bonfire_pot_tint(true,0)==rgba(0.25,0.25,0.27,1),"cold/daytime pot pigment stays unchanged")
+reflected=vec3(0.3,0.3,0.32)*bonfire_pot_tint(true,1).xyz*f32(bonfire_pot_bounce(true,1))
+assert(luma(reflected)>0.04 and luma(reflected)<0.08 and reflected.x>reflected.z,"night iron receives restrained warm bounce even away from the direct point")
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,0,10),vec3(),0,near=0)
+plain=PartO(vec4(),vec2(0.5,0.3),vec4(0.1,0.1,0.1,0.3),vec4(0.1,1,0.7,0),vec4(0,0,0,10),2)
+warm=plain
+warm.fire_lod=1
+cold=part_fs(plain,u)
+hot=part_fs(warm,u)
+assert(hot==cold,"fire smoke stays neutral with unchanged opacity and edges")
+plain.uv=vec2(0,0)
+warm.uv=plain.uv
+assert(part_fs(plain,u).w==0 and part_fs(warm,u).w==0,"lit smoke keeps fully transparent card corners")
+print("PASS night fire bounce: painted burning body, unchanged unlit actors, neutral smoke with original soft coverage")
+
+# Adjacent contour segments share world phase and full coverage at the join.
+# End fades live outside the shared corner, keeping exposed ends soft.
+u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+edge_a=PInst(vec4(0,0,-40,1.3),vec4(1,1,1,0.8),vec4(0.8,-8,0,1.8))
+edge_b=edge_a
+edge_b.pos.x=2
+seam_right=part_vs(QuadV(vec2(1.0/1.3,-1)),edge_a,u)
+seam_left=part_vs(QuadV(vec2(-1.0/1.3,-1)),edge_b,u)
+assert(length(seam_right.pos-seam_left.pos)<0.00001,"neighbouring contour segments join at the same world point")
+seam_right.uv.y=0.25
+seam_left.uv.y=0.25
+assert(part_fs(seam_right,u)==part_fs(seam_left,u),"the continuous wall shares colour and opacity through its seam")
+assert(part_fs(seam_right,u).w>0.7,"mid-distance wall fills the space beneath the silhouettes")
+seam_outer=seam_right
+loop edge in [0.0,1.0]:
+    seam_outer.uv.x=f32(edge)
+    assert(part_fs(seam_outer,u).w==0,"exposed contour ends cannot draw vertical panel borders")
+body_near=ch_point_light(alb,vec3(0,0,1),vec3(0,0.9,0),vec4(0,0.95,0.4,1.85),vec3(1.7,0.93,0.42),0.8)
+body_far=ch_point_light(alb,vec3(0,0,1),vec3(0,2.1,0),vec4(0,0.95,0.4,1.85),vec3(1.7,0.93,0.42),0.8)
+assert(luma(body_near)>luma(body_far)*3,"burning body light falls off across the painted figure")
+print("PASS continuous fuel-edge seams and burning-body spatial falloff")
+
+loop drop in [-20.0,-2.0,-0.2,0.0,0.2,2.0,20.0]:
+    surface=flame_contour_root(vec3(1,5,2),5,f32(5+drop))
+    assert(abs(surface.y-5.035)<=0.4001,"a neighbouring cliff cannot stretch the flame band into a hanging triangle")
+    if abs(drop)>1.6: assert(surface.w==0,"unsupported cliff-side fire endpoints are fully transparent")
+    if abs(drop)<0.65: assert(surface.w==1,"ordinary continuous ground keeps the full connected flame mass")
+print("PASS contour terrain support: continuous ordinary ground, no hanging cliff panels")
+
+# Exercise the submitted contour shader through its whole animated envelope.
+# The lower fade needs room to dissolve into glow instead of a sharp strip.
+loop tick in [0..12):
+    u.time=f64(tick)*0.13
+    loop x in [0..24):
+        root=seam_right
+        root.uv.x=0.5
+        root.foot=vec2(f32(x)*0.27,-40)
+        root.uv.y=0
+        assert(part_fs(root,u).w==0,"contour feet dissolve fully into the ground glow")
+        root.uv.y=0.02
+        assert(part_fs(root,u).w<0.04,"bottom glow has a broad continuous fade")
+        root.uv.y=0.98
+        assert(part_fs(root,u).w==0,"irregular crests stay below the card top")
+lp=burning_character_light(mat4(),vec3(2.6,1.65,3.3))
+cloth_top=ch_point_light(vec3(0.14,0.08,0.04),vec3(0,0,1),vec3(0,0.65,0.20),lp,vec3(1.7,0.93,0.42),0)
+cloth_hem=ch_point_light(vec3(0.14,0.08,0.04),vec3(0,0,1),vec3(0,0.30,0.25),lp,vec3(1.7,0.93,0.42),0)
+assert(luma(cloth_top)>luma(cloth_hem)*1.6,"the actual body-fire source falls off across the hanging cloth")
+print("PASS contour envelope and production loincloth light falloff")
+
+# A terrain ridge may hide the outer contour at the closest front. Check
+# that the submitted tongue shader itself retains a connected lower body.
+u=PartU(vp,vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop x in [3..18):
+        o=PartO(vec4(),vec2(f32(x)/20.0,0.20),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,f32(seed),-1.6),vec4(0,0,0,8),1.6,front=1,fire_lod=0)
+        assert(part_fs(o,u).w>0.15,"near front joins between crowns above a terrain-occluded contour")
+print("PASS connected near-front body without changing crown geometry")
+
+# Test actual submitted contour geometry from face-on through grazing and
+# overhead views. Every corner must disappear together, with no folded edge.
+loop camera in [vec3(40,2,-40),vec3(0,40,-40),vec3(12,40,-40),vec3(1,0,0)]:
+    u.cam=camera
+    edge=edge_a
+    edge.data.z=f32(PI*0.5)
+    loop corner in [vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(1,1)]:
+        vertex=part_vs(QuadV(corner),edge,u)
+        if camera.x==0 or camera.y==40 or camera.z> -40:
+            assert(vertex.color.w==0,"grazing or overhead contour cards disappear completely, at all four corners")
+        else:
+            assert(vertex.color.w>0.79,"face-on standing contour retains its connected body")
+# A sweep through the fade cannot pop a whole panel into view.
+previous=f32(0)
+loop step in [0..101):
+    normal=vec3(1,0,0)
+    sight=vec3(f32(step)/100.0,0,1)
+    coverage=flame_contour_visibility(normal,sight)
+    assert(coverage>=previous and coverage-previous<0.06,"continuous view-angle fade without a hard panel pop")
+    previous=coverage
+print("PASS contour views: whole-card suppression at grazing/overhead angles, standing front retained, continuous angular fade")
+
+# The distance blend must not bypass the short-sheet guard. Test the actual
+# fragment shader away from all three surviving narrow crown silhouettes.
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(),vec3(),0,near=0)
+loop aspect in [0.04,0.10,0.19]:
+    loop seed in [0.2,1.3,2.7,4.1]:
+        loop x in [0.06,0.94]:
+            o=PartO(vec4(),vec2(f32(x),0.20),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,f32(seed),f32(-aspect)),vec4(0,0,0,30),1.6,front=1,fire_lod=1)
+            assert(part_fs(o,u).w==0,"compressed distant sheets cannot leave a flat connecting haze card")
+print("PASS compressed distant fire: no broad haze/card shoulders behind surviving upright tongues")
+
+loop step in [0..101):
+    close=f32(step)/100.0
+    side=flame_contour_side(vec3(1,0,0),vec3(-1,0,0),close)
+    assert(abs(length(side)-1.0)<0.00001,"opposite camera heading cannot cancel a contour side at a distance transition")
+# Nearby sheets retain standing screen extent under a downward camera.
+u=PartU(vp,vec3(1,0,0),normalize(vec3(0,1,0.6)),vec3(),vec3(),0,near=0)
+edge=PInst(vec4(0,0,-8,1.3),vec4(1,1,1,0.8),vec4(0.8,-8,f32(PI*0.5),0.65))
+base=part_vs(QuadV(vec2(0,-1)),edge,u)
+top=part_vs(QuadV(vec2(0,1)),edge,u)
+assert(top.pos.y/top.pos.w-base.pos.y/base.pos.w>0.22,"near contour has standing height rather than a flattened strip")
+assert(abs(length(flame_contour_side(vec3(0,0,1),vec3(1,0,0),1))-1.0)<0.00001,"near contour turns fully toward the camera")
+print("PASS upright near contours: stable opposite headings, camera-facing width and minimum standing rise")

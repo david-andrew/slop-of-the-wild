@@ -4,15 +4,16 @@ import argparse
 import gzip
 import hashlib
 import json
+import re
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--packs', default='water,farland,chime,textures')
+parser.add_argument('--packs', default='world,water,farland,chime,textures')
 args = parser.parse_args()
 root = Path('.')
 site = Path('build/site')
 site.mkdir(parents=True, exist_ok=True)
-for old in list(site.glob('assets-*.gz')) + list(site.glob('manifest-*.json')):
+for old in list(site.glob('assets-*.gz')) + list(site.glob('manifest-*.json')) + list(site.glob('piano-worker-*.js')):
     old.unlink()
 paths = sorted(set(json.loads(Path('build/web-evidence/reads.json').read_text())))
 paths = [p for p in paths if not p.startswith('assets/prepared/')]
@@ -42,7 +43,15 @@ stamps = {}
 for path in sorted(stamp_paths):
     st = Path(path).stat()
     stamps[path] = f'{st.st_size}:{st.st_mtime_ns // 10**9}:{st.st_mtime_ns % 10**9}'
-manifest = {'format': 1, 'packs': packs, 'stamps': stamps, 'archives': []}
+worker_html = Path('build/web/piano-worker.html').read_text()
+worker = re.search(r'<script>([\s\S]*)</script>', worker_html)[1].split('// start the program once all runtime modules')[0]
+# The base runtime takes its Node filesystem branch when window is absent;
+# workers supply virtual files and a console-only stdout/stderr facade.
+worker = "const process={env:{},stdout:{write:s=>console.log(s)},stderr:{write:s=>console.error(s)}};\n" + worker
+worker += '\n' + Path('tools/web_piano_worker.js').read_text()
+worker_name = 'piano-worker-' + hashlib.sha256(worker.encode()).hexdigest()[:16] + '.js'
+(site / worker_name).write_text(worker)
+manifest = {'format': 1, 'packs': packs, 'stamps': stamps, 'archives': [], 'pianoWorker':worker_name}
 # Bound compressed downloads with <=64 MiB of raw source per archive; an individual
 # prepared record can be larger but must still compress below the Pages file limit.
 groups, current, size = [], [], 0

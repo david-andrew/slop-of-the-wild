@@ -22,6 +22,14 @@ loop kind in [14.0, 15.0, 16.0]:
 loop half_length in [0.02, 2.0]:
     o = part_vs(QuadV(vec2(1, 0)), PInst(vec4(0, 0, 0, f32(half_length)), vec4(1, 1, 1, 1), vec4(0, 13, 0, f32(PI / 2.0))), pu)
     check(abs(o.pos.x - 0.002) < 0.00001, "stroke minimum width independent of length")
+# Impact crowns must reach their own shader branch and leave the centre open.
+pu.near=0
+impact=PInst(vec4(0,0,0,0.16),vec4(0.36,0.43,0.48,0.45),vec4(0.2,20,0,0))
+center=part_fs(part_vs(QuadV(vec2(0,0)),impact,pu),pu)
+rim=part_fs(part_vs(QuadV(vec2(0,-0.55)),impact,pu),pu)
+check(center.w<0.01 and rim.w>0.40,"rain crown is an open rim, not a round glow or hit spark")
+check(part_vs(QuadV(vec2(1,-1)),impact,pu).pos.y==0,"crown remains rooted on the impact surface")
+check(part_vs(corner,impact,pu).pos.y<0.13,"crown stays low to the ground")
 hf.n = 64
 hf.cell = 1.0
 hf.x0 = -32.0
@@ -67,7 +75,7 @@ add_rain_face(a, c, d, "weather_test_roof")
 fx_rain_ground(vec3(0, 2, 0), 1.0, false)
 check(particles.len() == 0, "roof excludes water impacts")
 # Flat wet earth pools share the production material mask. Slopes, dry ground and roofs
-# cannot create rings; snow/indoor rejection above applies to both lakes and puddles.
+# cannot create pooled waves; brief impact rings also appear on unpooled surfaces.
 rain_sync({"weather_test_roof": true}, {})
 water_grid_set(fill(f32(-10000), 4096), 64, -32.0, -32.0, 1.0)
 hf.h = fill(f32(0), 4096)
@@ -82,19 +90,31 @@ loop p in particles:
         pools += 1
         check(p.pos.y > 0.0 and p.pos.y < 0.04, "ground pool ring on surface")
         check(puddle_mask(p.pos.xz, 1.0, 1.0) > 0.15, "ring agrees with wet terrain")
-    if p.kind == .splash: drops += 1
+    if p.kind == .rain_impact:
+        drops += 1
+        check(p.life <= 0.20 and length(p.vel) == 0.0, "brief surface impact cannot float like a glowing mote")
+        check(p.color.x < 0.5 and p.color.w < 0.5, "impact pigment and opacity remain subdued")
 check(pools > 20 and drops > 200, "mixed pooled and unpooled wet ground")
 check(particles.len() <= 1800, "pool rings replace drops within existing impact budget")
 particles.clear()
 env.wet = 0.0
 fx_rain_ground(vec3(0, 2, 0), 1.0, false)
-loop p in particles: check(p.kind == .splash, "dry ground has no pool rings")
+loop p in particles: check(p.kind == .rain_impact, "dry ground uses brief impacts instead of pooled waves")
+# Pale storm ground needs a faint light reflection, never a dark W-shaped mark.
+particles.clear()
+env.storm_k = 1.0
+fx_rain_ground(vec3(0, 2, 0), 1.0, false)
+check(particles.len() > 200, "storm retains surface impacts")
+loop p in particles:
+    check(p.kind == .rain_impact and p.life <= 0.13, "storm impacts vanish within 130 milliseconds")
+    check(p.color.x > 1.0 and p.color.y > 1.0 and p.color.z > 1.0 and p.color.w <= 0.21, "storm impacts reflect light at low opacity")
+env.storm_k = 0.0
 check(puddle_mask(vec2(0, 0), 0.95, 1.0) == 0.0, "slopes cannot pool")
 particles.clear()
 env.wet = 1.0
 rain_sync({}, {})
 fx_rain_ground(vec3(0, 2, 0), 1.0, false)
 loop p in particles:
-    check(p.kind == .splash and p.pos.y > 4.0, "roof intercepts ground pool rings")
-print("ground rain: {pools} puddle rings, {drops} droplets; bounded replacement")
+    check(p.kind == .rain_impact and p.pos.y > 4.0, "roof receives brief impacts above the ground")
+print("ground rain: {pools} puddle rings, {drops} brief surface impacts; bounded replacement")
 print("{checks} weather FX checks passed")

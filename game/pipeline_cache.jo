@@ -7,6 +7,7 @@ when TARGET != "wasm":
     extern vkDestroyPipelineCache = (dev: *u8, cache: int, allocator: *u8)
     __game_cache_path = ""
     __game_cache_loaded = false
+    game_pipeline_cache_hit = false
     game_pipeline_cache_load = ():
         if __game_cache_loaded: return
         __game_cache_loaded = true
@@ -28,6 +29,7 @@ when TARGET != "wasm":
             if vkCreatePipelineCache(__vk_dev, data(info) as *u8, null, &cache) != 0: return
             result = vkMergePipelineCaches(__vk_dev, __vk_pcache, 1, &cache)
             vkDestroyPipelineCache(__vk_dev, cache, null)
+            game_pipeline_cache_hit = result == 0
             if env("BOTW_LOADTIME") != none and result == 0: eprint("    game pipeline cache: hit")
     game_pipeline_cache_commit = ():
         if __game_cache_path == "": return

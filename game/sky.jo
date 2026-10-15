@@ -25,6 +25,7 @@ struct SkyU:
     lettering: vec4
     title_clear: f32
     calamity: vec3
+    storm: f32
 
 struct SkyO:
     pos: vec4
@@ -32,7 +33,7 @@ struct SkyO:
 
 skyp_vs = (v: FsVert, u: SkyU) -> SkyO: SkyO(vec4(v.pos, 0.99999, 1), v.pos)
 
-# One bank has a flat condensation base and an unequal cauliflower crown.
+# One bank has a softly scalloped underside and an unequal cauliflower crown.
 # The contour joins the lobes first; pigment belongs to the whole bank, rather
 # than lighting every overlapping oval as a separate bubble.
 cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f32, clearing: vec4) -> vec2:
@@ -64,10 +65,14 @@ cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f3
             visibility = smoothstep(1.0,1.28,length(offset/envelope))
             if visibility < 0.001: continue
             q = (p - center) * vec2(mirror, 1) / size
-            if abs(q.x) > 1.12 or q.y < -0.28 or q.y > 0.77: continue
+            if abs(q.x) > 1.12 or q.y < -0.38 or q.y > 0.77: continue
             # Broad unequal volumes overlap before the silhouette is extracted.
             # Seeded spacing lets shoulders merge; only selected banks grow towers.
             x = q.x + sin(q.y * 11.0 + seed * 31.0) * 0.018
+            base = -0.12 + sin(x * (4.0 + shoulder * 2.0) + shape * 9.0) * 0.085
+            base += sin(x * 10.0 + seed * 17.0) * 0.035 + x * (shoulder - 0.5) * 0.11
+            bottom = smoothstep(-0.07, 0.12 + shoulder * 0.07, q.y - base)
+            if bottom <= 0.0: continue
             crown: f32 = -0.3
             volume: f32 = 0.0
             hollow: f32 = 0.0
@@ -96,7 +101,6 @@ cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f3
                 shadow = shadow * shadow * fold_wash
                 hollow = max(hollow, shadow * (0.55 + h * 0.45))
             crown = crown + sin(x * 23.0 + seed * 23.0) * 0.012 + sin(x * 53.0 + shoulder * 19.0) * 0.004
-            base = -0.145 + sin(x * 4.0 + shape * 9.0) * 0.018
             edge = min(crown - q.y, q.y - base)
             # Downwind shreds narrow to points, interrupted by bites of clear air.
             tail = smoothstep(0.30, 0.92, q.x)
@@ -106,9 +110,14 @@ cumulus = (dir: vec3, sun: vec3, time: f32, wind: vec2, cover: f32, softness: f3
             edge = max(edge, wisp)
             bites = sin(q.x * 38.0 + shape * 21.0) * sin(q.y * 57.0 + seed * 13.0)
             edge = edge - tail * smoothstep(-0.07, -0.20, q.y) * max(bites, 0.0) * 0.045
-            # Analytic edge antialiasing only; no image blur or softened crowns.
-            aa = 0.006 + softness * 0.025
+            # Broader translucent condensation along the lower edge; the irregular
+            # crown keeps its silhouette without repeating a ruler-straight base.
+            underside = 1.0 - smoothstep(0.015, 0.13, q.y - base)
+            aa = 0.010 + softness * 0.06 + underside * (0.024 + shape * 0.016)
             bank = smoothstep(-aa, aa, edge) * visibility
+            # Dissolve the lower bank into air over a broad, varying depth;
+            # antialiasing alone still leaves a ruler-like condensation edge.
+            bank *= bottom
             height = clamp((q.y - base) / max(crown - base, 0.08), 0.0, 1.0)
             lit_side = sun_side * mirror
             flank = smoothstep(-0.62, 0.65, -q.x * lit_side + q.y * 0.75)
@@ -245,25 +254,29 @@ skyp_fs = (i: SkyO, u: SkyU) -> vec4:
     # Clear, slightly deeper blue under the warm white atlas also preserves
     # readability in the pale overcast deck. No lettering-sized hard rectangle.
     c = mix(c, mix(u.zenith, vec3(0.15, 0.25, 0.38), 0.35), reserve * 0.40)
-    # A dense storm deck absorbs open sky while leaving the approved habitat
-    # fill alone. The envelope stays continuous through rain/storm transitions.
-    storm_deck = smoothstep(0.66, 0.82, u.dark)
+    # Absorption follows the whole storm/rain envelope, not a narrow slice of
+    # cloud darkness. A clearing twenty-second deck must not shed its entire
+    # sky tint in a second; ordinary rain keeps its pale sky.
+    storm_deck = clamp(u.storm, 0.0, 1.0)
     c = c * mix(vec3(1, 1, 1), vec3(0.44, 0.49, 0.60), storm_deck)
     vec4(c, 1)
 
 sky_sh: Shader
 __sky_ready = false
 
-draw_sky = (inv_vp: mat4, cam: vec3):
+sky_prepare = ():
     if not __sky_ready:
         __sky_ready = true
         sky_sh = make_sh(shader(skyp_vs, skyp_fs))
+
+draw_sky = (inv_vp: mat4, cam: vec3):
+    sky_prepare()
     r = visible_rect()
     lettering = title_lettering_size(f64(r.z), f64(r.w))
     zone = vec4(0.5 - lettering.x / r.z * 0.5, 0.115, 0.5 + lettering.x / r.z * 0.5, 0.115 + lettering.y / r.w)
     clear = title_sky_strength()
     u = SkyU(inv_vp, cam, env.zenith, env.horizon, env.sun_dir, env.sun_color, env.moon_dir, f32(env.night),
-        f32(env.clouds), f32(env.dark), f32(elapsed()), env.wind, env.haze, zone, f32(clear), malice_center + vec3(0, 270, 0))
+        f32(env.clouds), f32(env.dark), f32(elapsed()), env.wind, env.haze, zone, f32(clear), malice_center + vec3(0, 270, 0), f32(env.storm_k * env.rain))
     glDepthMask(0)
     glDisable(GL_CULL_FACE)
     draw_fast(sky_sh, fullscreen_mesh(), u)
@@ -308,8 +321,7 @@ __mist_ready = false
 __mist_mesh: Mesh
 __mist_sh: Shader
 
-draw_valley_mist = (vp: mat4, cam: vec3):
-    if env.valley_mist < 0.005: return
+valley_mist_prepare = ():
     if not __mist_ready:
         __mist_ready = true
         __mist_sh = make_sh(shader(mist_vs, mist_fs))
@@ -334,6 +346,10 @@ draw_valley_mist = (vp: mat4, cam: vec3):
                 loop q in [vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1)]: vs.push(MistV(center, q, vec2(13, 0.75), vec2(2, 16)))
                 loop n in [0, 1, 2, 0, 2, 3]: idx.push(base + u32(n))
         __mist_mesh = mesh(vs, idx)
+
+draw_valley_mist = (vp: mat4, cam: vec3):
+    if env.valley_mist < 0.005: return
+    valley_mist_prepare()
     glEnable(GL_DEPTH_TEST)
     glDepthMask(0)
     glDisable(GL_CULL_FACE)

@@ -217,7 +217,9 @@ __temple_ashlar = (center: vec3, size: vec3, yaw: f64, seed: f64, col: vec4, mat
     back: vec3[]
     front: vec3[]
     __begin(center)
-    pigment = vec4(col.xyz * __old_stone(center).xyz / GREY.xyz,col.w)
+    # Shared fragment weathering flows across adjacent ashlar faces.
+    # A per-block centre sample created an unrelated square colour mosaic.
+    pigment = col
     loop k in [0..corners.len()):
         q = corners[k]
         h = hash2(seed,f64(k)+2.0)

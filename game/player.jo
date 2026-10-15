@@ -825,7 +825,7 @@ __player_step = (dt: f64):
         pl.stamina = min(pl.stamina_max, pl.stamina + RECOVER_RATE * dt)
         if pl.stamina >= pl.stamina_max: pl.exhausted = false
     # the wheel shows while it is not full
-    vis = pl.stamina < pl.stamina_max - 0.5 or pl.state == .climb or pl.state == .glide or pl.sprinting
+    vis = stamina_in_use()
     pl.stamina_shown = approach(pl.stamina_shown, (if vis: 1.0 else: 0.0), (if vis: 10.0 else: 2.0), dt)
     if pl.pos.y < -200.0:
         pl.pos = pl.last_safe
@@ -894,3 +894,9 @@ player_body_carry = (id: int, old_pos: vec3, old_yaw: f64, pos: vec3, yaw: f64, 
         pl.mantle_from = transform_point(delta, pl.mantle_from)
         pl.mantle_to = transform_point(delta, pl.mantle_to) + v3(0.0,top_delta,0.0)
         loop k in [0..2): pl.mantle_hands[k] = transform_point(delta, pl.mantle_hands[k]) + v3(0.0,top_delta,0.0)
+
+# Use/recovery owns the wheel, independent of stale display interpolation.
+stamina_in_use = () -> bool:
+    pl.stamina < pl.stamina_max - 0.5 or pl.state == .climb or pl.state == .glide or pl.sprinting
+stamina_hud_visible = () -> bool:
+    pl.stamina_shown >= 0.02 and (stamina_in_use() or pl.rest_t < 0.75)

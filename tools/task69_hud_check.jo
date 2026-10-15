@@ -1,0 +1,21 @@
+# CPU-only regression for active/recovering/resting stamina visibility.
+use '../game/player.jo'
+pl=Player(rest_t=3.0,stamina_shown=0.4)
+assert(not stamina_hud_visible(),"full rested stamina never leaves a wheel stub")
+pl.stamina_shown=0.0
+assert(not stamina_hud_visible())
+pl.stamina=pl.stamina_max-30.0
+pl.stamina_shown=1.0
+assert(stamina_hud_visible(),"recovering stamina remains visible")
+pl.stamina=pl.stamina_max
+pl.rest_t=0.3
+assert(stamina_hud_visible(),"recent use keeps the brief return")
+pl.rest_t=3.0
+pl.state=.climb
+assert(stamina_hud_visible(),"stationary climber keeps the wheel")
+pl.state=.glide
+assert(stamina_hud_visible())
+pl.state=.ground
+pl.sprinting=true
+assert(stamina_hud_visible())
+print("PASS stamina HUD: hidden at full rest, visible during use/recovery and brief return")

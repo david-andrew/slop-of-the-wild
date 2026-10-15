@@ -1,0 +1,39 @@
+# Headless checks of the production receiving-pool foam field.
+use '../game/water_render.jo'
+
+loop cloud in [0.0,0.3,0.7,1.0]:
+    assert(water_reflection_hold(f32(cloud),0.0)==1.0,"dry weather keeps bank reflections")
+assert(water_reflection_hold(1.0,0.75)==0.0,"heavy rain removes discontinuous opaque bank samples")
+previous=1.0
+loop step in [0..101):
+    current=water_reflection_hold(1.0,f32(step)/100.0)
+    assert(current>=0.0 and current<=previous,"rain fades bank reflections monotonically")
+    assert(previous-current<0.04,"weather transitions cannot pop the reflection")
+    previous=current
+print("PASS wet reflection: dry preservation, heavy-rain sky wash and continuous transition")
+
+energy_x=0.0
+energy_z=0.0
+low=1.0
+high=0.0
+worst_jump=0.0
+loop z in [0..40):
+    loop x in [0..40):
+        p=vec2(-1512.0+f32(x)*0.337,1815.0+f32(z)*0.337)
+        value=water_impact_brush(p,5.0)
+        # Foam is carried away from the foot toward decreasing world X.
+        advected=water_impact_brush(p+vec2(15,0),0.0)
+        assert(abs(value-advected)<0.0001,"foam moves with the receiving channel")
+        assert(value>=0.0 and value<=1.0,"bounded foam coverage")
+        low=min(low,f64(value))
+        high=max(high,f64(value))
+        dx=f64(water_impact_brush(p+vec2(0.05,0),5.0)-value)
+        dz=f64(water_impact_brush(p+vec2(0,0.05),5.0)-value)
+        energy_x+=dx*dx
+        energy_z+=dz*dz
+        loop offset in [vec2(0.01,0),vec2(0,0.01)]:
+            worst_jump=max(worst_jump,abs(f64(water_impact_brush(p+offset,5.0)-value)))
+assert(high-low>0.3,"unequal foam masses retain variation")
+assert(energy_z>energy_x*1.5,"foam elongates along flow instead of crossing it")
+assert(worst_jump<0.15,"foam remains continuous across noise-cell boundaries")
+print("PASS receiving foam: 1600 advected samples, cross/along gradient energy {energy_z/energy_x:.2}, 1 cm maximum jump {worst_jump:.4}, range {low:.3}..{high:.3}")

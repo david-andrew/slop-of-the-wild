@@ -53,9 +53,27 @@ loop variant in [1..6):
                 assert(dot(n, a.normal + b.normal + c.normal) > 0.0, "outward winding matches surface normals")
                 volume += f64(dot(a.pos, cross(b.pos, c.pos))) / 6.0
             assert(volume > 0.0, "closed bough volume")
-        # Each 32-vertex spray has upper and lower surfaces around its spine;
-        # the eight edge segments close all rings and cap both poles.
-        assert(crown.vertices.len() % 32 == 0)
-        assert(crown.indices.len() == crown.vertices.len() / 32 * 32 * 3)
-        assert(crown.shadow.len() == crown.vertices.len() / 32 * 16 * 3)
-        print("PASS Pine_{variant}: {crown.vertices.len() / 32} needle fans; {crown.indices.len() / 3} view / {crown.shadow.len() / 3} shadow triangles; stable RNG, bounds, normals and volume")
+        # Every variant needs snowy lateral shoulders on the lower crown,
+        # not just a white tip over bare green slabs. Use production vertex
+        # normals (including the canopy blend) and the same snow mask as GPU.
+        snow_sum = 0.0
+        shoulders = 0
+        values_lo = 1e9
+        values_hi = 0.0
+        inst = VInst(mat4(), vec4(1,1,1,0.85))
+        u = VegU(height=f32(hi.y), center_y=(bounds_lo.y+bounds_hi.y)*0.5, leaves=1, tree=1, wood=1, fir=1)
+        loop v in crown.vertices:
+            values_lo = min(values_lo, f64(v.color.y))
+            values_hi = max(values_hi, f64(v.color.y))
+            if v.pos.y > (lo.y+hi.y)*0.5 or v.normal.y < -0.05: continue
+            n = normalize(veg_vs(v,inst,u).normal)
+            snow_sum += f64(fir_snow_coverage(n.y))
+            shoulders += 1
+        assert(shoulders>0 and snow_sum/f64(shoulders)>0.60,"lower bough shoulders stay snow-laden")
+        assert(values_hi/values_lo>1.45,"near sprays retain internal pigment variation")
+        # Each 42-vertex spray has upper and lower surfaces around its spine;
+        # the six sides close seven scalloped rings and cap both poles.
+        assert(crown.vertices.len() % 42 == 0)
+        assert(crown.indices.len() == crown.vertices.len() / 42 * 60 * 3)
+        assert(crown.shadow.len() == crown.vertices.len() / 42 * 12 * 3)
+        print("PASS Pine_{variant}: {crown.vertices.len() / 42} needle fans; {crown.indices.len() / 3} view / {crown.shadow.len() / 3} shadow triangles; stable RNG, bounds, normals and volume")

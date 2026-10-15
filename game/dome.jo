@@ -40,8 +40,7 @@ __dome_sh = Shader()
 __dome_mesh = Mesh()
 __dome_ready = false
 
-dome_draw = (vp: mat4, center: vec3, radius: f64, cam: vec3, color: vec3, fade: f64):
-    if fade <= 0.0: return
+dome_prepare = ():
     if not __dome_ready:
         __dome_ready = true
         __dome_sh = make_sh(shader(dome_vs, dome_fs))
@@ -56,6 +55,10 @@ dome_draw = (vp: mat4, center: vec3, radius: f64, cam: vec3, color: vec3, fade: 
             loop i in [0..SEG):
                 loop q in [p(i, j), p(i + 1, j), p(i + 1, j + 1), p(i, j), p(i + 1, j + 1), p(i, j + 1)]: vs.push(q)
         __dome_mesh = mesh(vs)
+
+dome_draw = (vp: mat4, center: vec3, radius: f64, cam: vec3, color: vec3, fade: f64):
+    if fade <= 0.0: return
+    dome_prepare()
     gl_blend_state(true)
     glDisable(GL_CULL_FACE)
     draw_fast(__dome_sh, __dome_mesh, DomeU(vp, center, f32(radius), cam, color, f32(elapsed()), f32(fade)))

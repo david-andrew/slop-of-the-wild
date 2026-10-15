@@ -7,6 +7,10 @@ struct FirCrown:
     indices: u32[]
     shadow: u32[]
 
+# Snow settles over upper and lateral needle cushions, leaving the hanging
+# undersides green. Shared by detailed crowns and their normal atlas.
+fir_snow_coverage = (normal_y: f32) -> f32: smoothstep(-0.22, 0.30, normal_y)
+
 __fir_root = (parents: int[], i0: int) -> int:
     i = i0
     loop parents[i] != i: i = parents[i]
@@ -63,19 +67,22 @@ fir_crown = (source: Vertex3D[], indices: u32[]) -> FirCrown:
         up = normalize(cross(side, direction))
         width = 0.0
         loop p in points: width = max(width, abs(f64(dot(p - base, side))))
-        width = min(width * 0.82, reach * 0.40)
-        # Three short needle cushions overlap at unequal radii and sides.
-        # No broad spray runs the full length of the authored bough; upper
-        # surfaces keep their snow caps and the undersides retain green tiers.
+        width = min(width * 0.90, reach * 0.60)
+        # One rooted branch mass reaches the authored tip; two overlapping
+        # cushions grow from its middle. Every cluster touches that branch,
+        # avoiding detached needles and the former skeletal spear silhouette.
+        # Keep three attached sprays per bough and the existing draw buckets.
         seed = fract(sin(f64(base.x) * 17.3 + f64(base.y) * 7.1 + f64(tip.z) * 11.7) * 43758.5453)
-        loop tuft in [0..3):
+        broad = smoothstep(0.25, 0.55, width / reach)
+        __fir_spray(out, base, tip, width * (0.88 - broad * 0.18), reach * 0.125)
+        loop tuft in [0..2):
             phase = fract(seed * 7.13 + f64(tuft) * 0.371)
-            sign = if tuft == 1: -1.0 else: 1.0
-            start = f64(tuft) * 0.23 + phase * 0.035
-            finish = min(1.0,start + 0.38 + phase * 0.07)
+            sign = if tuft == 0: -1.0 else: 1.0
+            start = 0.18 + f64(tuft) * 0.16
+            finish = 0.78 + f64(tuft) * 0.15
             child_base = mix(base, tip, f32(start))
-            child_tip = mix(base, tip, f32(finish)) + side * f32(sign * width * (if tuft == 2: 0.20 else: 0.48+phase*0.18)) - up * f32(reach * (0.01+phase*0.018))
-            __fir_spray(out, child_base, child_tip, width * (0.17 + phase * 0.10), reach * (0.030 + phase * 0.013))
+            child_tip = mix(base, tip, f32(finish)) + side * f32(sign * width * (0.32 + phase * 0.13 + broad * 0.22)) - up * f32(reach * 0.015)
+            __fir_spray(out, child_base, child_tip, width * (0.44 + phase * 0.12), reach * (0.090 + phase * 0.020))
 
     out
 
@@ -86,35 +93,59 @@ __fir_spray = (out: mut FirCrown, base: vec3, tip: vec3, width: f64, thickness: 
     side = if length(direction.xz) > 0.001: normalize(cross(direction, vec3(0, 1, 0))) else: vec3(1, 0, 0)
     up = normalize(cross(side, direction))
     first = out.vertices.len()
-    # A broad inner knot opens into thin peripheral needle tips. Four rings
-    # per spray keep the existing three-spray budget;
-    # eight sides preserve the green underside and irregular snow cap.
-    stations = [0.0, 0.28, 0.59, 1.0]
+    # A rooted scallop interrupts each long card-like edge. Seven unequal
+    # sections keep one connected branch mass, rather than detached needle dots.
+    # Six sides round the cap; the cheap caster still uses only three rings.
+    stations = [0.0, 0.15, 0.29, 0.43, 0.58, 0.78, 1.0]
+    sides = 6
     loop u in stations:
-        bulge = if u == 0.0 or u == 1.0: 0.0 else: (if u < 0.5: 0.94 else: 0.46) * (0.90 + 0.18 * sin(u * 13.0 + f64(base.y) * 5.0))
+        phase = f64(base.y) * 5.0 + f64(base.x) * 2.3
+        bulge = pow(max(sin(PI * u), 0.0), 0.75) * (1.12 - u * 0.45) * (0.94 + 0.10 * sin(u * 13.0 + phase))
+        if u == 0.29: bulge *= 0.58 + 0.12 * sin(phase)
+        if u == 0.58: bulge *= 0.66 + 0.10 * cos(phase)
         spine = mix(base, tip, f32(u)) + up * f32(reach * 0.025 * sin(PI * u))
-        loop k in [0..8):
-            angle = TAU * f64(k) / 8.0
+        loop k in [0..sides):
+            angle = TAU * f64(k) / f64(sides) + 0.18 * sin(u * 9.0 + phase)
             p = spine + side * f32(width * bulge * cos(angle) * (1.0 + 0.18 * sin(u * 17.0 + f64(base.y) * 3.0 + cos(angle) * 2.0))) + up * f32(thickness * bulge * sin(angle) * (if sin(angle) > 0.0: 1.15 else: 0.65))
             n = normalize(side * f32(cos(angle) / max(width, 0.01)) + up * f32(sin(angle) / (thickness * (if sin(angle) > 0.0: 1.15 else: 0.65))) + direction * f32(-cos(PI * u) * 3.0 / reach))
-            shade = f32(0.86 + 0.14 * sin(angle))
+            # Unequal needle cushions catch different pigment values, including
+            # the near branch undersides. Never paint a whole spray one dark slab.
+            shade = f32((0.96 + 0.16 * sin(angle)) * (1.0 + 0.17 * sin(phase + u * 15.0)))
             out.vertices.push(Vertex3D(p, n, vec2(0.5, 0.5), vec4(shade, shade, shade, 1.0)))
     loop station in [0..stations.len() - 1):
-        loop k in [0..8):
-            a = u32(first + station * 8 + k)
-            b = u32(first + station * 8 + (k + 1) % 8)
-            c = a + 8
-            d = b + 8
+        loop k in [0..sides):
+            a = u32(first + station * sides + k)
+            b = u32(first + station * sides + (k + 1) % sides)
+            c = a + u32(sides)
+            d = b + u32(sides)
             if station > 0: out.indices.extend([a, c, b])
             if station < stations.len() - 2: out.indices.extend([b, c, d])
+    # Scalloped shoulders reverse slope between rings. Recompute their
+    # normals from the actual closed surface; an ellipsoid normal flattens
+    # those lobes and leaves the snowy lower shoulders falsely facing down.
+    # Reuse the vertex storage instead of allocating a temporary array for
+    # every spray. Hundreds of tiny loading allocations can perturb the retained
+    # combat-mesh buffers allocated after vegetation.
+    loop k in [first..out.vertices.len()): out.vertices[k].normal = vec3(0,0,0)
+    loop triangle in [0..(stations.len() - 2) * sides * 2):
+        k = out.indices.len() - (stations.len() - 2) * sides * 6 + triangle * 3
+        a = int(out.indices[k])
+        b = int(out.indices[k + 1])
+        c = int(out.indices[k + 2])
+        n = cross(out.vertices[b].pos - out.vertices[a].pos, out.vertices[c].pos - out.vertices[a].pos)
+        out.vertices[a].normal += n
+        out.vertices[b].normal += n
+        out.vertices[c].normal += n
+    loop k in [first..out.vertices.len()):
+        if length(out.vertices[k].normal) > 0.000001: out.vertices[k].normal = normalize(out.vertices[k].normal)
     # Keep all exterior boughs in the distant shadow. Fewer longitudinal
     # rings suffice there; retain the same poles and widest cross sections.
-    rings = [0, 1, 3]
+    rings = [0, 3, 6]
     loop station in [0..rings.len() - 1):
-        loop k in [0..8):
-            a = u32(first + rings[station] * 8 + k)
-            b = u32(first + rings[station] * 8 + (k + 1) % 8)
-            c = u32(first + rings[station + 1] * 8 + k)
-            d = u32(first + rings[station + 1] * 8 + (k + 1) % 8)
+        loop k in [0..sides):
+            a = u32(first + rings[station] * sides + k)
+            b = u32(first + rings[station] * sides + (k + 1) % sides)
+            c = u32(first + rings[station + 1] * sides + k)
+            d = u32(first + rings[station + 1] * sides + (k + 1) % sides)
             if station > 0: out.shadow.extend([a, c, b])
             if station < rings.len() - 2: out.shadow.extend([b, c, d])

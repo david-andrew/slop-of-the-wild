@@ -55,9 +55,15 @@ paint_light = (albedo: vec3, n: vec3, l: vec3, v: vec3, sun: vec3, sky: vec3, gr
 # shadows of the clouds drifting over the land (cover: env.clouds)
 cloud_shade = (xz: vec2, t: f32, cover: f32) -> f32:
     if cover >= 0.85: return 1.0
-    p = xz * 0.0016 + vec2(t * 0.005, t * 0.002)
+    # Keep the authored field/coverage, with broad banks drifting about two
+    # metres per second. Fast advection made fixed views pulse as edges passed.
+    p = xz * 0.0016 + vec2(t * 0.003, t * 0.0012)
     n = fbm3(p)
-    1.0 - smoothstep(0.86 - cover * 0.9, 1.0 - cover * 0.9, n) * 0.6 * shadow_direct(cover)
+    # Incoming overcast already removes direct light. Sweeping the noise
+    # threshold with coverage also rushed dark banks across stationary land.
+    # Keep their shape while softly dissolving their contrast into the deck.
+    bank_cover = min(cover, f32(0.42))
+    1.0 - smoothstep(0.86 - bank_cover * 0.9, 1.0 - bank_cover * 0.9, n) * 0.6 * shadow_direct(cover)
 
 # aerial perspective: blue haze that thickens with distance (less up high), warmer toward the sun
 atmos = (c: vec3, world: vec3, cam: vec3, l: vec3, haze: vec3, sun: vec3, density: f32, falloff: f32) -> vec3:

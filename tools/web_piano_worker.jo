@@ -1,0 +1,39 @@
+build:
+    opt = release
+use '../game/music.jo'
+use '../game/gfx.jo'
+use '../game/audio_assets.jo'
+# CPU-only worker: the same recordings, room, quantizer and cue generators as
+# native preparation. No graphics or playback device; no music substitutions.
+__audio_state=2
+piano_init()
+@export("__piano_key")
+web_piano_key=() -> int:audio_asset_key(["game/music.jo"])
+@export("__piano_count")
+web_piano_count=() -> int:PIANO_COUNT
+web_piano_bank=(bank:int) -> PianoSample[]:
+    match bank:
+        0:piano.notes
+        1:piano.soft
+        2:piano.forte
+        3:piano.short_notes
+        4:piano.short_soft
+        5:piano.short_forte
+        _:piano.restrained_soft
+@export("__piano_length")
+web_piano_length=(bank:int,slot:int) -> int:web_piano_bank(bank)[slot].samples.len()
+@export("__piano_data")
+web_piano_data=(bank:int,slot:int) -> int:data(web_piano_bank(bank)[slot].samples) as int
+@export("__piano_scale")
+web_piano_scale=(bank:int,slot:int) -> f32:web_piano_bank(bank)[slot].scale
+web_piano_cue=(cue:int) -> Sound:
+    match cue:
+        0:drum_lo
+        1:drum_hi
+        2:combat_entry
+        _:shrine_glass
+@export("__piano_cue_length")
+web_piano_cue_length=(cue:int) -> int:web_piano_cue(cue).samples.len()
+@export("__piano_cue_data")
+web_piano_cue_data=(cue:int) -> int:data(web_piano_cue(cue).samples) as int
+main=():pass

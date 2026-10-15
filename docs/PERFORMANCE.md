@@ -5,6 +5,41 @@ Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland and XWayl
 retained. These are **producer/present-return intervals, not scanout timestamps**;
 the shared desktop is not an isolated hardware guarantee.
 
+## Current results — 2026-10-14, Round 69
+
+Unmodified Sloppy **0.6.0**, i7-6700 / GTX 1070, shared loaded desktop.
+Native startup and fixed captures: **1280×720, scale 1.00**, managed X11/Vulkan,
+prepared assets. Cold uses fresh local Vulkan/NVIDIA cache directories; warm and
+changed-executable runs reuse them. Kernel/page/system caches are not flushed.
+Render-lock queue time is excluded. Browser measurements use isolated T3 browser
+tabs, a **1280×800** viewport and production **0.80/0.65** scene-scale policy;
+driver/system caches remain uncontrolled.
+
+- Native cold load: **8.30 s**; complete one-frame process: **9.22 s**.
+- Native warm median: **2.30 s** in game, **3.20 s** complete process;
+  the **1.5 s warm target remains unmet**. Changed executable, identical shader
+  digests: **2.26 s** in game / **3.10 s** complete process; shared cache hit.
+- Browser first completed frame: **70.16 → 31.73 s**, no reported errors.
+  The piano worker generates an exact compact bank alongside world initialization.
+  Site size grows **104.87 → 121.20 MB** with the prepared world and worker;
+  the compact mono recordings remain the download source.
+
+Matched CPU p99 passes: forest **7.032 → 6.579 ms**, sunken tower
+**5.444 → 5.321 ms**, 720 samples per version/scene. Producer p99 is worse in
+these pairs; this is not a delivery improvement claim. The final 120 s route
+at **2133×1200**, production dynamic scale, records **15.456 ms** producer p99
+and **7.321 ms** callback thread CPU p99, retaining four >25 ms intervals.
+CPU/pacing comparisons
+The complete pack passes: **45 byte-identical master comparisons**, all viewed
+side by side, 13 audio clips and eight fast checks. Full details are in
+[PERFORMANCE_ROUND69.md](PERFORMANCE_ROUND69.md). Callback and present-return
+statistics measure **producer timing**. Delivered/compositor scanout timing was
+**not measured**; completed-frame/browser-ready timing is not a scanout claim.
+Startup evidence: `build/task69-sol/final-v3-pack/startup/summary.json`.
+Browser evidence: `build/task69-sol/browser-{before,after}.json`.
+
+## Historical measurements
+
 ## Round 67 continued: structural canopy, upload and cue costs
 
 The latest implementation and measurements are in

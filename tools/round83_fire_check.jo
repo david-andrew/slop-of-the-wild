@@ -149,7 +149,7 @@ loop particle in particles:
     tagged+=1
     assert(particle.kind==.flame,"only grass flame births receive fuel ownership")
     assert(not grass_particle_visible(particle,particle.pos+vec3(0,0,10)),"near grass uses the continuous tongue instead of old cones and lingering cards")
-    if grass_particle_visible(particle,particle.pos+vec3(0,0,61)):
+    if grass_particle_visible(particle,particle.pos+vec3(0,0,91)):
         distant+=1
         assert(__burning.has(particle.fuel_cell) and __burning.has(__cell_of(f64(particle.pos.x),f64(particle.pos.z))),"distant cues retain live owners and roots instead of drifting ahead")
     untagged=particle

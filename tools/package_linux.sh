@@ -21,6 +21,8 @@ ln -s "$root/assets/src" "$stage/assets/src"
 (cd "$stage" && tools/prepare_assets.sh >/dev/null && sloppy/bin/sloppy build game/main.jo -o slop-of-the-wild)
 
 cp "$stage/slop-of-the-wild" "$pkg/"
+mkdir -p "$pkg/build"
+cp "$stage/build/libbotw-pipelines.so" "$pkg/build/"
 rsync -a --exclude src "$stage/assets" "$pkg/"
 rsync -a "$stage/game" "$pkg/"
 rsync -a "$stage/sloppy/lib" "$pkg/sloppy/"

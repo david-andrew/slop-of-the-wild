@@ -24,12 +24,14 @@ climb_update = (dt: f64):
     if frame_number()==2600: base_climb_finish()
 samples: f32[]
 checked_pixels=0
+vegetation_pixels=0
 climb_draw = ():
     draw()
-    # Negative scene alpha marks partially discarded occluders for the paint
-    # resolve. Read the production HDR scene every frame, before that resolve
-    # can blur a residual beam into the hero. The crop covers a 1m radius
-    # around the full body, including both head and feet.
+    # Architecture uses -8 scene alpha for partially discarded occluders.
+    # Vegetation uses -16 for its soft coverage resolve, including distant
+    # tree LOD transitions beside Jo; that marker does not imply a body occluder.
+    # Read the production HDR scene before paint can blur a residual beam into
+    # the hero. Keep the full 1m screen envelope, including head and feet.
     clip=sc.vp*vec4(pl.pos+vec3(0,0.8,0),1)
     if clip.w<=0.0: return
     scale=f64(post.h)/(2.0*tan(radians(sc.fov)*0.5)*f64(clip.w))
@@ -44,7 +46,10 @@ climb_draw = ():
     game_read_pixels_f32(x0,y0,x1-x0,y1-y0,data(samples) as *u8)
     glBindFramebuffer(GL_FRAMEBUFFER,0)
     loop pixel in [0..count/4):
-        assert(samples[pixel*4+3]>=-0.001,"no translucent occluder pigment in the full-body 1m screen envelope")
+        alpha=samples[pixel*4+3]
+        vegetation=abs(alpha+16.0)<0.001
+        assert(alpha>=-0.001 or vegetation,"no translucent structural occluder pigment in the full-body 1m screen envelope")
+        if vegetation: vegetation_pixels+=1
     checked_pixels+=count/4
-    if frame_number()==2600: print("PASS rendered full-base climb: {checked_pixels} HDR pixels across every frame; zero negative-alpha occluders near the body")
+    if frame_number()==2600: print("PASS rendered full-base climb: {checked_pixels} HDR pixels across every frame; zero structural occluder markers near the body; {vegetation_pixels} vegetation coverage pixels")
 main = (): performance_output_run(climb_update,climb_draw)

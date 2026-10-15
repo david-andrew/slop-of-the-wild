@@ -4,6 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/asset-bake assets/prepared
+cc -O2 -fPIC -shared -pthread tools/pipeline_workers.c -ldl -o "build/libbotw-pipelines.so.tmp.$$"
+mv "build/libbotw-pipelines.so.tmp.$$" build/libbotw-pipelines.so
 sloppy/bin/sloppy build tools/bake_world.jo -o build/asset-bake/world
 sloppy/bin/sloppy build tools/bake_textures.jo -o build/asset-bake/textures
 sloppy/bin/sloppy build tools/bake_audio.jo -o build/asset-bake/audio

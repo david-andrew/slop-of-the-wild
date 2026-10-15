@@ -12,6 +12,7 @@ sloppy.extra.push({
     const text = (p, n) => dec.decode(new Uint8Array(getMem().buffer, Number(p), Number(n)));
     const gl = () => document.getElementById('sloppy-canvas').getContext('webgl2');
     const imports = {
+      __web_piano_deferred: () => botwWeb.pianoDeferred ? 1n : 0n,
       __web_asset_open(p, n) {
         const path = text(p, n);
         let bytes = sloppy.files[path];
@@ -219,6 +220,7 @@ function botwFail(error) {
   console.error(error);
 }
 async function botwBoot(bin) {
+  let pianoWorker;
   try {
     if (typeof DecompressionStream === 'undefined') throw new Error('This browser needs gzip DecompressionStream support');
     const response = await fetch('manifest.json');
@@ -271,10 +273,32 @@ async function botwBoot(bin) {
     }
     botwWeb.downloadBytes = total;
     botwWeb.assetLoadMs = performance.now() - botwWeb.startedAt;
+    // Use a CPU worker for the production piano bank while the main thread
+    // prepares the world and graphics. All layers arrive before any music tick.
+    const worker = pianoWorker = new Worker(botwManifest.pianoWorker);
+    const pianoFiles = {}, transfers = [];
+    for (const path of Object.keys(sloppy.files)) if (/assets\/audio\/piano-(pp|mf|ff)-\d+\.wav$/.test(path)) {
+      pianoFiles[path] = sloppy.files[path];transfers.push(pianoFiles[path].buffer);
+    }
+    const pianoDone = new Promise((resolve,reject) => {
+      const timer=setTimeout(()=>reject(new Error('Piano preparation exceeded 180 seconds')),180000);
+      worker.onmessage = ({data}) => {clearTimeout(timer);data.error ? reject(new Error(data.error)) : resolve(data);};
+      worker.onerror = error => {clearTimeout(timer);reject(new Error(error.message));};
+    });
+    // Attach rejection handling now, before synchronous world initialization.
+    pianoDone.catch(()=>{});
+    worker.postMessage({files:pianoFiles,paths:Object.keys(sloppy.files).filter(path=>path.startsWith("assets/audio/") && path.endsWith(".wav")),stamps:botwManifest.stamps},transfers);
+    botwWeb.pianoDeferred = true;
     botwWeb.state = 'starting';
     // Give the progress UI a paint before synchronous wasm initialization.
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     sloppy.run(bin);
+    const pianoResult = await pianoDone;
+    worker.terminate();pianoWorker=null;
+    sloppy.files['assets/prepared/piano-compact.bin'] = pianoResult.pack;
+    botwWeb.pianoWorkerMs = pianoResult.ms;
+    botwWeb.pianoDeferred = false;
+    botwWeb.exports().__web_piano_finish();
     const gl = document.getElementById('sloppy-canvas').getContext('webgl2');
     const deadline = performance.now() + 180000;
     while (botwWeb.programs.some(({program, parallel}) => !gl.getProgramParameter(program, parallel.COMPLETION_STATUS_KHR))) {
@@ -287,5 +311,5 @@ async function botwBoot(bin) {
     botwWeb.programs.length = 0;
     botwWeb.beginFrames();
     botwWeb.peakWasmBytes = botwWeb.memory().buffer.byteLength;
-  } catch (e) { botwFail(e); }
+  } catch (e) { if(pianoWorker) pianoWorker.terminate();botwFail(e); }
 }

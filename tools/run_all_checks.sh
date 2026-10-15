@@ -188,6 +188,10 @@ jo() {
 # Headless tests; helper-only *_checks.jo files are exercised by their entry
 # points (fauna includes spacing, Stalkoblin, wildlife voices and Talus).
 cpu_checks=(
+    task69_hud_check
+    task69_tower_check
+    web_piano_worker_check
+    pipeline_workers_check
     tooling_check
     architecture_test
     art_shade_test
@@ -216,6 +220,7 @@ cpu_checks=(
     fire_scan_check
     fire_test
     task68_fire_check
+    task69_fire_check
     named_bounds_check
     input_check
     script_keys_check
@@ -269,6 +274,7 @@ cpu_checks=(
     cutscene_actor_check
     lens_plant_check
     death_check
+    task69_weather_check
     climb_masonry_check
     round92_lightning_check
     title_panorama_check
@@ -277,6 +283,8 @@ cpu_checks=(
     vegetation_tail_check
     vegetation_lod_check
     fir_bough_check
+    round69_foliage_check
+    round69_water_flow_check
     wake_contact_check
     wading_check
     water_coverage_check

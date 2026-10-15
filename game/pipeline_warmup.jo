@@ -1,0 +1,124 @@
+use 'pipeline_recipes.jo'
+use 'gfx.jo'
+use 'pipeline_cache.jo'
+# Game-owned preparation through the public Vulkan entry point. The vendored
+# release stays intact. Workers consume immutable modules/state; only the
+# calling thread inserts handles into the runtime program maps. Vulkan's default
+# pipeline cache is internally synchronized (no EXTERNALLY_SYNCHRONIZED flag).
+when TARGET != "wasm":
+    struct GamePipelineJob:
+        prog: int
+        key: int
+        vs: int
+        fs: int
+        topo: u32
+        cf: u32
+        df: u32
+    @lib("build/libbotw-pipelines.so")
+    extern botw_compile_pipelines = (dev:*u8,cache:int,count:int,infos:*u8,stride:int,handles:*int) -> i32
+    struct GamePipelineInfo:
+        entry: str
+        stages: VkPipelineShaderStageCreateInfo[]
+        vin: VkPipelineVertexInputStateCreateInfo[]
+        ia: VkPipelineInputAssemblyStateCreateInfo[]
+        vp: VkPipelineViewportStateCreateInfo[]
+        rs: VkPipelineRasterizationStateCreateInfo[]
+        pv: u32[]
+        ms: VkPipelineMultisampleStateCreateInfo[]
+        ds: VkPipelineDepthStencilStateCreateInfo[]
+        att: VkPipelineColorBlendAttachmentState[]
+        cb: VkPipelineColorBlendStateCreateInfo[]
+        dyn: u32[]
+        dy: VkPipelineDynamicStateCreateInfo[]
+        rinfo: VkPipelineRenderingCreateInfo[]
+        cfv: u32[]
+        gi: VkGraphicsPipelineCreateInfo
+    __game_pipeline_jobs: GamePipelineJob[]
+    __game_pipeline_prepared = 0
+    __game_pipeline_loading = true
+    __game_pipeline_started = false
+    __game_pipeline_seconds = 0.0
+    game_pipeline_queue = (sh: Shader, vs: str, fs: str):
+        if not __game_pipeline_loading or game_pipeline_cache_hit or env("BOTW_SERIAL_PIPELINES") != none or not lib_available("build/libbotw-pipelines.so"): return
+        recipe = game_pipeline_recipes.get("{__str_hash(vs)}:{__str_hash(fs)}", [])
+        loop key in recipe:
+            if __vgp[sh.prog].pipelines.contains(key): continue
+            formats: u32[] = [0,37,97,109,108,9,0]
+            cf = formats[(key >> 2) & 7]
+            df = u32(if (key & 32) != 0: 126 else: 0)
+            topo = u32(if (key & 3) == 0: 0 else: (if (key & 3) == 1: 1 else: 3))
+            p = __vgp[sh.prog]
+            __game_pipeline_jobs.push(GamePipelineJob(sh.prog,key,p.vs,p.fs,topo,cf,df))
+        if __game_pipeline_started: game_pipeline_prepare()
+    game_pipeline_info = (job: GamePipelineJob) -> GamePipelineInfo:
+        name = "main"
+        stages: VkPipelineShaderStageCreateInfo[] = [
+            VkPipelineShaderStageCreateInfo(stype = 18, stage = 1, module = job.vs, name = data(name)),
+            VkPipelineShaderStageCreateInfo(stype = 18, stage = 0x10, module = job.fs, name = data(name))]
+        vin = [VkPipelineVertexInputStateCreateInfo(stype = 19)]
+        ia = [VkPipelineInputAssemblyStateCreateInfo(stype = 20, topology = job.topo)]
+        vp = [VkPipelineViewportStateCreateInfo(stype = 22, nviewports = 1, nscissors = 1)]
+        rs = [VkPipelineRasterizationStateCreateInfo(stype = 23, line_width = 1.0)]
+        pv: u32[] = [1000254001, 0, 0, 0, 1, 0]               # the last vertex provokes (as GL)
+        if __vk_provoking_last: rs[0].next = data(pv) as *u8
+        ms = [VkPipelineMultisampleStateCreateInfo(stype = 24, samples = 1)]
+        ds = [VkPipelineDepthStencilStateCreateInfo(stype = 25, max_bounds = 1.0)]
+        att = [VkPipelineColorBlendAttachmentState(mask = u32((job.key >> 6) & 15))]
+        if (job.key & (1 << 10)) != 0:
+            att[0].on = 1
+            att[0].src = __vg_factor(((job.key >> 11) & 4095))
+            att[0].dst = __vg_factor(((job.key >> 23) & 4095))
+            att[0].src_a = __vg_factor(((job.key >> 35) & 4095))
+            att[0].dst_a = __vg_factor(((job.key >> 47) & 4095))
+        cb = [VkPipelineColorBlendStateCreateInfo(stype = 26)]
+        if job.cf != 0:
+            cb[0].natts = 1
+            cb[0].atts = data(att) as *u8
+        dyn: u32[] = [0, 1, 1000267000, 1000267001, 1000267002, 1000267006, 1000267007, 1000267008]
+        dy = [VkPipelineDynamicStateCreateInfo(stype = 27, nstates = u32(dyn.len()), states = data(dyn))]
+        rinfo = [VkPipelineRenderingCreateInfo(stype = 1000044002, depth = job.df)]
+        cfv = [job.cf]
+        if job.cf != 0:
+            rinfo[0].ncolors = 1
+            rinfo[0].colors = data(cfv)
+        gi = VkGraphicsPipelineCreateInfo(stype = 28, next = data(rinfo) as *u8, nstages = 2, stages = data(stages) as *u8, vertex_input = data(vin) as *u8,
+            input_assembly = data(ia) as *u8, viewport = data(vp) as *u8, raster = data(rs) as *u8, multisample = data(ms) as *u8, depth = data(ds) as *u8,
+            blend = data(cb) as *u8, dynamic = data(dy) as *u8, layout = __vk_layout, base_index = -1)
+        GamePipelineInfo(name,stages,vin,ia,vp,rs,pv,ms,ds,att,cb,dyn,dy,rinfo,cfv,gi)
+
+    game_pipeline_prepare = ():
+        if __game_pipeline_jobs.len()==0: return
+        started=time()
+        # Upload-time draws may already have created a queued variant. Preserve
+        # that handle instead of recompiling and overwriting its ownership.
+        jobs=[loop job in __game_pipeline_jobs: if not __vgp[job.prog].pipelines.contains(job.key): job]
+        __game_pipeline_jobs=[]
+        if jobs.len()==0:return
+        # Linux pool workers do not provide independent libc TLS. Retain all
+        # Sloppy-owned pointed-to arrays here; real pthreads only call Vulkan.
+        built=[loop job in jobs:game_pipeline_info(job)]
+        infos=[loop info in built:info.gi]
+        handles=fill(0,jobs.len())
+        result=botw_compile_pipelines(__vk_dev,__vk_pcache,jobs.len(),data(infos) as *u8,size_of(VkGraphicsPipelineCreateInfo),data(handles))
+        assert(built.len()==handles.len(),"retain pipeline create-info storage until workers join")
+        assert(result==0,"parallel Vulkan pipeline compilation")
+        loop i in [0..jobs.len()): __vgp[jobs[i].prog].pipelines[jobs[i].key]=handles[i]
+        __vk_pcache_dirty=true
+        __game_pipeline_prepared+=jobs.len()
+        __game_pipeline_seconds+=time()-started
+    game_pipeline_warmup_begin = ():
+        if not game_vulkan_backend(): return
+        __game_pipeline_started=true
+        game_pipeline_prepare()
+    game_pipeline_warmup_end = ():
+        __game_pipeline_loading=false
+        __game_pipeline_started=false
+        if not game_vulkan_backend(): return
+        game_pipeline_prepare()
+        if env("BOTW_LOADTIME") != none:
+            eprint("  parallel pipelines: {__game_pipeline_prepared} in {__game_pipeline_seconds:.3}s")
+else:
+    game_pipeline_warmup_begin = ():
+        pass
+    game_pipeline_warmup_end = ():
+        pass

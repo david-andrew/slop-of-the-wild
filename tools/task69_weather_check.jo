@@ -1,0 +1,90 @@
+# Continuous wet lighting, a twenty-second overcast and moving land shadows. No window.
+use '../game/charshade.jo'
+use '../game/env.jo'
+use '../game/shade.jo'
+use '../game/gfx.jo'
+use '../game/fx.jo'
+from '../game/fx.jo' import __rain_fill
+
+loop hz in [30,60,120]:
+    env=Env(hour=11,time_scale=0,weather=.clear,weather_t=1e9)
+    env_update(0,false)
+    clear=luma(env.zenith)
+    env.weather=.cloudy
+    last_sky=clear
+    loop k in [0..hz*20):
+        env_update(1.0/f64(hz),false)
+        level=luma(env.zenith)
+        assert(level<=last_sky+0.00001 and last_sky-level<0.002,"overcast darkens smoothly with fixed daylight")
+        last_sky=level
+    assert(env.clouds>0.70 and env.clouds<0.74,"deck closes over about twenty seconds")
+    assert(last_sky<clear*0.90,"overcast visibly darkens the blue sky")
+    print("PASS overcast {hz}Hz: sky {clear:.3} -> {last_sky:.3}, coverage {env.clouds:.3}")
+# Cloud motion starts from the master's authored field, rather than changing
+# clear-weather exposure by moving nearby land into a different noise scale.
+loop x in [-1400,-1060,-1000,-880,-818,-802,-700]:
+    loop z in [1620,1834,1900,1950,2230,2273]:
+        p=vec2(f32(x),f32(z))*0.0016
+        reference=1.0-smoothstep(0.86-0.42*0.9,1.0-0.42*0.9,fbm3(p))*0.6*shadow_direct(0.42)
+        assert(abs(cloud_shade(vec2(f32(x),f32(z)),0,0.42)-reference)<0.00001,"clear-day cloud exposure preserves master")
+# Visible motion is a minute-scale drift, not a twenty-second lighting pulse.
+# Bound every 100-frame interval too, independently of the image transition gate.
+changes=0
+largest: f32=0
+loop ix in [0..20):
+    x= -1400+ix*40
+    loop iz in [0..18):
+        z=1500+iz*40
+        a=cloud_shade(vec2(f32(x),f32(z)),0,0.42)
+        b=cloud_shade(vec2(f32(x),f32(z)),60,0.42)
+        if abs(a-b)>0.15:changes+=1
+        # Growing overcast fades the bank; it must not sweep a new dark edge
+        # over fixed terrain while the environment also removes direct light.
+        shade=cloud_shade(vec2(f32(x),f32(z)),30,0.42)
+        loop k in [1..9):
+            next=cloud_shade(vec2(f32(x),f32(z)),30,0.42+f32(k)*0.04)
+            assert(next>=shade,"closing deck dissolves existing cloud shadows")
+            shade=next
+        previous=a
+        loop frame in [1..37):
+            current=cloud_shade(vec2(f32(x),f32(z)),f32(frame)*100.0/60.0,0.42)
+            largest=max(largest,abs(current-previous))
+            previous=current
+        assert(a>=0.38 and a<=1 and b>=0.38 and b<=1,"cloud shadow stays bounded")
+        assert(cloud_shade(vec2(f32(x),f32(z)),20,0.95)==1,"closed deck has no sun patch")
+assert(changes>30,"moving cloud shadows cross a visible part of the Plateau")
+assert(largest<0.06,"cloud shadow changes by less than six percent per 100 frames")
+print("PASS cloud drift: largest 100-frame change {largest:.4}")
+print("PASS cloud shadows: {changes} land samples change by more than 15 percent in 60 seconds")
+
+# The cloth and skin use the same environment envelope; its wet daylight range
+# must preserve hemisphere variation rather than squeeze it to a scalar.
+env=Env(hour=11,time_scale=0,weather=.rain,clouds=0.85,rain=0.75,wet=1)
+env_update(0,false)
+u=ChU(environment=1,environment_shade=1,wet=1,environment_sun=env.sun_color,environment_sky=env.sky_amb,environment_ground=env.ground_amb)
+pigment=vec3(0.35,0.34,0.32)
+normal=normalize(vec3(0,0.5,1))
+ref=paint_light(pigment,normal,env.light_dir,vec3(0,0,1),env.sun_color,env.sky_amb,env.ground_amb,1,0.45)
+low=ch_environment_bound(ref*0.2,pigment,normal,vec3(0,0,1),env.light_dir,1,u)
+high=ch_environment_bound(ref*3,pigment,normal,vec3(0,0,1),env.light_dir,1,u)
+assert(luma(high)>luma(low)*1.10,"wet canopy retains a useful range for material planes")
+assert(luma(low)>luma(ref)*0.55 and luma(high)<luma(ref)*0.80,"wet canopy stays below the reflected-water value group")
+
+rain_streaks.clear()
+seed_random(64)
+__rain_fill()
+assert(rain_streaks.len()==8200,"near redistribution adds no rain parcels")
+loop yaw in [0.0,1.57,3.14,4.71]:
+    forward=v3(sin(yaw),-0.2,-cos(yaw))
+    right=v3(cos(yaw),0,sin(yaw))
+    near=0
+    extra=0
+    loop k in [3200..8200):
+        p=rain_drop_offset(rain_streaks[k],k,5,vec2(1,0.35),1.7)
+        depth=dot(p,forward)
+        if depth<1 or p.y< -1.4:continue
+        if abs(dot(p,right))<depth*0.88 and abs(p.y+depth*0.2)<depth*0.50:
+            near+=1
+            if k<6200:extra+=1
+    assert(near>400 and extra>180,"additional near strokes fill every heading")
+    print("PASS near rain heading {yaw}: {near} strokes, {extra} redistributed")

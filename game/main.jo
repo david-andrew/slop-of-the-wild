@@ -10,6 +10,7 @@ use 'shadows.jo'
 use 'dome.jo'
 use 'shader_load.jo'
 use 'pipeline_cache.jo'
+use 'pipeline_warmup.jo'
 from 'shadows.jo' import shadow_frame
 use 'cputime.jo'
 use 'gputime.jo'
@@ -1388,6 +1389,14 @@ render_warmup = ():
     hero_animate(0.0, (if story.beat == .wake: 1.0 else: 0.0))
     enemy_anim_update(0.0)
     wildlife_animate(0.0)
+    # Queue lazy sky/mist/dome/post variants with the already loaded programs,
+    # so the cold driver can compile independent variants in one larger batch.
+    sky_prepare()
+    valley_mist_prepare()
+    dome_prepare()
+    post_begin()
+    ch_init_shaders()
+    game_pipeline_warmup_begin()
     vegetation_warmup()
     character_warmup()
     # Outdoor view (terrain, vegetation, grass, sky, water, characters, post).
@@ -1499,6 +1508,7 @@ render_warmup = ():
                             __platform_poll()
             __platform_poll()
         else: glFinish()
+    game_pipeline_warmup_end()
     shader_load_cache_commit()
     sc = saved_sc
     cpu_timing = ct

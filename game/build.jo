@@ -149,6 +149,14 @@ build_occluder_fade = (i: BuildO, u: BuildU) -> f32:
         corridor = smoothstep(u.fade_width, u.fade_width * 0.45, length(u.cam + cp * tt - i.world))
         corridor *= smoothstep(0.08, 0.25, tt) * (1.0 - smoothstep(0.97, 1.0, tt))
         fade = max(fade, corridor)
+    if u.keep_radius < -0.5 and length(i.world.xz-u.keep_center)<18.0:
+        # Unraised-crown debris can overlap the player's depth without being a
+        # held climbing face. Clear the body corridor completely, including the
+        # endpoint; retain geometry beyond it and outside this local ruin.
+        projection=dot(i.world-u.cam,cp)/max(dot(cp,cp),0.01)
+        corridor=smoothstep(u.fade_width,u.fade_width*0.45,length(u.cam+cp*tt-i.world))
+        corridor*=smoothstep(0.08,0.25,projection)*(1.0-smoothstep(1.05,1.2,projection))
+        if corridor>0.01: fade=1.0
     if timber or u.keep_radius > 0.0:
         if fade > 0.001: fade = 1.0
     clamp(fade, 0.0, 1.0)

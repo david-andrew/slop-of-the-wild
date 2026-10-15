@@ -18,7 +18,7 @@ publish it.
 
 ## Loading and prepared data
 
-The generated page loads five gzip archives before starting Sloppy. A plain
+The generated page loads seven gzip archives before starting Sloppy. A plain
 progress bar covers downloading, decompression, CPU initialization and shader
 compilation. Archive extraction streams directly into individual `Uint8Array`
 files; it does not allocate a second uncompressed archive. HTTPS/localhost
@@ -32,17 +32,27 @@ nature files. With the selected packs, 193 files are shipped (including all 90 p
 replaced by their prepared RGBA records. Unused source downloads, normal maps,
 reference footage and unreferenced models are excluded.
 
-Selected packs are water (1.22 MB gzip), farland (1.96 MB), chime (0.22 MB) and
-textures (25.10 MB). Water/farland avoid roughly 2.6 seconds of CPU work for
+Selected packs are world (15.86 MB gzip), water (1.22 MB), farland (1.96 MB),
+chime (0.22 MB) and textures (25.10 MB). The world pack avoids the first collision/
+heightfield preparation, which measured about eight seconds in the loaded baseline. Water/farland avoid roughly 2.6 seconds of CPU work for
 about 3.2 MB. RGBA textures replace 21.25 MB of compressed PNG inputs, adding
 about 3.9 MB overall while reducing the texture stage from roughly 4–5 seconds
-to 0.8 seconds in the CPU wasm trace. The other geometry and all piano/SFX
-samples are generated during startup.
+to 0.8 seconds in the CPU wasm trace. Other geometry and SFX samples are generated during startup. The same Sloppy piano
+generator runs in a dedicated wasm worker alongside world/graphics initialization.
+The worker transfers its exact compact pack to the main thread; all dynamics and
+registers are validated and ready before gameplay starts. Foley directory entries
+and source stamps participate in the shared audio fingerprint without copying
+Foley sample data into the worker.
 
 The world pack costs 15.86 MB for about three seconds saved; terrain costs
 14.47 MB for about two seconds; structures cost 34.92 MB for about two seconds.
 Prepared piano/SFX together cost 274.42 MB versus the much smaller source WAVs,
-for roughly six seconds saved. These packs are omitted. The extended compact piano pack is 154.19 MB locally; the default package continues to use mono PCM16 WAVs and regenerate the bank. The packager verifies complete piano-manifest coverage so a stale trace cannot omit the added octaves. The extension build ships 95.51 MB of compressed assets across five archives (largest 30.24 MB); all archive bytes/hashes and 90 piano inputs were checked. Timings vary with
+for roughly six seconds saved. These packs are omitted. The extended compact piano pack is 154.19 MB locally; the default package continues to use mono PCM16 WAVs and regenerate the bank. The packager verifies complete piano-manifest coverage so a stale trace cannot omit the added octaves. The Round 69 build ships 111.49 MB of compressed assets across seven archives;
+the complete site is about 121.20 MB including the game and 0.46 MB piano worker.
+It adds the world pack while retaining the compact mono WAV downloads, rather
+than downloading the 101.82 MB compressed stereo piano pack.
+`tools/web_piano_worker_check.py` compares all 154,190,108 generated pack bytes,
+including the source-validation key, against native preparation. Timings vary with
 other work on the host; the original complete generated CPU trace was 20.9 s,
 and selected-pack traces ranged around 16–26 s.
 
@@ -63,7 +73,9 @@ and all startup links are validated before frames begin. Browsers without that
 extension compile synchronously.
 
 Only wasm uses 1024-pixel shadow cascades, scene scale 0.8/0.65 and opening-only
-warmup. Native settings and native full warmup remain unchanged. Clicking the
+warmup. Native scene settings retain their production policy. Native cold warmup compiles
+exact shader/state recipes through a bounded pthread helper; warm caches use the
+release runtime directly. Clicking the
 canvas unlocks Web Audio and pointer lock. Fullscreen uses an explicit button.
 
 Progress and preferences use Sloppy `save_data`/`load_data`, with separate
@@ -78,11 +90,11 @@ The optional real-browser tool owns a temporary HTTP server and isolated browser
 profile. CI does not call it:
 
 ```sh
-CHROMIUM=/path/to/chromium node tools/web_smoke.cjs
+flock /tmp/botw-render.lock env CHROMIUM=/path/to/chromium node tools/web_smoke.cjs
 # Startup-only measurement, without the reload/title checks:
-WEB_SMOKE_MEASURE_ONLY=1 CHROMIUM=/path/to/chromium node tools/web_smoke.cjs
+flock /tmp/botw-render.lock env WEB_SMOKE_MEASURE_ONLY=1 CHROMIUM=/path/to/chromium node tools/web_smoke.cjs
 # CPU logic/asset trace; no real GL context or browser:
-BOTW_LOADTIME=1 WEB_PACKS=water,farland,chime,textures \
+BOTW_LOADTIME=1 WEB_PACKS=world,water,farland,chime,textures \
   node tools/web_trace.cjs build/web/raw.html
 ```
 

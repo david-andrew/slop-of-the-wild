@@ -607,7 +607,7 @@ def main():
                     capture_settings_match(out) and
                     all(digest(out/s['png']) == s['sha256'] and (out/s['jpg']).is_file() for s in shots) and
                     len(manifest.get('contact_sheets',[])) == len({s[0] for s in SCENES})):
-                    print('PASS retained 43 matched captures',flush=True)
+                    print(f'PASS retained {len(shots)} matched captures',flush=True)
                     continue
             if args.resume and name == 'performance' and (out/'performance/route.log').exists():
                 folder = out/'performance'

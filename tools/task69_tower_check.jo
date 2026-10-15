@@ -1,0 +1,14 @@
+# CPU-only occlusion semantics at the sunken crown; no world or GPU needed.
+use '../game/build.jo'
+u=BuildU(cam=vec3(-560,175,1707),player=vec3(-560,172,1702),fade_width=2.6,keep_center=vec2(-560,1695),keep_radius=-5.0)
+loop y in [172.0,172.8,173.6]:
+    foreground=BuildO(vec4(),vec3(-560,f32(y),1703),vec3(0,1,0),vec4(1,1,1,1),PLAIN)
+    assert(build_occluder_fade(foreground,u)==1.0,"local crown clears head, torso and feet fully")
+    u.shadow_pass=1.0
+    assert(build_occluder_fade(foreground,u)==0.0,"all crown/rubble shadows remain")
+    u.shadow_pass=0.0
+behind=BuildO(vec4(),vec3(-560,173,1698),vec3(0,1,0),vec4(1,1,1,1),PLAIN)
+assert(build_occluder_fade(behind,u)==0.0,"crown beyond Jo remains")
+outside=BuildO(vec4(),vec3(-585,172,1703),vec3(0,1,0),vec4(1,1,1,1),PLAIN)
+assert(build_occluder_fade(outside,u)==0.0,"distant masonry remains")
+print("PASS sunken tower: complete local body clearance, retained background masonry and shadows")

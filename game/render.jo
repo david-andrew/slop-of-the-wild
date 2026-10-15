@@ -53,9 +53,18 @@ terr_u = (vp: mat4, shadow: bool) -> TerrU:
         snow_line = 600.0, burn = burn_tex, shadow_pass = f32(int(shadow)), lp = sc_lp, lc = sc_lc, clouds = f32(env.clouds), water = water_bed_tex, has_water = (if water_bed_tex.id != 0: f32(1.0) else: f32(0.0)), noise = terrain_noise_tex, canopy = canopy_tex, has_canopy = (if canopy_tex.id != 0: f32(1.0) else: f32(0.0)))
 
 build_u = (vp: mat4, shadow: bool) -> BuildU:
-    BuildU(vp, sc.cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), 0.004,
+    u = BuildU(vp, sc.cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), 0.004,
         cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), f32(elapsed()), f32(env.wet),
         hooks.glow, f32(int(shadow)), vec3(0, 0, 0), sc_lp, sc_lc, f32(env.clouds), veg_player, fade_width = f32(if pl.state == .climb: 2.6 else: 1.0))
+
+    # The unraised crown is above its buried collision courses, so the player
+    # can be grounded inside its render-only skirt. Clear that local sightline
+    # through both the moving crown and the surrounding world-chunk rubble.
+    if hooks.tower_lift < -70.0 and length(pl.pos.xz-TOWER.xz)<15.0:
+        u.keep_center=TOWER.xz
+        u.keep_radius=-5.0
+        u.fade_width=2.6
+    u
 
 __draw_named_all = (u0: BuildU):
     frustum = frustum_from(u0.vp)
@@ -65,7 +74,7 @@ __draw_named_all = (u0: BuildU):
         if k == "tower":
             u.lift = vec3(0, f32(hooks.tower_lift), 0)
             u.keep_center = TOWER.xz
-            u.keep_radius = 5.0
+            if u.keep_radius >= 0.0: u.keep_radius = 5.0
         if let lf = hooks.named_lift.get(k): u.lift = vec3(0, f32(lf), 0)
         if let c = hooks.named_collapse.get(k):
             u.base = c.xyz

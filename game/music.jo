@@ -245,8 +245,17 @@ drum_lo = Sound()
 drum_hi = Sound()
 combat_entry = Sound()
 
+when TARGET == "wasm":
+    extern __web_piano_deferred = () -> int
+    @export("__web_piano_finish")
+    web_piano_finish = ():
+        piano_init()
+        assert(piano.ready,"browser piano worker pack validated")
+
 piano_init = ():
     if piano.ready: return
+    when TARGET == "wasm":
+        if __web_piano_deferred() != 0: return
     saved = __global_rng
     defer __global_rng = saved
     seed_random(12345)
