@@ -1,0 +1,70 @@
+use '../game/malice.jo'
+use '../game/malice_shape.jo'
+
+# A smoke support must reach zero before its card boundary, with no punched
+# holes or discontinuous per-parcel pigment inside the overlapping body.
+u=MaliceU(amount=1.0,side=1.0,time=9.0)
+body=MaliceO(phase=0.5,facing=1.0,world=vec3(120,250,30))
+center=malice_fs(body,u)
+assert(center.w>0.05 and center.w<0.25,"soft translucent cloud body")
+loop radius in [0.95,1.0,1.1]:
+    body.cross_section=vec2(f32(radius),0)
+    assert(malice_fs(body,u).w==0.0,"smoke fades inside all quad edges")
+body.cross_section=vec2(0,0)
+lo=10.0
+hi=0.0
+loop k in [0..200):
+    body.world=vec3(f32(k)-100,250,30)
+    a=malice_fs(body,u)
+    body.world.x+=0.05
+    b=malice_fs(body,u)
+    assert(length(a-b)<0.002,"shared smoke field has smooth local gradients")
+    assert(a.x>a.y*2.0 and a.z>a.y*1.5,"crimson and dark magenta pigment retain saturation")
+    assert(a.w>0.05,"continuous body without eroded spot holes")
+    lo=min(lo,f64(a.x))
+    hi=max(hi,f64(a.x))
+assert(hi-lo>0.02,"cloud retains broad swirling structure")
+# Cross the polar coordinate seam: the physical cloud must remain continuous.
+body.world=vec3(-150,250,-0.01)
+a=malice_fs(body,u)
+body.world.z=0.01
+b=malice_fs(body,u)
+assert(length(a-b)<0.002,"swirling pigment is continuous across the angle seam")
+u.side= -1.0
+assert(malice_fs(body,u).w==0.0,"front and back supports remain separate depth banks")
+# A height hash correlated with golden-angle azimuth collapsed the smoke
+# into streaks. Every bank must occupy all directions at the title time.
+loop bank in [0..3):
+    sectors=fill(0,8)
+    lo_y=1000.0
+    hi_y= -1000.0
+    loop k in [bank*96..(bank+1)*96):
+        q=malice_parcel(f32(k)/f32(MALICE_SEGMENTS),11.0)
+        angle=atan2(f64(q.z)+f64(bank)*15.0,f64(q.x)-f64(bank*bank)*17.0)
+        sector=clamp(int(floor((angle+PI)/TAU*8.0)),0,7)
+        sectors[sector]+=1
+        lo_y=min(lo_y,f64(q.y))
+        hi_y=max(hi_y,f64(q.y))
+    loop count in sectors: assert(count>=6,"smoke occupies all azimuths instead of a narrow spiral streak")
+    assert(hi_y-lo_y>120.0,"independent parcel heights fill each bank")
+print("PASS story smoke: soft card boundaries, continuous saturated curls, filled banks without streaks")
+
+use '../game/post.jo'
+pigment=vec3(0.18,0.32,0.22)
+highlight=vec3(0.20,0.34,0.24)
+assert(length(mouth_adaptation(pigment,highlight,1.0,0.0)-pigment)<0.000001,"daylight ramp starts at the original colour")
+assert(length(mouth_adaptation(pigment,highlight,0.0,0.64)-pigment)<0.000001,"bloom falloff retains unaffected cave stone")
+previous=pigment
+loop k in [1..101):
+    next=mouth_adaptation(pigment,highlight,1.0,f32(k)*0.0064)
+    assert(length(next-previous)<0.02,"daylight changes smoothly across the full approach")
+    previous=next
+# The final reveal is a faint sky-coloured bloom, not a neutral floor wash.
+near=vec3(0.22,0.24,0.25)
+bright=mouth_adaptation(near,vec3(0.8,0.85,0.9),1.0,0.64)
+assert(length(bright-near)<0.12,"daylight cannot bleach the cave's value range")
+assert(bright.z-near.z>bright.x-near.x,"exit glow carries the blue sky")
+forest=mouth_adaptation(pigment,highlight,1.0,0.64)
+rock=mouth_adaptation(vec3(0.55,0.51,0.44),vec3(0.57,0.53,0.46),1.0,0.64)
+assert(length(forest-rock)>0.15 and forest.y>forest.x,"landscape retains colour and contrast under bright bloom")
+print("PASS daylight adaptation: continuous ramp/falloff, scene contrast and landscape colour retained")

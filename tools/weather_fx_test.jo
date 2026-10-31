@@ -26,8 +26,14 @@ loop half_length in [0.02, 2.0]:
 pu.near=0
 impact=PInst(vec4(0,0,0,0.16),vec4(0.36,0.43,0.48,0.45),vec4(0.2,20,0,0))
 center=part_fs(part_vs(QuadV(vec2(0,0)),impact,pu),pu)
-rim=part_fs(part_vs(QuadV(vec2(0,-0.55)),impact,pu),pu)
-check(center.w<0.01 and rim.w>0.40,"rain crown is an open rim, not a round glow or hit spark")
+peak: f32=0
+loop x in [0..21):
+    loop y in [0..21):
+        q=vec2(f32(x)*0.1-1.0,f32(y)*0.1-1.0)
+        alpha=part_fs(part_vs(QuadV(q),impact,pu),pu).w
+        peak=max(peak,alpha)
+        if x==0 or x==20 or y==0 or y==20: check(alpha<0.001,"rain arc fades before every card edge")
+check(center.w<0.01 and peak>0.30,"rain crown has a visible broken rim and open centre")
 check(part_vs(QuadV(vec2(1,-1)),impact,pu).pos.y==0,"crown remains rooted on the impact surface")
 check(part_vs(corner,impact,pu).pos.y<0.13,"crown stays low to the ground")
 hf.n = 64

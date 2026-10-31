@@ -20,24 +20,28 @@ print("smoke maximum 60 Hz step: {maximum_step:.4}m")
 assert(maximum_step<1.5,"world-scale smoke moves less than a panorama pixel per frame")
 loop night in [0.0,1.0]:
     u.night=f32(night)
-    transparent=0
+    lowest=f32(1)
+    highest=f32(0)
     visible=0
     loop k in [0..192):
-        i=MaliceO(vec4(),0.5,vec2(0,0),1,f32(k)*3.8)
+        i=MaliceO(vec4(),0.5,vec2(0,0),1,malice_parcel(f32(k)/192.0,0.0))
         c=malice_fs(i,u)
         assert(c.w>=0.0 and c.w<0.43,"bounded density instead of opaque tube surface")
-        if c.w<0.05: transparent+=1
+        lowest=min(lowest,c.w)
+        highest=max(highest,c.w)
         if c.w>0.10: visible+=1
         if night>0.0:
-            assert(c.z>c.x*0.65 and c.x>c.y*3.0,"night smoke glows magenta rather than red")
-            assert(luma(c.xyz)<0.15,"night energy is a dim glow")
+            # Crimson-magenta, never orange or brown.
+            assert(c.x>c.y*3.0 and c.z>c.y,"night smoke glows crimson-magenta rather than orange")
+            # Pre-alpha colour; parcels draw at most about 21% opacity.
+            assert(luma(c.xyz)<0.22,"night energy is a dim glow")
         i.cross_section=vec2(1,1)
         assert(malice_fs(i,u).w==0.0,"no rectangular parcel edge")
         i.phase=0.0
         i.cross_section=vec2(0,0)
         assert(malice_fs(i,u).w==0.0,"recycled parcel fades invisibly at the source")
-    assert(transparent>10 and visible>40,"broken density silhouette with both holes and smoky mass")
-print("PASS malice: 288 circulating parcels; continuous advection, feathered edges, density holes and dim magenta night energy")
+    assert(highest-lowest>0.05 and visible>40,"uneven density through a continuous smoky mass")
+print("PASS malice: 288 circulating parcels; continuous advection, feathered edges, uneven density and dim crimson night energy")
 
 pigment=vec3(0.72,0.64,0.34)
 loop k in [0..101):

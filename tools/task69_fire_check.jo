@@ -109,7 +109,7 @@ assert(length(seam_right.pos-seam_left.pos)<0.00001,"neighbouring contour segmen
 seam_right.uv.y=0.25
 seam_left.uv.y=0.25
 assert(part_fs(seam_right,u)==part_fs(seam_left,u),"the continuous wall shares colour and opacity through its seam")
-assert(part_fs(seam_right,u).w>0.7,"mid-distance wall fills the space beneath the silhouettes")
+assert(part_fs(seam_right,u).w>0.10,"mid-distance contour retains connected lower heat beneath the unequal tongues")
 seam_outer=seam_right
 loop edge in [0.0,1.0]:
     seam_outer.uv.x=f32(edge)

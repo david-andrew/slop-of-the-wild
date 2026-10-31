@@ -1,0 +1,32 @@
+build:
+    opt = release
+use '../game/gfx.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/interiors.jo'
+use '../game/vegetation.jo'
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+vegetation_place()
+# Original forest-floor fixtures from the master seed. Mountain relief must
+# not consume another random draw and move these stones or fallen branches.
+has_forest_landmark=(name: str, expected: vec3, tall: f64) -> bool:
+    loop prop in places:
+        if length(prop.pos-expected)>0.002 or abs(prop.height-tall)>0.002:continue
+        return vmodels[prop.model].name==name
+    false
+assert(has_forest_landmark("Moss_Rock_Medium_2",vec3(-992.5139,188.1613,1623.8923),1.8774),"master forest west stone stays planted")
+assert(has_forest_landmark("Moss_Rock_Medium_3",vec3(-1002.7722,187.6523,1624.1844),1.8586),"master forest tree-root stone stays planted")
+assert(has_forest_landmark("DeadTree_1",vec3(-1003.9168,188.5003,1632.7549),2.0),"master forest fallen branch stays rooted")
+assert(has_forest_landmark("Moss_Rock_Medium_1",vec3(-1023.3183,186.0868,1630.6665),1.6067),"master forest north stone stays planted")
+assert(has_forest_landmark("DeadTree_2",vec3(-1001.4630,187.7125,1603.3651),2.0),"master forest fallen trunk stays rooted")
+loop prop in places:assert(prop.model>=0 and prop.model<vmodels.len(),"valid model throughout the placed world")
+outside=0
+loop item in places:
+    if hypot(f64(item.pos.x)+1288.0,f64(item.pos.z)-2221.0)>170.0:outside+=1
+assert(outside==18379,"the local ridge keeps the entire off-mountain placement budget")
+print("PASS scatter: five master forest landmarks and all {outside} off-mountain placements retained")

@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'build/round83'
 SCENES = {
     'fire': (720, {'BOTW_FIRE': '1'}, [150, 230, 260, 290, 320, 420, 600]),
+    'rainfire': (600, {'BOTW_FIRE': '1', 'BOTW_WEATHER_SEQ': '180:rain'}, [150, 330, 480]),
     'tentfire': (960, {'BOTW_TENTFIRE': '5', 'BOTW_AT': '-955,1964,0'}, [150, 230, 260, 290, 320, 420, 600, 900]),
     # Raw telemetry flushes each 120 frames: retain every measured shock row.
     'shock': (480, {'BOTW_AT': '-1190,1665,-0.9', 'BOTW_WEATHER': 'storm', 'BOTW_BOLT': '300'}, [298, 300, 302, 304, 310, 320]),

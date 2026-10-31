@@ -357,7 +357,28 @@ __add_clips = (lib: mut BLib, path: str, only: str[], skip: str[]):
         strip_motion(bc, lib.skel, "pelvis")
         strip_motion(bc, lib.skel, "root")
         if length(bc.motion) > 0.0: print("  {an.name}: root motion removed {bc.motion}")
+        if an.name=="LayToIdle": bake_wake_hands(bc,lib.skel)
         lib.clips.push(bc)
+
+# Resting fingers curl progressively around the palm, with a little more
+# flexion in the ring and little finger. This is baked once, not solved per frame.
+# The supporting left palm and every wrist/arm track retain the authored keys.
+bake_wake_hands = (clip: mut BClip, sk: Skel):
+    loop j in [0..sk.names.len()):
+        name=lower(sk.names[j])
+        finger=contains(name,"index_") or contains(name,"middle_") or contains(name,"ring_") or contains(name,"pinky_")
+        if not finger or contains(name,"leaf"): continue
+        segment=if contains(name,"_01_"):0 else if contains(name,"_02_"):1 else:2
+        left=ends_with(name,"_l")
+        spread=if contains(name,"pinky"):1.20 else if contains(name,"ring"):1.10 else:1.0
+        angle=([0.16,0.37,0.28][segment])*spread*(if left:0.30 else:1.0)
+        axis=quat_rotate(quat_conj(mrot(sk.gm[j])),v3(0,0,(if left:-1.0 else:1.0)))
+        local=sk.gm[j]
+        if sk.parent[j]>=0: local=inverse(sk.gm[sk.parent[j]])*local
+        target=normalize(quat_mul(mrot(local),quat_axis_angle(axis,angle)))
+        loop f in [0..clip.frames):
+            weight=1.0-smoothstep(0.90,1.45,f64(f)/clip.fps)
+            clip.r[j][f]=quat_nlerp(clip.r[j][f],target,f32(weight))
 
 bake_humanoid_anims = ():
     humanoid_canon()
@@ -1135,7 +1156,7 @@ hero_shoulder_loops = (part: mut BPart, bones: int):
     hero_soft_normals(part,1.0)
     # Fair the coarse source cage before refinement; smoothing only its dense
     # descendants leaves the original axillary wedge visible between loops.
-    loop iteration in [0..4):
+    loop iteration in [0..8):
         sums: {str: ChVert} = {}
         counts: {str: int} = {}
         loop tri in [0..part.idx.len()/3):
@@ -1206,7 +1227,7 @@ hero_shoulder_loops = (part: mut BPart, bones: int):
         part.idx=indices
     # Relax the back's imported muscle ridges, and diffuse abrupt arm/chest
     # influence boundaries. The weld map also prevents a split at UV seams.
-    loop iteration in [0..7):
+    loop iteration in [0..12):
         sums: {str: ChVert} = {}
         counts: {str: int} = {}
         loop tri in [0..part.idx.len()/3):
@@ -1226,7 +1247,7 @@ hero_shoulder_loops = (part: mut BPart, bones: int):
             avg=sums.get(hero_vertex_key(a.pos)) ?? a
             axilla=smoothstep(0.10,0.17,abs(f64(a.pos.x)))*(1.0-smoothstep(0.25,0.33,abs(f64(a.pos.x))))
             axilla*=1.0-smoothstep(1.31,1.39,f64(a.pos.y))
-            strength=if iteration<4:0.38 else:axilla*0.48
+            strength=if iteration<8:0.48 else:axilla*0.54
             v=hero_blend_vertex(a,avg,f32(mask*strength),bones)
             # Keep material coordinates; only the surface and deformation change.
             v.uv=a.uv
@@ -1274,6 +1295,28 @@ hero_deltoid_attachment = (v: ChVert, sk: Skel) -> ChVert:
     anchored.jnt=vec4(js[0],js[1],js[2],js[3])
     hero_blend_vertex(v,anchored,f32(attachment),sk.names.len())
 
+# A continuous shoulder attachment replaces the imported muscle-to-arm weight
+# boundary. The scapula follows the chest/clavicle while the cap eases onto the
+# humerus. This is baked; wrists, contacts and the runtime palette are unchanged.
+hero_shoulder_weights = (v: ChVert, sk: Skel) -> ChVert:
+    x=abs(f64(v.pos.x))
+    y=f64(v.pos.y)
+    mask=smoothstep(0.065,0.115,x)*(1.0-smoothstep(0.29,0.35,x))
+    mask*=smoothstep(1.28,1.36,y)*(1.0-smoothstep(1.49,1.57,y))
+    mask*=1.0-smoothstep(-0.015,0.040,f64(v.pos.z))
+    if mask<=0.0: return v
+    side=if v.pos.x>0:"l" else:"r"
+    upper=skel_find(sk,"upperarm_"+side)
+    clavicle=skel_find(sk,"clavicle_"+side)
+    chest=skel_find(sk,"spine_03")
+    if upper<0 or clavicle<0 or chest<0: return v
+    arm=smoothstep(0.155,0.305,x)
+    collar=smoothstep(0.075,0.175,x)*(1.0-arm)
+    rounded=v
+    rounded.jnt=vec4(f32(upper),f32(clavicle),f32(chest),0)
+    rounded.wgt=vec4(f32(arm),f32(collar),f32(1.0-arm-collar),0)
+    hero_blend_vertex(v,rounded,f32(mask*0.92),sk.names.len())
+
 # Blend the elbow across several refined loops instead of inheriting the source's
 # abrupt upper/lower-arm boundary. Hands and the contact rig remain unchanged.
 hero_elbow_weights = (v: ChVert, sk: Skel) -> ChVert:
@@ -1315,7 +1358,7 @@ hero_surface_fair = (part: mut BPart):
             y=f64(p.y)
             # Broad scapular/spinal surface and the deltoid insertion; no face,
             # wrist, pelvis, toes or soles participate in this relaxation.
-            upper=smoothstep(1.00,1.16,y)*(1.0-smoothstep(1.37,1.46,y))*(1.0-smoothstep(0.40,0.57,x))
+            upper=smoothstep(1.00,1.16,y)*(1.0-smoothstep(1.43,1.53,y))*(1.0-smoothstep(0.34,0.49,x))
             leg=smoothstep(0.10,0.24,y)*(1.0-smoothstep(0.62,0.77,y))
             forearm=smoothstep(0.38,0.44,x)*(1.0-smoothstep(0.59,0.63,x))*smoothstep(1.18,1.24,y)*(1.0-smoothstep(1.35,1.40,y))
             mask=max(max(upper,leg),forearm*0.70)
@@ -1327,7 +1370,7 @@ hero_surface_fair = (part: mut BPart):
             delta=q-p
             # Bound cumulative movement; smoother knees retain their kneecap,
             # and the calf still tapers into the unchanged ankle/contact region.
-            limit=if forearm>max(upper,leg):0.004 else:(if leg>upper:0.014 else:0.010)
+            limit=if forearm>max(upper,leg):0.004 else:(if leg>upper:0.014 else:0.018)
             delta*=f32(min(1.0,limit/max(0.000001,f64(length(delta)))))
             part.verts[i].pos=p+delta
 
@@ -1439,9 +1482,13 @@ hero_form = (bm: mut BModel, sk: Skel, bare: bool):
             hero_joint_surface(part,sk)
             hero_anatomy_normals(part)
         loop mut v in part.verts:
-            if skin_part and bare: v=hero_deltoid_attachment(v,sk)
+            if skin_part and bare:
+                v=hero_deltoid_attachment(v,sk)
+                v=hero_shoulder_weights(v,sk)
             if contains(part.key,"Hair"):
-                v.pos.y = 1.708+(v.pos.y-1.708)*0.66
+                # Recess the coarse imported hairstyle inside the new crown.
+                # Only the curved overlapping clumps supply the silhouette.
+                v.pos=vec3(v.pos.x*0.78,1.708+(v.pos.y-1.708)*0.50,(v.pos.z+0.023)*0.78-0.023)
             p = v.pos
             n = v.nrm
             tangent = normalize(cross(n,(if abs(n.y)<0.9:vec3(0,1,0) else:vec3(1,0,0))))
@@ -2180,20 +2227,20 @@ hair_tail = (bm: mut BModel, sk: Skel, head_parts: BPart[], brow: f64):
             __xp_tri(bp,crown[row][k2],crown[row+1][k2],crown[row+1][k],col,jh,w1,jh,w1,jh,w1)
     # Overlapping swept clumps have a convex ridge, recessed edges and pointed
     # ends. The shorter crown layer crosses the longer nape layer; neither
-    # follows a parallel strip from crown to hem. Five longitudinal spans
-    # and four transverse spans keep the full hero below its original budget.
-    loop lock in [0..18):
-        layer=if lock<10:0 else:1
-        count=if layer==0:10 else:8
-        index=if layer==0:lock else:lock-10
+    # follows a parallel strip from crown to hem. Nine longitudinal spans
+    # round each clump into a fine tip within the existing hair draw.
+    loop lock in [0..24):
+        layer=if lock<13:0 else:1
+        count=if layer==0:13 else:11
+        index=if layer==0:lock else:lock-13
         a=TAU*(f64(index)+0.22+f64(layer)*0.41)/f64(count)
         a+=0.09*sin(f64(index)*2.3)
         front=max(0.0,cos(a))
         tip=brow-0.120+front*0.157+0.023*sin(f64(index)*2.7)
         if layer==1: tip+=0.065
         rows: vec3[][]
-        loop row in [0..6):
-            t=f64(row)/5.0
+        loop row in [0..10):
+            t=f64(row)/9.0
             sweep=if sin(a)<0.0:-1.0 else:1.0
             angle=a+sweep*(0.30*sin(t*PI)+0.19*t)+0.09*sin(f64(index))*t*t
             y=lerp(brow+0.110-f64(layer)*0.012,tip,pow(t,1.10))
@@ -2201,24 +2248,45 @@ hair_tail = (bm: mut BModel, sk: Skel, head_parts: BPart[], brow: f64):
             crown_t=clamp((y-low)/(brow+0.111-low),0.0,1.0)
             radius=sqrt(max(0.001,1.0-pow(crown_t,2.1)))*0.96+0.025
             radius*=1.0-0.12*smoothstep(low,tip,y)
-            width=max(0.001,0.27*pow(sin(PI*t),0.72))*(0.87+0.18*sin(f64(index)*1.8))
+            width=max(0.0006,0.235*pow(sin(PI*t),0.85))*(0.87+0.18*sin(f64(index)*1.8))
             ring: vec3[]
             loop cross_section in [0..5):
                 u=f64(cross_section)/2.0-1.0
                 aa=angle+u*width
                 ridge=pow(max(0.0,1.0-u*u),0.70)
-                lift=(0.021*ridge+f64(layer)*0.008)*sin(PI*t)
+                lift=(0.010*ridge+f64(layer)*0.004)*sin(PI*t)
                 ring.push(v3(sin(aa)*(0.093*radius+lift)-0.008*(1.0-t),y+0.005*ridge*sin(PI*t),-0.023+cos(aa)*(0.116*radius+lift)))
             rows.push(ring)
-        loop row in [0..5):
+        loop row in [0..9):
             loop k in [0..4):
                 value=0.78+0.16*(0.5+0.5*cos(a-0.7))+f64(layer)*0.035
-                value*=0.78+0.22*sin(PI*(f64(k)+0.5)/4.0)
-                value*=0.90+0.10*sin(PI*(f64(row)+0.5)/5.0)
+                value*=0.90+0.10*sin(PI*(f64(k)+0.5)/4.0)
+                value*=0.90+0.10*sin(PI*(f64(row)+0.5)/9.0)
                 col=gold*f32(value)
                 __xp_tri(bp,rows[row][k],rows[row+1][k],rows[row][k+1],col,jh,w1,jh,w1,jh,w1)
                 __xp_tri(bp,rows[row][k+1],rows[row+1][k],rows[row+1][k+1],col,jh,w1,jh,w1,jh,w1)
     hero_soft_normals(bp,1.0)
+    # Share each clump's curved grid vertices instead of emitting six copies
+    # per quad. Averaged pigment also removes hard face-to-face colour bands.
+    welded: ChVert[]
+    keys: {str: int} = {}
+    counts: int[]
+    remap: int[]
+    loop v in bp.verts:
+        key="{v.pos.x},{v.pos.y},{v.pos.z}:{v.jnt}:{v.wgt}"
+        index=keys.get(key) ?? -1
+        if index<0:
+            index=welded.len()
+            keys[key]=index
+            welded.push(v)
+            counts.push(1)
+        else:
+            count=counts[index]+1
+            welded[index].col=mix(welded[index].col,v.col,1.0/f32(count))
+            counts[index]=count
+        remap.push(index)
+    loop mut index in bp.idx: index=u32(remap[int(index)])
+    bp.verts=welded
     add_part(bm, bp, "plain", "tail")
     plain = image(4, 4, vec4(1, 1, 1, 1))
     img_set_alpha(plain, none)

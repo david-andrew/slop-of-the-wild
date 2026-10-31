@@ -1,0 +1,70 @@
+# CPU geometry/paint contracts and baked wake finger curvature.
+use '../game/chars.jo'
+use '../game/items.jo'
+use '../game/skel.jo'
+use '../game/clips.jo'
+use '../game/hero_motion.jo'
+
+surface = (b: MeshB, label: str):
+    assert(b.vs.len()>0 and b.idx.len()%3==0)
+    loop v in b.vs:
+        assert(abs(length(v.normal)-1.0)<0.0001,"unit sculpted normals")
+    loop t in [0..b.idx.len()/3):
+        a=b.vs[int(b.idx[t*3])]
+        bb=b.vs[int(b.idx[t*3+1])]
+        c=b.vs[int(b.idx[t*3+2])]
+        n=cross(bb.pos-a.pos,c.pos-a.pos)
+        assert(length(n)>0.00000000001 and dot(n,a.normal+bb.normal+c.normal)>0,"outward nondegenerate sculpt")
+    print("PASS {label}: {b.vs.len()} vertices; {b.idx.len()/3} outward triangles")
+surface(old_man_face_mesh(),"continuous painted face")
+surface(old_man_beard_mesh(),"overlapping swept beard locks")
+# A sculpt may be continuous yet still read as a blank egg. Inspect actual
+# front-facing painted vertices for the contrast needed at the held camera.
+face=old_man_face_mesh()
+loop side in [-1.0,1.0]:
+    dark=0
+    light=0
+    brow=0
+    loop v in face.vs:
+        x=f64(v.pos.x)*side
+        y=f64(v.pos.y)
+        if v.pos.z<0.19: continue
+        pigment=f64(v.color.x+v.color.y+v.color.z)/3.0
+        if x>0.028 and x<0.075 and y>0.092 and y<0.122:
+            if pigment<0.18: dark+=1
+            if pigment>0.24: light+=1
+        if x>0.022 and x<0.080 and y>0.120 and y<0.148 and pigment>0.60: brow+=1
+    print("{side} painted eye: {dark} dark socket, {light} catch, {brow} brow vertices")
+    assert(dark>=3 and light>=1 and brow>=3,"each eye has dark sockets, a light catch and heavy pale brow")
+hood=old_man_hood_mesh()
+assert(hood.idx.len()/3==1152,"single-sided shell and one lip, no reversed inner shell")
+surface(hood,"single hood shell")
+# The bridge grows continuously out of the forehead, with no separate bulb.
+loop y in [0..120):
+    v=lerp(-0.25,0.80,f64(y)/120.0)
+    a=old_face_point(0.0,v)
+    b=old_face_point(0.0,v+0.001)
+    assert(length(b-a)<0.00035,"continuous nose/forehead surface")
+old_man.spirit=1.0
+old_man.opacity=0.52
+assert(old_man_face_opacity()>0.90 and old_man_face_opacity()<1.0,"spectral face retains readable opacity")
+m=load_model("assets/models/hero_bare.mdl")
+lib=load_humanoid_anims()
+p=wake_pose(m,lib,1.8)
+loop side in ["l","r"]:
+    hand=bone_index(m,"hand_"+side)
+    base=motion_point(m,p,bone_index(m,"middle_01_"+side))
+    mid=motion_point(m,p,bone_index(m,"middle_02_"+side))
+    tip=motion_point(m,p,bone_index(m,"middle_04_leaf_"+side))
+    cosine=dot(normalize(mid-base),normalize(tip-mid))
+    assert(cosine<(if side=="r":0.95 else:0.999),"baked wake fingers curve through the phalanges")
+    assert(length(tip-motion_point(m,p,hand))<0.19,"relaxed fingers stay close to palm")
+    print("PASS {side} wake finger bend cosine {cosine:.5}")
+
+# Conservative culling must retain partial intersections and canopy-sized bounds.
+vp=perspective(radians(60.0),16.0/9.0,0.1,200.0)*look_at(vec3(0,2,8),vec3(0,1,0),vec3(0,1,0))
+assert(old_man_in_view(vp,vec3(0,0,0)),"held king stays visible")
+assert(old_man_in_view(vp,vec3(10,0,0)),"partial staff/canopy intersection stays visible")
+assert(not old_man_in_view(vp,vec3(1000,0,0)),"offscreen king is rejected before detailed draws")
+assert(not old_man_in_view(vp,vec3(0,0,1000)),"king behind the view is rejected")
+print("PASS king view bounds: body/staff/canopy and partial intersections retained; offscreen detail rejected")

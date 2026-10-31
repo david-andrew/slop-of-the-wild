@@ -1,11 +1,234 @@
 # Performance — Sloppy 0.6.0, 2026-10-15
 
 Unmodified official **0.6.0** (`7c8d133`), i7-6700 / GTX 1070, Wayland and XWayland,
-**2133×1200 physical pixels**, production dynamic scene scale. All outliers are
+**2133×1200 physical pixels**. Dynamic and fixed scene scales are identified per run. All outliers are
 retained. These are **producer/present-return intervals, not scanout timestamps**;
 the shared desktop is not an isolated hardware guarantee.
 
-## Current startup — pure Sloppy Vulkan batches, 2026-10-15
+## Round 72 camera follow-up
+
+Master `101d247` was merged into `sol/work` as `0739acc` before this follow-up.
+Stone-wall climbing now eases to a 5.3 m boom, hip-height look point and 0.65 rad
+downward pitch. The supplied Temple gameplay frame 180 and final frame 181
+exclude the dark aisle underside and its ragged boundary; masonry stays opaque.
+Natural cliffs use a 5 m oblique view with a retained shoulder chosen once from
+frame-edge scenery probes. Lens clearance remains active. The cliff draw
+decorator receives its existing inactive-player marker during opaque climbing,
+removing the exposed fragment dither without changing the cliff shader,
+mineral response, geometry or uniform layout.
+
+The final capture-only pack passes: **50 requested frames plus 37 final PNGs**.
+Every PNG was viewed downscaled beside `/tmp/crit72pack` and the previous own
+`build/sol72/release-pack`; 24 are pixel-identical to each reference. Other
+differences include the requested master character/weather merge and the two
+camera compositions. Tent-fire frame 900 and final are pixel-identical to an
+additional render of the merged baseline. The requested climb frame 180 and
+final frame 181 also exactly match their independently rendered timing-fixture
+counterparts, establishing the matched simulation times.
+
+Full-frame cliff luma standard deviation improves **13.505 → 24.094** at
+1280×720 (Pillow L conversion). The near held skin remains smooth and low-contrast
+at five metres. **Its material is left unchanged for Astra**; the new framing
+supplies the cliff silhouette, valley, terrain and sky context.
+
+Matched timing controls use the merged baseline and final binaries, X11/Vulkan,
+1280×720, fixed scene scale 1.00, 1/60 simulation, frozen 11:00 clear and weather
+seed 31. Three AB/BA/AB pairs per scene run 360 frames. Each run's nearest-rank
+p99 excludes frames 1–60 (300 samples); the table is the **median of three run
+p99 values**, not a pooled percentile. All runs and tails are retained.
+
+| Scene | Baseline thread p99, ms | Final thread p99, ms | Baseline wall p99, ms | Final wall p99, ms |
+|---|---:|---:|---:|---:|
+| Temple gameplay climb | 6.796 | 5.579 | 10.858 | 5.726 |
+| Cliff gameplay climb | 5.102 | 6.488 | 6.147 | 7.103 |
+
+**Strict cliff CPU p99 non-regression is not established.** Its thread point
+estimate rises by 1.386 ms even though per-run thread p50 improves. Baseline
+cliff p99 spans 3.455–6.918 ms; final spans 6.037–9.104 ms. Temple improves in
+all three pairs. The shared host is not isolated; the variation does not prove
+that the cliff cannot regress. No measured callback after frame 60 exceeds 25 ms.
+Raw per-run settings, executable hashes, frame samples and the summary are in
+[`paired-cpu-v3`](../build/sol72-followup/paired-cpu-v3/summary.json).
+
+The complete-pack follow-up repeats the **120-second real-dt forest route at
+2133×1200 physical output**, with dynamic and fixed scale 1.00 measured separately.
+Both select immediate (driver mailbox fallback). Steady percentiles exclude the
+first 240 frames; these are present-return intervals, not scanout. All tails and
+shared-host variation remain in the raw logs.
+
+| Route | Observed scene scale | Present p50, ms | Present p99, ms | Present worst, ms | Thread p99, ms | Intervals >25 ms |
+|---|---|---:|---:|---:|---:|---:|
+| Dynamic | 0.80 | 12.233 | 16.829 | 32.751 | 10.851 | 3 |
+| Fixed | 1.00 | 15.200 | 20.627 | 40.166 | 11.617 | 12 |
+
+The 720-frame diagnostic profile reduces average camera-update wall time from
+about 0.095 to 0.072 ms, and its instrumented thread p99 is 3.658 → 3.158 ms.
+Average wall time at terrain selection rises, a stage that also streams node
+buffers. This does not locate the p99 increase in camera CPU work. Instrumented results
+are diagnostic and do not replace the uninstrumented cohort above. Full stage
+traces are in `build/sol72-followup/cliff-profile/`.
+
+The **complete final pack passes**, including both forest routes, 13 audio clips
+and all eight regression groups (`feel_test`, `integration_test`, `input_check`,
+`opening_test`, `combat_check`, `weather_fx_test`, `music_harmony_check`,
+`late_story_check`). Source and screenshot hashes were verified against the final
+tree, and all 87 capture PNGs have recorded visual comparisons.
+
+A longer 720-frame guarded cliff cohort could not obtain an accepted pair in
+four attempts. The first was rejected after an Astra `final-traversal/check`
+GPU context overlapped its launch. The other three failed the unchanged
+pre-launch CPU/GPU activity limits (CPU <12%, GPU <5%); no thresholds were
+relaxed. Samples and rejection reasons remain in
+[`cliff-quiet`](../build/sol72-followup/cliff-quiet/summary.json).
+**The cliff CPU p99 gate remains unresolved.**
+
+The outer short-cohort timing session returned 143 after all 12 completed
+measurement summaries and the successful tent-fire control were printed. The
+cause is unknown; independent validation confirms all 12 complete 360-sample
+logs and their saved summaries. This is not treated as a benchmark PASS verdict.
+
+`camera_check`, `cliff_climb_check` (five routes, 1,800 frames),
+`climb_masonry_check`, `temple_climb_camera_check`, `tower_base_climb_check`, and
+`tooling_check` pass. The new Temple check is in `cpu_checks`; it covers roof
+framing, the clear opaque-wall sightline and immediate manual look input.
+`prepare_assets.sh` and `prepared_assets_check.sh` pass on the final tree,
+including complete structure/collision/roof/RNG byte equivalence. The initial
+merge-stale structure cache failure and superseded diagnostics remain available.
+
+Evidence: [`final pack`](../build/sol72-followup/final-pack-v3/index.html),
+[`Temple matched frames`](../build/sol72-followup/comparison/matched-temple-climb-gameplay.jpg),
+[`cliff matched frames`](../build/sol72-followup/comparison/matched-climb.jpg),
+[`all comparison results`](../build/sol72-followup/comparison/summary.json), and
+[`visual review record`](../build/sol72-followup/comparison/reviewed.json).
+
+## Round 72 — climbing camera and explicit forest scales
+
+Climbing masonry stays opaque. If the requested lens crosses a stone face,
+including Jo's held wall, the camera finds a clear back or side view on Jo's
+side. The existing `BuildU` layout stays 552 bytes: a reserved value in its
+keep-radius slot selects this policy, and named tower/crown behavior retains
+its existing settings. Identical climb-clearance queries are reused, and an
+unobstructed wall-normal view ends the search early. The cliff pack shot now
+uses the gameplay camera; a Temple gameplay shot accompanies the existing
+fixed wall test.
+
+The full pack measures the same **120-second real-dt forest route** twice at
+**2133×1200 physical output**: production dynamic scale and fixed **scene scale
+1.00** (`BOTW_SCALE=1`). Both summaries record requested and observed scales.
+Each route owns a separate bounded render lock. Nearest-rank steady percentiles
+exclude the first 240 frames; raw logs retain all outliers. These are present-call
+return intervals, not display scanout measurements.
+
+| 2133×1200 route metric | Dynamic scale 0.72 / 0.80 | Fixed scale 1.00 |
+|---|---:|---:|
+| Present-return p50, ms | 11.581 | 15.769 |
+| Present-return p99, ms | 14.710 | 19.896 |
+| Present-return worst, ms | 1229.987 | 29.384 |
+| CPU callback thread p99, ms | 8.426 | 11.641 |
+| CPU callback wall p99, ms | 14.198 | 19.056 |
+| Present-return intervals >25 ms | 1 | 2 |
+| Steady samples | 9884 | 7278 |
+
+Both runs selected **immediate (driver mailbox fallback)**. Route distance was
+427.9 / 430.2 m. Full logs, scale batches,
+and summaries are in `build/sol72/release-pack/performance/` and
+`build/sol72/release-pack/performance-full-scale/`.
+
+The dynamic route retains a **1,229.987 ms** present-return stall at frame
+7,920 (94.614 s): callback wall/thread were 77.037/75.210 ms and the present
+call itself was 0.285 ms. No competing game GPU context was observed by the
+1 Hz audit. The cause of this stall remains unresolved; it is included in the
+worst and >25 ms counts. Raw context is in `build/sol72/route-stall-context.json`.
+
+Matched CPU controls use 1280×720 X11/Vulkan, scene scale 1.00, fixed 1/60
+simulation, weather seed 31, frozen 11:00 clear, and production world seeds.
+Three AB/BA/AB pairs each run 720 frames; pooled frames 61–720 provide 1,980
+samples per version/scene. Temple movement stops at frame 300 to retain the same
+face, and frame-180/720 checkpoints assert climbing. Each launch requires CPU
+<12% and GPU <5% beforehand. A 1 Hz GPU-context audit rejects entire competing-game
+pairs; all attempts and timing tails remain available. The measured camera and
+render sources exactly match the final tree. Only a comment and the loading-only
+pipeline recipe hashes changed after this cohort.
+
+| CPU thread p99, ms | Master 7245dc7 | Candidate | Delta |
+|---|---:|---:|---:|
+| Temple gameplay climb/hold | 5.829 | 5.461 | -0.368 |
+| Cliff gameplay climb/hold | 4.341 | 4.412 | +0.071 |
+| Forest | 7.772 | 9.632 | +1.860 |
+
+**Strict CPU p99 non-regression is not established.** The cliff and forest
+point estimates above increase. Unchanged-binary cliff controls under the same
+guards shifted by -1.718 ms, +0.731 ms. This demonstrates variation; it does not
+prove the candidate cannot regress. Resolving this gate needs quieter or
+isolated hardware. Raw medians, tails, per-run activity, rejected attempts and
+binary hashes are in `quiet-layout-cpu/`, `quiet-layout-cpu-summary.json`, and
+`quiet-noop-cpu/` under `build/sol72/`.
+
+The earlier 560-byte uniform candidate was replaced by the original 552-byte
+layout. Its guarded p99 results (Temple/cliff/forest: 6.353→5.786,
+3.421→4.838, 7.629→8.094 ms) remain in `quiet-cpu-summary.json`; they are not
+pooled into the selected candidate's cohort. Earlier non-gated/prototype runs
+remain under `paired-cpu-verified/` and `probe-*`. Both baseline and candidate
+experienced `vkAllocateMemory failed (-2)` during earlier runs; a separate game
+was observed using the GPU while the render lock was free. Failed runs are
+retained rather than treated as successful measurements.
+
+Pure Sloppy pipeline recipes had become stale: only 18 variants entered the
+control cold batch. Refreshing the canonical SPIR-V hashes puts 51 variants
+into the existing batch. There are 47 program recipes / 53 observed variants;
+two variants already exist during uploads. Full warmup still finishes before
+play. `tools/capture_pipeline_recipes.py` creates an instrumented private fixture,
+observes hashes and keys, and writes a candidate under `build/` without changing
+production sources. The vendored runtime remains unchanged; no C was added.
+
+Exact 2133×1200 startup controls use scene scale 1.00, prepared assets, one
+completed frame, fresh local Vulkan/NVIDIA caches for each cold launch and the
+same cache for three warm launches. Build, lock and quiet waits are excluded;
+system/page caches remain intact.
+
+| Startup metric | Master 7245dc7 | Final |
+|---|---:|---:|
+| Cold in-game load, s | 12.33 | 11.00 |
+| Cold render warmup, s | 10.905 | 9.685 |
+| Warm median load, s | 1.67 | 1.50 |
+| Warm load range, s | 1.60–2.38 | 1.47–1.53 |
+
+One cold launch per version does not establish a repeatable speedup. Every
+sample and pre-launch activity measurement remains in `startup-before/` and
+`startup-release/` under `build/sol72/`. Camera-only and recipe-only experiments
+are retained separately in `startup-after/` and `startup-recipes/`; they are not
+pooled into this final comparison. Cold load remains about eleven seconds.
+
+Regenerate recipes after shader changes with
+`python3 tools/capture_pipeline_recipes.py build/recipes-NAME`, then validate a
+fresh local cache and first-use transitions before adopting the candidate.
+
+Validation: camera and masonry headless checks, cliff/tower climb controls,
+rendered tower clearance (2,600 frames), rendered occluder pixels, and tooling
+checks pass. `tools/prepare_assets.sh` followed by
+`tools/prepared_assets_check.sh` passes complete prepared/generated byte
+equivalence. Fresh-cache warmup covers **55 → 55** pipelines; the first-weather
+check passes. The final full pack passes **50 captures**, both **120-second**
+routes, **13 audio clips**, and **eight checks**.
+
+The pack GPU-process audit records 0 overlapping game-context samples;
+its complete audit is retained in `release-pack-gpu-audit.json`. Every final
+shot was viewed downscaled side by side with `/tmp/crit72pack/captures`:
+**48 pixel-identical of 50**; the cliff gameplay camera and new
+Temple gameplay view are the intentional differences. Matched before/final
+climb views and the requested-orbit held-wall diagnostic were also viewed.
+No new grid, dither, card edge, aliasing, black blob, colour cast or shape
+repetition was observed.
+
+Evidence stays under `build/sol72/`: `release-pack/` contains the complete pack,
+`release-comparison/` the visual comparisons and review log, and
+`held-wall-release-matched.jpg` the forced held-wall comparison. The capture-only
+command is `python3 tools/critic_pack.py --only captures build/sol72/release-pack`;
+the full run uses `python3 tools/critic_pack.py build/sol72/release-pack --resume`.
+Both retained runs use `--capture-batch-scenes 8` and the existing 60-second
+batch release limit. [Machine-readable aggregate](../build/sol72/performance-round72.json).
+
+## Prior startup — pure Sloppy Vulkan batches, 2026-10-15
 
 The game no longer builds, packages or loads a C pipeline helper. Sloppy retains
 all create-info storage and calls `vkCreateGraphicsPipelines` once per queued
@@ -862,3 +1085,91 @@ Raw logs, all native calls, images, unmatched flash, startup repeats and package
 extracts/caches remain under `build/pacing060/`. The prior full release suite and
 historical distributions remain in [release evidence](performance-sloppy060.json)
 and [pre-0.6 studies](rounds/PERFORMANCE_PRE_060.md).
+
+## Round 72 sol3 follow-up
+
+The Temple slab/inlay/cap and opening daylight/malice corrections retain the
+existing draw passes and the 67 architecture chunks / 2,186 colliders. Final
+prepared-asset equivalence and ten targeted checks pass. The full critic pack
+passes with 50 reviewed captures, 13 audio clips and eight integration checks.
+Evidence is retained under `build/task72b-sol3/` (`REPORT.txt`, `pack-final/`,
+`visual-review.json`, `cpu-960/summary.json`, `cpu-assessment.json`).
+
+Two adjacent AB/BA pairs per scene use identical fixtures, generated assets,
+1920×1080 Vulkan at full scale, fixed seed/hour/weather/input and steady thread
+core 0. Each run has 960 frames, excludes the first 240 and retains all 720
+steady samples. The climb ascends for 180 frames then holds the matching pose,
+so the long timing run stays on its short arch fixture.
+
+| Scene | Master CPU p99 ms | Candidate CPU p99 ms | Delta ms |
+| --- | ---: | ---: | ---: |
+| Passage | 5.900 | 5.695 | -0.205 |
+| Title | 6.205 | 7.117 | +0.912 |
+| Temple gameplay climb | 5.636 | 5.091 | -0.545 |
+| Temple floor | 9.243 | 8.781 | -0.462 |
+
+The strict pooled title screen does not pass. Its paired per-run increases
+(+0.129 / +0.179 ms) lie inside identical-master paired control differences
+(-0.368 / +0.403 ms). The control's pooled-label gap is 0.608 ms and its per-run
+p99 span is 4.108 ms. Title median CPU improves 2.972→2.804 ms and callback-wall
+p99 changes by -0.005 ms. These observations are compatible with shared-host
+variation; they do not establish zero overhead or strict pooled non-regression.
+A small title overhead remains a measurement uncertainty.
+
+Both 120-second real-time forest pacing routes pass at managed 2133×1200 with
+native driver mailbox fallback to immediate presentation. Present-return p99
+is 15.800 ms at dynamic scale (0.72/0.8), and 20.886 ms at full scale. The latter
+has nine intervals over 25 ms and a 101.182 ms worst interval; raw tails remain
+in the pack. Present-return intervals are not scanout measurements.
+
+## Round 72 sol3 cave and shrine material follow-up
+
+The cave's mineral contrast is scoped to a continuous interior-camera volume;
+its exterior ridge retains the merged-master appearance. Blue floor inlays use
+an interpolation-safe material tag and a queued additive falloff submitted after
+the FX reset. Castle smoke has a filled crimson core and an unequal soft crown.
+The four shrine wall palettes and inset proportions vary; Jo's pendant fill stays
+neutral. Architecture retains 67 chunks and 2,186 colliders.
+
+Final evidence is under `build/task72c-sol3/`: `handoff-pack/`,
+`pack-comparisons/`, `visual-review.json`, `exterior-fix-review.json`,
+`glow-staging-review.json`, and `cpu-handoff/assessment.json` (raw initial
+summary: `cpu-handoff/summary.json`). All 53 final captures
+were viewed downscaled against the 49-frame supplied pack and four matching
+master supplements. Character/flight/camera differences already merged before
+this task are identified in the review notes. The exterior glide comparison
+matches the prior merged master to within one RGB level at a few pixels.
+
+Prepared audio/world/mesh/collision/texture equivalence and all eight targeted
+headless checks pass; the new material check is registered in the CPU suite.
+The full critic pack includes both 120-second pacing routes, audio and all eight
+integration checks. Superseded candidates are explicitly excluded from delivery.
+
+CPU comparisons use frozen e9094ec master and final handoff binaries, generated
+assets for both, fixed world/weather seeds, hour, inputs and 1/60 simulation,
+1920×1080 Vulkan X11 at full scale, and main-thread affinity after frame 60.
+Each run retains all 720 samples after its first 240 frames. Four adjacent AB/BA pairs were predeclared for passage and two for each other
+scene. The title received one fixed two-pair extension after its initial result
+was inconclusive against control variation; the primary title estimate includes
+all four pairs. Every original and new tail is retained. One or two adjacent pairs share a bounded render lock.
+
+| Scene | Master CPU p99 ms | Handoff CPU p99 ms | Delta ms |
+| --- | ---: | ---: | ---: |
+| passage | 5.134 | 7.041 | +1.907 |
+| title | 6.763 | 6.508 | -0.255 |
+| shrine-1 | 3.296 | 2.907 | -0.389 |
+| shrine-2 | 2.820 | 5.237 | +2.417 |
+| shrine-3 | 5.843 | 3.654 | -2.189 |
+| shrine-4 | 5.269 | 2.586 | -2.683 |
+
+Strict pooled CPU p99 is unresolved for passage, shrine-2. Same-master controls demonstrate host variation but do not prove zero overhead.
+
+passage median CPU: 3.442→3.232 ms; this does not resolve the p99 gate.
+shrine-2 median CPU: 1.880→1.898 ms; this does not resolve the p99 gate.
+The initial two-pair title CPU p99 was 5.162→7.036 ms; both that result and the combined result remain in the raw evidence.
+
+Identical-master controls use the same affinity and frame protocol. Their
+pooled label differences are passage -2.668 ms, title +0.053 ms.
+Dynamic scale 120-second route present-return p99: 17.259 ms, worst 1853.239 ms, 3 intervals over 25 ms.
+Full scale 120-second route present-return p99: 20.389 ms, worst 26.343 ms, 4 intervals over 25 ms.
+Present-return timing is not scanout measurement. Raw distributions and logs remain in the pack.

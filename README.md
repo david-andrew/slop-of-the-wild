@@ -1,13 +1,11 @@
 # The Legend of Jo: Slop of the Wild
 
-**Prepared native 2133×1200 startup: 10.71 s cold · 1.61 s warm median (1.61–1.64 s; low-activity control)** — [conditions](docs/PERFORMANCE.md) · [play](https://david-andrew.github.io/slop-of-the-wild/).
+**Prepared native 2133×1200 startup: about 10.8 s cold · 1.5 s warm median** (pure Sloppy runtime) — [conditions](docs/PERFORMANCE.md) · [play](https://david-andrew.github.io/slop-of-the-wild/).
 
 *The Legend of Jo: Slop of the Wild* is a parody tribute inspired by *Breath of the Wild*'s
 Great Plateau, written in [Sloppy](../slop-lang) (formerly Jot), a small compiled language for games. Everything (rendering,
-physics, animation, audio mixing, the tools that build the world) is Sloppy. Native pipeline
-compilation uses a small C pthread transport (`tools/pipeline_workers.c`), built with `cc`
-by the launcher and asset preparation. The other exceptions are the piano
-sample importer, two small Python scripts that read the original's map data and one that sets
+physics, animation, audio mixing, Vulkan pipeline warmup, the tools that build the world) is
+Sloppy. The only exceptions are the piano sample importer, two small Python scripts that read the original's map data and one that sets
 the title card's lettering in a serif
 (`tools/title_art.py` and `tools/names_art.py`, Noto Serif; the game's built-in font is a sans).
 

@@ -1,0 +1,74 @@
+# Run real ignition, spread, rain dousing and particle expiry without a window.
+use 'tree_checks.jo'
+from 'tree_checks.jo' import __tree_course
+use '../game/fx.jo'
+use '../game/elements.jo'
+from '../game/elements.jo' import __burning
+use '../game/env.jo'
+use '../game/player.jo'
+use '../game/items.jo'
+use '../game/terrain.jo'
+use '../game/structures.jo'
+
+__audio_state=2
+items_init()
+loop hz in [30,60,120]:
+    loop rainfall in [0.11,0.31,0.65,1.0]:
+        seed_random(7208+hz)
+        __tree_course()
+        camp_wood.clear()
+        particles.clear()
+        pl.pos=vec3(20,0,20)
+        assert(ignite_at(vec3(0.5,0.1,0.5)),"dry grass catches through production ignition")
+        loop frame in [0..hz):
+            elements_update(1.0/f64(hz),pl.pos)
+            fx_update(1.0/f64(hz))
+        assert(flames.len()>1,"rain begins on a spreading active fire")
+        count=flames.len()
+        env.rain=rainfall
+        hissing=0
+        first_age=f32(0)
+        last_age=f32(0)
+        checked=false
+        loop frame in [0..hz*5):
+            elements_update(1.0/f64(hz),pl.pos)
+            if frame==0: first_age=grass_flame_age(flames[0])
+            if frame==int(f64(hz)*0.6):
+                last_age=grass_flame_age(flames[0])
+                assert(last_age>first_age and grass_flame_heat(last_age)<grass_flame_heat(first_age),"rain shrinks visible flames before removal")
+                checked=true
+            loop e in elem_events:
+                if e.kind=="douse": hissing+=1
+            assert(flames.len()<=count,"rain prevents propagation")
+            fx_update(1.0/f64(hz))
+        assert(checked and hissing==count and flames.len()==0 and __burning.len()==0,"all burning grass hisses and extinguishes within five seconds")
+        assert(not ignite_at(vec3(0.5,0.1,0.5)),"wet spent grass cannot reignite")
+        instances: PInst[]
+        grass_fire_instances(vec3(0,2,10),Frustum(),instances)
+        assert(instances.len()==0,"doused fuel leaves no flame sheets")
+        loop frame in [0..hz*6): fx_update(1.0/f64(hz))
+        loop p in particles: assert(p.kind!=.steam and p.kind!=.smoke and p.kind!=.ember and p.kind!=.glow,"steam, soot and embers finish after dousing")
+        print("PASS rain fire {hz}Hz / rain={rainfall}: {count} spreading cells shrink, hiss, extinguish within 5s and leave no hot remnants")
+
+# The weather command eases rain in over seconds. Exercise that real ramp,
+# rather than only jumping directly to an already wet environment.
+loop hz in [30,60,120]:
+    seed_random(7272)
+    __tree_course()
+    camp_wood.clear()
+    particles.clear()
+    pl.pos=vec3(20,0,20)
+    assert(ignite_at(vec3(0.5,0.1,0.5)))
+    loop frame in [0..hz): elements_update(1.0/f64(hz),pl.pos)
+    assert(flames.len()>1)
+    env.weather=.rain
+    env.weather_t=1e9
+    hissing=0
+    loop frame in [0..hz*5):
+        env_update(1.0/f64(hz),false)
+        elements_update(1.0/f64(hz),pl.pos)
+        fx_update(1.0/f64(hz))
+        loop e in elem_events:
+            if e.kind=="douse": hissing+=1
+    assert(hissing>0 and flames.len()==0 and __burning.len()==0,"the production weather ramp quenches an active fire within five seconds of rain onset")
+    print("PASS weather ramp {hz}Hz: {hissing} cells doused within 5s of clear-to-rain transition")

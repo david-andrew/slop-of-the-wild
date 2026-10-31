@@ -1,0 +1,99 @@
+# Inspect the production meshes: distinct wall palettes/layouts, no added
+# colliders, and inlay clearance over entire triangles rather than vertices only.
+use '../game/gfx.jo'
+use '../game/shrines.jo'
+use '../game/interiors.jo'
+use '../game/build.jo'
+use '../game/physics.jo'
+use '../game/terrain.jo'
+use '../game/worldgen.jo'
+from '../game/build.jo' import __named_b
+from '../game/shrines.jo' import __wall_bays, __wall_courses
+colours: vec3[]
+counts: int[]
+loop id in [0..4):
+    before=colliders.len()
+    name="palette_{id}"
+    begin_named(name)
+    __wall_bays(mat4(),id,12.0,7.0)
+    __wall_courses(translation(vec3(0,0,-0.015)),id,12.0,7.0)
+    end_named()
+    wall_mesh=__named_b[name]
+    sum=vec3(0,0,0)
+    loop v in wall_mesh.verts:
+        assert(v.mat==PLAIN,"wall colour does not introduce emissive tiling")
+        sum+=v.color.xyz
+    colours.push(sum/f32(wall_mesh.verts.len()))
+    counts.push(wall_mesh.verts.len())
+    assert(colliders.len()==before,"wall treatments preserve collision")
+loop i in [0..4):
+    loop j in [i+1..4):
+        assert(length(colours[i]-colours[j])>0.025,"all wall palettes remain distinct in the actual mesh")
+        assert(counts[i]!=counts[j],"palette changes also change the wall layout")
+assert(colours[0].y>colours[0].x*1.10,"Ohman Ow has blue-teal stone")
+assert(colours[1].x>colours[1].z*1.15,"Jaba Badge has warm bronze stone")
+assert(length(colours[2])<length(colours[3])*0.80,"Owa Dime slate contrasts with Kay Nomut pale stone")
+print("PASS four distinct non-emissive wall palettes and panel layouts, unchanged collision")
+
+hf.n=32
+hf.cell=200.0
+hf.x0= -4000.0
+hf.z0= -2000.0
+hf.h=fill(f32(247.2),hf.n*hf.n)
+a=v3(-1128,237,1884)
+b=v3(-1067,247.5,1844)
+begin_named("smooth_inlays")
+sor_floor_markers(a,b,36)
+end_named()
+markers=__named_b["smooth_inlays"]
+checked=0
+loop tri in [0..markers.idx.len()/3):
+    aa=markers.verts[int(markers.idx[tri*3])]
+    bb=markers.verts[int(markers.idx[tri*3+1])]
+    cc=markers.verts[int(markers.idx[tri*3+2])]
+    loop u in [0..9):
+        loop v in [0..9-u):
+            p=aa.pos+(bb.pos-aa.pos)*f32(f64(u)/8.0)+(cc.pos-aa.pos)*f32(f64(v)/8.0)
+            gap=p.y-sor_marker_height(a,b,36,p)
+            assert(gap>0.006 and gap<0.04,"inlay triangle interiors cannot intersect the ramp or float")
+            checked+=1
+print("PASS inlay triangle contact: {checked} interior/edge samples clear the actual ramp")
+
+# Exercise the real additive vertex path: each support follows the ramp,
+# remains above it, and cannot be mistaken for an upright light shaft.
+use '../game/fx.jo'
+from '../game/fx.jo' import __pinst_add
+sor_marker_glows(a)
+assert(queued_floor_glows.len()==sor_marker_nodes(a,b).len(),"one queued receiver glow per solid disc")
+assert(__pinst_add.len()==0,"opaque emission cannot bypass the FX reset")
+__pinst_add.clear()
+fx_submit_floor_glows()
+assert(queued_floor_glows.len()==0 and __pinst_add.len()==sor_marker_nodes(a,b).len(),"receiver glows survive the actual FX reset and flush")
+count=__pinst_add.len()
+fx_submit_floor_glows()
+assert(__pinst_add.len()==count,"receiver queue is consumed exactly once")
+loop glow in __pinst_add:
+    loop x in [-1.0,0.0,1.0]:
+        loop z in [-1.0,0.0,1.0]:
+            o=part_vs(QuadV(vec2(f32(x),f32(z))),glow,PartU(vp=mat4()))
+            gap=o.pos.y-sor_marker_height(a,b,36,o.pos.xyz)
+            assert(gap>0.006 and gap<0.07,"the entire glow support follows and clears the ramp")
+print("PASS additive inlay glow: bounded supports, real vertex path clears the ramp")
+
+# Cave texture/darkness must not create mottled blobs on the exterior ridge
+# seen by the glider. Fade the interior lens continuously through the mouth.
+axis=normalize(vec3(61,0,-40))
+loop station in [2.0,20.0,45.0,64.0]:
+    p=a+axis*f32(station)+vec3(0,f32(station*10.5/sqrt(61.0*61.0+40.0*40.0)+2.0),0)
+    assert(sor_lining_view(p)>0.99,"the real passage lens retains the stone treatment")
+loop p in [vec3(-1050,280,1828),vec3(-1070,270,1840),vec3(-1439,240,1606),vec3(-1060,248,1840)]:
+    assert(sor_lining_view(p)==0.0,"aerial and outside cameras retain the original ridge material")
+previous=1.0
+loop step in [0..121):
+    station=70.0+f64(step)*0.075
+    p=a+axis*f32(station)+vec3(0,f32(station*10.5/sqrt(61.0*61.0+40.0*40.0)+2.0),0)
+    next=sor_lining_view(p)
+    assert(abs(next-previous)<0.04,"interior treatment fades smoothly instead of popping at a zone box")
+    previous=next
+assert(previous==0.0)
+print("PASS cave material scope: inside stone retained, exterior ridge untouched, continuous mouth transition")

@@ -545,6 +545,7 @@ cur_scene = () -> CharScene:
 character_weather_look = (pos: vec3, p: CharParams) -> CharParams:
     look = p
     look.environment = p.hero_material * (1.0-smoothstep(0.0,0.5,env.indoor))
+    look.wet_night = look.environment * hero_wet_night_amount(env.rain,f64(env.sun_dir.y),f64(luma(env.sky_amb)))
     canopy = character_storm_fill(pos, p.hero_material > 0.0) - 1.0
     # Preserve the wet cloth silhouette inside the diffuse environment
     # envelope. Habitat/weather ramps keep the transition continuous.
@@ -834,10 +835,23 @@ old_man_prop = (m: Mesh, model: mat4, color: vec4, emissive: f64 = 0.0, rim: f64
     tint = mix(color.xyz,vec3(0.34,0.95,1.75),f32(old_man.spirit))
     draw_prop(m,model,vec4(tint,color.w),emissive*(1.0-old_man.spirit*0.45)+old_man.spirit*0.18,rim,opacity=(if face: old_man_face_opacity() else: old_man.opacity))
 
+# Include the seated log, long staff and deployed canopy. Test the current
+# shadow cascade independently: off-camera geometry may still cast into it.
+old_man_in_view = (vp: mat4, pos: vec3) -> bool:
+    box_visible(frustum_from(vp),pos-vec3(4,1,4),pos+vec3(4,5,4))
+
 old_man_draw = (transparent: bool = false, depth_only: bool = false):
     if not chars_ready or not old_man.visible or old_man.opacity <= 0.001: return
     if sc.shadow and transparent: return
     if not sc.shadow and (old_man.opacity < 1.0) != transparent: return
+    if not depth_only:
+        vp=if sc.shadow:cascades.vps[sc.shadow_k] else:sc.vp
+        if not old_man_in_view(vp,old_man.pos): return
+    if not sc.shadow:
+        # Cull the shell's cavity in both the depth prepass and colour pass.
+        # Its back wall must never become a second visible rim through the face.
+        glEnable(GL_CULL_FACE)
+        glCullFace(GL_BACK)
     if transparent and not depth_only:
         # Resolve the nearest spirit surface before blending any of its pieces.
         # Writing depth while blending still accumulated rear cloak layers drawn
@@ -866,29 +880,12 @@ old_man_draw = (transparent: bool = false, depth_only: bool = false):
     # Cache the replacement in the old man's own prop bank. All construction
     # stays here so shared hero/Bokoblin meshes and shading remain independent.
     if __old_meshes.len() == 6:
-        face = MeshB()
-        # A lightless lining behind the skin, rather than the cloak's pale return.
-        mb_sphere(face, v3(0.0, 0.085, 0.085), v3(0.169, 0.191, 0.050), rgb(0.012, 0.009, 0.006), 14)
-        # Warm cheek and forehead volumes reach the hood opening. Deep shade
-        # is confined to eyelids/nostrils, not a face-sized brown mask.
-        mb_sphere(face, v3(0.0, 0.073, 0.158), v3(0.115, 0.139, 0.075), rgb(0.36, 0.245, 0.164), 16)
-        loop side in [-1.0, 1.0]:
-            mb_sphere(face, v3(side*0.063, 0.047, 0.211), v3(0.039, 0.046, 0.027), rgb(0.40, 0.274, 0.186), 12)
-            mb_sphere(face, v3(side*0.047, 0.107, 0.222), v3(0.030, 0.013, 0.010), rgb(0.080, 0.050, 0.030), 12)
-            mb_sphere(face, v3(side*0.045, 0.105, 0.232), v3(0.017, 0.005, 0.005), rgb(0.29, 0.26, 0.19), 10)
-            mb_sphere(face, v3(side*0.043, 0.105, 0.237), v3(0.005, 0.005, 0.002), rgb(0.045, 0.039, 0.027), 8)
-            mb_cyl(face, v3(side*0.020, 0.133, 0.226), v3(side*0.078, 0.127, 0.207), 0.014, 0.010, rgb(0.46, 0.427, 0.35), 10)
-            mb_sphere(face, v3(side*0.021, 0.046, 0.249), v3(0.016, 0.011, 0.013), rgb(0.32, 0.205, 0.132), 10)
-            mb_sphere(face, v3(side*0.022, 0.039, 0.255), v3(0.007, 0.004, 0.004), rgb(0.09, 0.05, 0.027), 8)
-        mb_sphere(face, v3(0.0, 0.079, 0.232), v3(0.020, 0.052, 0.028), rgb(0.43, 0.298, 0.196), 12)
-        mb_sphere(face, v3(0.0, 0.052, 0.256), v3(0.026, 0.023, 0.026), rgb(0.46, 0.315, 0.211), 12)
-        mb_sphere(face, v3(0.0, -0.004, 0.239), v3(0.037, 0.008, 0.010), rgb(0.105, 0.059, 0.033), 10)
-        __old_meshes.push(mesh(face.vs, face.idx))
+        __old_meshes.push(__old_meshes[0])
         # The hair projects past the shoulder cloth, leaving the warm cheeks
         # uncovered. Separate fill retains grey in the hood's deep self-shadow.
         hair = old_man_beard_mesh()
         __old_meshes.push(mesh(hair.vs, hair.idx))
-    old_man_prop(__old_meshes[6], hm, vec4(1, 1, 1, 1), 0.50, 0.0, face=true)
+    old_man_prop(__old_meshes[6], hm, vec4(1, 1, 1, 1), 0.48, 0.0, face=true)
     old_man_prop(__old_meshes[7], hm, vec4(1, 1, 1, 1), 0.35, 0.0, face=true)
     if not sc.shadow:
         # a lantern at his hip
@@ -968,53 +965,210 @@ old_man_cloak_mesh = () -> MeshB:
         mb_sphere(b,v3(side*0.16,0.023,0.38),v3(0.09,0.045,0.16),rgb(0.115,0.075,0.044),10)
     b
 
+# Continuous sculpted skin; features displace and paint the same surface instead
+# of intersecting a collection of cheek, brow and nose primitives.
+old_face_point = (a: f64, v: f64) -> vec3:
+    y=0.070+0.153*sin(v)
+    x=0.126*cos(v)*sin(a)
+    front=max(0.0,cos(a))
+    z=0.139+0.085*cos(v)*cos(a)
+    nose=exp(-pow(x/0.021,2.0)-pow((y-0.083)/0.054,2.0))*0.044
+    nose+=exp(-pow(x/0.026,2.0)-pow((y-0.045)/0.019,2.0))*0.029
+    cheek=exp(-pow((abs(x)-0.074)/0.030,2.0)-pow((y-0.057)/0.026,2.0))*0.024
+    socket=exp(-pow((abs(x)-0.049)/0.030,4.0)-pow((y-0.110)/0.018,2.0))*0.016
+    brow=exp(-pow((abs(x)-0.051)/0.041,2.0)-pow((y-0.137+abs(x)*0.12)/0.013,2.0))*0.016
+    z+=(nose+cheek-socket+brow)*pow(front,4.0)
+    v3(x,y,z)
+
+old_man_face_mesh = () -> MeshB:
+    b=MeshB()
+    const R=48
+    const C=72
+    loop i in [0..R+1):
+        v=lerp(-PI*0.5+0.001,PI*0.5-0.001,f64(i)/f64(R))
+        loop j in [0..C+1):
+            a=TAU*f64(j)/f64(C)
+            p=old_face_point(a,v)
+            da=old_face_point(a+0.001,v)-old_face_point(a-0.001,v)
+            dv=old_face_point(a,v+0.0001)-old_face_point(a,v-0.0001)
+            n=normalize(cross(da,dv))
+            x=abs(f64(p.x))
+            y=f64(p.y)
+            front=smoothstep(0.15,0.70,cos(a))
+            wash=0.93+0.07*cos(a)-0.07*exp(-pow((y+0.015)/0.025,2.0))
+            c=rgb(0.49,0.334,0.221)*vec4(f32(wash),f32(wash),f32(wash),1)
+            # Broad deep sockets and pale iris catches survive the held roof view.
+            socket=exp(-pow((x-0.050)/0.029,4.0)-pow((y-0.109)/0.015,2.0))*front
+            c=mix(c,rgb(0.035,0.026,0.019),f32(socket*0.99))
+            eye=exp(-pow((x-0.047)/0.018,4.0)-pow((y-0.106)/0.0055,2.0))*front
+            c=mix(c,rgb(0.23,0.22,0.16),f32(eye*0.94))
+            pupil=exp(-pow((x-0.046)/0.006,4.0)-pow((y-0.106)/0.006,4.0))*front
+            c=mix(c,rgb(0.008,0.007,0.005),f32(pupil))
+            glint=exp(-pow((x-0.043)/0.0045,2.0)-pow((y-0.109)/0.0035,2.0))*front
+            c=mix(c,rgb(1.1,1.08,0.92),f32(glint))
+            brow=exp(-pow((x-0.051)/0.038,4.0)-pow((y-0.139+x*0.12)/0.010,4.0))*front
+            c=mix(c,rgb(0.84,0.80,0.68),f32(brow*0.98))
+            # Broken forehead folds, eye bags, crow's feet and cheek creases.
+            forehead=(exp(-pow((y-0.169+0.10*x)/0.0028,2.0))+0.65*exp(-pow((y-0.190+0.16*x)/0.0025,2.0)))*exp(-pow(x/0.088,6.0))
+            bag=exp(-pow((y-0.085-0.18*pow((x-0.05)/0.05,2.0))/0.0035,2.0))*exp(-pow((x-0.052)/0.034,4.0))
+            crease=exp(-pow((x-(0.030+(0.045-y)*0.58))/0.004,2.0))*exp(-pow((y-0.018)/0.039,4.0))
+            crow=exp(-pow((y-0.105+(x-0.078)*0.43)/0.003,2.0))*exp(-pow((x-0.086)/0.018,4.0))
+            c=mix(c,rgb(0.18,0.105,0.059),f32(clamp(forehead*0.55+bag*0.65+crease*0.68+crow*0.65,0.0,0.80)*front))
+            ridge=exp(-pow(x/0.008,2.0)-pow((y-0.083)/0.047,4.0))*front
+            cheek=exp(-pow((x-0.073)/0.025,2.0)-pow((y-0.055)/0.014,2.0))*front
+            c=mix(c,rgb(0.68,0.48,0.31),f32(max(ridge*0.68,cheek*0.47)))
+            nostril=exp(-pow((x-0.018)/0.008,2.0)-pow((y-0.035)/0.005,2.0))*front
+            mouth=exp(-pow(x/0.040,4.0)-pow((y+0.009-0.10*x)/0.005,2.0))*front
+            c=mix(c,rgb(0.065,0.032,0.016),f32(max(nostril*0.95,mouth*0.95)))
+            b.vs.push(Vertex3D(p,n,vec2(0,0),c))
+    loop i in [0..R):
+        loop j in [0..C):
+            a=u32(i*(C+1)+j)
+            d=a+u32(C+1)
+            loop k in [a,a+1,d,a+1,d+1,d]: b.idx.push(k)
+    b
+
+# Swept locks overlap at the cheek/chin and end at unequal rounded tips.
+# Broad valleys and directional pigment describe strands without a cone.
+old_lock_point = (root: vec3, tip: vec3, width: f64, depth: f64, bow: f64, a: f64, t: f64) -> vec3:
+    center=mix(root,tip,f32(t))+v3(0,0,bow*sin(PI*t))
+    radius=(0.72+0.28*sin(PI*t))*pow(1.0-t,0.42)
+    groove=1.0+0.075*cos(a*5.0+t*2.0)
+    center+v3(sin(a)*width*radius*groove,0,cos(a)*depth*radius*groove)
+
+old_beard_lock = (mut b: MeshB, root: vec3, tip: vec3, width: f64, depth: f64, bow: f64, pigment: f64):
+    const R=16
+    const C=20
+    off=u32(b.vs.len())
+    loop i in [0..R+1):
+        t=lerp(0.0001,0.9999,f64(i)/f64(R))
+        loop j in [0..C+1):
+            a=TAU*f64(j)/f64(C)
+            p=old_lock_point(root,tip,width,depth,bow,a,t)
+            da=old_lock_point(root,tip,width,depth,bow,a+0.001,t)-old_lock_point(root,tip,width,depth,bow,a-0.001,t)
+            dt=old_lock_point(root,tip,width,depth,bow,a,t+0.00001)-old_lock_point(root,tip,width,depth,bow,a,t-0.00001)
+            n=normalize(cross(dt,da))
+            strand=0.075*cos(a*5.0+t*2.0)+0.035*cos(a*9.0-t*3.0)
+            shade=pigment+strand+0.10*max(0.0,cos(a))+0.08*t
+            c=rgb(0.56,0.535,0.468)*vec4(f32(shade),f32(shade),f32(shade),1)
+            b.vs.push(Vertex3D(p,n,vec2(0,0),c))
+    loop i in [0..R):
+        loop j in [0..C):
+            a=off+u32(i*(C+1)+j)
+            d=a+u32(C+1)
+            loop k in [a,d,a+1,a+1,d,d+1]: b.idx.push(k)
+
+    # Seal both ends of the small swept moustache locks as well.
+    loop end in [0,1]:
+        t=if end==0:0.0001 else:0.9999
+        center=mix(root,tip,f32(t))+v3(0,0,bow*sin(PI*t))
+        loop j in [0..C):
+            row=int(off)+(if end==0:0 else:R*(C+1))
+            a=b.vs[row+j].pos
+            d=b.vs[row+j+1].pos
+            p1=if end==0:a else:d
+            p2=if end==0:d else:a
+            n=normalize(cross(p1-center,p2-center))
+            base=u32(b.vs.len())
+            loop p in [center,p1,p2]:b.vs.push(Vertex3D(p,n,vec2(0,0),rgb(0.55,0.525,0.46)))
+            loop k in [base,base+1,base+2]:b.idx.push(k)
+
+# A full cheek-to-chin envelope carries the locks, so no tube crowns or gaps
+# appear above the beard when the held camera looks down at the lowered head.
+old_beard_point = (a: f64, t: f64) -> vec3:
+    width=0.103*pow(max(0.00001,1.0-t*t),0.70)+0.0015
+    depth=0.045*pow(1.0-t,0.64)+0.002
+    strand=cos(a*9.0+t*1.1)+0.15*cos(a*13.0-t*1.7)
+    lobe=1.0+(0.045+0.025*t)*strand
+    y=-0.024-0.213*t+0.080*pow(abs(sin(a)),2.0)*pow(1.0-t,3.0)
+    y+=0.003*sin(a*5.0+0.5)*pow(t,3.0)
+    z=0.230+0.156*t-0.026*t*t
+    v3(sin(a)*width*lobe,y,z+cos(a)*depth*lobe)
+
 old_man_beard_mesh = () -> MeshB:
-    hair = MeshB()
-    loop side in [-1.0, 1.0]:
-        mb_sphere(hair, v3(side * 0.032, 0.008, 0.253), v3(0.039, 0.020, 0.024), rgb(0.47, 0.448, 0.39), 12)
-        mb_sphere(hair, v3(side*0.086, -0.005, 0.205), v3(0.033, 0.068, 0.032), rgb(0.39, 0.373, 0.326), 12)
-    # A continuous oval taper avoids a stack of bright chin-sized beads.
-    # It bows clear of the raised cloak as the lowered chin tilts forward.
-    beard_base = u32(hair.vs.len())
-    const BR = 10
-    const BC = 20
-    loop i in [0..BR):
-        t = f64(i) / f64(BR - 1)
-        width = 0.080 * pow(1.0 - t, 0.65) + 0.004
-        depth = 0.040 * pow(1.0 - t, 0.7) + 0.008
-        center = 0.272 + 0.215 * t
-        loop j in [0..BC + 1):
-            a = TAU * f64(j) / f64(BC)
-            lock = 1.0 + sin(a * 7.0 + t * 0.5) * 0.065
-            pos = v3(sin(a) * width * lock, -0.038 - t * 0.235, center + cos(a) * depth * lock)
-            n = normalize(v3(sin(a) / width, 1.8, cos(a) / depth))
-            shade = 0.91 + 0.09 * sin(a * 5.0 + t * 1.2)
-            col = mix(rgb(0.38, 0.365, 0.319), rgb(0.48, 0.46, 0.406), f32(t * 0.7 + 0.15)) * vec4(f32(shade), f32(shade), f32(shade), 1)
-            hair.vs.push(Vertex3D(pos, n, vec2(0, 0), col))
-    loop i in [0..BR - 1):
-        loop j in [0..BC):
-            a = beard_base + u32(i * (BC + 1) + j)
-            d = a + u32(BC + 1)
-            loop k in [a, d, a + 1, a + 1, d, d + 1]: hair.idx.push(k)
-    hair
+    b=MeshB()
+    const R=24
+    const C=64
+    loop i in [0..R+1):
+        t=f64(i)/f64(R)
+        loop j in [0..C+1):
+            a=TAU*f64(j)/f64(C)
+            p=old_beard_point(a,t)
+            da=old_beard_point(a+0.001,t)-old_beard_point(a-0.001,t)
+            dt=old_beard_point(a,min(1.0,t+0.0001))-old_beard_point(a,max(0.0,t-0.0001))
+            n=normalize(cross(dt,da))
+            lock=cos(a*9.0+t*1.1)
+            strand=0.11*lock+0.035*cos(a*17.0-t*1.7)
+            shade=0.86+0.10*max(0.0,cos(a))+strand+0.07*t
+            c=rgb(0.55,0.525,0.46)*vec4(f32(shade),f32(shade),f32(shade),1)
+            b.vs.push(Vertex3D(p,n,vec2(0,0),c))
+    loop i in [0..R):
+        loop j in [0..C):
+            a=u32(i*(C+1)+j)
+            d=a+u32(C+1)
+            loop k in [a,d,a+1,a+1,d,d+1]: b.idx.push(k)
+    # Closed crown follows the raised cheeks; its front is tucked under the
+    # moustache. Both cap fans point outward and share the beard's pigment.
+    loop end in [0,1]:
+        center=if end==0:v3(0,-0.024,0.230) else:v3(0,-0.237,0.360)
+        loop j in [0..C):
+            row=if end==0:0 else:R*(C+1)
+            a=b.vs[row+j].pos
+            d=b.vs[row+j+1].pos
+            p1=if end==0:a else:d
+            p2=if end==0:d else:a
+            n=normalize(cross(p1-center,p2-center))
+            base=u32(b.vs.len())
+            loop p in [center,p1,p2]:b.vs.push(Vertex3D(p,n,vec2(0,0),rgb(0.50,0.477,0.417)))
+            loop k in [base,base+1,base+2]:b.idx.push(k)
+    # Three unequal lower locks emerge from inside the cheek/chin envelope.
+    # Their overlapping round ends break the former single pointed silhouette.
+    old_beard_lock(b,v3(-0.040,-0.113,0.260),v3(-0.037,-0.270,0.410),0.030,0.025,0.012,0.90)
+    old_beard_lock(b,v3(0,-0.104,0.269),v3(0.004,-0.292,0.431),0.034,0.028,0.010,0.97)
+    old_beard_lock(b,v3(0.041,-0.115,0.261),v3(0.040,-0.260,0.404),0.029,0.025,0.012,0.84)
+    # Moustache joins the upper beard, sweeping from the philtrum to cheeks.
+    loop side in [-1.0,1.0]:
+        old_beard_lock(b,v3(side*0.009,0.017,0.263),v3(side*0.087,-0.034,0.258),0.027,0.024,0.015,1.02)
+    b
+
+old_man_hood_mesh = () -> MeshB:
+    cloak=rgb(0.27,0.235,0.19)
+    # Deep oval hood: a projecting brow and dark return around the face opening.
+    # Each depth ring is closed, so the crown has no slit over the forehead.
+    b6 = MeshB()
+    const HR = 12
+    const HC = 48
+    loop i in [0..HR):
+        t = f64(i) / f64(HR - 1)
+        radius = sqrt(max(0.002, 1.0 - t * t))
+        loop j in [0..HC + 1):
+            a = TAU * f64(j) / f64(HC)
+            peak = pow(max(0.0, cos(a)), 6.0) * 0.035
+            q = v3(sin(a) * 0.205 * radius, 0.085 + (cos(a) * 0.225 + peak) * radius, 0.205 - t * 0.39)
+            n = normalize(v3(sin(a), cos(a), -t))
+            b6.vs.push(Vertex3D(q, n, vec2(0, 0), cloak))
+    loop i in [0..HR - 1):
+        loop j in [0..HC):
+            a = u32(i * (HC + 1) + j)
+            d = a + u32(HC + 1)
+            loop q in [a, a + 1, d, a + 1, d + 1, d]: b6.idx.push(q)
+    # One continuous cloth return meets the face, closing the former sky gap
+    # without adding a back shell or a second, detached rim.
+    loop j in [0..HC):
+        a = TAU * f64(j) / f64(HC)
+        z = TAU * f64(j + 1) / f64(HC)
+        outer = (angle: f64) -> vec3: v3(sin(angle) * 0.205, 0.085 + cos(angle) * 0.225 + pow(max(0.0, cos(angle)), 6.0) * 0.035, 0.205)
+        inner = (angle: f64) -> vec3: v3(sin(angle) * 0.132, 0.070 + cos(angle) * 0.154, 0.145)
+        base = u32(b6.vs.len())
+        loop q in [outer(a), outer(z), inner(z), inner(a)]:
+            b6.vs.push(Vertex3D(q, normalize(v3(f64(q.x)*1.7, (f64(q.y)-0.085)*1.5, 1.0)), vec2(0, 0), rgb(0.21, 0.18, 0.145)))
+        loop q in [0, 2, 1, 0, 3, 2]: b6.idx.push(base + u32(q))
+    b6
 
 __old_meshes: Mesh[]
 __old_props = (k: int) -> Mesh:
     if __old_meshes.len() == 0:
-        b = MeshB()
-        # A warm face sits behind the hood lip, with brows/eye sockets and a nose.
-        # Keep the beard below the mouth so it cannot cover the whole face.
-        skin_col = rgb(0.40, 0.27, 0.19)
-        mb_sphere(b, v3(0.0, 0.075, 0.08), v3(0.105, 0.13, 0.074), skin_col, 12)
-        mb_sphere(b, v3(0.0, 0.06, 0.166), v3(0.026, 0.045, 0.039), rgb(0.49, 0.335, 0.225), 8)
-        loop side in [-1.0, 1.0]:
-            mb_sphere(b, v3(side*0.048, 0.111, 0.139), v3(0.039, 0.024, 0.02), rgb(0.105, 0.075, 0.059), 8)
-            mb_sphere(b, v3(side*0.049, 0.112, 0.157), v3(0.016, 0.007, 0.004), rgb(0.23, 0.205, 0.15), 6)
-            mb_cyl(b, v3(side*0.019, 0.141, 0.149), v3(side*0.081, 0.132, 0.128), 0.015, 0.011, rgb(0.48, 0.455, 0.39), 7)
-            # Separated moustache lobes leave the nose and cheek planes visible.
-            mb_sphere(b, v3(side*0.032, -0.011, 0.137), v3(0.045, 0.025, 0.032), rgb(0.59, 0.57, 0.50), 8)
-        mb_sphere(b, v3(0.0, -0.075, 0.18), v3(0.080, 0.092, 0.055), rgb(0.56, 0.54, 0.47), 10)
-        mb_cyl(b, v3(0.0, -0.12, 0.19), v3(0.0, -0.36, 0.18), 0.067, 0.016, rgb(0.62, 0.60, 0.53), 10)
+        b = old_man_face_mesh()
         __old_meshes.push(mesh(b.vs, b.idx))
         b2 = MeshB()
         wood = rgb(0.32, 0.23, 0.14)
@@ -1031,38 +1185,9 @@ __old_props = (k: int) -> Mesh:
         b4 = MeshB()
         mb_cyl(b4, v3(-0.8, 0.2, 0.0), v3(0.8, 0.2, 0.0), 0.2, 0.19, rgb(0.42, 0.3, 0.2), 10)
         __old_meshes.push(mesh(b4.vs, b4.idx))
-        cloak = rgb(0.27, 0.235, 0.19)
         b5 = old_man_cloak_mesh()
         __old_meshes.push(mesh(b5.vs, b5.idx))
-        # Deep oval hood: a projecting brow and dark return around the face opening.
-        # Each depth ring is closed, so the crown has no slit over the forehead.
-        b6 = MeshB()
-        const HR = 12
-        const HC = 28
-        loop i in [0..HR):
-            t = f64(i) / f64(HR - 1)
-            radius = sqrt(max(0.002, 1.0 - t * t))
-            loop j in [0..HC + 1):
-                a = TAU * f64(j) / f64(HC)
-                peak = pow(max(0.0, cos(a)), 6.0) * 0.035
-                q = v3(sin(a) * 0.205 * radius, 0.085 + (cos(a) * 0.225 + peak) * radius, 0.205 - t * 0.39)
-                n = normalize(v3(sin(a), cos(a), -t))
-                b6.vs.push(Vertex3D(q, n, vec2(0, 0), cloak))
-        loop i in [0..HR - 1):
-            loop j in [0..HC):
-                a = u32(i * (HC + 1) + j)
-                d = a + u32(HC + 1)
-                loop q in [a, a + 1, d, a + 1, d + 1, d, a, d, a + 1, a + 1, d, d + 1]: b6.idx.push(q)
-        # Rolled cloth lip leads back into shade instead of a bright face-sized cap.
-        loop j in [0..HC):
-            a = TAU * f64(j) / f64(HC)
-            z = TAU * f64(j + 1) / f64(HC)
-            outer = (angle: f64) -> vec3: v3(sin(angle) * 0.205, 0.085 + cos(angle) * 0.225 + pow(max(0.0, cos(angle)), 6.0) * 0.035, 0.205)
-            inner = (angle: f64) -> vec3: v3(sin(angle) * 0.174, 0.085 + cos(angle) * 0.191, 0.14)
-            base = u32(b6.vs.len())
-            loop q in [outer(a), outer(z), inner(z), inner(a)]:
-                b6.vs.push(Vertex3D(q, normalize(v3(-sin(a), -cos(a), 0.3)), vec2(0, 0), rgb(0.105, 0.085, 0.067)))
-            loop q in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]: b6.idx.push(base + u32(q))
+        b6 = old_man_hood_mesh()
         __old_meshes.push(mesh(b6.vs, b6.idx))
     __old_meshes[k]
 
@@ -1132,6 +1257,15 @@ boko_weapon_pose = (p: mut Pose, e: Enemy):
     if (len(e.weapon) == 0 and e.move < 3) or (e.state != .windup and e.state != .attack and e.state != .recover): return
     if e.state == .recover and (e.stun > 0.0 or e.move >= 2): return
     enemy_weapon_pose(boko_m, human, p, e.move, e.t, e.state == .windup, e.state == .recover, len(e.weapon) > 0 and item(e.weapon).spear)
+
+# The held club pose is identical across actors; footing edits a value copy.
+# Reuse its sampled clip and solved upper body while the anticipation is held.
+__boko_held_club = Pose()
+boko_held_club_pose = () -> Pose:
+    if __boko_held_club.r.len()==0:
+        __boko_held_club=sample_clip(human,ci("attack"),0.28*0.35,false)
+        boko_weapon_pose(__boko_held_club,Enemy(state=.windup,t=0.28,weapon="boko_club"))
+    __boko_held_club
 
 # Fire light and particles already identify the burn. A small ochre veil
 # preserves the creature's painted skin at night instead of a self-lit orange.
@@ -1251,7 +1385,8 @@ enemy_anim_update = (dt: f64):
         if changed and loop_ and (e.state == .idle or e.state == .chase or e.state == .sleep):
             eanims[i].a.t = personality * clip_duration(human, c)
         anim_update(eanims[i].a, dt * dtk * (if e.frozen > 0.0: 0.0 else: 1.0))
-        pose = anim_pose(human, eanims[i].a)
+        held_club = e.state==.windup and e.burning<=0.0 and e.move<2 and e.t>=0.28 and len(e.weapon)>0 and not item(e.weapon).spear
+        pose = if held_club: Pose() else: anim_pose(human, eanims[i].a)
         # Waiting, threatening and recovering silhouettes remain different in a group.
         # Upper-body-only adjustments leave locomotion and planted feet to the footing pass.
         if e.state == .chase and e.speed < 2.5 and e.burning <= 0.0:
@@ -1264,7 +1399,11 @@ enemy_anim_update = (dt: f64):
             rotate_bone(human, pose, lib_bone(human, "spine_01"), vec3(0, 0, 1), (personality - 0.5) * 0.16)
             rotate_bone(human, pose, lib_bone(human, "Head"), vec3(0, 1, 0), (personality - 0.5) * 0.18)
         if e.state == .windup and e.burning <= 0.0:
-            pose = sample_clip(human, ci((if e.move == 3: "fight_idle" else: (if e.move == 4: "throw" else: "attack"))), min(e.t * 0.35, 0.18), false)
+            if held_club: pose=boko_held_club_pose()
+            else:
+                loading_club=e.move<2 and len(e.weapon)>0 and not item(e.weapon).spear
+                tell_time=if loading_club: min(e.t,0.28)*0.35 else: min(e.t*0.35,0.18)
+                pose=sample_clip(human,ci((if e.move==3:"fight_idle" else:(if e.move==4:"throw" else:"attack"))),tell_time,false)
         if e.state == .attack and e.burning <= 0.0:
             # A socket pinned to the contact track cannot wait for a windup/idle
             # crossfade: its forearm must sample the very same state-time pose.
@@ -1282,7 +1421,7 @@ enemy_anim_update = (dt: f64):
         if length(secondary)>0.00001:
             rotate_bone(human,pose,lib_bone(human,"Head"),vec3(1,0,0),f64(secondary.x))
             rotate_bone(human,pose,lib_bone(human,"Head"),vec3(0,1,0),f64(secondary.y))
-        if e.burning <= 0.0: boko_weapon_pose(pose, e)
+        if e.burning <= 0.0 and not held_club: boko_weapon_pose(pose, e)
         # Modest build variation within the same species; footing uses this same matrix.
         build_ = e.contact_scale
         eanims[i].world = facing_mat(e.pos + vec3(0, f32(e.lift), 0), e.face) * scaling(build_)

@@ -15,6 +15,9 @@ struct BVert:
     mat: vec4            # x block size, y ivy, z glow, w surface (-1 dressed stone, 0 neutral, 1 wood, 2 hide, 3 rock, 4 cliff, 5 cliff, 6 cave, 7 weathered brow)
     light = vec3(0, 0, 0) # baked fixture irradiance; separate from material pigment
 
+# Reserved camera policy in the existing keep-radius slot; retain the uniform layout.
+const BUILD_KEEP_MASONRY = -0.25
+
 struct BuildU:
     vp: mat4
     cam: vec3
@@ -46,6 +49,7 @@ struct BuildU:
     fade_width = 1.0
     keep_center = vec2(0, 0)
     keep_radius = 0.0
+    cave_inside = 0.0
 
 struct BuildO:
     pos: vec4
@@ -59,7 +63,18 @@ build_vs = (v: BVert, u: BuildU) -> BuildO:
     w = v.pos + u.lift
     w.y = u.base.y + (w.y - u.base.y) * (1.0 - u.collapse * 0.94)
     w.xz = u.base.xz + (w.xz - u.base.xz) * (1.0 + u.collapse * 0.12)
-    BuildO(u.vp * vec4(w, 1), w, v.normal, v.color, v.mat, v.light)
+    n = v.normal
+    col = v.color
+    mat = v.mat
+    if mat.w < -3.5:
+        # Recessed Temple joints become subpixel at a shallow viewing angle.
+        # Blend their baked pigment and bevel normals into the slab's broad stone tone
+        # before that happens, continuously in the vertex stage (no dither).
+        blend = smoothstep(3.5,8.0,length(w-u.cam))
+        col = vec4(mix(col.xyz,mat.xyz,blend),col.w)
+        n = normalize(mix(n,vec3(0,1,0),blend))
+        mat = vec4(0,0,0,-1)
+    BuildO(u.vp * vec4(w, 1), w, n, col, mat, v.light)
 
 masonry = (w: vec3, n: vec3, size: f32) -> f32:
     # Narrow mortar beds with unequal course lengths and offset bond. Dimensions
@@ -121,6 +136,8 @@ sheikah_traces = (w: vec3, n: vec3, sparse: f32) -> f32:
 build_occluder_fade = (i: BuildO, u: BuildU) -> f32:
     # Camera clearance never changes a caster or an inactive player view.
     if u.player.y < -500.0 or u.shadow_pass > 0.5: return 0.0
+    timber = i.mat.w > 0.5 and i.mat.w < 1.5
+    if u.keep_radius == BUILD_KEEP_MASONRY and not timber: return 0.0
     # whatever stands between the camera and the player dissolves (a stake, a pillar, a wall's end)
     cp = u.player + vec3(0, 1.0, 0) - u.cam
     tt = clamp(dot(i.world - u.cam, cp) / max(dot(cp, cp), 0.01), 0.0, 1.0)
@@ -141,7 +158,6 @@ build_occluder_fade = (i: BuildO, u: BuildU) -> f32:
     if length(i.world-u.cam) < 1.0: fade = 1.0
     # Timber and tower supports clear completely; masonry keeps a broad
     # dithered transition instead of a hard oval portal through the wall.
-    timber = i.mat.w > 0.5 and i.mat.w < 1.5
     if not timber and u.keep_radius <= 0.0 and u.fade_width > 1.1:
         # The ordinary depth taper ends before Jo. During a masonry climb,
         # keep the sightline's centre clear through foreground walls close to
@@ -202,13 +218,20 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
         plane = smoothstep(-0.35, 0.65, n.y)
         # Broad mineral washes have no periodic line shared by floor and walls.
         # Relief already supplies local cracks, lips and shaded recesses.
-        alb = alb * (0.88 + bed * 0.28) * (0.84 + plane * 0.16)
+        lining=f32(u.cave_inside)
+        grain=f32(0.5)
+        shade=(0.88+bed*0.28)*(0.84+plane*0.16)
+        if lining>0.0:
+            grain=vnoise(q*vec2(1.4,2.1)+vec2(bed*1.3,wash*0.8))
+            shade=lerp(shade,(0.76+bed*0.38)*(0.78+grain*0.36)*(0.80+plane*0.20),lining)
+        alb*=shade
         exposed = clamp(i.mat.w-6.0,0.0,1.0)
         if exposed > 0.0:
             mineral = cave_weathered_stone(w) * (0.82 + i.color.x * 0.65)
             # Dark fractured recesses and pale shelf tops belong to the rock,
             # even where the exterior shell overlaps the heightfield.
             mineral = mineral * (0.78 + plane * 0.32 + bed * 0.16)
+            if lining>0.0: mineral*=lerp(f32(1.0),0.72+grain*0.46,lining)
             alb = mix(alb, mineral, exposed)
     else if i.mat.w > 4.5:
         # Keep the authored warm stone and its local darkening beneath strata.
@@ -314,14 +337,25 @@ build_fs = (i: BuildO, u: BuildU) -> vec4:
     canyon_mineral = if i.mat.w > 2.5 and i.mat.w < 5.5: west_rock_cover(w) else: f32(0.0)
     c = mix(c,luma(c)*vec3(1.04,1.0,0.92),canyon_mineral*0.88)
     c = c + alb * i.light + point_light(alb, n, w, u.lp, u.lc)
+    if i.mat.w > 5.5 and u.cave_inside > 0.0:
+        # The flared shell wraps back into the cave. Its exposed material must
+        # still lose sky fill on the inner side of the actual daylight threshold.
+        station = dot(w-vec3(-1128,237,1884),normalize(vec3(61,0,-40)))
+        c *= lerp(f32(1.0),0.62+0.38*smoothstep(66.0,82.0,station),f32(u.cave_inside))
+    # Inlaid passage lights retain blue emission without mineral shade pigment.
+    marker = i.mat.w > 0.49 and i.mat.w < 0.51
+    if marker:
+        # Inlays are smooth light, independent of weathering, shadow maps and
+        # interpolated triangle normals. Receiver glow uses the additive batch.
+        c = vec3(0.040,0.075,0.095) + u.glow_color*i.mat.z*0.95
     # Sheikah glow lines
-    if i.mat.z > 0.0:
+    if i.mat.z > 0.0 and not marker:
         # on Sheikah stone, light runs along the traces in slow pulses
         run = if i.mat.x < -0.5: smoothstep(0.85, 1.0, fract((w.x + w.z) * 0.04 + w.y * 0.03 - u.time * 0.25)) * 0.9 else: 0.0
         c = c + u.glow_color * i.mat.z * traces * (0.75 + 0.2 * sin(u.time * 2.0 + w.y * 0.5) + run)
     c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
     # Negative alpha marks occluders for the existing paint resolve (no extra pass).
-    vec4(c, (if fade > 0.001: -8.0 else: (if i.mat.w < -0.5 or i.mat.w > 5.5: 0.85 else: 1.0)))
+    vec4(c, (if fade > 0.001: -8.0 else: (if marker: 0.0 else if i.mat.w < -0.5 or i.mat.w > 5.5: 0.85 else: 1.0)))
 
 # ---------------- the builder ----------------
 struct Builder:
@@ -775,7 +809,12 @@ build_draw = (u: BuildU, vp: mat4, cam: vec3, max_dist: f64):
                 __build_draw_at(program,c.mesh,uniforms)
                 continue
         draw_fast(build_sh, c.mesh, u)
-    build_extra_draw(u, vp, cam, max_dist)
+    # The camera supplies a clear climbing sightline. Keep the cliff decorator
+    # equally opaque: its legacy dissolve uses the inactive-player sentinel.
+    # Mineral shading and its uniform layout remain unchanged.
+    extra = u
+    if u.keep_radius == BUILD_KEEP_MASONRY: extra.player.y = -10000.0
+    build_extra_draw(extra, vp, cam, max_dist)
 
 stone = (r: f64, g: f64, b: f64) -> vec4: vec4(f32(r), f32(g), f32(b), 1)
 

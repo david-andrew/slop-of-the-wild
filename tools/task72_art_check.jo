@@ -1,0 +1,252 @@
+build:
+    opt = release
+use '../game/gfx.jo'
+use '../game/build.jo'
+use '../game/interiors.jo'
+use '../game/structures.jo'
+use '../game/terrain.jo'
+use '../game/vegetation.jo'
+use '../game/worldgen.jo'
+use '../game/physics.jo'
+use '../game/player.jo'
+use '../game/input.jo'
+from '../game/build.jo' import __named_b, __bchunks
+
+# Inspect the actual uploaded floor geometry: every triangle takes one shader
+# path, and adjacent strips share colour and illumination at their boundary.
+hf.n=32
+hf.cell=200.0
+hf.x0= -4000.0
+hf.z0= -2000.0
+hf.h=fill(f32(247.2),hf.n*hf.n)
+a=v3(-1128,237,1884)
+b=v3(-1067,247.5,1844)
+begin_named("floor")
+loop i in [0..36):sor_passage_floor(a,b,i,36)
+end_named()
+floor_mesh=__named_b["floor"]
+shared:{str:BVert}={}
+joins=0
+loop v in floor_mesh.verts:
+    assert(v.mat==SOR_STONE,"one continuous floor material, no diagonal branch seam")
+    assert(length(v.normal)>0.99 and v.normal.y>0.8,"finite upward ramp normal")
+    id="{v.pos.x:.4},{v.pos.y:.4},{v.pos.z:.4}"
+    if let other=shared.get(id):
+        assert(length(v.color-other.color)<0.001 and length(v.light-other.light)<0.001,"shared ramp edges have continuous pigment/light")
+        joins+=1
+    shared[id]=v
+assert(joins>200,"audit repeated vertices across all 36 ramp stations")
+print("PASS passage floor: {joins} shared vertices, continuous material and irradiance")
+
+# Check the actual inlays, including their visible placement beside the footline.
+begin_named("inlays")
+corridor(a,b,36)
+end_named()
+inlays=__named_b["inlays"]
+axis=normalize(vec3(b.x-a.x,0,b.z-a.z))
+side=vec3(-axis.z,0,axis.x)
+glow_vertices=0
+loop v in inlays.verts:
+    along=dot(v.pos-a,axis)
+    level=a.y+along*(b.y-a.y)/length(vec3(b.x-a.x,0,b.z-a.z))
+    if v.mat.z<0.08 or abs(v.pos.y-level)>0.12:continue
+    assert(v.normal.y>0.9 and abs(dot(v.pos-a,side))<2.3,"floor inlays face up inside the ramp")
+    glow_vertices+=1
+assert(glow_vertices>=360,"filled blue floor discs and rings survive the continuous stone material")
+# Every marker triangle is front-facing, and nodes cover both sides of the
+# footline rather than gathering behind Jo at waist height.
+left=0
+right=0
+loop tri in [0..inlays.idx.len()/3):
+    aa=inlays.verts[int(inlays.idx[tri*3])]
+    bb=inlays.verts[int(inlays.idx[tri*3+1])]
+    cc=inlays.verts[int(inlays.idx[tri*3+2])]
+    along=dot(aa.pos-a,axis)
+    level=a.y+along*(b.y-a.y)/length(vec3(b.x-a.x,0,b.z-a.z))
+    if aa.mat.z<0.08 or abs(aa.pos.y-level)>0.12:continue
+    assert(cross(bb.pos-aa.pos,cc.pos-aa.pos).y>0,"floor markers are front facing")
+    if dot(aa.pos-a,side)<0:left+=1
+    else:right+=1
+assert(left>20 and right>20,"floor markers span both sides of the passage")
+print("PASS passage inlays: {glow_vertices} disc/ring vertices, both sides, front facing")
+min_marker_gap=1000.0
+max_marker_gap= -1000.0
+loop v in inlays.verts:
+    along=dot(v.pos-a,axis)
+    level=a.y+along*(b.y-a.y)/length(vec3(b.x-a.x,0,b.z-a.z))
+    if v.mat.z<0.08 or abs(v.pos.y-level)>0.12:continue
+    ground= -1000.0
+    loop tri in [0..floor_mesh.idx.len()/3):
+        aa=floor_mesh.verts[int(floor_mesh.idx[tri*3])].pos
+        bb=floor_mesh.verts[int(floor_mesh.idx[tri*3+1])].pos
+        cc=floor_mesh.verts[int(floor_mesh.idx[tri*3+2])].pos
+        e1=bb.xz-aa.xz
+        e2=cc.xz-aa.xz
+        offset=v.pos.xz-aa.xz
+        det=e1.x*e2.y-e1.y*e2.x
+        uu=(offset.x*e2.y-offset.y*e2.x)/det
+        vv=(e1.x*offset.y-e1.y*offset.x)/det
+        if uu< -0.0001 or vv< -0.0001 or uu+vv>1.0001:continue
+        ground=max(ground,aa.y+uu*(bb.y-aa.y)+vv*(cc.y-aa.y))
+    assert(ground> -900,"every marker lies above the real ramp mesh")
+    min_marker_gap=min(min_marker_gap,f64(v.pos.y-ground))
+    max_marker_gap=max(max_marker_gap,f64(v.pos.y-ground))
+assert(min_marker_gap>0.004 and max_marker_gap<0.035,"complete discs and rings remain visible over the real ramp, without floating")
+# Inlay annuli and their filled centres share an edge, never a coplanar area.
+marker_triangles:(vec3,vec3,vec3)[]
+loop tri in [0..inlays.idx.len()/3):
+    aa=inlays.verts[int(inlays.idx[tri*3])]
+    bb=inlays.verts[int(inlays.idx[tri*3+1])]
+    cc=inlays.verts[int(inlays.idx[tri*3+2])]
+    if aa.mat.w==0.5 and aa.mat.z>0.0:marker_triangles.push((aa.pos,bb.pos,cc.pos))
+loop i in [0..marker_triangles.len()):
+    tri=marker_triangles[i]
+    marker_point=(tri.0.xz+tri.1.xz+tri.2.xz)/3.0
+    loop j in [0..marker_triangles.len()):
+        if i==j:continue
+        other=marker_triangles[j]
+        e1=other.1.xz-other.0.xz
+        e2=other.2.xz-other.0.xz
+        offset=marker_point-other.0.xz
+        det=e1.x*e2.y-e1.y*e2.x
+        uu=(offset.x*e2.y-offset.y*e2.x)/det
+        vv=(e1.x*offset.y-e1.y*offset.x)/det
+        assert(not (uu>0.01 and vv>0.01 and uu+vv<0.99),"marker centres and rings have no coplanar overlap or depth fighting")
+print("PASS passage marker topology: {marker_triangles.len()} triangles, no coplanar overlap")
+print("PASS passage marker contact: {min_marker_gap:.5}..{max_marker_gap:.5} m above real ramp triangles")
+
+
+before=colliders.len()
+begin_named("pavers")
+temple_paving(vec3(0,0,0),0.0)
+end_named()
+assert(colliders.len()==before,"paver wear adds no raised collision plane")
+paving=__named_b["pavers"]
+upward=0
+loop tri in [0..paving.idx.len()/3):
+    aa=paving.verts[int(paving.idx[tri*3])]
+    bb=paving.verts[int(paving.idx[tri*3+1])]
+    cc=paving.verts[int(paving.idx[tri*3+2])]
+    face=cross(bb.pos-aa.pos,cc.pos-aa.pos)
+    assert(length(face)>0.000001 and dot(face,aa.normal+bb.normal+cc.normal)>0,"all paver crowns and broken edges are nondegenerate and outward")
+    if aa.normal.y>0.9:upward+=1
+loop v in paving.verts:
+    assert(v.pos.y>=-0.041 and v.pos.y<0.09,"all wear belongs to the original 8 cm paving depth")
+assert(upward>2000 and paving.idx.len()/3<24000,"bounded real broken-edge geometry")
+# Exercise the actual render vertex path on every crown, bevel and bed vertex:
+# subpixel grout loses both pigment and normal contrast without coverage noise.
+loop v in paving.verts:
+    near=build_vs(v,BuildU(cam=v.pos+vec3(0,2,0)))
+    far=build_vs(v,BuildU(cam=v.pos+vec3(0,20,0)))
+    assert(length(near.color-v.color)<0.00001,"near pavers retain the baked wear")
+    assert(length(far.color.xyz-v.mat.xyz)<0.00001 and far.normal.y>0.9999,"distant grout and bevels converge continuously to the stone wash")
+    assert(near.mat==vec4(0,0,0,-1) and far.mat==near.mat,"paver metadata never enters fragment material/glow branches")
+legacy=BVert(vec3(0,0,0),vec3(1,0,0),vec4(0.2,0.3,0.25,1),vec4(0,0,0,-3))
+legacy_render=build_vs(legacy,BuildU(cam=vec3(0,0,100)))
+assert(legacy_render.mat==legacy.mat and legacy_render.color==legacy.color and legacy_render.normal==legacy.normal,"Guardian patina material is distinct from paver filtering")
+# Filtering removes narrow joint contrast but retains broad slab identity.
+slab_min=10.0
+slab_max=0.0
+loop row in [10,11,12,13,14,15]:
+    loop col in [4,5,6,7]:
+        index=(row*12+col)*60+4
+        # Each slab owns a bed quad and eight crown/bevel groups of seven.
+        v=paving.verts[index]
+        mid=build_vs(v,BuildU(cam=v.pos+vec3(0,6,0)))
+        far=build_vs(v,BuildU(cam=v.pos+vec3(0,20,0)))
+        assert(length(mid.color.xyz-v.color.xyz)>0.00001,"joint contrast fades smoothly at middle distance")
+        assert(length(mid.color.xyz-far.color.xyz)<length(v.color.xyz-far.color.xyz),"mid-distance pigment approaches its slab wash continuously")
+        slab_min=min(slab_min,f64(v.mat.x))
+        slab_max=max(slab_max,f64(v.mat.x))
+assert(slab_max-slab_min>0.01,"broad slab tones survive after subpixel grout vanishes")
+print("PASS Temple grout filtering: all crown/bevel/bed vertices converge, near wear and Guardian patina retained")
+print("PASS Temple: {upward} upward paving triangles, broken closed edges inside original floor depth")
+
+worldgen_load()
+structures_pads()
+sor_pads()
+worldgen_finish()
+assert(abs(height_at(-1288.0,2221.0)-417.0)<5.0,"summit/tomb standing pad retained")
+assert(jolia_crags(-1288.0,2221.0)==0.0 and jolia_crags(-1000.0,2221.0)==0.0,"ridge stays outside summit pad and distant routes")
+steep=0
+high=0.0
+loop zi in [0..80):
+    z=2141.0+f64(zi)*2.0
+    loop xi in [0..100):
+        x= -1388.0+f64(xi)*2.0
+        relief=jolia_crags(x,z)
+        assert(relief>=0.0 and relief<55.0,"bounded ridge/drift displacement")
+        high=max(high,relief)
+        if relief>5.0 and normal_at(x,z).y<0.70:steep+=1
+assert(high>12.0 and steep>20,"summit has physical crags rather than painted grey smears")
+# Ground-controller contacts at the preserved summit and four snow pockets.
+loop xy in [vec2(-1288,2221),vec2(-1268,2254),vec2(-1314,2256),vec2(-1339,2204),vec2(-1247,2205)]:
+    p=v3(f64(xy.x),height_at(f64(xy.x),f64(xy.y)),f64(xy.y))
+    pl=Player(pos=p,last_safe=p)
+    act=Actions()
+    loop k in [0..60):player_update(1.0/60.0)
+    assert(abs(f64(pl.pos.y)-height_at(f64(pl.pos.x),f64(pl.pos.z)))<0.2 and pl.hp>0,"feet agree with displaced snowfield collision")
+print("PASS Mount Jolia: relief {high:.2} m, {steep} steep crag samples, preserved summit and five grounded contacts")
+
+# Instance pigment keeps little field stones grey without darkening the snow,
+# existing moss or the deliberately dim cave chips. Uses the real placement path.
+places.clear()
+point=vec3(-1288,417,2221)
+place("Rock_Medium_2",point,0.0,1.4,vec4(1,1,1,0),false)
+place("Pebble_Round_1",point,0.0,0.6,vec4(1,1,1,0),false)
+place("Rock_Medium_2",point,0.0,1.4,vec4(0.6,1,0.6,0),false)
+place("Rock_Medium_2",point,0.0,0.8,vec4(0.62,0.56,0.52,0),false)
+place("Rock_Medium_2",point,0.0,1.4,vec4(1,1,1,0.85),false)
+place("Rock_Medium_2",point,0.0,6.0,vec4(1,1,1,0),false)
+assert(places.len()==6,"all mineral finish probes retain their placement")
+loop i in [0,1]:
+    assert(places[i].tint.x>0.75 and places[i].tint.x<0.9 and places[i].tint.y<0.9 and places[i].tint.z<0.9,"little pale minerals retain a grey pigment at overlook distance")
+assert(places[2].tint==vec4(0.6,1,0.6,0),"existing moss finish is unchanged")
+assert(places[3].tint==vec4(0.62,0.56,0.52,0),"cave chips cannot become black blobs")
+assert(places[4].tint.x>0.70 and places[4].tint.x<0.8 and places[4].tint.z<0.9 and places[4].tint.w>0.3 and places[4].tint.w<0.4,"small snowfield rocks have grey stone bodies with restrained snow caps")
+assert(places[5].tint==vec4(1,1,1,0),"large bedrock actors retain their mineral value")
+print("PASS small mineral pigment: field stones and pebbles grey; moss, cave and large rocks retained; snowfield stones grey")
+
+# Audit the real Temple layers, not just isolated pavers: rays through narrow
+# open joints must reach the dirt bed before the foundation cap.
+temple()
+layer_probes=0
+layer_points: vec2[]
+loop row in [8,16,24,32,40,48,56,64]:
+    loop col in [4,5,6,7]:
+        layer_points.push(vec2(-9.5+f64(col)*19.0/12.0+0.005,-27.0+f64(row)*58.0/72.0+0.40))
+loop cap_point in [vec2(-14,0),vec2(14,0),vec2(0,-34),vec2(0,38)]:layer_points.push(cap_point)
+loop index in [0..layer_points.len()):
+    layer_point=layer_points[index]
+    o=lp(TEMPLE,TEMPLE_ROT,f64(layer_point.x),0.12,f64(layer_point.y))
+    dir=vec3(0,-1,0)
+    best=0.20
+    material= -1.0
+    loop key,mesh in __bchunks:
+        loop tri in [0..mesh.idx.len()/3):
+            aa=mesh.verts[int(mesh.idx[tri*3])]
+            bb=mesh.verts[int(mesh.idx[tri*3+1])]
+            cc=mesh.verts[int(mesh.idx[tri*3+2])]
+            if aa.normal.y<0.7:continue
+            e1=bb.pos-aa.pos
+            e2=cc.pos-aa.pos
+            h=cross(dir,e2)
+            det=f64(dot(e1,h))
+            if det<0.0000001:continue
+            offset=o-aa.pos
+            u=f64(dot(offset,h))/det
+            if u<0.0 or u>1.0:continue
+            q=cross(offset,e1)
+            v=f64(dot(dir,q))/det
+            if v<0.0 or u+v>1.0:continue
+            t=f64(dot(e2,q))/det
+            if t>0.0 and t<best:
+                best=t
+                material=if aa.mat.w< -3.5:0.0 else:f64(aa.mat.x)
+    level=0.12-best
+    if index<32:
+        assert(material==0.0 and level>0.025 and level<0.055,"open paving joints expose the bed, never an intersecting foundation/card")
+    else:
+        assert(material>0.4 and abs(level-0.07)<0.002,"outer aisles and landing retain original visible foot support")
+    layer_probes+=1
+print("PASS Temple floor layers: {layer_probes} real layer rays: exposed dirt joints and unchanged outer foot support")

@@ -1,0 +1,45 @@
+# Actual HUD projection/opacity and recovery, independent of weather/hour.
+use '../game/ui.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+use '../game/water_render.jo'
+loop hour in [0.0,6.4,11.0,18.6,22.0]:
+    loop rain in [0.0,0.75,1.0]:
+        env.hour=hour
+        env.rain=rain
+        pl=Player(stamina=500,stamina_shown=0.1,rest_t=5)
+        assert(stamina_opacity()>=clock_opacity(0,rain),"active stamina shares clock contrast floor")
+        pl.stamina=pl.stamina_max
+        before=pl.stamina_shown
+        stamina_visibility_update(1.0/60.0)
+        assert(stamina_opacity()<before and stamina_opacity()>0,"full recovery fades instead of snapping off")
+        loop i in [0..180): stamina_visibility_update(1.0/60.0)
+        assert(not stamina_hud_visible(),"full recovery disappears")
+loop k in [1.0,1.16,1.6]:
+    loop wheels in [1,2,3]:
+        loop head in [vec2(640,260),vec2(660,300),vec2(612,220)]:
+            body=vec2(640,320)
+            c=stamina_center(body,head,k,wheels)
+            radius=f32((18.0+f64(wheels-1)*7.0)*k)
+            assert(c.x-radius>head.x+f32(20.0*k),"all capacity arcs clear the head")
+            assert(c.y<body.y and c.x>body.x,"wheel sits upper right of Jo")
+print("PASS stamina: screen-space head clearance, HUD scaling, all-weather contrast and completed-recovery fade")
+
+assert(water_pond_reflection(1,0,0,0)<0.025,"no constant sky veil in clear overhead shallows")
+assert(water_pond_reflection(0,0,0,0)>0.55,"grazing water retains sky reflection")
+last=f32(1)
+loop n in [0..11):
+    nv=f32(n)/10.0
+    r=water_pond_reflection(nv,0,0,0)
+    assert(r<=last and r>=0,"reflectance rises continuously toward grazing")
+    last=r
+    original=0.035+(0.08+0.72*pow(1.0-nv,5.0))*0.55
+    assert(abs(water_pond_reflection(nv,0,0,1)-original)<0.00001,"night reflectance preserved")
+    assert(abs(water_pond_reflection(nv,1,1,0)-(original+0.37))<0.00001,"rain reflectance preserved")
+print("PASS water: clear shallow transmission, continuous Fresnel, preserved rain/night reflectance")
+
+assert(water_bed_clarity(0.3,5)>0.99,"nearshore sand stays sharp")
+assert(water_bed_clarity(1.5,5)<0.30,"deep swim water cannot read as exposed gritty ground")
+assert(water_bed_clarity(2.0,5)==0,"deep water keeps its existing soft blue-green bed")
+assert(water_bed_clarity(0.3,24)==0,"fine substrate fades before distance aliasing")
+print("PASS bed detail: clear shallow lip, subdued deep swim bed and distance filtering")

@@ -1,7 +1,9 @@
 # CPU-only regression for active/recovering/resting stamina visibility.
 use '../game/player.jo'
 pl=Player(rest_t=3.0,stamina_shown=0.4)
-assert(not stamina_hud_visible(),"full rested stamina never leaves a wheel stub")
+assert(stamina_hud_visible(),"completed recovery retains its fade, even after a long rest timer")
+loop i in [0..180): stamina_visibility_update(1.0/60.0)
+assert(not stamina_hud_visible(),"full rested stamina finishes fading without a wheel stub")
 pl.stamina_shown=0.0
 assert(not stamina_hud_visible())
 pl.stamina=pl.stamina_max-30.0

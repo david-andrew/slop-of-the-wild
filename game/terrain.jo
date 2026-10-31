@@ -214,8 +214,7 @@ __rim_rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
     c = mix(c, vec3(0.21, 0.265, 0.285), smoothstep(0.48, 0.22, big) * 0.70)
     c = mix(c, vec3(0.235, 0.29, 0.205), smoothstep(0.53, 0.77, big2) * 0.55)
     # tall facets: each joint-bounded column of rock a little lighter or darker
-    col = floor(side.x * 0.22 + vnoise(vec2(side.x * 0.04, side.y * 0.02)) * 3.0)
-    c = c * (0.94 + 0.12 * hash12(vec2(col, floor(w.y * 0.07))))
+    c = c * (0.94 + 0.12 * big2)
     # vertical washes: tall soft streaks, and broad bays of warmer and greyer rock across the face
     c = c * (0.76 + 0.38 * vnoise(vec2(side.x * 0.045 + w.y * 0.008, w.y * 0.012)))
     bay = vnoise(vec2(side.x * 0.012, w.y * 0.008) + vec2(4.0, 1.0))
@@ -244,8 +243,8 @@ __rim_rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
         # Broad slanted mineral strokes instead of the meadow's rounded tooth.
         dry = vnoise(vec2(side.x * 0.65 + side.y * 0.3, side.y * 2.1))
         c = c * (1.0 + near * (smoothstep(0.25, 0.72, dry) - 0.5) * 0.25)
-        lich = smoothstep(0.78, 0.86, vnoise(side * 2.7 + vec2(13.0, 5.0))) * smoothstep(0.45, 0.6, mot) * near
-        c = mix(c, vec3(0.55, 0.57, 0.48), lich * 0.35)
+        lich = smoothstep(0.52, 0.94, vnoise(side * 2.7 + vec2(13.0, 5.0))) * smoothstep(0.40, 0.76, mot) * near
+        c = mix(c, c * vec3(1.10, 1.11, 1.02), lich * 0.25)
     # the ledges: a dark undercut beneath each lip and the lip's sunlit top edge
     s2 = s * 0.5
     f2 = fract(s2)
@@ -320,9 +319,12 @@ canyon_rock_normal = (w: vec3, n: vec3, dist: f32) -> vec3:
     dy = (__canyon_detail_h(w + t2 * 0.15, weights) - h) / 0.15
     normalize(n - (t1 * dx + t2 * dy) * strength)
 
+jolia_rock_cover = (w: vec3) -> f32:
+    smoothstep(330.0,385.0,w.y)*(1.0-smoothstep(140.0,210.0,length(w.xz-vec2(-1288,2221))))
+
 rock_color = (w: vec3, n: vec3, dist: f32) -> vec3:
     hill = camp_hill_cover(w)
-    cover = max(west_rock_cover(w),hill)
+    cover = max(max(west_rock_cover(w),hill),jolia_rock_cover(w))
     if cover <= 0.0: return __rim_rock_color(w, n, dist)
     c = __canyon_rock_color(w, n, dist)
     if hill > 0.0:
@@ -724,14 +726,15 @@ terrain_fs_surface = (i: TerrO, u: TerrU, soaked: bool) -> vec4:
     absorb = forest_wet_absorption(alb, fo, rockk)
     alb = alb * (1.0 - wetness * absorb)
     alb = mix(alb, vec3(1, 1, 1) * dot(alb, vec3(0.3, 0.55, 0.15)), wetness * 0.3)
+    jolia_stone = jolia_rock_cover(w)
     rk = clamp(mt.y + smoothstep(0.66, 0.5, n.y), 0.0, 1.0) * (1.0 - snk)
-    rk = rk * (1.0 - smoothstep(60.0, 220.0, length(w - u.cam))) * (1.0 - west_rock_cover(w))
+    rk = rk * (1.0 - smoothstep(60.0, 220.0, length(w - u.cam))) * (1.0 - max(west_rock_cover(w),jolia_stone))
     # (cliffs in relief at any distance, the light picking out their ribs: far off a face was one
     # flat painted sheet)
     # Exposed shoulders beside the glide are steep rock without being vertical.
     # Give them the same broad ribs as the cliff, gated by the actual stone
     # weight so gentle meadow slopes retain their soft turf lighting.
-    fk = smoothstep(0.82, 0.43, n.y) * rockk * (1.0 - snk) * (1.0-cave_cliff_cover(w))
+    fk = smoothstep(0.82, 0.43, n.y) * rockk * (1.0 - snk) * (1.0-cave_cliff_cover(w)) * (1.0-jolia_stone)
     if fk > 0.05:
         fh = __face_h(w)
         n = normalize(mix(n, face_normal(w, n, fh), fk))

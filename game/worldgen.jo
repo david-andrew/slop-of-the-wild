@@ -151,6 +151,23 @@ plateau_crowns = (x: f64, z: f64) -> f64:
     # Leave the mouth, standing overlook and southern footpath at their old height.
     d * (1.0-smoothstep(1810.0,1838.0,z))
 
+# An offset, broken bedrock crest leaves the summit/tomb pad walkable.
+# Heightfield relief is shared by rendering, tree roots and climbing physics.
+jolia_crags = (x: f64, z: f64) -> f64:
+    dx=x+1288.0
+    dz=z-2221.0
+    r=hypot(dx,dz)
+    if r<10.0 or r>128.0:return 0.0
+    along=dx*0.86+dz*0.51
+    across=dz*0.86-dx*0.51
+    ridge=pow(max(0.0,1.0-abs(across+22.0+sin(along*0.055)*3.0)/22.0),1.4)
+    ridge*=smoothstep(-110.0,-62.0,along)*(1.0-smoothstep(46.0,96.0,along))
+    teeth=0.60+0.40*noise(along*0.045+7.0,3.0)
+    spur=pow(max(0.0,1.0-abs(across-30.0-along*0.28)/13.0),1.7)
+    spur*=smoothstep(-55.0,-22.0,along)*(1.0-smoothstep(18.0,60.0,along))
+    drift=relief_mass(x,z,-1271.0,2256.0,19.0,35.0)*2.8
+    (ridge*teeth*16.0+spur*9.0+drift)*smoothstep(10.0,19.0,r)*(1.0-smoothstep(110.0,128.0,r))
+
 # fine relief: gentle undulation on meadows, broken rock on steep ground, none on pads and water
 __detail = (x: f64, z: f64, h: f64, slope: f64, sd: f64) -> f64:
     d = (fbm(x * 0.03, z * 0.03, 3) - 0.5) * 2.2 + (noise(x * 0.11, z * 0.11) - 0.5) * 0.5
@@ -170,6 +187,7 @@ __detail = (x: f64, z: f64, h: f64, slope: f64, sd: f64) -> f64:
         # taper its uplift into the existing mountain over 140 m.
         summit = pow(clamp((140.0 - r) / 132.0, 0.0, 1.0), 1.4)
         d += max(0.0, 417.0 - h) * summit
+        d += jolia_crags(x,z)
         envelope = smoothstep(12.0, 48.0, r) * (1.0 - smoothstep(130.0, 245.0, r)) * smoothstep(285.0, 360.0, h)
         rib = pow(max(0.0, cos(a * 4.0 + r * 0.009 + 0.5)), 2.0)
         d += envelope * (rib * 13.0 - 1.0)

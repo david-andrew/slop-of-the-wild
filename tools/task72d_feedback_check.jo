@@ -1,0 +1,62 @@
+# Connecting later combo blows pause and flash more strongly; misses emit nothing.
+use '../game/gfx.jo'
+use '../game/player.jo'
+use '../game/chars.jo'
+use '../game/items.jo'
+use '../game/skel.jo'
+use '../game/enemy_weapon_pose.jo'
+use '../game/combat.jo'
+use '../game/enemies.jo'
+
+items_init()
+chars_init()
+pl=Player(pos=vec3(0,0,0),face=0)
+d=item("travelers_sword")
+stops: f64[]
+flashes: f64[]
+loop combo in [0..4):
+    fight=Fight(act=.swing,combo=combo,t=swing_for(d,combo).hit0+0.025,weapon_out=true,swing_id=combo+200)
+    player_hits.clear()
+    blade_hits(d,1.0/60.0,5.0,2.0,combo==3)
+    assert(player_hits.len()>0,"authored active interval produces blade contacts")
+    h=player_hits[0]
+    stops.push(h.stop)
+    enemies.clear()
+    enemy_events.clear()
+    i=spawn_enemy(.blue_bokoblin,vec3(40,0,0))
+    enemies_take_hits()
+    assert(enemy_events.len()==0,"a missed swing never triggers impact feedback")
+    enemies[i].pos=vec3(0,0,0)
+    enemies[i].state=.chase
+    enemies[i].alert=1.0
+    h.grip=vec3(-0.5,0.9,0)
+    h.tip=vec3(0.5,0.9,0)
+    h.pos=vec3(0,0.9,0)
+    player_hits=[h,h,h,h]
+    enemies_take_hits()
+    assert(enemies[i].hp==enemies[i].hp_max-5.0,"four contact samples damage once")
+    impacts=0
+    loop ev in enemy_events:
+        if ev.kind=="enemy_hit" or ev.kind=="enemy_hit_big":
+            impacts+=1
+            assert(abs(ev.stop-h.stop)<0.00001,"connected impact carries its combo pause")
+            assert((ev.kind=="enemy_hit_big")== (combo==3),"finisher selects the stronger burst")
+    assert(impacts==1,"one impact per connected swing")
+    flashes.push(enemies[i].flash)
+assert(stops[0]==stops[1] and stops[2]>stops[1] and stops[3]>stops[2],"third hit and finisher increase pause")
+assert(abs(stops[0]-0.065)<0.00001 and abs(stops[2]-0.090)<0.00001 and abs(stops[3]-0.135)<0.00001,"65/90/135 ms hitstop without retiming the swing data")
+assert(flashes[2]>flashes[1] and flashes[3]>flashes[2],"later hits hold the brief partial flash longer")
+print("PASS connected combo: {stops} seconds, flashes {flashes}; no miss effects or duplicate impacts")
+
+# Cached tells must preserve the authored pose and remain independent per actor.
+a=boko_held_club_pose()
+loop move in [0,1]:
+    b=sample_clip(human,ci("attack"),0.28*0.35,false)
+    boko_weapon_pose(b,Enemy(state=.windup,t=0.4,move=move,weapon="boko_club"))
+    loop j in [0..a.r.len()):
+        assert(length(a.r[j]-b.r[j])<0.000001 and length(a.t[j]-b.t[j])<0.000001 and length(a.s[j]-b.s[j])<0.000001,"held club cache matches both live club overlays")
+a.t[0]+=vec3(1,2,3)
+a.r[0]=vec4(1,0,0,0)
+c=boko_held_club_pose()
+assert(length(c.t[0]-a.t[0])>1.0 and length(c.r[0]-a.r[0])>0.1,"one actor's footing cannot mutate another's cached tell")
+print("PASS held club cache: exact poses and independent actor copies")

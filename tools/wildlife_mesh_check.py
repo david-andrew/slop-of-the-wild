@@ -2,7 +2,7 @@
 """Run production wildlife mesh builders headlessly by replacing only mesh upload.
 
 The generated audit validates indices and normals, and preserves the eight boar
-parts / fifteen bird batches. Pass --baseline REF for matched triangle budgets.
+parts / shared bird batches. Pass --baseline REF for matched triangle budgets.
 """
 from pathlib import Path
 import argparse, re, subprocess
@@ -39,8 +39,11 @@ loop k in [0..3):
 assert(audit_bird_m.len() == 9 and audit_bird_details.len() == 6, "bird batch/draw budget unchanged")
 print("PASS production mesh normals, indices, bounds and draw budgets")
 '''
-    # Flight now draws one body and two instances of its shared wing mesh.
+    # Flight draws the body and two instances of each articulated wing segment.
     wing_audit = 'if pose > 0: m.index_count = audit_bird(k, 1).index_count + audit_bird(k, 2).index_count * 2' if 'pose.flap' in source else 'pass'
+    if '__bird_hands:' in source:
+        wing_audit += ' + audit_bird_hands[k].index_count * 2'
+        code = code.replace('print("PASS production mesh', 'assert(audit_bird_hands.len() == 3, "one outer-wing batch per species")\nprint("PASS production mesh')
     code = code.replace('WING_AUDIT', wing_audit)
     path=out/f'{label}-mesh-check.jo';path.write_text(code)
     result=subprocess.run(['sloppy/bin/sloppy',str(path)],cwd=root,text=True,capture_output=True)

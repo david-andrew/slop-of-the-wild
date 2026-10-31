@@ -67,19 +67,23 @@ SCENES = [
     ('weather', 'rain', [(300, 'Rain near camera and wet surfaces')], dict(BOTW_SKIP='1', BOTW_AT='-1000,1620,3.14', BOTW_WEATHER='rain'), 'round96_capture.py'),
     ('combat', 'camp', [(180, 'Camp foreground vegetation clearance'), (300, 'Camp combat framing'), (420, 'Camp combat recovery'), (640, 'Camp combat aftermath')],
      dict(BOTW_SKIP='1', BOTW_AT='-1439,1606,0', BOTW_GIVE='travelers_sword,travelers_shield', SLOPPY_INPUT=CAMP_INPUT), 'README.md / combat_framing_check.py camp'),
-    ('fire', 'grass-fire', [(150, 'Grass ignition'), (260, 'Advancing flame front'), (600, 'Burn aftermath')], dict(BOTW_SKIP='1', BOTW_FIRE='1'), 'round83_fire_capture.py'),
+    ('fire', 'grass-fire', [(150, 'Grass ignition'), (260, 'Advancing flame front'), (270, 'Uneven near flame height'), (600, 'Burn aftermath')], dict(BOTW_SKIP='1', BOTW_FIRE='1'), 'round83_fire_capture.py'),
+    ('fire', 'grass-rain', [(150, 'Active dry grass fire'), (330, 'Rain shrinking the front'), (480, 'Rain-doused grass and cooling smoke')], dict(BOTW_SKIP='1', BOTW_FIRE='1', BOTW_WEATHER_SEQ='180:rain', SLOPPY_INPUT='151:s+,230:s-'), 'production grass fire and timed rain / task72h_rain_fire_check.jo'),
     ('fire', 'tent-fire', [(900, 'Tent fire and crowd')], dict(BOTW_SKIP='1', BOTW_TENTFIRE='5', BOTW_AT='-955,1964,0'), 'round83_fire_capture.py'),
     ('fire', 'body-fire', [(300, 'Production body burn pose and particles')], dict(BOTW_SKIP='1', BOTW_HOUR='22', BOTW_AT='-960,1995,0', BOTW_CAM='-947,243,1956,-0.85,-0.45'), 'round88_closeup_capture.py burn-night'),
     ('wildlife', 'boar', [(150, 'Boar coat and silhouette')], dict(BOTW_SKIP='1', BOTW_CAM='-947,188,1653,-0.717,-0.24'), 'round88_closeup_capture.py boar-clear-side'),
     ('wildlife', 'bird', [(120, 'Bird at one metre')], dict(BOTW_SKIP='1', BOTW_CAM='-818,195,1950,0,0'), 'round88_closeup_capture.py bird-pigeon'),
-    ('wildlife', 'bird-flight', [(120, 'Bird flight pose')], dict(BOTW_SKIP='1', BOTW_CAM='-818,195,1950,0,0'), 'round88_closeup_capture.py bird-pigeon-flight'),
+    ('wildlife', 'bird-flight', [(116, 'Bird recovery fold'), (118, 'Bird raised wing'), (120, 'Bird flight pose'), (122, 'Bird power stroke')], dict(BOTW_SKIP='1', BOTW_CAM='-818,195,1950,0,0'), 'round88_closeup_capture.py bird-pigeon-flight'),
     ('traversal', 'swim', [(180, 'Swim surface, stroke and camera')], dict(BOTW_SKIP='1', BOTW_AT='-1161,1684,-0.9', SLOPPY_INPUT='10:w+'), 'Hopper Pond depth scan / swim_surface_check.jo'),
-    ('traversal', 'climb', [(180, 'Real cliff climb')], dict(BOTW_SKIP='1'), 'cliff_climb_capture.jo'),
-    ('traversal', 'temple-climb', [(180, 'Temple wall climb and soft masonry clearance')], dict(BOTW_SKIP='1', SLOPPY_INPUT='1:w+'), 'round67 temple inner-wall climb; fixed opposing-wall camera'),
+    ('traversal', 'climb', [(180, 'Gameplay camera cliff climb')], dict(BOTW_SKIP='1'), 'cliff_climb_capture.jo controller route / production chase camera'),
+    ('traversal', 'temple-climb', [(180, 'Temple wall climb and opaque masonry clearance')], dict(BOTW_SKIP='1', SLOPPY_INPUT='1:w+'), 'round67 temple inner-wall climb; fixed opposing-wall camera'),
+    ('traversal', 'temple-climb-gameplay', [(180, 'Temple wall climb with the production chase camera')], dict(BOTW_SKIP='1', SLOPPY_INPUT='1:w+'), 'temple inner-wall controller route / production chase camera'),
     ('traversal', 'glide', [(90, 'Paraglider pose over the Plateau')], dict(BOTW_SKIP='1', BOTW_AT='-1050,1828,-2.36', BOTW_GIVE='paraglider', SLOPPY_INPUT='10:space+,11:space-'), 'overlook fixture / production glider input'),
     ('traversal', 'glide-runoff', [(240, 'Ground glider deployment'), (250, 'Ground glider body and canopy'), (270, 'Ground glider feet and ledge clearance'), (300, 'Ground glide camera recovery')],
      dict(BOTW_SKIP='1', BOTW_AT='-1030,1805,1.57', BOTW_GIVE='paraglider', SLOPPY_INPUT='10:w+,20:shift+,100:shift-,230:space+,232:space-'), 'README.md exact ground run-off route / task71_runoff_check.jo'),
     *[('shrines', f'shrine-{n}', [(180, f'Shrine {n} interior')], dict(BOTW_SKIP='1', BOTW_TOWER='1', BOTW_SHRINE=str(n)), 'BOTW_SHRINE interior fixture') for n in range(1, 5)],
+    ('shrines', 'monk', [(200, 'Monk face, robe and seated hands at the shrine camera')],
+     dict(BOTW_SKIP='1', BOTW_TOWER='1', BOTW_SHRINE='2', BOTW_SHRINE_AT='3.5,0,-50,-1.2'), 'round71_character_check.py monk / production shrine camera'),
     ('interface', 'map', [(120, 'Slate map')], dict(BOTW_SKIP='1', BOTW_TOWER='1', SLOPPY_INPUT='20:m+,21:m-'), 'slate_map_view.jo / production map input'),
     ('interface', 'inventory', [(120, 'Inventory and item icons')], dict(BOTW_SKIP='1', BOTW_GIVE='travelers_sword,travelers_shield,apple', SLOPPY_INPUT='20:i+,21:i-'), 'inventory_check.sh / production inventory input'),
     ('interface', 'options', [(150, 'Options contrast and controls')], dict(BOTW_SKIP='1', BOTW_AT='-1054,1834,0.85'), 'round82_critic_capture.py options-grass'),
@@ -98,7 +102,7 @@ cp_climb_y = 0.0
 cp_climb_normal = vec3(0,0,1)
 update = (dt: f64):
     if not cp_ready:
-        if cp_scene == "temple-climb":
+        if starts_with(cp_scene,"temple-climb"):
             origin=lp(TEMPLE,TEMPLE_ROT,0.0,6.0,-20.0)
             hit=raycast(origin,transform_dir(rotation_y(TEMPLE_ROT),vec3(1,0,0)),18.0,true,false)
             assert(hit.hit,"temple wall fixture")
@@ -136,10 +140,8 @@ update = (dt: f64):
             cp_climb_normal=hit.normal
             cam_yaw_global=yaw_of(hit.normal*-1.0)
             cp_climb_y=f64(p.y)
-            fc_pos=v3(-1568,213,1758)
-            fc_yaw=1.10
-            fc_pitch=-0.08
-            free_cam=true
+            cam.yaw=pl.face
+            camera_snap()
         cp_ready=true
     if cp_scene == "climb": act=Actions()
     production_update(dt)
@@ -152,6 +154,7 @@ update = (dt: f64):
         cam.pos=lp(TEMPLE,TEMPLE_ROT,-12.8,10.0,-22.0)
         cam.target=pl.pos+vec3(0,1.0,0)
         cam.blend=0.0
+    if starts_with(cp_scene,"temple-climb"):
         assert(pl.state==.climb,"temple climb left wall")
     if cp_scene == "options": invui=InvUI(open=true,tab=6,t=1.0,tab_t=1.0)
     if cp_scene == "boar":
@@ -173,6 +176,7 @@ update = (dt: f64):
         animal.t=1.8
         if cp_scene=="bird-flight":
             animal.state=.fly
+            animal.idle=1.8+f64(frame_number()-120)/60.0
             animal.pos.y+=0.3
         animals.push(animal)
         target=animal.pos+vec3(0,0.22,0)
@@ -400,22 +404,29 @@ def performance(out, manifest):
     fixture.write_text(source)
     binary = folder / 'route'
     compile_s = command_run(['sloppy/bin/sloppy', 'build', str(fixture), '-o', str(binary)], folder / 'build.log')
-    env = clean_env() | dict(BOTW_SKIP='1', BOTW_AT='-1140,1500,3.14', BOTW_HOUR='11', BOTW_TIMESCALE='0', BOTW_WEATHER='clear',
-        BOTW_FPS='0', BOTW_FRAME_LOG='1', BOTW_LOADTIME='1', BOTW_SCENE_LOG='1', SLOPPY_PLATFORM='x11', SLOPPY_VULKAN='1',
-        SLOPPY_VSYNC='0', SLOPPY_WINDOW='2133x1200', PROBE_ROUTE='forest', PROBE_SECONDS='120', PROBE_PNG=str(folder / 'route.png'))
-    # No SLOPPY_SCREENSHOT: the route uses real dt and two minutes of wall time.
-    command = ['flock', '/tmp/botw-render.lock', 'python3', 'tools/performance_window.py', '--visible', '2133x1200', 'timeout', '180', 'tools/play.sh', str(binary)]
-    settings = dict(command=command, environment={k:v for k,v in env.items() if k.startswith(PREFIXES)}, compile_s=compile_s)
-    (folder / 'run-settings.json').write_text(json.dumps(settings,indent=2)+'\n')
-    started = time.monotonic()
-    wall_s = command_run(command, folder / 'route.log', env)
-    wait_s = lock_wait(folder / 'route.log', started)
-    manifest['render_lock_wait_s'] = manifest.get('render_lock_wait_s', 0) + wait_s
-    settings.update(wall_s=wall_s, lock_wait_s=wait_s)
-    (folder / 'run-settings.json').write_text(json.dumps(settings,indent=2)+'\n')
-    report = performance_report(folder, command, env, compile_s, wall_s, wait_s)
-    manifest['performance'] = report
-    print('PASS 120s pacing:', report['actual_present_mode'], report['timing_ms']['present_return_interval'], flush=True)
+    for scale_name, fixed_scale in [('dynamic', None), ('full-scale', '1')]:
+        run_folder = folder if fixed_scale is None else out / 'performance-full-scale'
+        run_folder.mkdir(exist_ok=True)
+        if run_folder != folder: shutil.copy2(binary, run_folder / 'route')
+        env = clean_env() | dict(BOTW_SKIP='1', BOTW_AT='-1140,1500,3.14', BOTW_HOUR='11', BOTW_TIMESCALE='0', BOTW_WEATHER='clear',
+            BOTW_FPS='0', BOTW_FRAME_LOG='1', BOTW_LOADTIME='1', BOTW_SCENE_LOG='1', SLOPPY_PLATFORM='x11', SLOPPY_VULKAN='1',
+            SLOPPY_VSYNC='0', SLOPPY_WINDOW='2133x1200', PROBE_ROUTE='forest', PROBE_SECONDS='120', PROBE_PNG=str(run_folder / 'route.png'))
+        if fixed_scale is not None: env['BOTW_SCALE'] = fixed_scale
+        # No SLOPPY_SCREENSHOT: each route uses real dt and two minutes of wall time.
+        # Release between scales; each launch owns its own bounded render lock.
+        command = ['flock', '/tmp/botw-render.lock', 'python3', 'tools/performance_window.py', '--visible', '2133x1200', 'timeout', '180', 'tools/play.sh', str(binary)]
+        settings = dict(command=command, environment={k:v for k,v in env.items() if k.startswith(PREFIXES)}, compile_s=compile_s)
+        (run_folder / 'run-settings.json').write_text(json.dumps(settings,indent=2)+'\n')
+        started = time.monotonic()
+        wall_s = command_run(command, run_folder / 'route.log', env)
+        wait_s = lock_wait(run_folder / 'route.log', started)
+        manifest['render_lock_wait_s'] = manifest.get('render_lock_wait_s', 0) + wait_s
+        settings.update(wall_s=wall_s, lock_wait_s=wait_s)
+        (run_folder / 'run-settings.json').write_text(json.dumps(settings,indent=2)+'\n')
+        report = performance_report(run_folder, command, env, compile_s, wall_s, wait_s)
+        manifest['performance' if fixed_scale is None else 'performance_full_scale'] = report
+        save_manifest(out, manifest)
+        print(f'PASS 120s pacing ({scale_name}):', report['scene_scale'], report['actual_present_mode'], report['timing_ms']['present_return_interval'], flush=True)
 
 
 def performance_report(folder, command, env, compile_s, wall_s, wait_s):
@@ -438,7 +449,15 @@ def performance_report(folder, command, env, compile_s, wall_s, wait_s):
     steady = [r for r in rows if r[0] > 240]
     startup = re.search(r'loaded in ([\d.]+)s', text)
     assert startup, 'startup timing missing'
-    report = dict(protocol='120s real-dt forest route; launcher-default X11 Vulkan mailbox preference / immediate fallback; managed 2133x1200 output; dynamic scene scale; first 240 frames excluded from steady percentiles; nearest rank; present-call returns, not scanout',
+    scales = [float(v) for v in re.findall(r'^frame percentiles:.*; 2133x1200 scale ([\d.]+)$', text, re.M)]
+    assert scales, 'missing measured scene scale'
+    fixed = env.get('BOTW_SCALE')
+    if fixed is not None: assert all(v == float(fixed) for v in scales), 'fixed scene scale changed'
+    scale = dict(mode='fixed' if fixed is not None else 'dynamic', requested=float(fixed) if fixed is not None else None,
+                 observed=sorted(set(scales)), batches={str(v): scales.count(v) for v in sorted(set(scales))})
+    scale_label = f'fixed scene scale {float(fixed):.2f}' if fixed is not None else f'dynamic scene scale {min(scales):.2f}–{max(scales):.2f}'
+    report = dict(protocol=f'120s real-dt forest route; launcher-default X11 Vulkan mailbox preference / immediate fallback; managed 2133x1200 output; {scale_label}; first 240 frames excluded from steady percentiles; nearest rank; present-call returns, not scanout',
+        output_pixels=[2133,1200], scene_scale=scale,
         compile_s=compile_s, process_wall_s_including_lock_wait=wall_s, lock_wait_s=wait_s, process_wall_s=wall_s-wait_s if wall_s is not None else None, actual_present_mode=present_mode, startup_in_game_s=float(startup[1]),
         route_elapsed_s=rows[-1][1], route_distance_m=float(distance[-1]), total_frames=len(rows),
         timing_ms={k: percentiles([r[col] for r in steady]) for k,col in [('present_return_interval',2),('present_call',3),('callback_wall',4),('callback_thread',5)]},
@@ -535,12 +554,15 @@ def indexes(out, manifest):
         report = manifest['startup']
         md += ['## Startup', '', f'Cold: {report["cold_s"]:.3f} s; warm median: {report["warm_median_s"]:.3f} s; changed executable, identical shaders: {report["new_build_s"]:.3f} s. [Details](startup/summary.json).', '', report['protocol'], '']
         sections.append('<section><h2>Startup</h2><a href="startup/summary.json">Cold, warm and new-build summary</a><pre>'+html.escape(json.dumps(report,indent=2))+'</pre></section>')
-    if 'performance' in manifest:
-        report = manifest['performance']
-        md += ['## Performance', '', f'Startup: {report["startup_in_game_s"]:.3f} s in game. [Raw route log](performance/route.log), [summary](performance/summary.json).', '', '| Metric (ms) | p50 | p99 | Worst | Frames >25 ms |', '|---|---:|---:|---:|---:|']
+    for key, title, directory in [('performance', 'Performance — dynamic scene scale', 'performance'),
+                                  ('performance_full_scale', 'Performance — fixed scene scale 1.00', 'performance-full-scale')]:
+        if key not in manifest: continue
+        report = manifest[key]
+        scale = report['scene_scale']
+        md += [f'## {title}', '', f'2133×1200 output; observed scene scale: {scale["observed"]}. Startup: {report["startup_in_game_s"]:.3f} s in game. [Raw route log]({directory}/route.log), [summary]({directory}/summary.json).', '', '| Metric (ms) | p50 | p99 | Worst | Frames >25 ms |', '|---|---:|---:|---:|---:|']
         for metric, row in report['timing_ms'].items(): md.append(f'| {metric} | {row["p50"]:.3f} | {row["p99"]:.3f} | {row["worst"]:.3f} | {row["frames_over_25ms"]} |')
         md += ['', report['protocol'], '']
-        sections.append('<section><h2>Performance</h2><a href="performance/summary.json">Summary</a> · <a href="performance/route.log">Raw log</a><pre>'+html.escape(json.dumps(report,indent=2))+'</pre></section>')
+        sections.append(f'<section><h2>{title}</h2><a href="{directory}/summary.json">Summary</a> · <a href="{directory}/route.log">Raw log</a><pre>'+html.escape(json.dumps(report,indent=2))+'</pre></section>')
     if 'audio' in manifest:
         md += ['## Audio', '', '[Listening levels](audio/LEVELS.md) · [Audio players](audio/index.html). Scores list actual dispatched piano note names and onset times; ambience and foley are unpitched.', '']
         players = []
@@ -611,12 +633,16 @@ def main():
                     len(manifest.get('contact_sheets',[])) == len({s[0] for s in SCENES})):
                     print(f'PASS retained {len(shots)} matched captures',flush=True)
                     continue
-            if args.resume and name == 'performance' and (out/'performance/route.log').exists():
+            if args.resume and name == 'performance':
+                complete = all((out / d / 'route.log').exists() and 'probe complete:' in (out / d / 'route.log').read_text()
+                               for d in ['performance', 'performance-full-scale'])
                 folder = out/'performance'
-                if 'probe complete:' in (folder/'route.log').read_text() and all(digest(folder/'game'/Path(p).name)==v for p,v in manifest['sources'].items()):
-                    settings = json.loads((folder/'run-settings.json').read_text()) if (folder/'run-settings.json').exists() else dict(command=[],environment={},compile_s=None,wall_s=None,lock_wait_s=None)
-                    manifest['performance'] = performance_report(folder,settings['command'],settings['environment'],settings['compile_s'],settings.get('wall_s'),settings.get('lock_wait_s'))
-                    print('PASS retained complete native-default pacing log',flush=True)
+                if complete and all(digest(folder/'game'/Path(p).name)==v for p,v in manifest['sources'].items()):
+                    for key, directory in [('performance', 'performance'), ('performance_full_scale', 'performance-full-scale')]:
+                        folder = out / directory
+                        settings = json.loads((folder/'run-settings.json').read_text())
+                        manifest[key] = performance_report(folder,settings['command'],settings['environment'],settings['compile_s'],settings.get('wall_s'),settings.get('lock_wait_s'))
+                    print('PASS retained dynamic and full-scale native-default pacing logs',flush=True)
                     continue
             {'captures': capture, 'performance': performance, 'audio': audio, 'checks': checks}[name](out, manifest)
             save_manifest(out, manifest)

@@ -34,7 +34,10 @@ loop id in [0..4):
     pl.pos = o + lamp.xyz - vec3(0, 0.2, 0)
     assert(shrines_light(lp, lc))
     assert(length(lp.xyz - o - lamp.xyz) < 0.01, "accent on player belongs to a real fixture")
-    checks += 8
+    hi = max(lc.x,max(lc.y,lc.z))
+    lo = min(lc.x,min(lc.y,lc.z))
+    assert(hi / lo < 1.15,"new shrine palette cannot cast its colour onto Jo near a pendant")
+    checks += 9
     print("PASS lighting {srec[id].name}: pigment preserved, bounded pool, blue traces, cool lift, local pendant")
 assert(SHR_SKY.z > SHR_SKY.x and SHR_GROUND.z > SHR_GROUND.x and SHR_HAZE.z > SHR_HAZE.x)
 print("PASS lighting: {checks + 1} checks; cool shared ambient and haze")

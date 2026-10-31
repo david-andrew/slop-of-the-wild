@@ -1,6 +1,7 @@
 use '../game/camera.jo'
 use '../game/physics.jo'
 use '../game/player.jo'
+use '../game/build.jo'
 
 # A foreground wall must shorten the view instead of requiring a masonry hole.
 held=add_box(vec3(0,0,-1),vec3(5,10,0.2),0,true,.stone)
@@ -22,8 +23,45 @@ assert(view_pos()==cam.pos,"a pose change within one frame invalidates the block
 cam.pos=vec3(0,5,10)
 cam.target=target+vec3(0.7,0,0)
 assert(view_pos()==camera_climb_masonry_view(cam.pos,cam.target),"moving target refreshes clearance before rendering")
+# Looking through the held wall is also an obstruction, rather than permission
+# to show actors behind it. A normal back view remains unchanged.
+cam.pos=vec3(0,5,-5)
+p=camera_climb_masonry_view(cam.pos,cam.target)
+assert(p.z>colliders[held].pos.z+colliders[held].half.z,"held masonry stays behind the lens")
+# Actual controller clearance is 45 cm; retraction must never cross this face.
+colliders[held].pos.z=-0.65
+cam.target=target
+p=camera_climb_masonry_view(vec3(0,3,-5),target)
+assert(p.z>0.15 and length(p-target)>1.5,"a held wall gets a clear back view outside the body")
+assert(not raycast(target,p-target,f64(length(p-target)),true,false).hit,"held-wall fallback stays on the visible side")
+p=camera_climb_masonry_view(vec3(0,3,-0.8),target)
+assert(p.z>0.15 and length(p-target)>1.5,"a previously retracted lens restores body room on the visible side")
+# Opposing masonry leaves less than a metre across the aisle. Look along it.
+colliders[wall].pos.z=0.75
+p=camera_climb_masonry_view(vec3(0,3,5),target)
+assert(abs(p.x)>1.5 and p.z>-0.45 and p.z<0.55,"a narrow masonry aisle gets a side view")
+assert(not raycast(target,p-target,f64(length(p-target)),true,false).hit,"side view crosses neither wall")
+u=BuildU(cam=vec3(0,3,5),player=pl.pos,fade_width=2.6,keep_radius=BUILD_KEEP_MASONRY)
+loop depth in [0.1,0.5,1.0,2.0,4.0,5.0]:
+    loop side in [-3.0,-1.0,0.0,1.0,3.0]:
+        vertex=BuildO(world=vec3(f32(side),3,f32(depth)),mat=vec4(1,0,0,-1))
+        assert(build_occluder_fade(vertex,u)==0.0,"climbing masonry never exposes creatures or leaves fog pigment")
 cam.override=true
 cam.blend=1
 cam.o_pos=vec3(0,5,10)
 assert(view_pos()==cam.o_pos,"cinematic overrides retain their authored view")
-print("PASS climbing masonry: lens retracts before foreground wall; held wall and cinematics retained")
+print("PASS climbing masonry: opaque masonry; lens retracts before foreground and held walls; cinematics retained")
+
+# Cliff batches have a separate legacy dissolve. Forward the existing inactive
+# player marker only to that decorator, preserving ordinary building uniforms.
+extra_player = vec3()
+install_extra_probe = ():
+    build_extra_draw = (draw_u: BuildU, vp: mat4, eye: vec3, distance: f64): extra_player = draw_u.player
+    build_ready = true
+install_extra_probe()
+build_draw(u,mat4(),vec3(),5000.0)
+assert(extra_player.y < -500.0 and u.player == pl.pos,"cliff draw disables dissolve without changing building/player data")
+u.keep_radius = 0.0
+build_draw(u,mat4(),vec3(),5000.0)
+assert(extra_player == pl.pos,"ordinary cliff views preserve their existing dissolve inputs")
+print("PASS cliff climbing opacity: draw decorator retains opaque rock without changing the mineral shader")

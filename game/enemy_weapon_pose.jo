@@ -7,12 +7,14 @@ use 'hero_motion.jo'
 enemy_weapon_pose = (m: Model, lib: AnimLib, p: mut Pose, move: int, time_: f64, windup: bool, recovery: bool = false, spear: bool = false):
     # A raised, backward-loaded chest tells a blow; the low forward chest and
     # splayed off arm hold its follow-through. Active contacts still use the bake.
-    load = if windup: smooth01(time_ / 0.14) else: 0.0
+    # Load over 280 ms, then hold for the remainder of the existing tell.
+    club_tell = windup and move < 2 and not spear
+    load = if windup: smooth01(time_ / (if club_tell: 0.28 else: 0.14)) else: 0.0
     settle = if recovery: 1.0 - smoothstep(0.18, 0.65, time_) else: 0.0
     if windup or recovery:
-        rotate_bone(lib, p, lib_bone(lib, "spine_01"), vec3(1, 0, 0), -0.24 * load + 0.38 * settle)
-        rotate_bone(lib, p, lib_bone(lib, "spine_02"), vec3(0, 1, 0), -0.32 * load + 0.28 * settle)
-        rotate_bone(lib, p, lib_bone(lib, "upperarm_l"), vec3(0, 0, 1), 0.52 * load + 0.65 * settle)
+        rotate_bone(lib, p, lib_bone(lib, "spine_01"), vec3(1, 0, 0), -(if club_tell: 0.90 else: 0.40) * load + 0.38 * settle)
+        rotate_bone(lib, p, lib_bone(lib, "spine_02"), vec3(0, 1, 0), -(if club_tell: 0.95 else: 0.62) * load + 0.28 * settle)
+        rotate_bone(lib, p, lib_bone(lib, "upperarm_l"), vec3(0, 0, 1), 0.78 * load + 0.65 * settle)
     if move == 3:
         leg = HeroMotion()
         motion_init(leg, m, lib)
@@ -31,13 +33,13 @@ enemy_weapon_pose = (m: Model, lib: AnimLib, p: mut Pose, move: int, time_: f64,
     l = bone_index(m, "lowerarm_r")
     h = bone_index(m, "hand_r")
     if u < 0 or l < 0 or h < 0: return
-    raised = v3(-0.38, 1.58, -0.23)
+    raised = if club_tell: v3(-0.38, 2.30, -0.90) else: v3(-0.45, 1.65, -0.38)
     if not windup: raised = v3(-0.28, 1.43, -0.08)
     fall = if move == 2: 1.0 else: (if windup: 0.0 else: smooth01(time_ / (if move == 1: 0.5 else: 0.18)))
     target = lerp(raised, v3(-0.12, 0.82, 0.68), f32(fall))
     # The armed shove stays low and pushes the held weapon toward the guard.
     if move == 2: target = lerp(motion_point(m, p, h), target, f32(smooth01(time_ / 0.12)))
-    if windup: target = lerp(motion_point(m, p, h), raised, f32(smooth01(time_ / 0.16)))
+    if windup: target = lerp(motion_point(m, p, h), raised, f32(if club_tell: load else: smooth01(time_ / 0.16)))
     if move == 4:
         raised = v3(-0.32, 1.35, -0.38)
         target = if windup: lerp(motion_point(m, p, h), raised, f32(smooth01(time_ / 0.3))) else: lerp(raised, v3(-0.16, 1.0, 0.75), f32(smooth01(time_ / 0.22)))
@@ -52,6 +54,7 @@ enemy_weapon_pose = (m: Model, lib: AnimLib, p: mut Pose, move: int, time_: f64,
     socket = bone_world(m, p, h) * SOCKET_HAND_R.offset
     from = normalize(transform_dir(socket, vec3(0, 1, 0)))
     to = normalize(lerp(vec3(0, 1, -0.15), vec3(0, -0.25, 1), f32(fall)))
+    if club_tell: to = normalize(lerp(vec3(0,1,-0.15),vec3(-0.10,1.0,-0.38),f32(load)))
     if windup and spear: to = normalize(vec3(0.03, 0.04, 1))
     if recovery: to = normalize(lerp(from, (if spear: vec3(0.0, 0.04, 1.0) else: vec3(-0.25, -0.6, 0.8)), f32(settle)))
     axis = cross(from, to)

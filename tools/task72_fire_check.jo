@@ -1,0 +1,122 @@
+# Inspect the production near-fire silhouette and distance blend headlessly.
+use '../game/fx.jo'
+use '../game/body_fire.jo'
+use '../game/gfx.jo'
+
+u=PartU(mat4(),vec3(1,0,0),vec3(0,1,0),vec3(0,0,10),vec3(),0,near=0)
+probe=(uv: vec2, seed: f32, lod: f32, time: f32) -> vec4:
+    local=u
+    local.time=time
+    part_fs(PartO(vec4(),uv,vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,seed,-0.8),vec4(0,0,0,10),1.6,fire_lod=lod),local)
+most=0
+changes=0
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop tick in [0..20):
+        time=f32(tick)/30.0
+        components=0
+        previous=false
+        loop x in [0..240):
+            uv=vec2((f32(x)+0.5)/240.0,0.40)
+            color=probe(uv,f32(seed),0,time)
+            lit=color.w>0.08
+            if lit and not previous: components+=1
+            previous=lit
+            later=probe(uv,f32(seed),0,time+0.10)
+            if abs(color.w-later.w)>0.10: changes+=1
+            if color.w>0.05:
+                assert(color.x>color.y and color.z<color.y*0.50,"near tongues stay yellow/orange/red without pink or white")
+        most=max(most,components)
+        assert(components>=1 and components<=16,"near sheet retains visible bounded upper licks through every phase")
+        loop uv in [vec2(0,0.20),vec2(1,0.20),vec2(0.5,0),vec2(0.5,1)]:
+            assert(probe(uv,f32(seed),0,time).w==0,"all near-sheet perimeters remain transparent")
+        loop x in [0..21):
+            assert(probe(vec2(f32(x)/20.0,1),f32(seed),0,time).w==0,"every upper card pixel is transparent even when a tall noisy tip reaches the envelope")
+        loop y in [0.08,0.20,0.40,0.70]:
+            loop x in [2..19):
+                uv=vec2(f32(x)/20.0,f32(y))
+                loop boundary in [0.15,0.50,0.70,0.9999]:
+                    a=probe(uv,f32(seed),f32(boundary)-0.0001,time)
+                    b=probe(uv,f32(seed),f32(boundary)+0.0001,time)
+                    assert(length(a.xyz*a.w-b.xyz*b.w)<0.01 and abs(a.w-b.w)<0.01,"distance transition has no silhouette or colour step")
+assert(most>=5,"near fire contains many narrow licks rather than the old three smooth cones")
+assert(changes>1000,"silhouette changes within six frames throughout the seeded animation")
+print("PASS near grass fire: 80 seeded frames; up to {most} separate licks, {changes} changing samples; transparent edges, warm ramp, continuous distance blend")
+
+# A ridge can hide the UV foot. Test the actual depth intersection, so a
+# continuous hot root cannot be exposed as a straight yellow card edge.
+depth_alpha=(gap: f32, lod: f32) -> f32:
+    local=u
+    local.near=5
+    local.far=100
+    distance=10.0+gap
+    z=(local.far+local.near-2.0*local.near*local.far/distance)/(local.far-local.near)
+    local.depth=bytes_texture(1,1,[u8((z*0.5+0.5)*255),u8(0),u8(0),u8(255)],false,false)
+    part_fs(PartO(vec4(),vec2(0.5,0.23),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,2.7,-0.8),vec4(0,0,0,10),1.6,fire_lod=lod),local).w
+near_edge=depth_alpha(0.10,0)/max(depth_alpha(1,0),0.001)
+far_edge=depth_alpha(0.10,1)/max(depth_alpha(1,1),0.001)
+assert(near_edge>0 and near_edge<far_edge*0.4,"near terrain intersection has a broad continuous feather; far front retains its original edge")
+print("PASS terrain/fire intersection: near ratio {near_edge:.3}, far {far_edge:.3}; no hard bright strip at a ridge")
+
+# Fully lit fuel may preserve or attenuate the shape, never restore pixels
+# removed by the root/perimeter feather. Exercise the real burn-texture path.
+owned=u
+owned.live_burn=bytes_texture(1,1,[u8(0),u8(0),u8(255),u8(255)],false,false)
+owned.burn_grid=vec4(0,0,2048,1)
+loop lod in [0.0,0.3,1.0]:
+    loop y in [0.04,0.075,0.12,0.20,0.40,0.70]:
+        loop x in [0.06,0.10,0.20,0.50,0.80,0.90,0.94]:
+            o=PartO(vec4(),vec2(f32(x),f32(y)),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,2.7,-0.8),vec4(0,0,0,10),1.6,vec2(0.5,0.5),fire_lod=f32(lod))
+            plain=part_fs(o,u)
+            lit=part_fs(o,owned)
+            assert(abs(plain.w-lit.w)<0.00001,"fully lit fuel preserves feathered root/side opacity without gain or a bright strip")
+print("PASS fuel/shape opacity: 126 real fragment samples; root, perimeter and distance fades survive fully lit fuel")
+
+# Mid-range sheets use the same varied tongues, and every old far crown
+# feathers before its rectangular boundary can clip a curved side.
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop tick in [0..20):
+        time=f32(tick)/30.0
+        loop y in [0.08,0.20,0.40,0.70]:
+            loop x in [2..19):
+                uv=vec2(f32(x)/20.0,f32(y))
+                assert(probe(uv,f32(seed),0,time)==probe(uv,f32(seed),0.65,time),"near and mid-distance silhouettes retain the same flowing tongues")
+        loop lod in [0.0,0.50,0.80,1.0]:
+            loop y in [1..20):
+                loop x in [0.0,1.0]:
+                    assert(probe(vec2(f32(x),f32(y)/20.0),f32(seed),f32(lod),time).w==0,"all side edges stay transparent at every distance")
+print("PASS mid fire: tongue silhouettes through middle distance, continuous distant blend and transparent full-height card sides")
+
+# The cited cone behind Jo is beyond the old 26m cutoff. Sample real
+# fragment depth at middle and far range, including the end of the blend.
+loop seed in [0.2,1.3,2.7,4.1]:
+    loop y in [0.20,0.40,0.70]:
+        loop x in [2..19):
+            near=PartO(vec4(),vec2(f32(x)/20.0,f32(y)),vec4(1.55,0.45,0.055,0.88),vec4(0.8,-6,f32(seed),-0.8),vec4(0,0,0,10),1.6,fire_lod=1)
+            middle=near
+            middle.clip.w=28
+            assert(part_fs(near,u)==part_fs(middle,u),"flowing tongues survive beyond the old middle-distance cone cutoff")
+            a=middle
+            b=middle
+            a.clip.w=54.999
+            b.clip.w=55.001
+            ca=part_fs(a,u)
+            cb=part_fs(b,u)
+            assert(length(ca.xyz*ca.w-cb.xyz*cb.w)<0.01 and abs(ca.w-cb.w)<0.01,"the far-bank transition has no new silhouette or colour step")
+print("PASS middle/far depth: clustered tongues through 28m and continuous 55m far-bank transition")
+
+# The fuel contour must carry the same moving tongues in continuous world
+# coordinates, rather than leave a broad cone behind the detailed cell cards.
+most_contour=0
+loop tick in [0..20):
+    local=u
+    local.time=f64(tick)/30.0
+    components=0
+    previous=false
+    loop x in [0..200):
+        o=PartO(vec4(),vec2(0.5,0.50),vec4(1,1,1,0.8),vec4(0.8,-8,0,1.6),vec4(0,0,0,20),1.6,vec2(f32(x)*0.10,0))
+        lit=part_fs(o,local).w>0.05
+        if lit and not previous: components+=1
+        previous=lit
+    most_contour=max(most_contour,components)
+assert(most_contour>=8,"the middle fuel contour breaks into many separated tongues rather than broad cones")
+print("PASS contour tongues: 20 animated world-space fronts, up to {most_contour} separated upper licks; existing seam and perimeter checks retained")

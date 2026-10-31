@@ -109,6 +109,31 @@ water_wade_color = (sun: vec3, horizon: vec3) -> vec3:
 water_reflection_hold = (overcast: f32, rain: f32) -> f32:
     1.0 - smoothstep(0.18, 0.60, overcast * rain)
 
+# Surface reflectance, independent of bed colour. Clear overhead views transmit
+# 98% of the bed; a grazing view still catches the sky. Storm/night retain their wash.
+water_pond_reflection = (nv: f32, overcast: f32, rain: f32, night: f32) -> f32:
+    grazing = pow(1.0 - nv, 5.0)
+    clear = (1.0 - overcast) * (1.0 - rain) * (1.0 - night)
+    mix(0.035 + (0.08 + 0.72 * grazing) * 0.55, 0.02 + 0.58 * grazing, clear) + overcast * 0.25 + rain * 0.12
+
+water_bed_clarity = (depth: f32, distance: f32) -> f32:
+    (1.0 - smoothstep(0.6, 2.0, depth)) * (1.0 - smoothstep(10.0, 24.0, distance))
+
+# Unequal mineral patches and fine weed strands belong to the reconstructed
+# bottom, never the water plane or a submerged figure. Warped continuous fields
+# avoid cell-centred pebble disks, a repeating grid and screen-space distortion.
+water_bed_pigment = (p: vec2) -> vec3:
+    patches = vnoise(p * 0.72)
+    # Rotate and warp the fine field. Continuous pigment (no contour bands)
+    # keeps the value-noise cell boundaries out of the visible substrate.
+    q = vec2(p.x * 0.83 + p.y * 0.56, p.y * 0.83 - p.x * 0.56)
+    grain = vnoise(q * 28.0 + vec2(patches * 3.1, patches * 2.3))
+    mineral = vnoise(q * 11.0 + vec2(grain * 1.3, patches * 2.7))
+    weed = vnoise(vec2(q.x * 5.0, q.y * 22.0) + vec2(patches * 3.0, mineral * 1.4))
+    weed = smoothstep(0.64, 0.86, weed) * smoothstep(0.48, 0.72, patches)
+    sand = vec3(1.06, 1.02, 0.92) * (0.76 + grain * 0.30 + mineral * 0.18)
+    mix(sand, vec3(0.59, 0.73, 0.59), weed * 0.65)
+
 water_impact_brush = (p: vec2, t: f32) -> f32:
     # Streamwise advection, sub-metre cross-flow detail and unequal local bends.
     # Overlapping scales break the noise lattice before foam coverage is applied.
@@ -347,7 +372,13 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
     rc = vec3(0, 0, 0)
     # (traced off a calmer surface: full ripples scatter it into blotches of the shore's grass)
     rr = reflect(v * -1.0, normalize(mix(n, vec3(0, 1, 0), 0.75)))
+    pond = 1.0 - smoothstep(75.0, 100.0, length(w.xz - vec2(-1230.0, 1650.0)))
     reflection_hold = water_reflection_hold(overcast, u.rain)
+    # Looking down into clear pond water needs only its faint sky reflection.
+    # Fade out the bank ray march smoothly before adding fine bottom detail;
+    # grazing views, rain and night retain the established reflection path.
+    clear_day = (1.0 - overcast) * (1.0 - u.rain) * (1.0 - u.night)
+    reflection_hold *= 1.0 - pond * clear_day * smoothstep(0.25, 0.55, nv)
     # The uniform cutoff avoids paying nineteen scene/depth probes per pixel
     # when dense rain has already erased the coherent bank reflection.
     if reflection_hold > 0.001:
@@ -396,7 +427,6 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
     # Screen depth distinguishes sand from submerged legs, fish and shore geometry.
     # This keeps the original silhouettes instead of painting a flat bottom over them.
     figure_behind: f32 = 0.0
-    pond = 1.0 - smoothstep(75.0, 100.0, length(w.xz - vec2(-1230.0, 1650.0)))
     if pond > 0.001:
         clip = u.vp * vec4(w, 1)
         uv = clip.xy / clip.w * 0.5 + vec2(0.5, 0.5)
@@ -416,12 +446,9 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
         # modulation adds underwater detail without replacing it with a pale sand sheet.
         grain = vnoise(bedp.xz * 4.0)
         # Classify at the same unwarped pixel as the reconstructed depth.
-        # Refracting a figure while sampling the bed's depth leaked mineral grain
-        # along limbs. Keep body transmission continuous; only refract the bed.
+        # A single unwarped sample preserves stones, weed and figure contours;
+        # the surface normal still animates reflections and approved rain rings.
         opaque = sample(u.scene, uv)
-        figure = smoothstep(0.02,0.12,opaque.w)*(1.0-smoothstep(0.45,0.60,opaque.w))
-        bed_sample = sample(u.scene, uv + n.xz * 0.0007 * smoothstep(0.05,0.5,depth)*(1.0-figure))
-        opaque = vec4(bed_sample.xyz,opaque.w)
         transmitted = opaque.xyz
         figure_behind = smoothstep(0.02, 0.12, opaque.w) * (1.0 - smoothstep(0.45, 0.60, opaque.w))
         # The existing opaque alpha marks characters, including fish. Even a foot
@@ -432,6 +459,13 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
         # Continuous mineral grain follows the visible bed; regularly spaced
         # cell-centred disks read as a polka-dot overlay in the swim camera.
         transmitted = transmitted * (1.0 + (grain - 0.5) * 0.16 * bed_mask)
+        # Preserve existing rain and night colour; only the nearby clear bed
+        # resolves fine substrate. Fade before its smallest strands alias.
+        # Silt/absorption soften the deeper bottom. Keep sharp substrate at the
+        # shallow lip without turning the swim view into exposed textured land.
+        bed_detail = bed_mask * clear_day * water_bed_clarity(max(w.y - bedp.y, 0.0), length(bedp - u.cam))
+        if bed_detail > 0.001:
+            transmitted *= mix(vec3(1, 1, 1), water_bed_pigment(bedp.xz), bed_detail)
         # Red absorbs first; shallow sand remains legible before the deeper teal takes over.
         # Use the visible submerged fragment, including a wader or fish, to measure
         # the path through water. Vertical bed depth over-absorbed the shallow lip.
@@ -442,7 +476,9 @@ water_surface_fs = (i: WaterO, u: WaterU, depth_contact: bool) -> vec4:
         # bodies keep their shape and value. It cannot inherit bed triangles.
         rough = clamp(overcast * 0.35 + u.rain * 0.60, 0.0, 0.95)
         through = mix(through, body, bed_mask * rough)
-        reflection = 0.035 + fres * 0.55 + overcast * 0.25 + u.rain * 0.12
+        # Clear shallows have dielectric Fresnel, without the old constant sky
+        # veil. Keep the established rain/night response and grazing reflection.
+        reflection = water_pond_reflection(nv, overcast, u.rain, u.night)
         reflection = reflection * mix(1.0, 0.55, 1.0 - bed_mask)
         clear = mix(through, sky * 0.9, reflection) + u.sun_color * min(spec, 1.2) * 0.12 * (1.0 - u.night)
         c = mix(c, clear, pond)

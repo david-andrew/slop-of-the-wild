@@ -41,6 +41,7 @@ __noop = (): pass
 # a cave mouth: from inside within 45 m of it the world outside is drawn (the daylight at the end)
 see_out_from = vec3(0, -10000, 0)
 hooks = RenderHooks(__noop, __noop)
+__cave_lining_view = 0.0
 
 # Retained CPU mesh buffers follow the same culling as submitted named draws.
 named_visible = (name: str) -> bool: not (hooks.named_hidden.get(name) ?? false)
@@ -56,8 +57,9 @@ terr_u = (vp: mat4, shadow: bool) -> TerrU:
 build_u = (vp: mat4, shadow: bool) -> BuildU:
     u = BuildU(vp, sc.cam, env.light_dir, env.sun_color, env.sky_amb, env.ground_amb, env.haze, f32(env.density), 0.004,
         cascades.vps[0], cascades.vps[1], cascades.vps[2], shadow_tex(0), shadow_tex(1), shadow_tex(2), f32(elapsed()), f32(env.wet),
-        hooks.glow, f32(int(shadow)), vec3(0, 0, 0), sc_lp, sc_lc, f32(env.clouds), veg_player, fade_width = f32(if pl.state == .climb: 2.6 else: 1.0))
+        hooks.glow, f32(int(shadow)), vec3(0, 0, 0), sc_lp, sc_lc, f32(env.clouds), veg_player, fade_width = f32(if pl.state == .climb: 2.6 else: 1.0), keep_radius = (if pl.state == .climb: BUILD_KEEP_MASONRY else: 0.0))
 
+    u.cave_inside = __cave_lining_view
     # The unraised crown is above its buried collision courses, so the player
     # can be grounded inside its render-only skirt. Clear that local sightline
     # through both the moving crown and the surrounding world-chunk rubble.
@@ -75,7 +77,7 @@ __draw_named_all = (u0: BuildU):
         if k == "tower":
             u.lift = vec3(0, f32(hooks.tower_lift), 0)
             u.keep_center = TOWER.xz
-            if u.keep_radius >= 0.0: u.keep_radius = 5.0
+            if u.keep_radius >= 0.0 or u.keep_radius == BUILD_KEEP_MASONRY: u.keep_radius = 5.0
         if let lf = hooks.named_lift.get(k): u.lift = vec3(0, f32(lf), 0)
         if let c = hooks.named_collapse.get(k):
             u.base = c.xyz
@@ -98,6 +100,7 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
     under = zone_at(cam_pos) != "" and f64(length(cam_pos - see_out_from)) > 45.0
     if not under: terrain_stream_require()
     sc.cam = cam_pos
+    __cave_lining_view = sor_lining_view(cam_pos)
     sc.fwd = normalize(target - cam_pos)
     sc.fov = fov
     sc.proj = perspective(radians(fov), aspect_ratio(), sc.near, sc.far)
@@ -220,6 +223,14 @@ render_world = (cam_pos: vec3, target: vec3, fov: f64):
         ahead = clamp(1.0 - f64(length(sun_uv - vec2(0.5, 0.5))) * 1.2, 0.0, 1.0)
         post_rays = (0.25 + 0.75 * low) * ahead * (1.0 - env.dark) * f64(shadow_direct(f32(env.clouds))) * 0.9 * screen_weight
         post_ray_color = env.sun_color * 0.7
+    post_mouth_size=vec2(0,0)
+    if post.white>0.0:
+        # Project daylight beyond the flared brow. The near threshold can
+        # already be behind the chase lens while the opening fills the view.
+        mouth=vp*vec4(see_out_from+normalize(vec3(61,0,-40))*10.0+vec3(0,3,0),1)
+        if mouth.w>0.1:
+            post_mouth_uv=mouth.xy/mouth.w*0.5+vec2(0.5,0.5)
+            post_mouth_size=clamp(vec2(3.8*sc.proj[0].x,3.2*sc.proj[1].y)/(2.0*mouth.w),vec2(0.06,0.10),vec2(0.35,0.50))
     cpu_mark("post_draw")
     gpu_mark("post")
     post_end(sc.near, sc.far)

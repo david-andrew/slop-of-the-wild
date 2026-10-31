@@ -185,7 +185,8 @@ blade_hits = (d: ItemDef, dt: f64, damage: f64, knock: f64, finisher: bool = fal
     if weapon_tracks.paths.len() == 0: return
     heavy = d.two_handed or fight.act == .spin or fight.act == .jump_attack
     stop = if d.spear: 0.045 else: (if d.two_handed: 0.095 else: 0.065)
-    if finisher: stop += 0.045
+    if fight.act == .swing and not d.two_handed and not d.spear and fight.combo == 2: stop += 0.025
+    if finisher: stop += 0.070
     samples = max(4, int(ceil(dt * 120.0)) + 1)
     loop sample in [0..samples):
         back = dt * f64(sample) / f64(samples - 1)

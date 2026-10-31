@@ -1,0 +1,120 @@
+# Articulated flight surfaces and the live sprint/fire escape paths, no GPU.
+use '../game/wildlife.jo'
+use '../game/terrain.jo'
+use '../game/player.jo'
+use '../game/env.jo'
+use '../game/elements.jo'
+use '../game/items.jo'
+from '../game/elements.jo' import __burning
+from '../game/wildlife.jo' import __wild_fire_t
+
+# Project the opaque triangles to the wing plane. The interior of the hand
+# must stay covered: a row of separated slats leaves sky at these samples.
+wing_covers = (b: MeshB, p: vec2) -> bool:
+    loop t in [0..b.idx.len()/3):
+        a=b.vs[int(b.idx[t*3])].pos.xz
+        c=b.vs[int(b.idx[t*3+1])].pos.xz
+        d=b.vs[int(b.idx[t*3+2])].pos.xz
+        edges=[c-a,d-c,a-d]
+        offsets=[p-a,p-c,p-d]
+        lo=100.0
+        hi=-100.0
+        loop j in [0..3):
+            v=f64(edges[j].x*offsets[j].y-edges[j].y*offsets[j].x)
+            lo=min(lo,v)
+            hi=max(hi,v)
+        if lo>=-0.00000001 or hi<=0.00000001: return true
+    false
+
+loop kind in [0..3):
+    loop outer in [false,true]:
+        b=bird_wing_geometry(kind,outer)
+        low=100.0
+        high=-100.0
+        ylo=100.0
+        yhi=-100.0
+        under_lo=100.0
+        under_hi=-100.0
+        loop v in b.vs:
+            assert(abs(length(v.normal)-1.0)<0.0001 and v.color.w==1.0)
+            low=min(low,f64(v.color.x))
+            high=max(high,f64(v.color.x))
+            ylo=min(ylo,f64(v.pos.y))
+            yhi=max(yhi,f64(v.pos.y))
+            if v.normal.y<0:
+                under_lo=min(under_lo,f64(v.color.x))
+                under_hi=max(under_hi,f64(v.color.x))
+        loop t in [0..b.idx.len()/3):
+            a=b.vs[int(b.idx[t*3])]
+            c=b.vs[int(b.idx[t*3+1])]
+            d=b.vs[int(b.idx[t*3+2])]
+            n=cross(c.pos-a.pos,d.pos-a.pos)
+            assert(length(n)>0.00000001 and dot(n,a.normal)>0,"outward nondegenerate feather faces")
+        assert(high-low>0.01 and yhi-ylo>0.005,"feather rows have pigment contrast and camber")
+        assert(under_hi-under_lo>0.01,"underwing feather rows retain soft pigment contrast")
+        if outer:
+            span=if kind==2: 1.18 else: 1.0
+            loop zi in [0..75):
+                assert(wing_covers(b,vec2(f32(0.070*span),f32(-0.068+f64(zi)*0.001))),"overlapping primary vanes keep the hand opaque")
+        print("PASS wing {kind} outer={outer}: {b.idx.len()/3} triangles, camber={yhi-ylo:.4}")
+loop kind in [WKind.sparrow,WKind.pigeon,WKind.crow]:
+    lo=10.0
+    hi=-10.0
+    folded=false
+    open=false
+    gliding=false
+    previous=BirdPose()
+    loop f in [0..1200):
+        a=Animal(kind,vec3(0,3,0),vec3(0,0,0),state=.fly,seed=3.7,idle=f64(f)/120.0)
+        p=bird_pose(a)
+        lo=min(lo,p.flap)
+        hi=max(hi,p.flap)
+        if p.spread<0.73 and p.wrist>0.65: folded=true
+        if p.spread>0.98 and p.wrist<0.15: open=true
+        if p.glide>0.95 and p.spread>0.95: gliding=true
+        if f>0:
+            assert(abs(p.flap-previous.flap)<0.55 and abs(p.wrist-previous.wrist)<0.55,"continuous flap and wrist cycle")
+        previous=p
+    assert(hi-lo>1.5 and folded and open and gliding,"full flap, folded recovery, open power stroke and held glide")
+    a=Animal(kind,vec3(0,1,0),vec3(0,0,0),state=.land,seed=3.7,idle=2.0,vy=-1.0)
+    p=bird_pose(a)
+    assert(p.spread>1.1 and p.wrist<0 and p.glide==0,"landing brakes with spread primaries")
+    print("PASS {kind}: complete articulated flap/glide/landing cycle")
+
+hf.n=256
+hf.x0=-128.0
+hf.z0=-128.0
+hf.cell=1.0
+hf.h=fill(f32(0),hf.n*hf.n)
+hf.mat=fill(u8(0),hf.n*hf.n*4)
+burn_px=fill(u8(0),BURN_N*BURN_N*4)
+env.hour=8.0
+env.rain=0.0
+loop hz in [30,60,120]:
+    loop kind in [WKind.boar,WKind.pigeon,WKind.crow]:
+        loop fire in [false,true]:
+            flames.clear()
+            __burning.clear()
+            __wild_fire_t=0.0
+            pl=Player(pos=vec3(-60,0,0),state=.ground)
+            animals=[Animal(kind,vec3(0,0,0),vec3(0,0,0),face=-PI*0.5,seed=3.7,hp=8.0)]
+            # Prime the production heat cache before the new threat appears.
+            wildlife_update(1.0/f64(hz))
+            assert(not animals[0].danger)
+            source=vec3(-6,0,0)
+            if fire:
+                assert(ignite_at(source),"active grass fire fixture")
+            else:
+                pl.pos=source
+                pl.vel=vec3(8,0,0)
+            alert=-1.0
+            loop f in [0..hz*2):
+                wildlife_update(1.0/f64(hz))
+                a=animals[0]
+                if a.danger and alert<0.0: alert=f64(f+1)/f64(hz)
+            a=animals[0]
+            assert(alert>0 and alert<0.5,"fire/sprint alarm within sensing cadence")
+            assert(a.state==(if kind==.boar: WState.flee else: WState.fly),"animal enters live escape state")
+            assert(a.pos.x>2.0 and length(a.pos-source)>9.0,"animal visibly retreats away from threat")
+            print("PASS {kind} {hz}Hz fire={fire}: alert={alert:.3}s escape={a.pos}")
+print("PASS flight geometry, cycle and live wildlife threat escape")

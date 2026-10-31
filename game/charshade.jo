@@ -67,6 +67,7 @@ struct CharParams:
     hero_material = 0.0             # hero-only cloth/leather/skin response from painted albedo
     recolor = vec4(0, 0, 0, 0)      # rgb, amount: a new base color, keeping the texture's light and shade
     environment = 0.0              # outdoor hero diffuse follows the environment exposure
+    wet_night = 0.0                # outdoor rain-only moon/sky bounce
     environment_shade = 0.0        # overcast canopy favors the dark end of the same exposure range
     burn_light = 0.0               # draw-local fire bounce; no light leaks to other actors
 
@@ -107,6 +108,7 @@ struct ChU:
     waterline: f32 = -10000.0
     submerged: f32 = 0.0
     environment: f32 = 0.0
+    wet_night: f32 = 0.0
     environment_shade: f32 = 0.0
     environment_sun = vec3(0,0,0)
     environment_sky = vec3(0,0,0)
@@ -381,6 +383,7 @@ ch_fs = (i: ChO, u: ChU) -> vec4:
     if u.environment <= 0.0: c += local
     c = ch_fibre_wet(c,alb,u.wet,hair_)
     c = ch_environment_bound(c,alb,n,v,l,sh,u)
+    c += hero_wet_night_light(alb,n,v,u.wet_night)
     if u.environment > 0.0: c += local
     # Blue chamber light still changes value and leaves a cool edge, but keeps
     # its effect on skin. Correct only the blond locks at matched luminance.
@@ -473,6 +476,7 @@ ch_uniforms = (s: CharScene, p: CharParams, model: mat4, bones: Texture, row: in
     u.waterline = water.x
     u.submerged = water.y
     u.environment = f32(p.environment)
+    u.wet_night = f32(p.wet_night)
     u.environment_shade = f32(p.environment_shade)
     u.environment_sun = s.environment_sun
     u.environment_sky = s.environment_sky
@@ -480,3 +484,10 @@ ch_uniforms = (s: CharScene, p: CharParams, model: mat4, bones: Texture, row: in
     u.status_rim = p.status_rim
     u.status_flash = p.status_flash
     u
+
+# Added after diffuse exposure bounding: cloud absorption must not clamp away
+# this moon/sky fill a second time. Pigment and broad planes stay visible.
+hero_wet_night_light = (alb: vec3, n: vec3, v: vec3, amount: f32) -> vec3:
+    plane = 0.65 + 0.35 * smoothstep(-0.5,0.8,n.y)
+    edge = smoothstep(0.55,0.95,1.0-abs(dot(n,v)))
+    (alb * vec3(0.34,0.408,0.51) * plane + alb * vec3(0.17,0.238,0.34) * edge) * amount

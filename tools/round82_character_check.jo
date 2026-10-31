@@ -18,10 +18,14 @@ loop kind in [WKind.sparrow,WKind.pigeon,WKind.crow]:
         previous_flap=p.flap
     assert(maximum<0.18,"continuous flap including takeoff tempo change")
     bird.idle=2.731
-    airborne=bird_pose(bird).flap
     bird.state=.land
+    # Landing now has an authored braking amplitude; it need not equal the
+    # airborne flap. Resetting the state timer must still retain its idle phase.
+    braking=bird_pose(bird).flap
     bird.t=0.0
-    assert(abs(bird_pose(bird).flap-airborne)<0.000001,"landing preserves the flight clock")
+    assert(abs(bird_pose(bird).flap-braking)<0.000001,"landing braking preserves the flight clock")
+    bird.idle+=0.07
+    assert(abs(bird_pose(bird).flap-braking)>0.001,"landing still advances with the flight clock")
     print("PASS {kind}: maximum 240 Hz wing rotation {maximum:.5} rad")
 
 m=load_model("assets/models/bokoblin.mdl")

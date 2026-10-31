@@ -91,8 +91,8 @@ loop foot in fall_feet:
 assert(anchors==1,"one stable west-pool plume, no floating bench cards")
 print("PASS west plunge pool: three wide wet probes, one mist source on the receiving mesh")
 
-# The first-half wash is actual vertex irradiance, not extra emission. It must
-# fade before the mouth and leave the sealed walking/camera geometry intact.
+# The strip-lit first half and daylight mouth use actual vertex irradiance.
+# Their fills overlap smoothly and leave the walking/camera geometry intact.
 loop key in __bchunks.keys(): __bchunks.remove(key)
 corridor(v3(-1128,237,1884),v3(-1067,247.5,1844),36)
 near=vec3(0,0,0)
@@ -113,6 +113,6 @@ loop key,b in __bchunks:
 assert(near_n>0 and far_n>0,"probe both lining halves")
 near/=f32(near_n)
 far/=f32(far_n)
-assert(near.x<0.025 and far.x>near.x*3.0,"deep passage remains dark until the last forty metres")
-assert(near.x>near.z and far.x<0.25,"restrained warm daylight-end bounce")
+assert(near.x>0.12 and near.x<0.45 and far.x>0.025,"strip bounce makes the early passage legible before daylight")
+assert(near.z>near.x and far.x>far.z and far.x<0.25,"cool strip fill eases into restrained warm daylight bounce")
 print("PASS cave indirect wash: early {near}; late {far}; daylight builds near the mouth")

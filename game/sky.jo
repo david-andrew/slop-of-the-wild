@@ -213,8 +213,9 @@ skyp_surface = (i: SkyO, u: SkyU, closed: bool) -> vec4:
     # a wide pale halo
     c = c + vec3(0.2, 0.25, 0.35) * pow(max(md, 0.0), 24.0) * 0.25 * u.night * (1.0 - u.dark)
     # stars
-    if u.night > 0.01 and dir.y > 0.0:
-        vis = u.night * (1.0 - u.dark) * clamp(dir.y * 4.0, 0.0, 1.0)
+    stars = star_visibility(l.y,u.night)
+    if stars > 0.0 and dir.y > 0.0:
+        vis = stars * (1.0 - u.dark) * clamp(dir.y * 4.0, 0.0, 1.0)
         # the Milky Way: a faint lumpy band across the sky
         bn = normalize(vec3(0.5, 0.35, -0.8))
         band = exp(-dot(dir, bn) * dot(dir, bn) * 22.0) * (0.5 + 0.8 * fbm3(dir.xz / (dir.y + 0.35) * 6.0))
@@ -396,3 +397,7 @@ draw_valley_mist = (vp: mat4, cam: vec3):
     draw_fast(__mist_sh, __mist_mesh, MistU(vp, cam, color, f32(env.valley_mist), f32(elapsed())))
     glDepthMask(1)
     glDisable(GL_BLEND)
+
+# Twilight stars fade fully before the solar disk crosses the horizon.
+star_visibility = (sun_height: f32, night: f32) -> f32:
+    night * (1.0-smoothstep(-0.12,0.0,sun_height))

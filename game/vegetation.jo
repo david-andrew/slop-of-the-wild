@@ -772,7 +772,7 @@ round_rock_vertices = (vs: mut Vertex3D[], ids: u32[]):
                 counts[a] += 1
                 counts[b] += 1
         loop j in [0..points.len()):
-            if counts[j] > 0: points[j] = mix(points[j], sums[j]/f32(counts[j]), 0.42)
+            if counts[j] > 0: points[j] = mix(points[j], sums[j]/f32(counts[j]), 0.22)
     # Restore the authored extent after relaxation, retaining the rooted shape.
     rlo = vec3(1e9, 1e9, 1e9)
     rhi = vec3(-1e9, -1e9, -1e9)
@@ -1049,6 +1049,9 @@ place = (name: str, pos: vec3, rot: f64, height: f64, tint: vec4, collide: bool 
             width = (8.6 + (62.0 - f64(q.z)) * 0.15) * 0.5
             if q.z < 50.6: width = max(width, 7.0)
             if abs(f64(q.x)) < width + 0.5: return
+    # Arguments have already consumed the placement samples. A pine formerly
+    # on gentle ground cannot sprout through the newly exposed crag face.
+    if starts_with(name,"Pine_") and jolia_crags(f64(pos.x),f64(pos.z))>0.0 and normal_at(f64(pos.x),f64(pos.z)).y<0.75:return
     treeline = 0.0
     if starts_with(name, "Pine"):
         treeline = smoothstep(355.0, 415.0, f64(pos.y)) * (1.0 - smoothstep(200.0, 270.0, hypot(f64(pos.x) + 1288.0, f64(pos.z) - 2221.0)))
@@ -1094,8 +1097,17 @@ place = (name: str, pos: vec3, rot: f64, height: f64, tint: vec4, collide: bool 
     m = translation(root) * rotation_y(rot) * scaling(v3(w * px, s, w * pz))
     bound = vm.radius * (if starts_with(name, "CommonTree"): max(w * px, w * pz) else: s)
     surface_tint = tint
+    # Small pale field stones keep grey mineral pigment at overlook distance.
+    # Snow, moss and the cave's already-dark chips retain their own finish.
+    if (starts_with(name,"Rock_Medium_") or starts_with(name,"Pebble_")) and height<3.4 and tint.w<0.01 and min(tint.x,min(tint.y,tint.z))>0.8:
+        surface_tint=vec4(tint.xyz*vec3(0.82,0.84,0.86),tint.w)
     if tint.w > 0.0 or starts_with(name, "Pine_") or starts_with(name, "CommonTree"):
         surface_tint.w = 0.85 * vegetation_snow_cover(f64(pos.x), f64(pos.z))
+    # Loose snowfield stones keep a light grey mineral body and a restrained
+    # snow cap, rather than becoming white dots against the mountain.
+    if (starts_with(name,"Rock_Medium_") or starts_with(name,"Pebble_")) and height<3.4 and tint.w>0.0:
+        surface_tint.xyz *= vec3(0.75,0.78,0.82)
+        surface_tint.w *= 0.42
     places.push(VPlace(mi, m, surface_tint, root, bound, treeheight, collide))
 
 LEAF = vec4(0.95, 1.0, 0.9, 0.0)
@@ -1103,6 +1115,41 @@ LEAF = vec4(0.95, 1.0, 0.9, 0.0)
 # a placement by its own matrix (a fallen trunk lies on its side)
 place_m = (name: str, m: mat4, pos: vec3, height: f64, radius: f64, tint: vec4):
     places.push(VPlace(model_id(name), m, tint, pos, radius, height, false))
+
+# Scatter eligibility uses the pre-crag slope so a local mountain edit cannot
+# advance the shared placement stream and move unrelated forest scenery.
+__vegetation_relief_delta = (ix: int, iz: int) -> f64:
+    if ix<0 or iz<0 or ix>=hf.n or iz>=hf.n:return 0.0
+    x=hf.x0+f64(ix)*hf.cell
+    z=hf.z0+f64(iz)*hf.cell
+    delta=jolia_crags(x,z)
+    if delta<=0.0:return 0.0
+    if water_grid.len()==hf.n*hf.n and water_grid[iz*hf.n+ix]> -9000.0:return 0.0
+    delta*=1.0-hylia_pass(x,z)
+    loop pad in pads:
+        d=hypot(x-pad.x,z-pad.z)
+        if d<pad.r+pad.fall:delta*=smooth01((d-pad.r)/max(pad.fall,0.01))
+    delta
+
+vegetation_baseline_height = (x: f64, z: f64) -> f64:
+    if hypot(x+1288.0,z-2221.0)>136.0:return height_at(x,z)
+    fx=(x-hf.x0)/hf.cell
+    fz=(z-hf.z0)/hf.cell
+    ix=int(floor(fx))
+    iz=int(floor(fz))
+    tx=fx-f64(ix)
+    tz=fz-f64(iz)
+    old_corner=(cx: int, cz: int) -> f64: hf_sample(cx,cz)-__vegetation_relief_delta(cx,cz)
+    aa=lerp(old_corner(ix,iz),old_corner(ix+1,iz),tx)
+    bb=lerp(old_corner(ix,iz+1),old_corner(ix+1,iz+1),tx)
+    lerp(aa,bb,tz)
+
+vegetation_baseline_normal = (x: f64, z: f64) -> vec3:
+    if hypot(x+1288.0,z-2221.0)>136.0:return normal_at(x,z)
+    e=hf.cell
+    dx=vegetation_baseline_height(x-e,z)-vegetation_baseline_height(x+e,z)
+    dz=vegetation_baseline_height(x,z-e)-vegetation_baseline_height(x,z+e)
+    normalize(v3(dx,2.0*e,dz))
 
 vegetation_place = ():
     seed_random(42)
@@ -1192,7 +1239,7 @@ vegetation_place = ():
         z = random(1440.0, 2400.0)
         if not is_snow_area(x, z) or edge_at(x, z) > -4.0 or water_depth(x, z) > 0.0: continue
         g = height_at(x, z)
-        if normal_at(x, z).y < 0.75: continue
+        if vegetation_baseline_normal(x, z).y < 0.75: continue
         q = random()
         if q < 0.35: place("Rock_Medium_{random_int(1, 4)}", v3(x, g - 0.4, z), random(0.0, TAU), random(1.0, 3.2), vec4(1, 1, 1, 0.85))
         else if q < 0.5:
@@ -1617,6 +1664,15 @@ vegetation_place = ():
         z = 2289.0 + f64(offset.z)
         sz = [0.48,0.65,0.57,0.72,0.38][k]
         place("Rock_Medium_{1+k%3}",v3(x,height_at(x,z)-sz*0.18,z),0.65+f64(k)*1.71,sz,vec4(0.94,0.96,0.91,0),false)
+    # Sparse wind-pruned firs in sheltered summit pockets. Hash-only additions
+    # use existing pine batches and do not add obstacles to the climb route.
+    loop bed in [vec2(-1268,2254),vec2(-1314,2256),vec2(-1339,2204),vec2(-1247,2205)]:
+        loop k in [0..8):
+            h=hash2(f64(bed.x)+f64(k)*13.0,f64(bed.y))
+            x=f64(bed.x)+sin(h*TAU)*8.0
+            z=f64(bed.y)+cos(h*TAU)*12.0
+            if normal_at(x,z).y<0.80:continue
+            place("Pine_{1+k%5}",v3(x,height_at(x,z)-0.2,z),h*TAU,7.0+h*4.0,vec4(0.87,0.93,0.87,0.85),false)
     # trunks are solid
     loop i in [0..places.len()):
         pl_ = places[i]

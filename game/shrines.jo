@@ -122,7 +122,8 @@ __floor_colour = (id: int) -> vec4:
     SHR_FLOOR
 
 # Distinct reflected light temperatures.
-__shrine_accent = [vec3(2.2, 0.78, 0.22), vec3(1.9, 0.28, 0.24), vec3(1.65, 1.32, 0.38), vec3(0.22, 1.25, 1.45)]
+__shrine_accent = [vec3(0.30, 1.30, 1.48), vec3(1.8, 0.86, 0.30), vec3(1.8, 0.66, 0.22), vec3(0.44, 1.00, 1.48)]
+__shrine_arch_glow = [vec3(0.25,1.05,1.5),vec3(1.4,0.65,0.20),vec3(1.5,0.50,0.13),vec3(0.32,0.8,1.6)]
 # Shared cool ambient: identity comes from fixture irradiance, never the air.
 const SHR_SKY = vec3(0.55, 0.61, 0.70)
 const SHR_GROUND = vec3(0.29, 0.33, 0.40)
@@ -296,7 +297,7 @@ __wall_courses = (frame: mat4, id: int, width: f64, height: f64):
     nx = max(1, int(ceil(width / tw)))
     ny = max(1, int(ceil(height / th)))
     normal = transform_dir(frame, vec3(0, 0, 1))
-    col = [stone(0.21, 0.215, 0.20), stone(0.255, 0.22, 0.20), stone(0.205, 0.235, 0.235), stone(0.18, 0.29, 0.30)][id]
+    col = [stone(0.17, 0.29, 0.29), stone(0.34, 0.265, 0.18), stone(0.16, 0.185, 0.21), stone(0.39, 0.42, 0.42)][id]
     __begin(transform_point(frame, vec3(0, 0, 0)))
     face = (xa: f64, xb: f64, ya: f64, yb: f64, depth: f64, c: vec4):
         pts = [v3(xa, ya, depth), v3(xb, ya, depth), v3(xb, yb, depth), v3(xa, yb, depth)]
@@ -375,8 +376,8 @@ __wseg = (o: vec3, side: str, a0: f64, a1: f64, x0: f64, x1: f64, z0: f64, z1: f
 # All pieces stay at the shell edge; the original wall owns collision/climbing.
 __wall_bays = (frame: mat4, id: int, width: f64, height: f64, depth: f64 = 1.0):
     if width < 1.4 or height < 2.0: return
-    col = [stone(0.31, 0.30, 0.26), stone(0.34, 0.27, 0.23), stone(0.32, 0.34, 0.32), stone(0.30, 0.43, 0.44)][id]
-    metal = [stone(0.42, 0.30, 0.16), stone(0.24, 0.18, 0.13), stone(0.48, 0.36, 0.17), stone(0.39, 0.55, 0.54)][id]
+    col = [stone(0.28, 0.41, 0.40), stone(0.44, 0.34, 0.22), stone(0.25, 0.28, 0.31), stone(0.53, 0.55, 0.53)][id]
+    metal = [stone(0.28, 0.48, 0.47), stone(0.40, 0.255, 0.12), stone(0.48, 0.29, 0.13), stone(0.29, 0.38, 0.46)][id]
     put = (x: f64, y: f64, z: f64, w: f64, h: f64, d: f64, c: vec4):
         box_m(frame * translation(v3(x, y, z * depth)) * scaling(v3(w, h, d * depth)), c, PLAIN, false)
         # Face wash and edge wear on the stone surround; leave narrow metal
@@ -392,12 +393,12 @@ __wall_bays = (frame: mat4, id: int, width: f64, height: f64, depth: f64 = 1.0):
     top = max(1.8, height - 1.8)
     put(width * 0.5, top, 0.26, width, 0.22, 0.52, col)
     put(width * 0.5, top + 0.20, 0.19, width, 0.18, 0.38, darken(col, 0.20))
-    count = max(1, int(round(width / 3.6)))
+    count = max(1, int(round(width / [3.6, 4.8, 3.0, 4.2][id])))
     bay = width / f64(count)
     loop k in [0..count):
         cx = (f64(k) + 0.5) * bay
-        pw = min(2.4, bay - 0.8)
-        ph = min(3.1, top - 1.2)
+        pw = min([2.4, 3.4, 1.5, 2.8][id], bay - 0.8)
+        ph = min([3.1, 2.2, 3.8, 2.7][id], top - 1.2)
         if pw > 0.5 and ph > 0.7:
             # A dark inset surrounded by a wide, stepped frame.
             put(cx, 0.82 + ph * 0.5, 0.055, pw, ph, 0.075, darken(col, 0.64))
@@ -1578,8 +1579,8 @@ shrines_build = ():
         loop i in 0.. and s in shrines:
             if s.name == r.name: r.entry = i
         r.checkpoint = r.o
-    # Every chamber uses the same Sheikah slate. Iron, soot, brass and ice
-    # fixtures provide material variety; their nearby light provides the accent.
+    # Shared floor/hull stone anchors the Sheikah language. Authored wall
+    # courses, inset proportions and trim carry each chamber's material palette.
     SHR_STONE = stone(0.19, 0.23, 0.28)
     SHR_FLOOR = stone(0.28, 0.32, 0.37)
     __build_oman(srec[OMAN])
@@ -3476,7 +3477,7 @@ __monk_draw = ():
     monk_scene = cur_scene()
     monk_scene.lp = vec4(p.x - 1.2, p.y + 2.4, p.z + 1.8, 5.5)
     monk_scene.lc = vec3(2.8, 1.55, 0.65)
-    draw_prop(shrine_monk_model(), world, monk_scene, cp)
+    draw_character(shrine_monk_model(),world,shrine_monk_skin(),monk_scene,cp)
     if r.orb_t >= 0.0 and r.orb_t < 4.0:
         sz = f32(1.3 + 0.5 * __orb_glow)
         draw_prop(shape_mesh(.orb), translation(__orb_pos) * scaling(v3(sz, sz, sz)), rgba(1.0, 0.82, 0.5, 1), f32(3.0 + 2.5 * __orb_glow), 0.5)
@@ -3749,7 +3750,7 @@ shrines_update = (dt: f64):
             hooks.named_glow[names.circuits[k]] = (if active[k]: GLOW_BLUE.xyz else: GLOW_ORANGE.xyz) * f32((if active[k]: 0.32 else: 0.62) + surge * 1.5)
         # Decorative ribs, arch inlays and caustics support the puzzle hierarchy.
         # Machinery, pressure plates, stage signals and the exit retain their glow.
-        hooks.named_glow[names.architecture] = GLOW_BLUE.xyz * 0.32
+        hooks.named_glow[names.architecture] = __shrine_arch_glow[i] * 0.32
         hooks.named_glow[names.lamps] = __shrine_accent[i] * 0.24
         hooks.named_glow[names.goal] = vec3(1.25, 1.05, 0.65) * f32(if i == OWA: 1.35 else: 0.65)
         loop k in [0..2):
@@ -3838,8 +3839,10 @@ shrines_light = (lp: mut vec4, lc: mut vec3) -> bool:
     score = strength(lp, lc)
     loop lamp in __pendants[shr_cur]:
         candidate = vec4(o + lamp.xyz, 6.5)
-        col = __shrine_fixture_colour(shr_cur, lamp) * 1.35
-        value = strength(candidate, col)
+        # Coloured irradiance is baked into the architecture. The figure
+        # receives a pearl fill, so the trial palette cannot tint skin/clothing.
+        col = vec3(1.40,1.43,1.46)
+        value = strength(candidate, __shrine_fixture_colour(shr_cur, lamp) * 1.35)
         if value > score:
             score = value
             lp = candidate

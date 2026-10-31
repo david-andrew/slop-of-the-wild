@@ -446,7 +446,7 @@ __take_hit_actor = (e: mut Enemy, dmg: f64, from: vec3, knock: f64, fire: bool, 
     dv = e.pos - from
     e.recoil = normalize(vec3(dv.x, 0, dv.z) + vec3(0.0001, 0, 0))
     e.blow_dir = e.recoil
-    e.flash = 0.2
+    e.flash = if finisher: 0.24 else: (if stop >= 0.085: 0.22 else: 0.2)
     e.alert = 1.0
     if fire and not lethal: e.burning = max(e.burning, 4.0)
     # (a finisher, a heavy blow or the last one lands harder)

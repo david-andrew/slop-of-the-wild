@@ -1,5 +1,6 @@
 # Production controller on the displaced west rim (no synthetic flat wall).
 use '../game/structures.jo'
+use '../game/camera.jo'
 use '../game/worldgen.jo'
 use '../game/gfx.jo'
 use '../game/physics.jo'
@@ -19,12 +20,23 @@ loop z in [1645.0, 1718.0, 1752.0, 1777.0, 1908.0]:
     p = h.pos + h.normal * 0.45 - vec3(0, 1, 0)
     pl = Player(pos = p, last_safe = p, state = .air, grounded = false, st_t = 0.3, vel = vec3(0, -1, 0), face = yaw_of(h.normal * -1.0), air_peak = f64(p.y))
     cam_yaw_global = yaw_of(h.normal * -1.0)
+    cam = Cam(yaw=pl.face)
+    camera_snap()
     act = Actions(move = vec2(0, 1))
     ticks = 0
     mantling = 0
     standing = 0
     loop k in [0..360):
         player_update(1.0 / 60.0)
+        camera_update(1.0 / 60.0)
+        if k == 180 and z == 1752.0:
+            eye = view_pos()
+            boom = f64(length(eye-cam.target))
+            angle = abs(wrap_angle(yaw_of(cam.target-eye)-pl.face))
+            assert(boom > 4.5 and boom < 5.2,"open cliff retains a five-metre gameplay boom")
+            assert(cam.cliff_side == -1.0 and angle > 0.9,"prefer the open valley shoulder over the adjacent cliff face")
+            assert(not raycast(cam.target,eye-cam.target,boom,true,false).hit,"oblique view keeps a clear sightline to Jo")
+            print("cliff camera: boom {boom:.3} m, oblique angle {angle:.3}, valley shoulder {cam.cliff_side}")
         if pl.state == .climb: ticks += 1
         if pl.state == .mantle: mantling += 1
         if pl.state == .ground: standing += 1

@@ -49,6 +49,7 @@ struct PropU:
     lc = vec3(0, 0, 0)
     creature = 0.0
     opacity = 1.0
+    feather_light: f32 = 0.0
 
 struct PropO:
     pos: vec4
@@ -74,6 +75,10 @@ prop_fs = (i: PropO, u: PropU) -> vec4:
         alb = alb * t.xyz
     n = normalize(i.normal)
     l = normalize(u.sun_dir)
+    # Uniform material selection keeps feather batches on the shared program.
+    if u.feather_light>0.5:
+        feather=alb*(u.sky*0.85+u.ground*0.15+u.sun_color*0.10)+point_light(alb,n,i.world,u.lp,u.lc)
+        return vec4(atmos(feather,i.world,u.cam,l,u.haze,u.sun_color,u.density,0.004),i.color.w*f32(u.opacity))
     v = normalize(u.cam - i.world)
     sh = cascade_shadow(i.world, dot(n, l), u.vp0, u.vp1, u.vp2, u.sm0, u.sm1, u.sm2)
     c = paint_light(alb, n, l, v, u.sun_color, u.sky, u.ground, sh, 0.25)
@@ -123,11 +128,13 @@ prop_inst_vs = (v: Vertex3D, inst: PropI, u: PropU) -> PropO:
 prop_inst_sh: Shader
 __prop_inst_ready = false
 
-draw_props = (m: Mesh, b: InstBuf, color: vec4 = vec4(1, 1, 1, 1), creature: f64 = 0.0):
+draw_props = (m: Mesh, b: InstBuf, color: vec4 = vec4(1, 1, 1, 1), creature: f64 = 0.0, feathers: bool = false):
     if not __prop_inst_ready:
         __prop_inst_ready = true
         prop_inst_sh = make_sh(shader(prop_inst_vs, prop_fs))
-    draw_static(prop_inst_sh, m, b, prop_u(mat4(), color, creature = creature))
+    u=prop_u(mat4(),color,creature=creature)
+    u.feather_light=f32(int(feathers))
+    draw_static(prop_inst_sh,m,b,u)
 
 draw_props_tex = (m: Mesh, b: InstBuf, tex: Texture):
     if not __prop_inst_ready:

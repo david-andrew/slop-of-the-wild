@@ -188,6 +188,19 @@ jo() {
 # Headless tests; helper-only *_checks.jo files are exercised by their entry
 # points (fauna includes spacing, Stalkoblin, wildlife voices and Talus).
 cpu_checks=(
+    task72e_bird_continuity_check
+    task72d_feedback_check
+    task72h_rain_fire_check
+    task72i_water_hud_check
+    task72c_monk_check
+    task72_art_check
+    task72b_story_check
+    task72c_material_check
+    task72_scatter_check
+    task72b_wildlife_check
+    task72_fire_check
+    task72_weather_check
+    task72_character_check
     task71_runoff_check
     task71_smoke_check
     task71_weather_check
@@ -280,6 +293,7 @@ cpu_checks=(
     death_check
     task69_weather_check
     climb_masonry_check
+    temple_climb_camera_check
     round92_lightning_check
     title_panorama_check
     tree_test
@@ -377,6 +391,7 @@ check self prepared_frame_check python3 tools/prepared_frame_check.py
 check self element_input_check python3 tools/element_input_check.py
 check self renderer_structure_check python3 tools/renderer_structure_check.py
 check self weather_silhouette_check python3 tools/weather_silhouette_check.py
+check self task72_weather_capture python3 tools/task72_weather_capture.py "$out/weather-hours-$(date +%s%N)"
 check self sky_camera_check python3 tools/sky_camera_check.py
 check self traversal_check tools/traversal_check
 check self live_audio_check python3 tools/live_audio_check.py

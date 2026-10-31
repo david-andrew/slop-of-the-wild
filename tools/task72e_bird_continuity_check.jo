@@ -1,0 +1,31 @@
+# Cover seeded high-rate beats, periodic seams, glide envelopes and interrupted landings.
+use '../game/wildlife.jo'
+
+worst=0.0
+wrist_step=0.0
+transitions=0
+loop kind in [WKind.sparrow,WKind.pigeon,WKind.crow]:
+    loop seed in [0..64):
+        a=Animal(kind,vec3(0,4,0),vec3(0,0,0),state=.fly,seed=f64(seed)*0.39,wing_brake=0.0)
+        previous=bird_pose(a)
+        loop frame in [1..2881):
+            # Switch and abort between beats and glide peaks, retaining the
+            # flight clock. A steering state/timer change itself cannot pop.
+            if frame==737 or frame==766 or frame==1321 or frame==1561:
+                before=bird_pose(a)
+                a.state=if a.state==.fly: WState.land else: WState.fly
+                a.t=0.0
+                after=bird_pose(a)
+                assert(abs(before.flap-after.flap)<0.0000001 and abs(before.wrist-after.wrist)<0.0000001 and abs(before.spread-after.spread)<0.0000001,"fly/land transition retains the complete wing pose")
+                transitions+=1
+            a.idle+=1.0/240.0
+            a.t+=1.0/240.0
+            bird_brake_update(a,1.0/240.0)
+            p=bird_pose(a)
+            step=abs(p.flap-previous.flap)
+            worst=max(worst,step)
+            wrist_step=max(wrist_step,abs(p.wrist-previous.wrist))
+            assert(step<0.18,"all seeded wing beats/glides/braking remain continuous at 240 Hz")
+            assert(abs(p.wrist-previous.wrist)<0.10 and abs(p.spread-previous.spread)<0.05,"wrist and spread blend continuously through aborted landings")
+            previous=p
+print("PASS {transitions} fly/land transitions; 552960 wing steps; maximum flap {worst:.6}, wrist {wrist_step:.6} radians")

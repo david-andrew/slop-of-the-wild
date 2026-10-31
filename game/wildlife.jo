@@ -61,6 +61,7 @@ struct Animal:
     flock = -1
     idle = 0.0
     landing = vec3(0, 0, 0)
+    wing_brake = -1.0      # retained across fly/land steering changes; -1 for static poses
     el = Elem()
     impulse = vec3(0, 0, 0)
     voice_t = 4.0
@@ -486,6 +487,7 @@ wildlife_update = (dt: f64):
         to_pl = pl.pos - a.pos
         dist = f64(length(to_pl))
         if dist > 250.0 and a.kind != .hawk: continue
+        bird_brake_update(a, dt)
         wild_voice_update(a, dt)
         if a.kind != .fish and a.kind != .hawk and a.state != .dead and a.state != .gone: __wild_sense(a, dist, dt)
         # Species share the death/drop path, including birds shot in flight.
@@ -851,7 +853,7 @@ wildlife_draw = ():
     if cutscene_actors_hidden(): return
     if not wild_ready: return
     if __wild_batches.len() == 0:
-        loop k in [0..18): __wild_batches.push(WildBatch([], inst_buffer([PropI(mat4(), vec4(1, 1, 1, 1))])))
+        loop k in [0..21): __wild_batches.push(WildBatch([], inst_buffer([PropI(mat4(), vec4(1, 1, 1, 1))])))
     loop mut b in __wild_batches: b.items.clear()
     # The displayed camera is constant during this draw, including shadow passes.
     # Ordinary play only needs the hero proximity test, so avoid rebuilding a
@@ -881,7 +883,7 @@ wildlife_draw = ():
                 trait=fract(a.seed*0.618)
                 bm = world * scaling(v3(sz*(0.90+trait*0.17),sz*(0.95+trait*0.09),sz*(1.06-trait*0.12)))
                 # Keep the perch silhouette; flight has a slim breast and separate
-                # continuously rotating wings, shared in one instance batch per species.
+                # articulated wings, shared in two instance batches per species.
                 flight = pose.wing != 0
                 slim = if flight: lerp(0.88, 0.72, smoothstep(12.0, 55.0, d)) else: 1.0
                 body = bm * pose.body * scaling(v3(slim, slim, 1.0))
@@ -891,8 +893,15 @@ wildlife_draw = ():
                         wing = bm * pose.body * translation(v3(side * 0.025 * slim, 0.082 * slim, 0.0))
                         wing *= rotation_z(side * pose.flap) * scaling(v3(side, 1.0, lerp(0.88, 0.72, smoothstep(12.0, 55.0, d))*(0.88+trait*0.20)))
                         __wild_batches[bk * 3 + 2].items.push(PropI(wing, vec4(1, 1, 1, 1)))
+                        # The hand folds back at the wrist on recovery; the fan opens
+                        # into the air on the power stroke, without new per-feather draws.
+                        hand = wing * translation(v3(0.068 * (if bk == 2: 1.18 else: 1.0), 0.004, 0.008))
+                        hand *= rotation_y(pose.wrist) * rotation_z(pose.flex) * scaling(v3(1.0, 1.0, pose.spread))
+                        __wild_batches[18 + bk].items.push(PropI(hand, vec4(1, 1, 1, 1)))
                 __wild_batches[12 + bk].items.push(PropI(bm * pose.head * scaling(v3(slim, slim, 1.0)), vec4(1, 1, 1, 1)))
-                if pose.wing == 0: __wild_batches[15 + bk].items.push(PropI(bm, vec4(1, 1, 1, 1)))
+                if pose.wing == 0 or a.state == .land:
+                    feet = if a.state == .land: bm * pose.body else: bm
+                    __wild_batches[15 + bk].items.push(PropI(feet, vec4(1, 1, 1, 1)))
             fox:
                 p = CharParams(rim = 0.6, fill = 1.3, creature = 1.0)
                 if a.state == .dead: p.dissolve = f32(clamp((a.t - 1.0) / 0.6, 0.0, 1.0))
@@ -908,12 +917,17 @@ wildlife_draw = ():
         b = __wild_batches[k]
         if b.items.len() == 0: continue
         inst_stream(b.buf, b.items)
-        draw_props(__bird(k / 3, k % 3), b.buf, creature = 1.0)
+        draw_props(__bird(k/3,k%3),b.buf,creature=1.0,feathers=k%3==2)
     loop k in [12..18):
         b = __wild_batches[k]
         if b.items.len() == 0: continue
         inst_stream(b.buf, b.items)
         draw_props(__bird_details[k - 12], b.buf, creature = 1.0)
+    loop k in [0..3):
+        b = __wild_batches[18 + k]
+        if b.items.len() == 0: continue
+        inst_stream(b.buf, b.items)
+        draw_props(__bird_hands[k],b.buf,creature=1.0,feathers=true)
     if sc.shadow or env.night > 0.5 or env.rain > 0.3: return
     loop bi in 0.. and b in bugs:
         if b.hide > 0.0 or b.firefly or f64(length(b.home - sc.cam)) > 40.0: continue
@@ -1261,14 +1275,25 @@ __draw_boar = (a: Animal, world0: mat4, d: f64):
         draw_prop(parts[2], world * leg.upper, tint, 0.0, 0.2, creature = 1.0)
         draw_prop(parts[3], world * leg.lower, tint, 0.0, 0.2, creature = 1.0)
 
-# Small birds: folded perch, slim flight body and one mirrored wing mesh.
-# Continuous transforms reuse the former up/down-pose batch budget.
+# Small birds: folded perch, slim flight body and mirrored arm/hand meshes.
+# Shoulder and wrist transforms share one cached mesh per segment/species.
 # kinds: 0 sparrow (streaked brown, buff breast), 1 pigeon (blue-grey), 2 crow (black)
 struct BirdPose:
     body = mat4()
     head = mat4()
     wing = 0
     flap = 0.0
+    wrist = 0.0
+    flex = 0.0
+    spread = 1.0
+    glide = 0.0
+
+# State transitions only change the target. Retaining the blend through an
+# aborted approach avoids resetting the wing when the steering timer resets.
+bird_brake_update = (a: mut Animal, dt: f64):
+    if a.kind != .sparrow and a.kind != .pigeon and a.kind != .crow: return
+    if a.wing_brake < 0.0: a.wing_brake = if a.state == .land: 1.0 else: 0.0
+    a.wing_brake = clamp(a.wing_brake + (if a.state == .land: dt else: -dt) / 0.30, 0.0, 1.0)
 
 bird_pose = (a: Animal) -> BirdPose:
     p = BirdPose()
@@ -1280,13 +1305,35 @@ bird_pose = (a: Animal) -> BirdPose:
         # simulation time, so fixed-frame captures and gameplay show the same beat.
         # idle resets on takeoff, but survives fly/land steering changes.
         flight_time = a.idle
-        tempo = if a.kind == .crow: 3.6+fract(a.seed*0.41)*0.8 else: 7.0+fract(a.seed*0.41)*1.5
-        beat = (if flight_time < 0.45: flight_time * 6.0 else: 2.7 + (flight_time - 0.45) * tempo) + fract(a.seed*0.73)
-        p.wing = if fract(beat) < 0.5: 1 else: 2
+        # Bound the angular speed as well as the phase: the previous 8.5 Hz
+        # upper rate could rotate 0.20 rad in a single 240 Hz continuity step.
+        tempo = if a.kind == .crow: 3.6+fract(a.seed*0.41)*0.8 else: 5.6+fract(a.seed*0.41)
+        u=clamp((flight_time-0.30)/0.30,0.0,1.0)
+        # Integral of smoothstep tempo interpolation, with matching rate at
+        # both ends. Wrapping before periodic sin/cos preserves the cycle seam.
+        ramp = if flight_time<0.60: 0.30*(u*u*u-u*u*u*u*0.5) else: flight_time-0.45
+        beat = flight_time*6.0+(tempo-6.0)*ramp+fract(a.seed*0.73)
+        phase=fract(beat)
+        p.wing = if phase < 0.5: 1 else: 2
         # Occasional held glides and shallow banks break repeated V silhouettes.
         glide=smoothstep(0.45,1.0,flight_time)*smoothstep(0.65,0.94,sin(clock*1.3))
-        p.flap = 0.08 + (0.72-glide*0.61) * sin(beat * TAU)
-        bank=rotation_z(sin(clock*1.1)*0.12)*rotation_x(clamp(-a.vy*0.035,-0.14,0.12))
+        p.glide = glide
+        stroke = sin(phase * TAU)
+        recovery = smoothstep(-1.0, 1.0, cos(phase * TAU))
+        p.flap = 0.08 + (0.90-glide*0.79) * stroke
+        p.wrist = 0.10 + recovery * (1.0-glide) * 0.62
+        p.flex = -0.10 - recovery * (1.0-glide) * 0.28
+        p.spread = 1.0 - recovery * (1.0-glide) * 0.30
+        # A static landing fixture is fully braked; live birds carry their
+        # approach weight across steering transitions, independently of a.t.
+        brake=smooth01(if a.wing_brake>=0.0: a.wing_brake else: (if a.state==.land: 1.0 else: 0.0))
+        p.flap=lerp(p.flap,0.28+stroke*0.42,brake)
+        p.wrist=lerp(p.wrist,-0.12,brake)
+        p.flex=lerp(p.flex,-0.22,brake)
+        p.spread=lerp(p.spread,1.12,brake)
+        p.glide*=1.0-brake
+        pitch=lerp(clamp(-a.vy*0.035,-0.14,0.12),-0.28,brake)
+        bank=rotation_z(sin(clock*1.1)*0.12)*rotation_x(pitch)
         # Airborne heads share the body transform: peck/look are both zero.
         # Skip the perch matrix products and their temporary storage per bird.
         p.body=bank
@@ -1325,24 +1372,74 @@ __bird_fan = (b: mut MeshB, points: vec3[], col: vec4, m: mat4 = mat4()):
             c = base + 1 + u32((k + 1) % points.len())
             loop v in (if side * area > 0.0: [base, c, a] else: [base, a, c]): b.idx.push(v)
 
-# Two-sided wing outline, visible from its shoulder triangulation origin.
-# Twelve connected vertices retain the old 20-triangle wing budget. Cached
-# geometry keeps the wrist bend and primaries inside the same draw batch.
-__bird_surface = (b: mut MeshB, points: vec3[], col: vec4):
-    area = 0.0
+# Convex feather patches have an arched centre and actual face normals. Both
+# faces stay opaque; the silhouette is geometry, with no alpha/dither pattern.
+__bird_surface = (b: mut MeshB, points: vec3[], col: vec4, rows: bool = false, covert: bool = false):
+    center = vec3(0,0,0)
+    loop q in points: center += q
+    center /= f32(points.len())
+    center.y += 0.0008
+    normals: vec3[]
+    average = vec3(0,0,0)
     loop i in [0..points.len()):
-        a=points[i]
-        c=points[(i+1)%points.len()]
-        area+=f64(a.x*c.z-a.z*c.x)
-    loop side in [-1.0,1.0]:
-        base=u32(b.vs.len())
-        loop q in points:
-            b.vs.push(Vertex3D(q+v3(0,side*0.0015,0),v3(0,side,0),vec2(0,0),col))
-        loop i in [1..points.len()-1):
-            a=base+u32(i)
-            c=base+u32(i+1)
-            loop v in (if side*area>0.0:[base,c,a] else:[base,a,c]): b.idx.push(v)
+        n = normalize(cross(points[i]-center,points[(i+1)%points.len()]-center))
+        if n.y < 0.0: n = -n
+        normals.push(n)
+        average += n
+    average = normalize(average)
+    loop i in [0..points.len()):
+        a = points[i]
+        c = points[(i+1)%points.len()]
+        n = normals[i]
+        ns = [average,normalize(n+normals[(i+points.len()-1)%points.len()]),normalize(n+normals[(i+1)%points.len()])]
+        loop side in [-1.0,1.0]:
+            base = u32(b.vs.len())
+            loop j in [0..3):
+                q = [center,a,c][j]
+                # Broad pigment transitions follow the chord on both faces. The
+                # underwing keeps its pale coverts even when the upper layers hide.
+                tone = if rows: lerp((if side<0: 0.62 else: 0.80),(if side<0: 1.22 else: 1.08),smoothstep(-0.040,0.014,f64(q.z))) else: 1.0
+                edge = if covert and j!=0: 0.93 else: 1.0
+                pigment = col * vec4(f32(tone*edge),f32(tone*edge),f32(lerp(tone,1.0,0.12)*edge),1)
+                b.vs.push(Vertex3D(q,ns[j]*f32(side),vec2(0,0),pigment))
+            if dot(cross(a-center,c-center),n)*f32(side)>0:
+                loop j in [0,1,2]: b.idx.push(base+u32(j))
+            else:
+                loop j in [0,2,1]: b.idx.push(base+u32(j))
 
+bird_wing_geometry = (kind: int, outer: bool) -> MeshB:
+    b = MeshB()
+    wing = [rgb(0.33,0.21,0.12),rgb(0.48,0.49,0.53),rgb(0.065,0.065,0.085)][kind]
+    span = if kind == 2: 1.18 else: 1.0
+    if outer:
+        # A single cambered sheet owns the primary fan. Rounded scallops give
+        # individual tips without crossing coplanar vanes or pale fragments.
+        __bird_surface(b,[v3(-0.008,0.002,0.010),v3(0.018*span,0.008,0.026),
+            v3(0.052*span,0.010,0.028),v3(0.080*span,0.008,0.025),
+            v3(0.099*span,0.005,0.020),v3(0.108*span,0.003,0.012),
+            v3(0.110*span,0.002,0.004),v3(0.106*span,0.001,-0.003),
+            v3(0.100*span,0.001,-0.007),v3(0.111*span,0.001,-0.012),
+            v3(0.116*span,0,-0.019),v3(0.115*span,0,-0.026),
+            v3(0.110*span,0,-0.032),v3(0.102*span,0,-0.035),
+            v3(0.107*span,0,-0.041),v3(0.108*span,0,-0.048),
+            v3(0.103*span,0,-0.055),v3(0.095*span,0,-0.058),
+            v3(0.086*span,0,-0.059),v3(0.090*span,0,-0.065),
+            v3(0.089*span,0,-0.072),v3(0.083*span,0,-0.078),
+            v3(0.074*span,0,-0.079),v3(0.061*span,0.001,-0.074),
+            v3(0.040*span,0.002,-0.067),v3(0.018*span,0.002,-0.055),
+            v3(0.001*span,0.002,-0.039),v3(-0.008,0.002,-0.018)],wing,true)
+    else:
+        # Taper the arm into the wrist instead of ending in a straight card.
+        __bird_surface(b,[v3(-0.010,0,0.018),v3(0.008*span,0.006,0.026),
+            v3(0.025*span,0.010,0.030),v3(0.043*span,0.012,0.028),
+            v3(0.062*span,0.008,0.021),v3(0.075*span,0.004,0.010),
+            v3(0.079*span,0.003,-0.003),v3(0.075*span,0.002,-0.020),
+            v3(0.066*span,0,-0.034),v3(0.052*span,0,-0.044),
+            v3(0.033*span,-0.002,-0.050),v3(0.010*span,-0.003,-0.037),
+            v3(-0.010,-0.003,-0.024)],wing*vec4(1.04,1.04,1.03,1),true)
+    b
+
+__bird_hands: Mesh[]
 __bird_details: Mesh[]
 __bird_feet: Mesh[]
 __bird_m: Mesh[]
@@ -1356,15 +1453,15 @@ __bird = (kind: int, pose: int) -> Mesh:
             beak = [rgb(0.3, 0.25, 0.2), rgb(0.35, 0.3, 0.3), rgb(0.04, 0.04, 0.05)][k]
             loop pose_ in [0..3):
                 b = MeshB()
-                mb_sphere(b, v3(0.0, 0.07, 0.0), v3((if k == 1: 0.042 else: 0.036), (if k == 1:0.046 else:0.038), (if k == 2: 0.067 else: 0.058)), back, 12)
-                mb_sphere(b, v3(0.0, 0.06, 0.012), v3(0.032, (if k==1:0.040 else:0.032), 0.046), belly, 10)
+                mb_sphere(b, v3(0.0, 0.07, 0.0), v3((if k == 1: 0.042 else: 0.036), (if k == 1:0.046 else:0.038), (if k == 2: 0.067 else: 0.058)), back, (if pose_ == 0: 12 else: (if k == 1: 7 else: 8)))
+                mb_sphere(b, v3(0.0, 0.06, 0.012), v3(0.032, (if k==1:0.040 else:0.032), 0.046), belly, (if pose_ == 0: 10 else: 6))
                 # the tail, cocked up a little
                 tail = if k == 2: 0.128 else: (if k == 1: 0.107 else: 0.100)
                 __bird_fan(b, [v3(-0.013, 0.073, -0.035), v3(0.013, 0.073, -0.035),
                     v3(0.022, 0.095, -tail + 0.008), v3(0.008, 0.098, -tail),
                     v3(-0.008, 0.098, -tail), v3(-0.022, 0.095, -tail + 0.008)], wing)
                 # Overlapping neck feathers keep the rotating head seated in the breast.
-                mb_sphere(b, v3(0.0, 0.092, 0.038), v3(0.022, 0.033, 0.027), head, 10)
+                mb_sphere(b, v3(0.0, 0.092, 0.038), v3(0.022, 0.033, 0.027), head, (if pose_ == 0: 10 else: (if k == 1: 5 else: 6)))
                 if pose_ == 0:
                     # wings folded along the sides; thin legs
                     loop sx in [-1.0, 1.0]:
@@ -1375,20 +1472,10 @@ __bird = (kind: int, pose: int) -> Mesh:
                             # Two broad pigeon wing bars, visible without tiny feather noise.
                             loop z in [-0.025, -0.004]:
                                 mb_cyl(b, v3(sx * 0.037, 0.091, z), v3(sx * 0.044, 0.071, z - 0.014), 0.003, 0.003, rgb(0.22, 0.25, 0.29), 4)
-                if pose_ == 2:
-                    # A wrist bend leads into three short overlapping primaries.
-                    # The continuous web keeps their shallow notches filled at
-                    # the roots; one pigment and plane avoids floating white tips.
-                    b = MeshB()
-                    span = if k == 2: 1.18 else: 1.0
-                    points: vec3[]
-                    loop q in [vec2(0,0.022),vec2(0.050,0.032),vec2(0.090,0.025),
-                        vec2(0.156,0.003),vec2(0.146,-0.014),vec2(0.150,-0.026),
-                        vec2(0.134,-0.033),vec2(0.131,-0.047),vec2(0.115,-0.050),
-                        vec2(0.109,-0.065),vec2(0.087,-0.059),vec2(0,-0.023)]:
-                        points.push(v3(f64(q.x)*span,0,f64(q.y)))
-                    __bird_surface(b,points,wing)
+                if pose_ == 2: b = bird_wing_geometry(k,false)
                 __bird_m.push(mesh(b.vs, b.idx))
+            hand = bird_wing_geometry(k,true)
+            __bird_hands.push(mesh(hand.vs,hand.idx))
             b = MeshB()
             mb_sphere(b, v3(0.0, 0.123, 0.057), v3(0.023, 0.026, 0.026), head, 12)
             mb_cyl(b, v3(0.0, 0.121, 0.077), v3(0.0, 0.116, (if k == 2: 0.124 else: 0.101)), (if k == 2: 0.011 else: 0.008), 0.001, beak, 5)

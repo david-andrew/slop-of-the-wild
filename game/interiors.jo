@@ -234,6 +234,19 @@ const SOR_TERMINAL = v3(-1130.5, 237.0, 1895.0)
 const SOR_DOOR2 = v3(-1128.0, 237.0, 1893.0)
 const SOR_MOUTH_IN = v3(-1068.0, 248.0, 1845.0)
 
+# A continuous camera weight for the inner lining only. The same shell also
+# owns the outside ridge, which must retain its established cliff pigment.
+sor_lining_view = (cam: vec3) -> f64:
+    if cam.x < -1140.0 or cam.x > -1058.0 or cam.z < 1835.0 or cam.z > 1896.0 or cam.y < 232.0 or cam.y > 260.0: return 0.0
+    axis=normalize(vec3(61,0,-40))
+    delta=cam-vec3(-1128,237,1884)
+    along=f64(dot(delta,axis))
+    across=abs(f64(dot(delta,vec3(-axis.z,0,axis.x))))
+    above=f64(cam.y)-237.0-along*(10.5/sqrt(61.0*61.0+40.0*40.0))
+    length_fade=smoothstep(-7.0,-3.0,along)*(1.0-smoothstep(71.0,77.0,along))
+    height_fade=smoothstep(-0.8,0.4,above)*(1.0-smoothstep(5.0,7.0,above))
+    length_fade*height_fade*(1.0-smoothstep(3.25,5.0,across))
+
 # the rooms run from the bed toward the north-east (yaw so local -z points that way)
 SOR_YAW = 0.0
 # The right-hand surviving strip lights the passage's dressed threshold.
@@ -603,6 +616,10 @@ sor_rock_finish = (first: int):
             # Only the last forty metres receive a reflected daylight wash.
             # The built shrine lamps remain on their own material/light path.
             cur.verts[k].light = vec3(0.23,0.195,0.145)*f32((0.08+day*0.92)*facing)
+            # Reflected strip light fills the first bend, then eases into daylight.
+            # Bake irradiance into the sealed lining, without a fog/light card.
+            lamp = 1.0-smoothstep(16.0,42.0,station)
+            cur.verts[k].light += vec3(0.40,0.46,0.48)*f32(lamp*facing)
 
 sor_mouth_point = (j: int, k: int) -> vec3:
     layer = min(5,k/6)
@@ -717,16 +734,6 @@ sor_rock_mouth = ():
             edge = side*0.032
             __tri(cur,root-edge,root+edge,root+v3(0.06,0.22+t*0.32,0.04),stone(0.25+t*0.09,0.35+t*0.10,0.13),PLAIN)
         __end()
-
-# Reuse the existing additive shaft batch at the daylight threshold. Depth
-# testing clips the light against the irregular brow; no extra full-screen pass.
-sor_passage_light = (cam: vec3, sunlight: f32):
-    if length(cam-SOR_MOUTH_IN)>45.0: return
-    axis = normalize(vec3(61,0,-40))
-    side = vec3(-axis.z,0,axis.x)
-    loop k in [0..2):
-        p = SOR_MOUTH_IN + axis*f32(1.0-f64(k)*2.3) + side*f32(0.65-f64(k)*1.0) - vec3(0,0.35,0)
-        shafts.push(vec4(p,f32(0.11-f64(k)*0.03)*sunlight))
 
 # Angular split slabs, with broad planes and an undercut dark lip. These are
 # decorative relief only; the continuous lining and all ramp colliders stay sealed.
@@ -851,20 +858,40 @@ sor_passage_shell = (a: vec3, b: vec3, n: int):
 
 # A shallow, irregular scree surface over the unchanged walkable ramp. Across
 # the threshold its ragged tongues sink into turf instead of exposing a box end.
+sor_passage_floor_point = (a: vec3, b: vec3, n: int, j: int, station: f64) -> vec3:
+    side=normalize(v3(-f64(b.z-a.z),0,f64(b.x-a.x)))
+    ax=normalize(vec3(b.x-a.x,0,b.z-a.z))
+    across=(f64(j)/8.0*2.0-1.0)*3.15
+    base=mix(a,b,f32(station/f64(n)))+side*f32(across)
+    edge=pow(abs(across)/3.15,3.0)
+    base.y+=f32(0.025+edge*(0.18+0.08*sin(station*2.3+across)))
+    if station>f64(n-1):
+        blend=station-f64(n-1)
+        base+=ax*f32(blend*(1.9+0.25*sin(across*4.7)))
+        base.y=f32(lerp(f64(base.y),height_at(f64(base.x),f64(base.z))-0.035,blend))
+    base
+
+# Height on the actual two floor triangles, including the curved side bed.
+# Markers follow that surface rather than intersecting a planar approximation.
+sor_marker_height = (a: vec3, b: vec3, n: int, p: vec3) -> f32:
+    axis=normalize(vec3(b.x-a.x,0,b.z-a.z))
+    side=vec3(-axis.z,0,axis.x)
+    station=f64(dot(p-a,axis))/f64(length((b-a).xz))*f64(n)
+    across=(f64(dot(p-a,side))/3.15+1.0)*4.0
+    row=int(floor(station))
+    col=clamp(int(floor(across)),0,7)
+    u=f32(across-f64(col))
+    v=f32(station-f64(row))
+    aa=sor_passage_floor_point(a,b,n,col,f64(row)).y
+    bb=sor_passage_floor_point(a,b,n,col+1,f64(row)).y
+    cc=sor_passage_floor_point(a,b,n,col+1,f64(row+1)).y
+    dd=sor_passage_floor_point(a,b,n,col,f64(row+1)).y
+    if u>v: aa+(bb-aa)*u+(cc-bb)*v else: aa+(cc-dd)*u+(dd-aa)*v
+
 sor_passage_floor = (a: vec3, b: vec3, i: int, n: int):
     side = normalize(v3(-f64(b.z - a.z), 0.0, f64(b.x - a.x)))
     ax = normalize(vec3(b.x - a.x, 0, b.z - a.z))
-    point = (j: int, k: int) -> vec3:
-        station = f64(i + k)
-        across = (f64(j) / 8.0 * 2.0 - 1.0) * 3.15
-        base = mix(a, b, f32(station / f64(n))) + side * f32(across)
-        edge = pow(abs(across) / 3.15, 3.0)
-        base.y += f32(0.025 + edge * (0.18 + 0.08 * sin(station * 2.3 + across)))
-        if i >= n - 1:
-            blend = f64(k)
-            base += ax * f32(blend * (1.9 + 0.25 * sin(across * 4.7)))
-            base.y = f32(lerp(f64(base.y), height_at(f64(base.x), f64(base.z)) - 0.035, blend))
-        base
+    point = (j: int, k: int) -> vec3: sor_passage_floor_point(a,b,n,j,f64(i+k))
     __begin(mix(a, b, f32((f64(i) + 0.5) / f64(n))))
     first = cur.verts.len()
     loop j in [0..8):
@@ -882,13 +909,78 @@ sor_passage_floor = (a: vec3, b: vec3, i: int, n: int):
         across = abs(f64(dot(v.pos-mix(a,b,clamp(dot(v.pos-a,b-a)/dot(b-a,b-a),0.0,1.0)),side)))
         damp = smoothstep(0.5,2.65,across) * smoothstep(0.25,0.72,__n3(v.pos*0.43))
         cur.verts[k].color = vec4(mix(v.color.xyz,vec3(0.16,0.21,0.105),f32(damp*0.65)),v.color.w)
-        # Surviving shrine circuitry follows the ramp, without a separate
-        # floor box or a rectangular portal at the cave transition.
-        station = f64(i)+clamp(f64(dot(v.pos-mix(a,b,f32(f64(i)/f64(n))),ax))/f64(length((b-a)/f32(n))),0.0,1.0)
-        if station < 5.0:
-            cur.verts[k].mat = SH_TILE
-            cur.verts[k].mat.z *= f32(1.0-smoothstep(2.0,5.0,station))
+        # One material spans every triangle. Interpolating SH_TILE into cave
+        # material switched shader branches diagonally, making dark X seams.
+        station = clamp(f64(dot(v.pos-a,ax)),0.0,f64(length(b-a)))
+        dressed = 1.0-smoothstep(0.0,20.0,station)
+        pigment = mix(cur.verts[k].color.xyz,vec3(0.205,0.235,0.25),f32(dressed))
+        cur.verts[k].color = vec4(pigment,v.color.w)
     __end()
+
+# Shared deterministic positions for the solid inlays and their additive light.
+# This runs without RNG and is independent of prepared architecture cache hits.
+sor_marker_nodes = (a: vec3, b: vec3) -> vec3[]:
+    axis=normalize(vec3(b.x-a.x,0,b.z-a.z))
+    side=vec3(-axis.z,0,axis.x)
+    tip=a+axis*12.0
+    points: vec3[]
+    loop z in [int(floor(min(a.z,tip.z)*0.45))-2..int(ceil(max(a.z,tip.z)*0.45))+2):
+        loop x in [int(floor(min(a.x,tip.x)*0.45))-2..int(ceil(max(a.x,tip.x)*0.45))+2):
+            cell=vec2(f32(x),f32(z))
+            if hash12(cell)<0.65:continue
+            center=vec3((f32(x)+0.5)/0.45,a.y,(f32(z)+0.5)/0.45)
+            along=f64(dot(center-a,axis))
+            across=f64(dot(center-a,side))
+            if along<0.3 or along>11.5 or abs(across)>2.0:continue
+            points.push(center)
+    points
+
+# Smooth blue receiver light shares the existing additive batch. Its radial
+# shader reaches zero before the card edge and rejects the character surface.
+__sor_marker_glows: PInst[]
+__sor_marker_glows_ready=false
+sor_marker_glows = (cam: vec3):
+    a=v3(-1128,237,1884)
+    if length(cam-a)>22.0:return
+    if not __sor_marker_glows_ready:
+        __sor_marker_glows_ready=true
+        b=v3(-1067,247.5,1844)
+        axis=normalize(vec3(b.x-a.x,0,b.z-a.z))
+        slope=f32((b.y-a.y)/length(vec3(b.x-a.x,0,b.z-a.z)))
+        loop node in sor_marker_nodes(a,b):
+            p=node
+            p.y=sor_marker_height(a,b,36,p)+0.032
+            __sor_marker_glows.push(PInst(vec4(p,0.34),vec4(0.10,0.48,1.2,0.16),vec4(axis.x*slope,9.25,axis.z*slope,0)))
+    loop glow in __sor_marker_glows:queued_floor_glows.push(glow)
+
+# Preserve the old floor circuitry's round nodes in world space. These inlays
+# follow the actual ramp height; the floor keeps its continuous cave material.
+sor_floor_markers = (a: vec3, b: vec3, n: int):
+    axis=normalize(vec3(b.x-a.x,0,b.z-a.z))
+    slope=f64(b.y-a.y)/f64(length(vec3(b.x-a.x,0,b.z-a.z)))
+    loop node in sor_marker_nodes(a,b):
+        center=node
+        cell=floor(center.xz*0.45)
+        point=(angle: f64, radius: f64) -> vec3:
+            delta=vec3(f32(cos(angle)*radius),0,f32(sin(angle)*radius))
+            delta.y=f32(f64(dot(delta,axis))*slope)
+            p=center+delta
+            p.y=sor_marker_height(a,b,n,p)+0.020
+            p
+        center.y=sor_marker_height(a,b,n,center)+0.020
+        nn=normalize(vec3(-axis.x*f32(slope),1,-axis.z*f32(slope)))
+        __begin(center)
+        ring=hash12(cell+vec2(11,5))>0.72
+        # The filled centre meets the annulus exactly. Coplanar overlap
+        # between the old 0.205 m disc and 0.18 m inner rim caused speckle.
+        radius=if ring:0.18 else:0.205
+        loop k in [0..24):
+            aa=TAU*f64(k)/24.0
+            bb=TAU*f64(k+1)/24.0
+            __tri(cur,center,point(bb,radius),point(aa,radius),SH_STONE,vec4(0,0,0.36,0.5))
+            if ring:
+                __quad(cur,point(aa,0.23),point(aa,0.18),point(bb,0.18),point(bb,0.23),nn,SH_STONE,vec4(0,0,0.46,0.5))
+        __end()
 
 # a sloping corridor with walls, a ceiling and glowing strips, from a to b (floor heights)
 corridor = (a: vec3, b: vec3, n: int):
@@ -898,7 +990,9 @@ corridor = (a: vec3, b: vec3, n: int):
     side = normalize(v3(-f64(d.z), 0.0, f64(d.x)))
     slope = atan2(f64(d.y), len_)
     seg = len_ / f64(n)
-    if n > 3: sor_passage_shell(a, b, n)
+    if n > 3:
+        sor_passage_shell(a, b, n)
+        sor_floor_markers(a,b,n)
     loop i in [0..n):
         p0 = a + d * f32(f64(i) / f64(n))
         p1 = a + d * f32(f64(i + 1) / f64(n))

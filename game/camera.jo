@@ -56,6 +56,7 @@ struct Cam:
     from_pos = vec3(0, 0, 0)
     from_target = vec3(0, 0, 0)
     from_fov = 50.0
+    cliff_side = 0.0         # chosen open shoulder for a natural cliff
     climb_offset = 0.0       # retained side choice around a thin climbing occluder
     combat_side = 0.0        # shoulder separation for an unselected nearby foe
     climb_recovery = false  # finish returning the view gently after leaving the wall
@@ -198,7 +199,9 @@ camera_climb_clearance = (target: vec3, back: vec3, dist: f64, foreground: bool 
     up = normalize(cross(right, back))
     px = pixel_size()
     aspect = if px.y > 0.0: f64(px.x / px.y) else: 16.0 / 9.0
-    if foreground:
+    # The held natural face belongs in an oblique climb view. Its near edge
+    # may enter a frame corner without blocking Jo or touching the lens.
+    if foreground and not (pl.state == .climb and use_terrain and pl.climb_col < 0):
         lens = target + back * f32(dist)
         half_h = dist * tan(cam.fov * PI / 360.0)
         loop x in [-1.0, 0.0, 1.0]:
@@ -231,6 +234,27 @@ camera_climb_clearance = (target: vec3, back: vec3, dist: f64, foreground: bool 
                         break
                     step += 0.15
     limit
+
+# Choose once on acquiring a natural cliff. Prefer the shoulder with distant
+# scenery at the frame edges, rather than an adjacent face filling both edges.
+camera_cliff_side = () -> f64:
+    best = -1.0
+    score = -1000.0
+    loop side in [-1.0,1.0]:
+        back = __cam_back(pl.face+side*1.05,0.22)
+        eye = cam.target+back*5.0
+        hit = raycast(cam.target,back,5.35,true,false)
+        if hit.hit and hit.dist < 5.0: continue
+        right = normalize(cross(back,vec3(0,1,0)))
+        open = 0.0
+        loop edge in [-1.0,1.0]:
+            direction = cam.target+right*f32(edge*5.0*tan(50.0*PI/360.0)*aspect_ratio())-eye
+            view = raycast(eye,direction,45.0,true,true)
+            open += if view.hit: min(view.dist,45.0) else: 45.0
+        if open > score+0.5:
+            score = open
+            best = side
+    best
 
 # A camera lens is a sphere, not a walking capsule: the player push-out permits
 # a 45 cm step down through a collider top, then ejects sideways. That permission
@@ -340,6 +364,7 @@ camera_snap = ():
     cam.target = pl.pos + vec3(0, 1.5, 0)
     cam.tvel = vec3(0, 0, 0)
     cam.dist_cur = cam.dist
+    cam.cliff_side = 0.0
     cam.climb_offset = 0.0
     cam.climb_clear = 0.0
     cam.climb_recovery = false
@@ -389,8 +414,11 @@ __camera_step = (dt: f64):
     match pl.state:
         glide: want_d = 7.2
         climb:
-            want_d = 6.6
-            tgt_h = 1.2
+            # Open rock benefits from a readable body and an oblique view of
+            # ledges. Architecture retains room for its clearance orbit.
+            masonry = pl.climb_col >= 0 and colliders[pl.climb_col].surf == .stone
+            want_d = if use_terrain and pl.climb_col < 0: 5.0 else if masonry: 5.3 else: 6.6
+            tgt_h = if masonry: 1.0 else: 1.2
         swim:
             want_d = 4.2
             tgt_h = SWIM_FOOT_DEPTH + 0.25
@@ -484,8 +512,8 @@ __camera_step = (dt: f64):
     view_yaw += cam.combat_side
     if pl.state == .climb and not cam.locked and not cam.aiming and cam.blend < 0.99:
         cam.climb_recovery = true
-        current = camera_climb_clearance(cam.target, __cam_back(cam.yaw + cam.climb_offset, pitch), cam.dist_cur)
         straight = camera_climb_clearance(cam.target, __cam_back(cam.yaw, pitch), cam.dist_cur)
+        current = if cam.climb_offset == 0.0: straight else: camera_climb_clearance(cam.target, __cam_back(cam.yaw + cam.climb_offset, pitch), cam.dist_cur)
         if straight >= cam.dist_cur - 0.15: cam.climb_clear += dt
         else: cam.climb_clear = 0.0
         if current < cam.dist_cur - 0.5:
@@ -684,22 +712,30 @@ __camera_turn = (dt: f64):
         cam.pitch = clamp(cam.pitch + f64(act.look.y), -1.15, 1.35)
         cam.idle_t = 0.0
     else: cam.idle_t += dt
+    natural_climb = pl.state == .climb and use_terrain and pl.climb_col < 0
+    masonry_climb = pl.state == .climb and pl.climb_col >= 0 and colliders[pl.climb_col].surf == .stone
+    if not natural_climb: cam.cliff_side = 0.0
+    else if cam.cliff_side == 0.0: cam.cliff_side = camera_cliff_side()
     moving = pl.speed > 1.0 and pl.state == .ground
     # follow: swing slowly behind the direction of travel (not while the player steers the camera)
-    if cam.idle_t > 0.5 and (moving or pl.state == .glide or pl.state == .swim or (pl.state == .climb and pl.speed > 0.2)) and not cam.locked:
+    if cam.idle_t > 0.5 and (moving or pl.state == .glide or pl.state == .swim or natural_climb or masonry_climb or (pl.state == .climb and pl.speed > 0.2)) and not cam.locked:
         behind = pl.face
+        if pl.state == .climb and use_terrain and pl.climb_col < 0:
+            # Look along the face toward the open shoulder selected at grip.
+            behind += cam.cliff_side*1.05
         d = wrap_angle(behind - cam.yaw)
         # only when running sideways or away; running toward the camera stays put
         if abs(d) < 2.4:
             k = 0.55 * clamp(pl.speed / RUN_SPEED, 0.0, 1.3)
             if pl.state == .glide: k = 0.9
-            # (on a wall: round to square behind him, so the face is seen, not hugged)
-            if pl.state == .climb: k = 0.7
+            if pl.state == .climb: k = if use_terrain and pl.climb_col < 0: 1.2 else: 0.7
             cam.yaw += d * min(1.0, k * dt)
         # drift the pitch back toward the default (walking out of the cave, level: the light at
         # the mouth opens on the view, not on the ground at his feet)
         out_ = not cam_open_ground and f64(length(pl.pos - cave_mouth)) < 18.0
-        cam.pitch = approach(cam.pitch, (if pl.state == .swim: 0.42 else: (if pl.state == .glide: 0.16 else: (if out_: 0.04 else: 0.22))), (if pl.state == .swim: 1.8 else: (if out_: 0.25 else: 0.4)), dt)
+        # Keep the upper frustum below nearby aisle roofs while climbing;
+        # the higher eye also shows the tread of ledges on an open cliff.
+        cam.pitch = approach(cam.pitch, (if masonry_climb: 0.65 else: (if pl.state == .swim: 0.42 else: (if pl.state == .glide: 0.16 else: (if out_: 0.04 else: 0.22)))), (if masonry_climb: 1.4 else if pl.state == .swim: 1.8 else: (if out_: 0.25 else: 0.4)), dt)
     if cam.locked:
         # face the lock-on target over the player's shoulder
         dv = cam.lock_pos - pl.pos
@@ -861,11 +897,33 @@ camera_aim_blend = (a: vec3, at: vec3, b: vec3, bt: vec3, k: f64) -> vec3:
 camera_climb_masonry_view = (pos: vec3, target: vec3) -> vec3:
     delta = pos - target
     dist = f64(length(delta))
-    if dist < 0.8: return pos
+    if dist < 0.15: return pos
     back = normalize(delta)
     hit = raycast(target, back, dist, true, false)
-    if hit.hit and hit.collider != pl.climb_col and colliders[hit.collider].surf == .stone:
-        return target + back * f32(max(0.8, hit.dist - 0.45))
+    if hit.hit and hit.collider >= 0 and colliders[hit.collider].surf == .stone:
+        safe = max(0.15, hit.dist - 0.45)
+        if safe < 1.3 and abs(hit.normal.y) < 0.7:
+            # The held face can be only 45 cm behind the body. A minimum
+            # 80 cm boom would cross it again. Find room on Jo's side, using
+            # the wall normal for a back view and its tangent in a narrow aisle.
+            normal = normalize(vec3(hit.normal.x, 0, hit.normal.z))
+            right = vec3(-normal.z, 0, normal.x)
+            side = if dot(back, right) < 0.0: -1.0 else: 1.0
+            best = back * f32(safe)
+            score = safe
+            loop turn in [0.0, side*0.7, -side*0.7, side*1.4, -side*1.4, side*PI*0.5, -side*PI*0.5]:
+                direction = normalize(normal*f32(cos(turn)) + right*f32(sin(turn)) + vec3(0,0.16,0))
+                desired = max(3.2, min(dist, 5.3))
+                room = desired
+                wall = raycast(target, direction, room + 0.35, true, false)
+                if wall.hit: room = min(room, max(0.15, wall.dist - 0.35))
+                if turn == 0.0 and room == desired: return target + direction*f32(room)
+                candidate = room - abs(turn)*0.2
+                if candidate > score + 0.1:
+                    score = candidate
+                    best = direction*f32(room)
+            return target + best
+        return target + back * f32(safe)
     pos
 
 # Rendering asks for the same view many times. Sweep foreground masonry once

@@ -135,7 +135,11 @@ loop age in [0.0,0.033,0.20,0.8,3.0,4.0,5.0]:
         result=part_fs(PartO(vec4(),vec2(0.5,0.23),vec4(1.55,0.45,0.055,0.88),vec4(f32(age),-6,2.7,-1.6),vec4(0,0,0,10),1.6,foot),u)
         live=foot.x>=100 and foot.x<101 and foot.y>=100 and foot.y<101
         if not live or age<=0.20 or age>=4.0: assert(result.w<0.008,"no tongue on an unlit neighbour, at first ignition, or in the rear ember bed")
-        if live and age==0.8: assert(result.w>0.1,"accepted fresh cell keeps its broad connected sheet")
+        if live and age==0.8:
+            if foot==vec2(100.5,100.5):
+                assert(result.w>0.1,"accepted fresh fuel keeps its connected interior")
+            else:
+                assert(result.w<0.04,"exposed live-cell perimeter feathers inward instead of cutting a vertical flame card")
 assert(sample(tex,vec2(99.99,100.5)/f32(BURN_N)).z>0,"regression actually exercises bilinear heat leaking into an unlit neighbour")
 pixels[(100*BURN_N+100)*4+2]=u8(0)
 u.live_burn=bytes_texture(BURN_N,BURN_N,pixels,false,false)

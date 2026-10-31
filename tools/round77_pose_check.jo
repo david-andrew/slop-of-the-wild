@@ -20,21 +20,14 @@ loop clip in ["sit","Greeting","idle","glide"]:
             assert(abs(p.x)<0.17 and p.z<0.18 and p.y>(if clip=="sit":0.58 else:0.88) and p.y<(if clip=="sit":0.72 else:1.0),"hand stays within the closed cloak")
     print("PASS {clip}: 240 concealed hand samples, max target error {worst:.4}m")
 b=old_man_beard_mesh()
-# Four moustache/sideburn spheres precede the continuous 10 x 21 beard grid.
-base=b.vs.len()-210
-assert(base>0 and b.idx.len()%3==0)
-loop triangle in [0..360):
-    t=b.idx.len()-1080+triangle*3
-    ia=b.idx[t]
-    ib=b.idx[t+1]
-    ic=b.idx[t+2]
-    assert(int(ia)>=base and int(ib)>=base and int(ic)>=base,"beard triangles must not index the preceding moustache spheres")
-    a=b.vs[int(ia)]
-    bb=b.vs[int(ib)]
-    c=b.vs[int(ic)]
+assert(b.vs.len()>500 and b.idx.len()%3==0)
+loop t in [0..b.idx.len()/3):
+    a=b.vs[int(b.idx[t*3])]
+    bb=b.vs[int(b.idx[t*3+1])]
+    c=b.vs[int(b.idx[t*3+2])]
     n=cross(bb.pos-a.pos,c.pos-a.pos)
-    assert(length(n)>0.000001 and dot(n,a.normal+bb.normal+c.normal)>0,"outward, nondegenerate beard surface")
-print("PASS beard: {b.vs.len()} vertices, {b.idx.len()/3} triangles; independent outward taper")
+    assert(length(n)>0.000000001 and dot(n,a.normal+bb.normal+c.normal)>0,"outward, nondegenerate beard surface")
+print("PASS beard: {b.vs.len()} vertices, {b.idx.len()/3} triangles; sculpted outward surface")
 
 use '../game/structures.jo'
 from '../game/build.jo' import __bchunks

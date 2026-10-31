@@ -1,0 +1,55 @@
+# The gameplay climb must fit below the aisle roof, with solid masonry intact.
+use '../game/worldgen.jo'
+use '../game/structures.jo'
+use '../game/env.jo'
+use '../game/camera.jo'
+use '../game/player.jo'
+use '../game/physics.jo'
+use '../game/input.jo'
+use '../game/gfx.jo'
+
+worldgen_load()
+structures_pads()
+worldgen_finish()
+structures_generate()
+env.rain = 0.0
+hit = raycast(lp(TEMPLE,TEMPLE_ROT,0.0,6.0,-20.0),transform_dir(rotation_y(TEMPLE_ROT),vec3(1,0,0)),18.0,true,false)
+assert(hit.hit and hit.collider >= 0)
+p = hit.pos+hit.normal*0.45-vec3(0,1,0)
+pl = Player(pos=p,last_safe=p,state=.climb,grounded=false,climb_n=hit.normal,climb_col=hit.collider,face=yaw_of(hit.normal*-1.0))
+cam = Cam(yaw=pl.face)
+camera_snap()
+cam_yaw_global = pl.face
+loop frame in [0..181):
+    act = Actions(move=vec2(0,1))
+    player_update(1.0/60.0)
+    camera_update(1.0/60.0)
+assert(pl.state == .climb and pl.pos.y > p.y+2.0)
+eye = view_pos()
+delta = eye-view_target()
+boom = f64(length(delta))
+pitch = atan2(f64(delta.y),f64(length(delta.xz)))
+assert(boom > 4.0 and boom < 5.5,"architectural climb retains room for the body")
+assert(pitch > view_fov()*PI/360.0+0.08,"upper frame points below the aisle roof")
+assert(not raycast(cam.target,eye-cam.target,f64(length(eye-cam.target)),true,false).hit,"Jo remains visible on the near side of masonry")
+assert(colliders[hit.collider].active,"held Temple wall stays solid")
+# The low outer wall has a complete mineral crown, rather than the generic
+# top-face moss that visually continued the green turf through this stone.
+use '../game/build.jo'
+from '../game/build.jo' import __bchunks
+caps=0
+loop key,b in __bchunks:
+    loop v in b.verts:
+        local=transform_dir(rotation_y(-TEMPLE_ROT),v.pos-TEMPLE)
+        if abs(f64(local.y)-3.5)>0.002 or abs(abs(f64(local.x))-16.5)>0.51 or v.normal.y<0.9:continue
+        assert(v.mat.w== -1 and v.mat.y==0.0,"low Temple cap exposes mineral stone above damp vertical faces")
+        caps+=1
+assert(caps>=64,"all eight pairs of low aisle walls retain their upward caps")
+print("PASS Temple low wall caps: {caps} upward stone vertices, moss-free crowns")
+# A deliberate orbit keeps its input instead of fighting the automatic framing.
+yaw = cam.yaw
+pitch_input = cam.pitch
+act = Actions(look=vec2(0.2,-0.1))
+camera_update(1.0/60.0)
+assert(abs(cam.yaw-yaw-0.2)<0.002 and abs(cam.pitch-pitch_input+0.1)<0.002,"manual camera look remains immediate")
+print("PASS Temple climb gameplay camera: boom {boom:.3} m, pitch {pitch:.3}; roof above the frame, opaque held wall, manual look retained")

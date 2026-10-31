@@ -22,13 +22,14 @@ loop tt in [0.0,12.0,120.0,900.0]:
                 q=malice_parcel(phase,f32(tt))
                 next=malice_parcel(phase,f32(tt+1.0/60.0))
                 assert(length(next-q)<0.65,"continuous advection without recycling jumps")
-                assert(length(q.xz)>55 and length(q.xz)<225,"bounded three-bank circulation")
-                assert(q.y>40 and q.y<470,"castle crown remains inside the smoke volume")
+                assert(length(q.xz)>10 and length(q.xz)<300,"bounded core and wind-drawn crown")
+                assert(q.y>15 and q.y<470,"castle crown remains inside the smoke volume")
                 min_y=min(min_y,q.y)
                 max_y=max(max_y,q.y)
                 if dot(q,toward)>0:front+=1
                 else:back+=1
-            assert(front>32 and back>32,"each bank wraps on both sides at every azimuth")
+            # The wind-drawn crown (top band) leans downwind, so its thinner side holds fewer parcels.
+            assert(front>24 and back>24,"each bank wraps on both sides at every azimuth")
     assert(max_y-min_y>250,"overlapping banks fill the castle height")
 print("PASS malice: three turbulent banks; 72 time/band/view cases, bounded volume and continuous advection")
 

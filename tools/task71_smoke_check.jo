@@ -17,10 +17,36 @@ loop distance in [2.0,8.0,14.0,18.0,40.0]:
     loop corner in [vec2(-1,-1),vec2(1,-1),vec2(-1,1),vec2(1,1)]:
         ordinary=part_vs(QuadV(corner),plain,u)
         grass=part_vs(QuadV(corner),tagged,u)
-        assert(ordinary.pos==grass.pos,"smoke geometry is unchanged")
         assert(ordinary.color.xyz==grass.color.xyz,"smoke pigment is unchanged")
-        assert(abs(grass.color.w-ordinary.color.w*grass_smoke_coverage(f32(distance)))<0.000001,"whole-card opacity uses centre distance")
+        assert(abs(grass.color.w-ordinary.color.w*grass_smoke_coverage(f32(distance))*0.82)<0.000001,"whole-card opacity uses centre distance")
         assert(ordinary.color.w==plain.color.w,"ordinary smoke is unaffected")
     tagged.data.x=-0.5
     assert(part_vs(QuadV(vec2(0,0)),tagged,u).color.w==plain.color.w,"Calamity smoke is unaffected")
-print("PASS grass smoke: smooth bounded proximity fade, unchanged distant opacity, geometry/pigment and other smoke tags")
+print("PASS grass smoke: smooth bounded proximity fade, neutral pigment and other smoke tags")
+
+# Production plume extends vertically so adjacent births overlap, with wind
+# drift at its upper end and fully transparent boundaries at every phase.
+plume=PInst(vec4(0,4,-20,2),vec4(0.32,0.32,0.32,0.28),vec4(0.5,1,2048.75,0))
+u.wind=vec2(1.0,0.4)
+bottom=part_vs(QuadV(vec2(0,-1)),plume,u)
+top=part_vs(QuadV(vec2(0,1)),plume,u)
+assert(top.pos.y-bottom.pos.y>6.0,"visible smoke columns overlap after their fully transparent drawing margins are trimmed")
+assert(top.pos.x>bottom.pos.x+1.0,"upper billows drift with the wind")
+loop tick in [0..30):
+    u.time=f64(tick)/10.0
+    loop corner in [vec2(0,0.5),vec2(1,0.5),vec2(0.5,0),vec2(0.5,1)]:
+        top.uv=corner
+        assert(part_fs(top,u).w==0,"soft volume is transparent at every card edge")
+    top.uv=vec2(0.5,0.5)
+    color=part_fs(top,u)
+    assert(color.w>0.05 and abs(color.x-color.y)<0.00001 and abs(color.y-color.z)<0.00001,"continuous billows remain neutral grey")
+print("PASS continuous smoke: overlapping vertical volume, wind drift, soft transparent edges and grey pigment through 30 phases")
+
+# Actual cropped quad sides remain below the renderer's discard. This keeps
+# the smaller submission from exposing a straight boundary at any plume phase.
+loop tick in [0..30):
+    u.time=f64(tick)/10.0
+    loop corner in [vec2(-1,0),vec2(1,0),vec2(0,-1),vec2(0,1)]:
+        edge=part_vs(QuadV(corner),plume,u)
+        assert(part_fs(edge,u).w<0.01,"trimmed smoke quad ends outside all visible density")
+print("PASS smoke drawing bounds: 120 animated cropped edges below discard; visible world-space column retained")

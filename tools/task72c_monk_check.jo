@@ -1,0 +1,52 @@
+# Inspect actual opaque skin/fold geometry without opening a window.
+use '../game/shrine_monk.jo'
+use '../game/items.jo'
+use '../game/skel.jo'
+
+surface = (b: MeshB, label: str):
+    assert(b.vs.len()>0 and b.idx.len()%3==0)
+    loop v in b.vs:
+        assert(abs(length(v.normal)-1.0)<0.0001,"unit smooth skin/cloth normals")
+        assert(v.color.w==1.0,"opaque single surface, no inner spectral shell")
+    loop t in [0..b.idx.len()/3):
+        a=b.vs[int(b.idx[t*3])]
+        c=b.vs[int(b.idx[t*3+1])]
+        d=b.vs[int(b.idx[t*3+2])]
+        n=cross(c.pos-a.pos,d.pos-a.pos)
+        assert(length(n)>0.00000000001 and dot(n,a.normal+c.normal+d.normal)>0,"outward nondegenerate surface")
+    print("PASS {label}: {b.idx.len()/3} outward opaque triangles")
+
+b=MeshB()
+monk_head(b,rgb(0.43,0.39,0.33))
+surface(b,"sculpted monk head")
+# Check the side profile that the held shrine camera actually exposes. A
+# cylinder nose or detached lip can pass silhouette tests but not this surface.
+previous=monk_face_point(0.0,PI*0.5)
+max_step=0.0
+loop i in [1..1601):
+    p=monk_face_point(f64(i)/200.0,PI*0.5)
+    max_step=max(max_step,f64(length(p-previous)))
+    previous=p
+assert(max_step<0.001,"continuous forehead/nose/mouth/chin profile")
+nose=monk_face_point(3.6,PI*0.5)
+cheek=monk_face_point(3.6,PI*0.5+0.65)
+assert(nose.z>cheek.z+0.025,"nose projects continuously from sculpted cheeks")
+# Cupped digits turn through the knuckle instead of ending in a flat block.
+b=MeshB()
+monk_digit(b,[monk_row(0,0,0,0.008),monk_row(0,0.008,0.03,0.007),monk_row(0,0.025,0.035,0.004),monk_row(0,0.028,0.030,0.0005)],rgb(0.43,0.39,0.33))
+surface(b,"rounded curled finger")
+b=MeshB()
+monk_drape(b,[vec4(0,0.85,0.02,0.08),vec4(-0.02,0.60,0.10,0.09),vec4(0,0.30,0.25,0.20)],rgb(0.34,0.255,0.16))
+surface(b,"layered pleated linen")
+m=shrine_monk_model()
+assert(m.parts.len()==1 and m.parts[0].tris<20000,"cached monk stays in one bounded draw")
+print("PASS cached monk: {m.parts[0].tris} triangles, continuous profile max step {max_step:.6} m")
+
+# A cached rigid skin preserves the root and cannot be changed by a caller.
+cached_skin=shrine_monk_skin()
+reference=skin_cpu(m,Pose())
+assert(cached_skin.mats.len()==12 and cached_skin.world.len()==1,"one rigid root")
+loop i in [0..cached_skin.mats.len()): assert(abs(cached_skin.mats[i]-reference.mats[i])<0.000001,"cached rest palette is exact")
+cached_skin.mats[0]=2.0
+assert(shrine_monk_skin().mats[0]==1.0,"cached statue skin is independent of caller edits")
+print("PASS cached rigid monk skin: exact identity root, independent copies")

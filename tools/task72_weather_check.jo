@@ -1,0 +1,33 @@
+# Headless gates complement the rendered 24-hour silhouette sweep.
+use '../game/env.jo'
+use '../game/shade.jo'
+use '../game/charshade.jo'
+use '../game/sky.jo'
+use '../game/fx.jo'
+use '../game/ui.jo'
+
+loop hour in [0..24):
+    loop weather in [Weather.clear,Weather.cloudy,Weather.rain,Weather.storm]:
+        rain = if weather==.rain: 0.75 else if weather==.storm: 1.0 else: 0.0
+        env=Env(hour=f64(hour),time_scale=0,weather=weather,weather_t=1e9,clouds=(if weather==.clear:0.42 else if weather==.cloudy:0.74 else:0.95),rain=rain,wet=rain,storm_k=(if weather==.storm:1 else:0))
+        env_update(0,false)
+        amount=hero_wet_night_amount(env.rain,f64(env.sun_dir.y),f64(luma(env.sky_amb)))
+        if rain==0 or env.sun_dir.y>=0: assert(amount==0,"dry nights and daytime unchanged")
+        if rain>0 and env.sun_dir.y<=-0.1 and luma(env.sky_amb)<=0.25: assert(amount==1.05,"night rain has full hero bounce")
+        assert(clock_opacity(0,env.rain)>=0.88,"weather symbol shares clock floor")
+        if env.sun_dir.y>=0: assert(star_visibility(env.sun_dir.y,f32(env.night))==0,"no daytime stars")
+print("PASS 24 hours x four weathers: hero gates, stars and HUD")
+
+loop y in [-0.1,-0.05,-0.001,0.0,0.01]:
+    before=hero_wet_night_amount(1,y,0.1)
+    after=hero_wet_night_amount(1,y+0.0001,0.1)
+    assert(before>=after and before-after<0.002,"continuous horizon fill")
+loop alb in [vec3(0.12,0.15,0.18),vec3(0.5,0.3,0.2),vec3(0.6,0.52,0.24)]:
+    base=hero_wet_night_light(alb,vec3(0,0,1),vec3(0,0,1),1)
+    rim=hero_wet_night_light(alb,vec3(1,0,0),vec3(0,0,1),1)
+    assert(luma(rim)>luma(base) and luma(base)>0,"fill and thin edge preserve pigment")
+assert(rain_impact_light(vec3(0.03,0.04,0.06),vec3(0))<0.08,"night impacts cannot glow white")
+assert(rain_impact_light(vec3(0.8),vec3(0))==1,"bright daytime impact response retained")
+print("PASS continuous fill, pigmented rim and scene-lit rain impacts")
+
+assert(hero_wet_night_amount(1,-0.04,0.53)==0,"dawn ambient restores the dark silhouette before sunrise")

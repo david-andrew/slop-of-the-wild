@@ -460,7 +460,7 @@ __slash_flash = (p: vec3, k: f64):
     f = forward_of(pl.face)
     side = v3(cos(pl.face), 0.0, sin(pl.face))
     tilt = vec3(0, f32(random(-0.4, 0.4)), 0)
-    # Outlined dabs merge into an ink-backed streak, gone in a few frames.
+    # Luminous dabs merge into a soft streak, gone in a few frames.
     loop j in [0..13):
         t = (f64(j) / 12.0 - 0.5) * 0.7 * k
         front = p + normalize(sc.cam-p+vec3(0,0.0001,0)) * 0.95
@@ -545,6 +545,9 @@ play_events = ():
                 cam.shake = max(cam.shake, 0.55)
                 sfx_at(sfx.hit_big, e.pos, c, r, 1.0, 0.95)
                 __slash_flash(e.pos, 1.85)
+                front=e.pos+normalize(sc.cam-e.pos+vec3(0,0.0001,0))*0.75
+                emit(.glow,front,vec3(0,0,0),0.14,0.44,rgba(1.8,1.4,0.65,0.95))
+                emit(.spark,front,vec3(0,0,0),0.11,0.42,rgba(1.8,1.6,0.95,1.0))
                 fx_sparks(e.pos + normalize(sc.cam-e.pos+vec3(0,0.0001,0))*0.4, 22)
                 emit(.ring, e.pos, vec3(0, 0, 0), 0.35, 1.6, rgba(1.0, 0.95, 0.85, 0.6))
             "sneakstrike": sfx_at(sfx.parry, e.pos, c, r, 0.8, 0.8)

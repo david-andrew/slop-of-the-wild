@@ -1,6 +1,7 @@
 use 'gfx.jo'
 use 'shade.jo'
 use 'terrain.jo'
+from 'terrain.jo' import __canyon_weights
 use 'physics.jo'
 use 'build.jo'
 from 'build.jo' import __begin, __end, __tri, __quad, __quad_n, __n3, cur, __bchunks
@@ -278,6 +279,62 @@ __temple_tread = (base: vec3, size: vec3, yaw: f64):
     __end()
     add_box(base,size*0.5,yaw,false,.stone)
 
+# Each paver has a shallow worn crown and broken bevel down to the dirt bed.
+# It replaces the old top face; no raised overlay or added floor collider.
+temple_paving = (o: vec3, yaw: f64):
+    frame = translation(o)*rotation_y(yaw)
+    tile_width=19.0/12.0
+    tile_depth=58.0/72.0
+    loop row in [0..72):
+        loop col in [0..12):
+            x0 = -9.5+f64(col)*tile_width
+            z0 = -27.0+f64(row)*tile_depth
+            seed = f64(row*12+col)
+            h = hash2(seed,72.0)
+            # Wider missing corners cluster at the weather-exposed aisle edges.
+            broken = h > 0.78 or (abs(x0)>6.0 and h>0.46)
+            cut = if broken:0.045+h*0.095 else:0.008+h*0.018
+            wx=tile_width-0.025
+            wz=tile_depth-0.025
+            paver_outline = [vec2(0,cut),vec2(cut,0),vec2(wx-cut*0.7,0),vec2(wx,cut),vec2(wx,wz-cut),vec2(wx-cut*1.3,wz),vec2(cut,wz),vec2(0,wz-cut)]
+            point = (k: int, top: bool) -> vec3:
+                q=paver_outline[k]
+                xx=x0+f64(q.x)+0.017
+                zz=z0+f64(q.y)+0.020
+                yy=if top:0.062+noise(xx*0.8,zz*0.8)*0.018 else:0.012
+                transform_point(frame,v3(xx,yy,zz))
+            center=transform_point(frame,v3(x0+tile_width*0.5,0.078,z0+tile_depth*0.5))
+            __begin(center)
+            first=cur.verts.len()
+            # The existing recessed dirt bed is tessellated with the stones so
+            # its far pigment follows exactly the same broad damp wash.
+            bed = (x: f64, z: f64) -> vec3: transform_point(frame,v3(x,0.035,z))
+            __quad(cur,bed(x0,z0),bed(x0,z0+tile_depth),bed(x0+tile_width,z0+tile_depth),bed(x0+tile_width,z0),vec3(0,1,0),stone(0.285,0.265,0.215),PLAIN)
+            loop k in [0..8):
+                j=(k+1)%8
+                __tri(cur,center,point(j,true),point(k,true),stone(0.45,0.435,0.395),vec4(0,0,0,-1))
+                n=normalize(cross(point(k,true)-point(k,false),point(j,false)-point(k,false)))
+                __quad(cur,point(k,false),point(k,true),point(j,true),point(j,false),n,stone(0.32,0.31,0.265),vec4(0,0,0,-1))
+            loop k in [first..cur.verts.len()):
+                v=cur.verts[k]
+                q=transform_dir(rotation_y(-yaw),v.pos-o)
+                damp=noise(f64(q.x)*0.35+7.0,f64(q.z)*0.22)
+                dirt=smoothstep(0.38,0.73,damp)*(0.28+smoothstep(2.5,9.0,abs(f64(q.x)))*0.55)
+                moss=smoothstep(0.52,0.78,damp)*smoothstep(2.5,8.4,abs(f64(q.x)))
+                weather = (color: vec3) -> vec3:
+                    pigment=mix(color,vec3(0.29,0.265,0.205),f32(dirt))
+                    mix(pigment,vec3(0.20,0.26,0.13),f32(moss*0.82))
+                cur.verts[k].color=vec4(weather(v.color.xyz),v.color.w)
+                # Negative material tag carries the common far pigment only to
+                # build_vs; the fragment stage receives ordinary dressed stone.
+                # Broad slab value survives after the narrow joints flatten.
+                # The centre-to-edge roll is interpolated across the crown,
+                # so it never turns into disconnected subpixel grout dashes.
+                slab=0.94+hash2(seed,219.0)*0.12
+                crown=if k>=first+4 and (k-first-4)%7==0:1.0 else:0.965
+                cur.verts[k].mat=vec4(weather(vec3(0.45,0.435,0.395))*f32(slab*crown),-4)
+            __end()
+
 temple = ():
     o = TEMPLE
     r = TEMPLE_ROT
@@ -291,7 +348,13 @@ temple = ():
     foundation_axis = transform_dir(rotation_y(r)*scaling(v3(36.0,1.3,80.0)),vec3(1,0,0))
     foundation_yaw = atan2(-f64(foundation_axis.z),f64(foundation_axis.x))
     add_box(p(0.0, -1.2, 2.0), v3(18.0, 0.65, 40.0), foundation_yaw, false, .stone)
-    box(p(0.0,-1.18,2.0),v3(32.0,1.25,76.0),r,GREY_DARK,temple_block,false)
+    box(p(0.0,-1.18,2.0),v3(32.0,1.20,76.0),r,GREY_DARK,temple_block,false)
+    # Recess only the paving bed. The outer aisles/landing retain their old
+    # cap height and foot contact, continuous with the surviving foundation.
+    loop side in [-1.0,1.0]:
+        box(p(side*12.75,0.02,2.0),v3(6.5,0.05,76.0),r,GREY_DARK,temple_block,false)
+    loop z in [-31.5,35.5]:
+        box(p(0.0,0.02,z),v3(19.0,0.05,9.0),r,GREY_DARK,temple_block,false)
     loop side in [-1.0,1.0]:
         loop k in [0..20):
             z = -36.0+f64(k)*3.9
@@ -380,7 +443,7 @@ temple = ():
             sz = 0.35 + h * 0.9
             __old_block(v3(xx, g - sz * 0.24, zz), v3(sz * 1.7, sz * 0.65, sz), r + h * 0.7, GREY_DARK, temple_ivy, false)
     # floor tiles inside
-    box(p(0.0, 0.0, 2.0), v3(19.0, 0.08, 58.0), r, stone(0.52, 0.5, 0.46), vec4(0.8, 0.0, 0.0, -1), false)
+    temple_paving(o,r)
     # nave: piers every 7 m; arcades open to the aisles; a clerestory of tall pointed windows above
     loop i in [0..9):
         z = -26.0 + f64(i) * 7.0
@@ -404,7 +467,18 @@ temple = ():
                     arch(p(x, 17.0, zc), r + PI / 2.0, 3.0, 3.0, 0.5, 1.2, col, temple_block)
                     box(p(x, 20.0, zc), v3(1.2, 3.0, 5.2), r, col, m)
                 # the aisle's outer wall with a low window, and its lean-to roof
-                __old_block(p(side * 16.5, 0.0, zc), v3(1.0, 3.5, 5.6), r, GREY_DARK, m)
+                low=p(side*16.5,0.0,zc)
+                __begin(low)
+                first=cur.verts.len()
+                __end()
+                __old_block(low,v3(1.0,3.5,5.6),r,GREY_DARK,m)
+                __begin(low)
+                loop k in [first..cur.verts.len()):
+                    # The cap is opaque stone. Generic top-face moss matched
+                    # the turf behind it and read like a green transparency.
+                    # Keep the vertical damp wash, but expose its mineral crown.
+                    if cur.verts[k].normal.y>0.7:cur.verts[k].mat.y=0.0
+                __end()
                 if not broken: box(p(side * 16.5, 7.5, zc), v3(1.0, 4.5, 5.6), r, GREY_DARK, m)
                 arch(p(side * 16.5, 3.5, zc), r + PI / 2.0, 3.0, 4.0, 0.5, 1.0, GREY_DARK, temple_block)
                 if i < 2 or i > 5: box_m(translation(p(side * 13.2, 12.6, zc)) * rotation_y(r) * rotation_z(-side * 0.42) * scaling(v3(7.6, 0.5, 7.2)), ROOF_SLATE, PLAIN, true)
@@ -608,7 +682,9 @@ temple = ():
         x = 12.0 + hash2(f64(i), 8.0) * 10.0
         z = -7.0 + hash2(f64(i), 18.0) * 17.0
         q = p(x, 0.0, z)
-        box_m(translation(v3(f64(q.x), gy(f64(q.x), f64(q.z)) + 0.6, f64(q.z))) * rotation_y(r + f64(i) * 0.7) * rotation_z(0.15) * scaling(v3(2.8, 1.2, 1.6)), col, m, true)
+        center=v3(f64(q.x),gy(f64(q.x),f64(q.z))+0.6,f64(q.z))
+        sor_split_stone(center,v3(1.7,0.8,1.0),r+f64(i)*0.7,f64(i)+72.0,col,m)
+        add_box(center-vec3(0,0.6,0),vec3(1.4,0.6,0.8),r+f64(i)*0.7,true,.stone)
     # rubble: fallen roof and wall stones inside and around
     seed_random(77)
     loop i in [0..40):
@@ -616,7 +692,11 @@ temple = ():
         z = random(-30.0, 45.0)
         sz_ = random(0.5, 2.0)
         q = p(x, 0.0, z)
-        box_m(translation(v3(f64(q.x), gy(f64(q.x), f64(q.z)) + sz_ * 0.3, f64(q.z))) * rotation_y(random(0.0, 3.0)) * rotation_x(random(-0.3, 0.3)) * scaling(v3(sz_ * 1.5, sz_, sz_)), GREY, temple_block, true)
+        yaw=random(0.0,3.0)
+        tilt=random(-0.3,0.3) # retain the original placement stream
+        center=v3(f64(q.x),gy(f64(q.x),f64(q.z))+sz_*0.3,f64(q.z))
+        sor_split_stone(center,v3(sz_*0.96,sz_*0.65,sz_*0.64),yaw,f64(i)+177.0,GREY,temple_ivy)
+        add_box(center-v3(0,sz_*0.5,0),v3(sz_*0.75,sz_*0.5,sz_*0.5),yaw,true,.stone)
 
 # the three abbeys north of the temple: ruined chapels on raised bases
 abbey = (o: vec3, rot: f64, size: f64):
@@ -840,7 +920,51 @@ __cliff_bed_presence = (p: vec3) -> f64:
     # the envelope with height avoids the same long fold on every tier.
     smoothstep(0.30, 0.69, noise(across * 0.043 + f64(p.y) * 0.015 + 3.0, f64(p.y) * 0.029))
 
+# Preserve the fractured lower north bank. The upper face and south bank use
+# the original cliff shape and material, including the climbing surface.
+__cliff_strata_weight = (p: vec3) -> f64:
+    if p.z >= 1823.0: return 0.0
+    1.0 - smoothstep(185.0, 195.0, f64(p.y))
+
+__cliff_shelf = (across: f64, y: f64, base: f64, thickness: f64, depth: f64, seed: f64) -> f64:
+    patch = noise(across * 0.037 + seed, seed * 0.71)
+    tilt = (noise(across * 0.019 + seed * 2.3, 11.0) - 0.5) * 24.0
+    split = noise(across * 0.091 + seed, 19.0)
+    h = y + tilt + (split - 0.5) * 5.0 - base
+    thick = thickness * (0.48 + patch * 1.10)
+    rise = clamp(h / (thick * 0.64), 0.0, 1.0)
+    lip = 1.0 - clamp((h - thick) / (1.2 + split * 2.2), 0.0, 1.0)
+    presence = smoothstep(0.23, 0.66, patch)
+    rise * lip * depth * presence * (0.60 + split * 0.70)
+
+
+__cliff_strata_depth = (p: vec3) -> f64:
+    across = f64(p.z) + f64(p.x) * 0.28
+    y = f64(p.y)
+    # Unequal joint bays replace the fixed 43-m sawtooth. Their axes change
+    # direction and terminate with height rather than repeating on each bed.
+    bend = (noise(across * 0.028, y * 0.037) - 0.5) * 10.0
+    joint = noise((across + bend) * 0.064 + 13.0, y * 0.025)
+    plane = clamp((joint - 0.27) / 0.39, 0.0, 1.0)
+    columns = 4.0 + plane * 7.0
+    small = noise(across * 0.16 + y * 0.025, y * 0.13 + 9.0)
+    columns += (small - 0.5) * 5.0
+    gullies = smooth01((noise((across + bend) * 0.079 + 7.0, y * 0.019) - 0.53) / 0.28) * 7.0
+    broad = (noise(across * 0.022, y * 0.033) - 0.5) * 6.0
+    shelf = __cliff_shelf(across, y, 106.0, 20.0, 6.0, 3.7)
+    shelf += __cliff_shelf(across, y, 143.0, 22.0, 9.0, 17.3)
+    shelf += __cliff_shelf(across, y, 177.0, 19.0, 8.0, 31.8)
+    shelf += __cliff_shelf(across, y, 208.0, 23.0, 11.0, 47.1)
+    shelf += __cliff_shelf(across, y, 243.0, 12.0, 7.0, 69.4)
+    fault = 1.0 - clamp((abs(across - 1339.0 + (y - 190.0) * 0.11) - 1.2) / 3.5, 0.0, 1.0)
+    fault += 1.0 - clamp((abs(across - 1455.0 - (y - 180.0) * 0.16) - 1.6) / 4.0, 0.0, 1.0)
+    south = (1.0 - smooth01(abs(f64(p.z) - 1887.0) / 24.0)) * 6.0
+    29.0 + south + columns - gullies + broad + shelf * (1.0 - min(fault, 1.0) * 0.75) - fault * 4.0
+
+
 __cliff_depth = (p: vec3) -> f64:
+    strata = __cliff_strata_weight(p)
+    if strata >= 1.0: return __cliff_strata_depth(p)
     across = f64(p.z) + f64(p.x) * 0.28
     y = f64(p.y)
     # Long vertical structures, 10--40 m across. Their axes drift with height,
@@ -880,13 +1004,18 @@ __cliff_depth = (p: vec3) -> f64:
     split_mid = clamp((bed_height-185.0)/1.6,0.0,1.0)*(1.0-clamp((bed_height-196.0)/1.8,0.0,1.0))
     upper = lerp(upper,split_upper,angular)
     mid = lerp(mid,split_mid,angular)
+    # Flatten the isolated lit upper-bed lip into the adjoining face.
+    # Keep the surrounding folds and their shared lighting normals intact.
+    upper *= smoothstep(3.0, 15.0, abs(f64(p.z) - 1779.0))
     shelf = (upper*6.0+lower*4.0+mid*5.0+high*3.5+toe*3.0*poolside)*(0.65+presence*0.35)
     # Deliberate diagonal fault bays break the tall north buttress and the
     # south pool shoulder. Their broad returns are resolved by all three LODs.
     fault = 1.0 - smoothstep(1.8, 5.5, abs(across - 1339.0 + (y - 190.0) * 0.11))
     fault += 1.0 - smoothstep(2.0, 6.0, abs(across - 1455.0 - (y - 180.0) * 0.16))
     south = (1.0 - smooth01(abs(f64(p.z) - 1887.0) / 24.0)) * 6.0
-    29.0 + south + columns + secondary - gullies + broad + shelf - fault * 5.0
+    d = 29.0 + south + columns + secondary - gullies + broad + shelf - fault * 5.0
+    if strata > 0.0: return lerp(d, __cliff_strata_depth(p), strata)
+    d
 
 const CLIFF_ROWS = 48
 __cliff_point = (s: CliffStation, row: int) -> vec3:
@@ -997,6 +1126,15 @@ __cliff_skin = (stations: CliffStation[], step: int) -> Builder:
         if i >= stride and i < stations.len() * stride - stride and i % stride > 0 and i % stride < CLIFF_ROWS:
             around = (b.verts[i - stride].pos + b.verts[i + stride].pos + b.verts[i - 1].pos + b.verts[i + 1].pos) * 0.25
             cavity = clamp(f64(dot(around - p, n)) * 0.85, 0.0, 0.32)
+        overhang = 0.0
+        strata = __cliff_strata_weight(p)
+        if strata > 0.0 and i < stations.len() * stride:
+            loop offset in [1, 2, 3]:
+                if i % stride + offset < CLIFF_ROWS:
+                    above = b.verts[i + offset].pos - p
+                    cover = clamp(f64(-above.x) * 1.6 / max(f64(above.y), 0.5), 0.0, 1.0)
+                    overhang = max(overhang, cover * (0.48 - f64(offset) * 0.06))
+        cavity = lerp(cavity, max(cavity, overhang), strata)
         col.w = f32((0.84 + 0.16 * smooth01((f64(n.y) + 0.35) / 0.65)) * (1.0 - cavity))
         b.verts[i].normal = n
         b.verts[i].color = col
@@ -1450,6 +1588,15 @@ __west_cliffs = ():
 # Evaluate the bed boundary per fragment: vertex RGB cannot retain a narrow
 # ledge edge over a two-metre triangle. The mesh carries the same bed coordinate
 # and pinch-out envelope used by its displaced skin, plus a gully exposure mask.
+__cliff_strata_fields = (p: vec3) -> vec3:
+    across = f64(p.z) + f64(p.x) * 0.28
+    bend = (noise(across * 0.016, f64(p.y) * 0.006) - 0.5) * 5.0
+    gully = smooth01((noise((across + bend) * 0.079 + 7.0, f64(p.y) * 0.004) - 0.57) / 0.25)
+    presence = __cliff_bed_presence(p)
+    pigment = 0.96 + noise(across * 0.11 + 5.0, f64(p.y) * 0.16) * 0.08
+    v3(pigment, presence, 1.0 - gully * 0.9)
+
+
 __cliff_surface_fields = (p: vec3) -> vec3:
     across = f64(p.z) + f64(p.x) * 0.28
     bend = (noise(across * 0.016, f64(p.y) * 0.006) - 0.5) * 5.0
@@ -1462,7 +1609,10 @@ __cliff_surface_fields = (p: vec3) -> vec3:
     f = fract(bed)
     seam = smoothstep(0.62,0.78,f)*(1.0-smoothstep(0.83,0.96,f))
     pigment = 1.0+sin(bed*TAU)*0.055-seam*(0.035+presence*0.075)
-    v3(pigment, presence, 1.0 - gully * 0.9)
+    fields = v3(pigment, presence, 1.0 - gully * 0.9)
+    strata = __cliff_strata_weight(p)
+    if strata > 0.0: return mix(fields, __cliff_strata_fields(p), f32(strata))
+    fields
 
 # The cliff's grazing beds need a depth ramp, rather than a binary shadow
 # comparison that turns small receiver/caster differences into dark decals.
@@ -1505,16 +1655,55 @@ cliff_shadow = (w: vec3, ndl: f32, u: BuildU) -> f32:
         return lerp(s, f32(1.0), 0.38 + 0.62 * smoothstep(0.72, 0.98, edge))
     1.0
 
+__cliff_mineral_plane = (p: vec2, dist: f32) -> vec3:
+    mass = vnoise(p * vec2(0.033, 0.047) + vec2(7, 3))
+    split = vnoise(vec2(p.x * 0.085 + p.y * 0.054, p.y * 0.097 - p.x * 0.038))
+    c = mix(vec3(0.255, 0.265, 0.26), vec3(0.35, 0.34, 0.305), smoothstep(0.22, 0.78, mass))
+    c *= 0.88 + split * 0.22
+    near = 1.0 - smoothstep(18.0, 65.0, dist)
+    if near > 0.0:
+        chip = vnoise(vec2(p.x * 2.07 + p.y * 0.93, p.y * 2.49 - p.x * 0.81))
+        joint = abs(vnoise(p * vec2(0.81, 0.64) + vec2(split * 0.9, mass * 0.7)) - 0.48)
+        crack = (1.0 - smoothstep(0.008, 0.034, joint)) * smoothstep(0.35, 0.62, chip)
+        c *= 1.0 + (chip - 0.5) * near * 0.16 - crack * near * 0.26
+    c
+
+
+__cliff_mineral = (w: vec3, n: vec3, dist: f32) -> vec3:
+    weights = __canyon_weights(n)
+    c = vec3(0,0,0)
+    if weights.x > 0.001: c += __cliff_mineral_plane(w.zy, dist) * weights.x
+    if weights.y > 0.001: c += __cliff_mineral_plane(w.xz, dist) * weights.y
+    if weights.z > 0.001: c += __cliff_mineral_plane(w.xy, dist) * weights.z
+    wash = vnoise(w.xz * 0.09 + vec2(w.y * 0.13, w.y * 0.07))
+    moss = smoothstep(0.35, 0.86, n.y) * smoothstep(0.40, 0.76, wash)
+    mix(c, vec3(0.245, 0.29, 0.19), moss * 0.62)
+
+
 cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     w = i.world
     n = normalize(i.normal)
     dist = length(w - u.cam)
     # Shared granite pigment joins the skin to the exposed heightfield. Actual
     # buttresses, concavity AO and shadow maps carry the painted value masses.
-    alb = rock_color(w, n, dist) * i.mat.x
-    # The displaced shelves own bedding edges. Triplanar minerals and local
-    # fractures replace repeated horizontal ink bands on every exposed plane.
-    n = canyon_rock_normal(w, n, dist)
+    # Retain the original open mineral strokes at climbing distance on every bank.
+    strata = f32(__cliff_strata_weight(w)) * smoothstep(18.0, 65.0, dist)
+    alb = vec3(0,0,0)
+    detail_n = n
+    if strata < 1.0:
+        alb = rock_color(w, n, dist) * i.mat.x
+        detail_n = canyon_rock_normal(w, n, dist)
+    if strata > 0.0:
+        mineral = __cliff_mineral(w, n, dist) * i.mat.x
+        detail = 0.60 + (1.0 - smoothstep(12.0, 45.0, dist)) * 0.9
+        strata_n = normalize(n + (canyon_rock_normal(w * 1.8, n, dist) - n) * detail)
+        if strata >= 1.0:
+            alb = mineral
+            detail_n = strata_n
+        else:
+            alb = mix(alb, mineral, strata)
+            detail_n = normalize(mix(detail_n, strata_n, strata))
+    n = detail_n
     if w.x > -1600.0 and w.x < -1480.0 and abs(w.z-1823.0)<20.0 and w.y<107.0:
         tide=104.0+(vnoise(w.xz*0.85)-0.5)*0.65
         damp=1.0-smoothstep(tide-0.25,tide+1.1,w.y)
@@ -1532,8 +1721,9 @@ cliff_surface_fs = (i: BuildO, u: BuildU) -> vec4:
     stone_sky = mix(u.sky, luma(u.sky) * vec3(1.0, 1.0, 1.01), 0.88)
     sh = 0.28 + sh * 0.72
     c = paint_light(alb, n, l, v, stone_sun, stone_sky, u.ground, sh, 0.25) * i.color.w
-    c = c + alb * stone_sun * vec3(0.98, 1.0, 1.04) * 0.2 * clamp(1.0 - n.y * 1.4, 0.0, 1.0) * (1.0 - clamp(dot(n, l), 0.0, 1.0) * sh)
-    c = c + point_light(alb, n, w, u.lp, u.lc)
+    fill_ao = mix(f32(1.0), i.color.w, strata)
+    c = c + fill_ao * alb * stone_sun * vec3(0.98, 1.0, 1.04) * 0.2 * clamp(1.0 - n.y * 1.4, 0.0, 1.0) * (1.0 - clamp(dot(n, l), 0.0, 1.0) * sh)
+    c = c + fill_ao * point_light(alb, n, w, u.lp, u.lc)
     c = atmos(c, w, u.cam, l, u.haze, u.sun_color, u.density, u.falloff)
     # Preserve the building renderer's camera/player occluder dissolve.
     cp = u.player + vec3(0, 1.0, 0) - u.cam
@@ -1557,7 +1747,7 @@ __cliff_finish = ():
     loop b in cliff_surfaces: cliff_meshes.push(static_mesh(b.verts, b.idx))
     if env("BOTW_BAKE_ASSETS") == none and env("BOTW_ASSET_CHECK") == none: cliff_surfaces = []
     build_extra_draw = (u: BuildU, vp: mat4, cam: vec3, max_dist: f64):
-        if u.shadow_pass < 0.5: sor_passage_light(cam, clamp(u.sun_dir.y*2.0,0.0,1.0))
+        if u.shadow_pass < 0.5: sor_marker_glows(cam)
         f = frustum_from(vp)
         loop strip in [0..cliff_meshes.len() / 3):
             base = strip * 3
